@@ -461,7 +461,7 @@
       };
 
       const safeOptions = options && typeof options === 'object' ? options : {};
-      const providerType = normalizeText(safeOptions.providerType || '').toLowerCase() || 'plato';
+      const providerType = normalizeText(safeOptions.providerType || '').toLowerCase() || 'openai-compatible';
       const summarizedApiKey = normalizeText(safeOptions.summarizedApiKey || '');
       const summarizedBaseUrl = normalizeBaseUrlForStorage(safeOptions.summarizedBaseUrl || '');
       const summarizedModel = normalizeText(safeOptions.summarizedModel || '');
