@@ -189,7 +189,7 @@
       return utils.inferProviderType(secret);
     }
     const summary = resolveSummaryLLM(secret);
-    if (!summary) return 'plato';
+    if (!summary) return 'openai-compatible';
     return /bltcy\.ai|gptbest\.vip/i.test(summary.baseUrl) ? 'plato' : 'openai-compatible';
   };
   const getDefaultPlatoBaseUrl = () => {
@@ -482,6 +482,17 @@
       const secretNameSummaryApiKey = 'SUMMARY_API_KEY';
       const secretNameSummaryBaseUrl = 'SUMMARY_BASE_URL';
       const secretNameSummaryModel = 'SUMMARY_MODEL';
+      const secretNameLlmApiKey = 'LLM_API_KEY';
+      const secretNameLlmBaseUrl = 'LLM_BASE_URL';
+      const secretNameLlmModel = 'LLM_MODEL';
+      const secretNameOpenaiApiKey = 'OPENAI_API_KEY';
+      const secretNameOpenaiBaseUrl = 'OPENAI_BASE_URL';
+      const secretNameRewriteApiKey = 'REWRITE_API_KEY';
+      const secretNameRewriteBaseUrl = 'REWRITE_BASE_URL';
+      const secretNameRewriteModel = 'REWRITE_MODEL';
+      const secretNameFilterApiKey = 'FILTER_API_KEY';
+      const secretNameFilterBaseUrl = 'FILTER_BASE_URL';
+      const secretNameFilterModel = 'FILTER_MODEL';
       const secretNameBltKey = 'BLT_API_KEY';
       const secretNameBltBase = 'BLT_PRIMARY_BASE_URL';
       const secretNameLlmPrimaryBase = 'LLM_PRIMARY_BASE_URL';
@@ -489,6 +500,9 @@
       const secretNameBltFilterModel = 'BLT_FILTER_MODEL';
       const secretNameBltRewriteModel = 'BLT_REWRITE_MODEL';
       const secretNameSkipRerank = 'DPR_SKIP_RERANK';
+      const secretNameRerankerKey = 'RERANKER_API_KEY';
+      const secretNameRerankerUrl = 'RERANKER_BASE_URL';
+      const secretNameRerankerModel = 'RERANKER_MODEL';
       const secretNameRerankKey = 'Reranker_LLM_API_KEY';
       const secretNameRerankUrl = 'Reranker_LLM_BASE_URL';
       const secretNameRerankModel = 'Reranker_LLM_MODEL';
@@ -527,17 +541,39 @@
         { name: secretNameSummaryApiKey, value: summarizedApiKey },
         { name: secretNameSummaryBaseUrl, value: summarizedBaseUrl },
         { name: secretNameSummaryModel, value: summarizedModel },
-        { name: secretNameBltKey, value: summarizedApiKey },
-        { name: secretNameBltBase, value: summarizedBaseUrl },
+        { name: secretNameLlmApiKey, value: summarizedApiKey },
+        { name: secretNameLlmBaseUrl, value: summarizedBaseUrl },
+        { name: secretNameLlmModel, value: summarizedModel },
+        { name: secretNameRewriteApiKey, value: summarizedApiKey },
+        { name: secretNameRewriteBaseUrl, value: summarizedBaseUrl },
+        { name: secretNameRewriteModel, value: rewriteModel || summarizedModel },
+        { name: secretNameFilterApiKey, value: summarizedApiKey },
+        { name: secretNameFilterBaseUrl, value: summarizedBaseUrl },
+        { name: secretNameFilterModel, value: filterModel || summarizedModel },
         { name: secretNameLlmPrimaryBase, value: summarizedBaseUrl },
-        { name: secretNameBltSummaryModel, value: summarizedModel },
-        { name: secretNameBltFilterModel, value: filterModel || summarizedModel },
-        { name: secretNameBltRewriteModel, value: rewriteModel || summarizedModel },
         { name: secretNameSkipRerank, value: skipRerank ? 'true' : 'false' },
       ];
 
+      if (providerType === 'openai-compatible') {
+        secrets.push(
+          { name: secretNameOpenaiApiKey, value: summarizedApiKey },
+          { name: secretNameOpenaiBaseUrl, value: summarizedBaseUrl },
+        );
+      } else {
+        secrets.push(
+          { name: secretNameBltKey, value: summarizedApiKey },
+          { name: secretNameBltBase, value: summarizedBaseUrl },
+          { name: secretNameBltSummaryModel, value: summarizedModel },
+          { name: secretNameBltFilterModel, value: filterModel || summarizedModel },
+          { name: secretNameBltRewriteModel, value: rewriteModel || summarizedModel },
+        );
+      }
+
       if (!skipRerank && rerankerApiKey && rerankerBaseUrl && rerankerModel) {
         secrets.push(
+          { name: secretNameRerankerKey, value: rerankerApiKey },
+          { name: secretNameRerankerUrl, value: rerankerBaseUrl },
+          { name: secretNameRerankerModel, value: rerankerModel },
           { name: secretNameRerankKey, value: rerankerApiKey },
           { name: secretNameRerankUrl, value: rerankerBaseUrl },
           { name: secretNameRerankModel, value: rerankerModel },
@@ -892,6 +928,12 @@
           ? window.decoded_secret_private
           : {};
       const currentProviderType = inferProviderType(currentSecret);
+      const defaultOpenAIPreset = getOpenAICompatiblePreset('openai') || {
+        baseUrl: 'https://api.openai.com/v1',
+        models: ['gpt-4.1-mini', 'gpt-4.1'],
+      };
+      const defaultOpenAIBaseUrl = normalizeBaseUrlForStorage(defaultOpenAIPreset.baseUrl || 'https://api.openai.com/v1');
+      const defaultOpenAIModels = sanitizeModelList(defaultOpenAIPreset.models || ['gpt-4.1-mini', 'gpt-4.1'], 3);
       const currentSummaryLLM = resolveSummaryLLM(currentSecret) || {};
       const currentChatEntry =
         Array.isArray(currentSecret.chatLLMs) && currentSecret.chatLLMs.length
@@ -920,19 +962,33 @@
       const initialGithubToken = normalizeText(
         currentSecret.github && currentSecret.github.token,
       );
-      const initialApiKey = normalizeText(currentSummaryLLM.apiKey || '');
-      const initialCustomApiKey = normalizeText(currentChatEntry.apiKey || '');
+      const initialApiKey =
+        currentProviderType === 'plato'
+          ? normalizeText(currentSummaryLLM.apiKey || '')
+          : '';
+      const initialCustomApiKey = normalizeText(
+        currentProviderType === 'openai-compatible'
+          ? (currentChatEntry.apiKey || currentSummaryLLM.apiKey || '')
+          : currentChatEntry.apiKey || '',
+      );
       const initialCustomBaseUrl = normalizeBaseUrlForStorage(
-        currentChatEntry.baseUrl || '',
+        currentProviderType === 'openai-compatible'
+          ? (currentChatEntry.baseUrl || currentSummaryLLM.baseUrl || defaultOpenAIBaseUrl)
+          : currentChatEntry.baseUrl || '',
       );
       const initialPlatoModel =
         normalizeText(currentSummaryLLM.model || '') || 'gpt-5-chat';
-      const initialCustomModels = sanitizeModelList(
+      const loadedCustomModels = sanitizeModelList(
         currentProviderType === 'openai-compatible'
-          ? (currentChatEntry.models || [])
+          ? (
+              (currentChatEntry.models && currentChatEntry.models.length
+                ? currentChatEntry.models
+                : [currentSummaryLLM.model])
+            )
           : [],
         3,
       );
+      const initialCustomModels = loadedCustomModels.length ? loadedCustomModels : defaultOpenAIModels;
 
       modal.innerHTML = `
         <h2 style="margin-top:0;">🛡️ 新配置指引 · 第二步</h2>
@@ -961,16 +1017,16 @@
             </div>
 
             <div id="secret-setup-plato-section" class="secret-setup-step2-block">
-              <div class="secret-setup-step2-title">工作流 / Reranker 专用 BLT（必填）</div>
+              <div class="secret-setup-step2-title">BLT 工作流 / Reranker（可选）</div>
               <p class="secret-setup-step2-note">
-                BLT 用于 query enrich、LLM refine、总结与 reranker，是工作流硬依赖。
+                只有选择 BLT 模式时才需要填写。选择 OpenAI-compatible 时不需要配置 BLT，rerank 会自动跳过并使用召回分数兜底。
               </p>
               <div class="secret-setup-input-row multi-actions">
                 <input
                   id="secret-setup-plato"
                   type="password"
                   autocomplete="off"
-                  placeholder="BLT API Key，例如：sk-xxxx"
+                  placeholder="BLT API Key（可选，仅 BLT 模式）"
                   style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:13px;"
                 />
                 <button id="secret-setup-plato-verify" type="button" class="secret-gate-btn secondary">
@@ -981,11 +1037,11 @@
                 </button>
               </div>
               <div id="secret-setup-plato-status" style="min-height:18px; font-size:12px; color:#999; margin-bottom:8px;">
-                将通过 <code>/v1/token/quota</code> 和一次 <code>hello world</code> 请求检查配置可用性。
+                仅 BLT 模式需要验证。OpenAI-compatible 模式会写入 OpenAI-compatible secrets，不依赖这里。
               </div>
 
               <div style="font-weight:500; margin-bottom:4px; display:flex; align-items:center; gap:4px;">
-                用于工作流总结 / 过滤的大模型
+                BLT 工作流模型
                 <span class="secret-model-tip">!
                   <span class="secret-model-tip-popup">
                     按照 Thinking（思考模式）的高负载场景估算：<br/>
@@ -1009,24 +1065,24 @@
 
           <div class="secret-setup-step2-col">
             <div class="secret-setup-step2-block">
-              <div class="secret-setup-step2-title">聊天模型来源</div>
+              <div class="secret-setup-step2-title">工作流与聊天模型来源</div>
               <p class="secret-setup-step2-note">
-                BLT 是工作流必填项；OpenAI-compatible 入口已重新开放，但仍属于实验性能力，仅作为聊天区模型来源。
+                默认使用 OpenAI-compatible 接口，保存后会自动写入 GitHub Secrets。BLT 只作为需要 /rerank 专用接口时的可选模式。
               </p>
               <label class="secret-setup-provider-choice">
-                <input type="radio" name="secret-setup-provider" value="plato" />
-                <span><strong>聊天区也使用 BLT</strong>工作流总结、过滤、reranker 与聊天区统一使用柏拉图（BLTCY）模型。</span>
+                <input type="radio" name="secret-setup-provider" value="openai-compatible" />
+                <span><strong>工作流与聊天使用 OpenAI-compatible</strong>最多 3 个自定义模型；第一个模型会作为工作流默认模型。</span>
               </label>
               <label class="secret-setup-provider-choice">
-                <input type="radio" name="secret-setup-provider" value="openai-compatible" />
-                <span><strong>聊天区使用 OpenAI-compatible（实验性）</strong>工作流总结与 reranker 仍强制使用 BLT，最多 3 个自定义模型仅用于聊天区。</span>
+                <input type="radio" name="secret-setup-provider" value="plato" />
+                <span><strong>工作流与聊天都使用 BLT</strong>需要 BLT API Key；总结、过滤、reranker 与聊天区统一使用柏拉图（BLTCY）模型。</span>
               </label>
             </div>
 
             <div id="secret-setup-custom-section" class="secret-setup-step2-block">
-              <div class="secret-setup-step2-title">OpenAI-compatible 聊天配置</div>
+              <div class="secret-setup-step2-title">OpenAI-compatible 工作流 / 聊天配置</div>
               <p class="secret-setup-step2-note">
-                预设会自动填写 <code>Base URL</code> 与推荐模型；API Key 仍需你自行输入。这里的模型仅供聊天区使用。
+                预设会自动填写 <code>Base URL</code> 与推荐模型；API Key 仍需你自行输入。这里会用于 query enrich、LLM refine、总结和聊天。
               </p>
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
                 <button id="secret-setup-preset-deepseek" type="button" class="secret-gate-btn secondary">
@@ -1049,42 +1105,42 @@
                 id="secret-setup-custom-api-key"
                 type="password"
                 autocomplete="off"
-                placeholder="聊天 API Key"
+                placeholder="API Key"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <input
                 id="secret-setup-custom-base-url"
                 type="text"
                 autocomplete="off"
-                placeholder="聊天 Base URL，例如 https://api.openai.com/v1"
+                placeholder="Base URL，默认 https://api.openai.com/v1"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <input
                 id="secret-setup-custom-model-1"
                 type="text"
                 autocomplete="off"
-                placeholder="聊天模型 1（默认）"
+                placeholder="模型 1（工作流默认）"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <input
                 id="secret-setup-custom-model-2"
                 type="text"
                 autocomplete="off"
-                placeholder="聊天模型 2（可选）"
+                placeholder="模型 2（可选）"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <input
                 id="secret-setup-custom-model-3"
                 type="text"
                 autocomplete="off"
-                placeholder="聊天模型 3（可选）"
+                placeholder="模型 3（可选）"
                 style="width:100%; box-sizing:border-box; padding:6px 8px; margin-bottom:4px; font-size:13px;"
               />
               <button id="secret-setup-custom-test" type="button" class="secret-gate-btn secondary secret-setup-step2-actions">
                 测试当前配置
               </button>
               <div id="secret-setup-custom-status" style="min-height:18px; font-size:12px; color:#999; margin-top:6px;">
-                将依次用已填写聊天模型发送 <code>hello world</code>，检查接口与模型是否可用。
+                将依次用已填写模型发送 <code>hello world</code>，检查接口与模型是否可用。
               </div>
             </div>
           </div>
@@ -1177,9 +1233,7 @@
       githubInput.value = initialGithubToken;
       platoInput.value = initialApiKey;
       customApiKeyInput.value =
-        currentProviderType === 'openai-compatible'
-        ? normalizeText(currentChatEntry.apiKey || '')
-        : '';
+        currentProviderType === 'openai-compatible' ? initialCustomApiKey : '';
       customBaseUrlInput.value =
         currentProviderType === 'openai-compatible' ? initialCustomBaseUrl : '';
       customModel1Input.value = initialCustomModels[0] || '';
@@ -1210,7 +1264,7 @@
 
       const selectedProvider = () => {
         const checked = providerInputs.find((input) => input.checked);
-        return checked ? checked.value : 'plato';
+        return checked ? checked.value : 'openai-compatible';
       };
 
       const selectedPlatoModel = () => {
@@ -1219,7 +1273,7 @@
 
       const syncProviderSections = () => {
         const provider = selectedProvider();
-        platoSection.style.display = 'block';
+        platoSection.style.display = provider === 'plato' ? 'block' : 'none';
         customSection.style.display =
           provider === 'openai-compatible' ? 'block' : 'none';
       };
@@ -1233,7 +1287,7 @@
       const resetPlatoStatus = () => {
         platoOk = false;
         platoStatusEl.innerHTML =
-          '将通过 <code>/v1/token/quota</code> 和一次 <code>hello world</code> 请求检查配置可用性。';
+          '仅 BLT 模式需要验证。OpenAI-compatible 模式会写入 OpenAI-compatible secrets，不依赖这里。';
         platoStatusEl.style.color = '#999';
       };
 
@@ -1266,7 +1320,7 @@
 
       const validateCustomDraft = () => {
         const apiKey = normalizeText(customApiKeyInput.value);
-        const baseUrl = normalizeBaseUrlForStorage(customBaseUrlInput.value);
+        const baseUrl = normalizeBaseUrlForStorage(customBaseUrlInput.value) || defaultOpenAIBaseUrl;
         const models = sanitizeModelList(
           [
             customModel1Input.value,
@@ -1278,9 +1332,6 @@
 
         if (!apiKey) {
           throw new Error('请先输入 OpenAI-compatible API Key。');
-        }
-        if (!baseUrl) {
-          throw new Error('请先输入 OpenAI-compatible Base URL。');
         }
         if (!/^https?:\/\//i.test(baseUrl)) {
           throw new Error('Base URL 需要以 http:// 或 https:// 开头。');
@@ -1297,15 +1348,15 @@
 
       const collectProviderDraft = () => {
         const provider = selectedProvider();
-        const apiKey = normalizeText(platoInput.value);
-        const model = selectedPlatoModel();
-        if (!apiKey) {
-          throw new Error('请先输入 BLT API Key。');
-        }
-        if (!model) {
-          throw new Error('请选择用于工作流总结的大模型。');
-        }
         if (provider === 'plato') {
+          const apiKey = normalizeText(platoInput.value);
+          const model = selectedPlatoModel();
+          if (!apiKey) {
+            throw new Error('请先输入 BLT API Key。');
+          }
+          if (!model) {
+            throw new Error('请选择用于工作流总结的大模型。');
+          }
           return {
             providerType: 'plato',
             summaryApiKey: apiKey,
@@ -1324,22 +1375,19 @@
         }
 
         const customDraft = validateCustomDraft();
+        const workflowModel = customDraft.models[0];
         return {
           providerType: 'openai-compatible',
-          summaryApiKey: apiKey,
-          summaryBaseUrl: getDefaultPlatoBaseUrl(),
-          summaryModel: model,
+          summaryApiKey: customDraft.apiKey,
+          summaryBaseUrl: customDraft.baseUrl,
+          summaryModel: workflowModel,
           chatModels: customDraft.models,
           chatApiKey: customDraft.apiKey,
           chatBaseUrl: customDraft.baseUrl,
-          rewriteModel: 'gemini-3-flash-preview',
-          filterModel: 'gemini-3-flash-preview-nothinking',
-          skipRerank: false,
-          reranker: {
-            apiKey,
-            baseUrl: getDefaultPlatoBaseUrl(),
-            model: 'qwen3-reranker-4b',
-          },
+          rewriteModel: workflowModel,
+          filterModel: workflowModel,
+          skipRerank: true,
+          reranker: null,
         };
       };
 
@@ -1563,10 +1611,6 @@
 
         if (providerDraft.providerType === 'plato' && !platoOk) {
           setErrorText('请先验证柏拉图 API Key，或点击“测试当前配置”。', '#c00');
-          return;
-        }
-        if (providerDraft.providerType === 'openai-compatible' && !platoOk) {
-          setErrorText('请先验证 BLT API Key，工作流总结与 reranker 必须使用 BLT。', '#c00');
           return;
         }
         if (providerDraft.providerType === 'openai-compatible' && !customOk) {

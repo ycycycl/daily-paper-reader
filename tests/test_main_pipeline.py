@@ -68,10 +68,13 @@ class MainPipelineTest(unittest.TestCase):
         ):
             env = self.mod.resolve_summary_step_env()
 
-        self.assertEqual(env["BLT_API_KEY"], "summary-key")
-        self.assertEqual(env["BLT_API_BASE"], "https://summary.example.com/v1")
-        self.assertEqual(env["BLT_PRIMARY_BASE_URL"], "https://summary.example.com/v1")
+        self.assertEqual(env["BLT_API_KEY"], "base-key")
+        self.assertEqual(env["BLT_API_BASE"], "https://api.bltcy.ai/v1")
+        self.assertNotIn("BLT_PRIMARY_BASE_URL", env)
         self.assertEqual(env["LLM_PRIMARY_BASE_URL"], "https://summary.example.com/v1")
+        self.assertEqual(env["LLM_API_KEY"], "summary-key")
+        self.assertEqual(env["LLM_BASE_URL"], "https://summary.example.com/v1")
+        self.assertEqual(env["LLM_MODEL"], "gpt-4.1-mini")
         self.assertEqual(env["BLT_SUMMARY_MODEL"], "gpt-4.1-mini")
 
     def test_main_skips_rerank_for_non_blt_base_and_builds_fallback(self):
@@ -150,6 +153,45 @@ class MainPipelineTest(unittest.TestCase):
 
             labels = [item[0] for item in calls]
             self.assertIn("Step 3 - Rerank", labels)
+
+    def test_main_respects_explicit_skip_rerank_flag(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            src_dir = root / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            token = "20260310"
+            self._write_rrf_input(root, token)
+            calls = []
+
+            def fake_run_step(label, args, env=None):
+                calls.append((label, args, env))
+
+            with patch.object(self.mod, "ROOT_DIR", str(root)), patch.object(
+                self.mod, "SRC_DIR", str(src_dir)
+            ), patch.object(
+                self.mod, "resolve_run_date_token", return_value=token
+            ), patch.object(
+                self.mod, "resolve_sidebar_date_label", return_value=None
+            ), patch.object(
+                self.mod, "parse_trace_ids", return_value=[]
+            ), patch.object(
+                self.mod, "run_step", side_effect=fake_run_step
+            ), patch.object(
+                sys, "argv", ["main.py"]
+            ), patch.dict(
+                os.environ,
+                {
+                    "DPR_SKIP_RERANK": "true",
+                    "LLM_PRIMARY_BASE_URL": "https://api.bltcy.ai/v1",
+                },
+                clear=True,
+            ):
+                self.mod.main()
+
+            labels = [item[0] for item in calls]
+            self.assertNotIn("Step 3 - Rerank", labels)
+            rerank_path = root / "archive" / token / "rank" / f"arxiv_papers_{token}.json"
+            self.assertTrue(rerank_path.exists())
 
 
 if __name__ == "__main__":

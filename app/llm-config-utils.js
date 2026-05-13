@@ -142,7 +142,7 @@
       return explicit;
     }
     const summary = resolveSummaryLLM(safeSecret);
-    if (!summary) return 'plato';
+    if (!summary) return 'openai-compatible';
     if (/bltcy\.ai|gptbest\.vip/i.test(summary.baseUrl)) {
       return 'plato';
     }

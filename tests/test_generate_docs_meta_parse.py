@@ -21,11 +21,14 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
 
             llm_stub = types.ModuleType("llm")
 
-            class DummyBltClient:
+            class DummyClient:
                 def __init__(self, *args, **kwargs):
                     pass
 
-            llm_stub.BltClient = DummyBltClient
+            llm_stub.DEFAULT_BLT_BASE_URL = "https://api.bltcy.ai/v1"
+            llm_stub.LLMClient = DummyClient
+            llm_stub.create_chat_client = lambda *args, **kwargs: DummyClient()
+            llm_stub.first_env = lambda *names: ""
             sys.modules["llm"] = llm_stub
 
         src_path = root / "src" / "6.generate_docs.py"
