@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # 使用柏拉图 Rerank API 对候选论文做重排序（简化版）。
+# OpenAI-compatible 工作流没有 /rerank 时，会使用召回分数生成兜底排序。
 
 import argparse
 import json
@@ -8,7 +9,7 @@ import random
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from llm import BltClient
+from llm import BltClient, DEFAULT_BLT_BASE_URL, first_env, looks_like_blt_base
 
 SCRIPT_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
@@ -66,6 +67,80 @@ def score_to_stars(score: float) -> int:
   if score >= 0.01:
     return 2
   return 1
+
+
+def _env_flag_enabled(value: str | None) -> bool:
+  return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_ranked_from_sim_scores(query_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
+  sim_scores = query_obj.get("sim_scores")
+  if not isinstance(sim_scores, dict) or not sim_scores:
+    return []
+
+  items: List[Tuple[str, float | None, int | None]] = []
+  for pid, meta in sim_scores.items():
+    score = None
+    rank = None
+    if isinstance(meta, dict):
+      raw_score = meta.get("score")
+      raw_rank = meta.get("rank")
+      if isinstance(raw_score, (int, float)):
+        score = float(raw_score)
+      if isinstance(raw_rank, (int, float)):
+        rank = int(raw_rank)
+    elif isinstance(meta, (int, float)):
+      score = float(meta)
+    items.append((str(pid), score, rank))
+
+  items.sort(
+    key=lambda item: (
+      item[2] is None,
+      item[2] if item[2] is not None else 10**9,
+      -(item[1] if item[1] is not None else 0.0),
+      item[0],
+    )
+  )
+  if not items:
+    return []
+
+  numeric_scores = [item[1] for item in items if item[1] is not None]
+  min_score = min(numeric_scores) if numeric_scores else None
+  max_score = max(numeric_scores) if numeric_scores else None
+  total = len(items)
+  ranked: List[Dict[str, Any]] = []
+  for idx, (pid, score, _rank) in enumerate(items, start=1):
+    if (
+      score is not None
+      and min_score is not None
+      and max_score is not None
+      and max_score > min_score
+    ):
+      normalized = (score - min_score) / (max_score - min_score)
+    elif total == 1:
+      normalized = 1.0
+    else:
+      normalized = (total - idx) / (total - 1)
+    ranked.append(
+      {
+        "paper_id": pid,
+        "score": float(normalized),
+        "star_rating": score_to_stars(float(normalized)),
+      }
+    )
+  return ranked
+
+
+def apply_rerank_fallback(input_path: str, output_path: str, reason: str) -> None:
+  data = load_json(input_path)
+  queries = data.get("queries")
+  if isinstance(queries, list):
+    for query in queries:
+      if isinstance(query, dict):
+        query["ranked"] = build_ranked_from_sim_scores(query)
+  data["reranked_at"] = datetime.now(timezone.utc).isoformat()
+  log(f"[INFO] 跳过 BLT rerank，使用召回分数兜底排序：{reason}")
+  save_json(data, output_path)
 
 
 def load_json(path: str) -> Dict[str, Any]:
@@ -411,7 +486,10 @@ def main() -> None:
   parser.add_argument(
     "--rerank-model",
     type=str,
-    default=os.getenv("BLT_RERANK_MODEL") or os.getenv("RERANK_MODEL") or "qwen3-reranker-4b",
+    default=(
+      first_env("RERANKER_MODEL", "Reranker_LLM_MODEL", "BLT_RERANK_MODEL", "RERANK_MODEL")
+      or "qwen3-reranker-4b"
+    ),
     help="BLT Rerank 模型名称（默认 qwen3-reranker-4b）。",
   )
 
@@ -429,11 +507,41 @@ def main() -> None:
     log(f"[WARN] 输入文件不存在（今天可能没有新论文）：{input_path}，将跳过 Step 3。")
     return
 
-  api_key = os.getenv("BLT_API_KEY")
-  if not api_key:
-    raise RuntimeError("缺少 BLT_API_KEY 环境变量，无法调用 BLT Rerank API。")
+  if _env_flag_enabled(first_env("DPR_SKIP_RERANK")):
+    apply_rerank_fallback(input_path, output_path, "DPR_SKIP_RERANK=true")
+    return
 
-  reranker = BltClient(api_key=api_key, model=args.rerank_model)
+  rerank_base = first_env(
+    "RERANKER_BASE_URL",
+    "Reranker_LLM_BASE_URL",
+    "BLT_RERANK_BASE_URL",
+  )
+  inferred_base = rerank_base or first_env(
+    "BLT_PRIMARY_BASE_URL",
+    "BLT_API_BASE",
+    "LLM_PRIMARY_BASE_URL",
+    "LLM_BASE_URL",
+    "GPTBEST_BASE_URL",
+  )
+  if inferred_base and not looks_like_blt_base(inferred_base):
+    apply_rerank_fallback(input_path, output_path, f"base 不支持 /rerank: {inferred_base}")
+    return
+
+  api_key = first_env(
+    "RERANKER_API_KEY",
+    "Reranker_LLM_API_KEY",
+    "BLT_RERANK_API_KEY",
+    "BLT_API_KEY",
+  )
+  if not api_key:
+    apply_rerank_fallback(
+      input_path,
+      output_path,
+      "缺少 RERANKER_API_KEY / Reranker_LLM_API_KEY / BLT_RERANK_API_KEY / BLT_API_KEY",
+    )
+    return
+
+  reranker = BltClient(api_key=api_key, model=args.rerank_model, base_url=rerank_base or DEFAULT_BLT_BASE_URL)
   process_file(
     reranker=reranker,
     input_path=input_path,

@@ -463,24 +463,107 @@ window.SubscriptionsSmartQuery = (function () {
     (currentProfiles || []).find((profile) => getProfileKey(profile) === getProfileKey(profileId))
   );
 
-  const loadLlmConfig = () => {
-    const secret = window.decoded_secret_private || {};
-    const summarized = secret.summarizedLLM || {};
-    const baseUrl = normalizeText(summarized.baseUrl || '');
-    const apiKey = normalizeText(summarized.apiKey || '');
-    const model = normalizeText(summarized.model || '');
-    if (baseUrl && apiKey && model) return { baseUrl, apiKey, model };
+  const getLLMUtils = () => window.DPRLLMConfigUtils || {};
 
-    const chatLLMs = Array.isArray(secret.chatLLMs) ? secret.chatLLMs : [];
-    if (chatLLMs.length > 0) {
-      const first = chatLLMs[0] || {};
-      const cBase = normalizeText(first.baseUrl || '');
-      const cKey = normalizeText(first.apiKey || '');
-      const models = Array.isArray(first.models) ? first.models : [];
-      const cModel = normalizeText(models[0] || '');
-      if (cBase && cKey && cModel) return { baseUrl: cBase, apiKey: cKey, model: cModel };
+  const normalizeBaseUrlForStorage = (value) => {
+    const utils = getLLMUtils();
+    if (typeof utils.normalizeBaseUrlForStorage === 'function') {
+      return utils.normalizeBaseUrlForStorage(value);
     }
-    return null;
+    let text = normalizeText(value).replace(/\/+$/g, '');
+    if (!text) return '';
+    text = text.replace(/\/chat\/completions$/i, '');
+    return text.replace(/\/+$/g, '');
+  };
+
+  const buildChatCompletionsEndpoint = (value) => {
+    const utils = getLLMUtils();
+    if (typeof utils.buildChatCompletionsEndpoint === 'function') {
+      return utils.buildChatCompletionsEndpoint(value);
+    }
+    const raw = normalizeText(value).replace(/\/+$/g, '');
+    if (!raw) return '';
+    if (/\/chat\/completions$/i.test(raw)) return raw;
+    const normalized = normalizeBaseUrlForStorage(raw);
+    if (!normalized) return '';
+    if (/\/v\d+$/i.test(normalized)) {
+      return `${normalized}/chat/completions`;
+    }
+    return `${normalized}/v1/chat/completions`;
+  };
+
+  const isLegacyBltBaseUrl = (baseUrl) => /bltcy\.ai|gptbest\.vip/i.test(normalizeText(baseUrl));
+
+  const getExplicitProviderType = (secret) => {
+    const llmProvider = (secret && secret.llmProvider) || {};
+    const explicit = normalizeText(llmProvider.type || llmProvider.provider || '').toLowerCase();
+    return explicit === 'plato' || explicit === 'openai-compatible' ? explicit : '';
+  };
+
+  const resolveChatModels = (secret) => {
+    const utils = getLLMUtils();
+    if (typeof utils.resolveChatModels === 'function') {
+      return utils.resolveChatModels(secret);
+    }
+    const safeSecret = secret && typeof secret === 'object' ? secret : {};
+    const chatLLMs = Array.isArray(safeSecret.chatLLMs) ? safeSecret.chatLLMs : [];
+    const models = [];
+    chatLLMs.forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      const baseUrl = normalizeBaseUrlForStorage(item.baseUrl || '');
+      const apiKey = normalizeText(item.apiKey || '');
+      const names = Array.isArray(item.models) ? item.models : [];
+      names.forEach((name) => {
+        const model = normalizeText(name);
+        if (!baseUrl || !apiKey || !model) return;
+        models.push({ baseUrl, apiKey, name: model });
+      });
+    });
+    return models;
+  };
+
+  const loadLlmConfigs = () => {
+    const secret = window.decoded_secret_private || {};
+    const entries = [];
+    const seen = new Set();
+    const pushEntry = (entry, source) => {
+      const baseUrl = normalizeBaseUrlForStorage((entry && entry.baseUrl) || '');
+      const apiKey = normalizeText((entry && entry.apiKey) || '');
+      const model = normalizeText((entry && (entry.model || entry.name)) || '');
+      if (!baseUrl || !apiKey || !model) return;
+      const key = `${baseUrl}\u0000${apiKey}\u0000${model.toLowerCase()}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      entries.push({ baseUrl, apiKey, model, source });
+    };
+
+    // 候选生成是前端交互式 Chat Completion，优先使用 Chat LLM。
+    resolveChatModels(secret).forEach((item) => pushEntry(item, 'chat'));
+
+    const summarized = secret.summarizedLLM || {};
+    pushEntry(
+      {
+        baseUrl: summarized.baseUrl,
+        apiKey: summarized.apiKey,
+        model: summarized.model,
+      },
+      'summary',
+    );
+
+    const explicitProviderType = getExplicitProviderType(secret);
+    const openAICompatibleEntries = entries.filter((entry) => !isLegacyBltBaseUrl(entry.baseUrl));
+    const platoEntries = entries.filter((entry) => isLegacyBltBaseUrl(entry.baseUrl));
+
+    if (explicitProviderType === 'openai-compatible') {
+      return openAICompatibleEntries;
+    }
+    if (explicitProviderType === 'plato') {
+      return platoEntries;
+    }
+    if (openAICompatibleEntries.length) {
+      return openAICompatibleEntries;
+    }
+    return platoEntries.length ? platoEntries : entries;
   };
 
   const extractLlmJsonText = (data) => {
@@ -773,58 +856,33 @@ window.SubscriptionsSmartQuery = (function () {
   };
 
   const requestCandidatesByDesc = async (tag, desc) => {
-    const llm = loadLlmConfig();
-    if (!llm) {
+    const llmEntries = loadLlmConfigs();
+    if (!llmEntries.length) {
       throw new Error('未检测到可用大模型配置，请先完成密钥配置。');
-    }
-    if (!llm.apiKey) {
-      throw new Error('未检测到可用 API Key，请先在密钥配置里填写摘要/Chat Token。');
     }
 
     const cfg = window.SubscriptionsManager.getDraftConfig ? window.SubscriptionsManager.getDraftConfig() : {};
     const subs = (cfg && cfg.subscriptions) || {};
     const template = defaultPromptTemplate;
     const prompt = buildPromptFromTemplate(tag, desc, template);
-    const buildEndpoints = () => {
+    const buildEndpoints = (baseUrl) => {
       const out = [];
       const pushUnique = (u) => {
         if (u && !out.includes(u)) out.push(u);
       };
-      const expandEndpoint = (base) => {
-        const src = normalizeText(base).replace(/\/+$/, '');
-        if (!src) return;
-        if (src.includes('/chat/completions')) {
-          pushUnique(src);
-          pushUnique(src.replace(/\/chat\/completions$/, '/v1/chat/completions'));
-          return;
-        }
-        if (/\/v\d+$/i.test(src)) {
-          pushUnique(`${src}/chat/completions`);
-          pushUnique(`${src}/v1/chat/completions`);
-          return;
-        }
-        pushUnique(`${src}/v1/chat/completions`);
-        pushUnique(`${src}/chat/completions`);
-      };
-
-      expandEndpoint('https://hk-api.gptbest.vip');
-      expandEndpoint('https://api.bltcy.ai');
-
-      const raw = normalizeText(llm.baseUrl);
-      if (!raw) {
-        return out;
-      }
-      expandEndpoint(raw);
+      pushUnique(buildChatCompletionsEndpoint(baseUrl));
       return out;
     };
-    const endpoints = buildEndpoints();
-    if (!endpoints.length) {
+    const attempts = llmEntries.flatMap((llm) => (
+      buildEndpoints(llm.baseUrl).map((endpoint) => ({ llm, endpoint }))
+    ));
+    if (!attempts.length) {
       throw new Error('LLM 配置缺少 baseUrl。');
     }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
-    const requestPayload = ({ useResponseFormat = true, includeTools = true }) => {
+    const requestPayload = (llm, { useResponseFormat = true, includeTools = true }) => {
       const payload = {
         model: llm.model,
         messages: [
@@ -856,6 +914,7 @@ window.SubscriptionsSmartQuery = (function () {
 
     const doFetch = async (
       endpoint,
+      llm,
       options = { useResponseFormat: true, includeTools: true },
     ) => {
       const headers = {
@@ -866,43 +925,58 @@ window.SubscriptionsSmartQuery = (function () {
       return fetch(endpoint, {
         method: 'POST',
         headers,
-        body: JSON.stringify(requestPayload(options)),
+        body: JSON.stringify(requestPayload(llm, options)),
         signal: controller.signal,
       });
+    };
+
+    const describeEndpoint = (endpoint) => {
+      try {
+        const url = new URL(endpoint);
+        return `${url.origin}${url.pathname}`;
+      } catch {
+        return endpoint;
+      }
     };
 
     let res = null;
     let errorText = '';
     let fetchError = '';
     try {
-      for (let i = 0; i < endpoints.length; i++) {
-        const endpoint = endpoints[i];
+      for (let i = 0; i < attempts.length; i++) {
+        const { llm, endpoint } = attempts[i];
         try {
           let current = null;
           let txt = '';
-          current = await doFetch(endpoint, {
+          current = await doFetch(endpoint, llm, {
             useResponseFormat: true,
             includeTools: true,
           });
           if (current && !current.ok) {
             txt = await current.text().catch(() => '');
             if (current.status === 400 && /response[\s-]*format|json_object/i.test(txt)) {
-              current = await doFetch(endpoint, {
+              current = await doFetch(endpoint, llm, {
                 useResponseFormat: false,
                 includeTools: true,
               });
+              txt = current && !current.ok ? await current.text().catch(() => '') : '';
             }
             if (current && !current.ok && current.status === 400 && /tool_choice|tools/i.test(txt)) {
-              current = await doFetch(endpoint, {
+              current = await doFetch(endpoint, llm, {
                 useResponseFormat: false,
                 includeTools: false,
               });
+              txt = current && !current.ok ? await current.text().catch(() => '') : '';
             }
           }
           if (current && !current.ok) {
-            txt = await current.text().catch(() => '');
+            if (!txt) {
+              txt = await current.text().catch(() => '');
+            }
             if (current.status === 400 || current.status === 401 || current.status === 403) {
-              throw new Error(`HTTP ${current.status} ${txt || current.statusText}`);
+              throw new Error(
+                `HTTP ${current.status} ${txt || current.statusText} @ ${describeEndpoint(endpoint)}`,
+              );
             }
             if (current.status === 429 || current.status >= 500) {
               errorText = txt;
@@ -919,7 +993,7 @@ window.SubscriptionsSmartQuery = (function () {
           if (e && e.name === 'AbortError') {
             throw new Error('生成超时，请稍后重试。');
           }
-          if (i < endpoints.length - 1) {
+          if (i < attempts.length - 1) {
             // 网络类错误尝试下一个端点
             continue;
           }

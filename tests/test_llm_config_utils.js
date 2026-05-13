@@ -72,6 +72,7 @@ function testResolveChatModelsAndSummary() {
 }
 
 function testInferProviderType() {
+  assert.equal(inferProviderType({}), 'openai-compatible');
   assert.equal(
     inferProviderType({
       summarizedLLM: {

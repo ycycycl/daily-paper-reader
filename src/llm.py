@@ -10,7 +10,7 @@ import requests
 统一的 LLM 客户端封装。
 
 提供商/模型命名规则：'provider/model'，provider 大小写不敏感，model 保留大小写与路径。
-当前支持：deepseek、siliconflow、ollama、blt、cstcloud（科技云）。
+当前支持：deepseek、siliconflow、ollama、blt、cstcloud（科技云）以及通用 OpenAI-compatible 接口。
 """
 
 # 单次实验级别的全局 token 统计（需由调用方在实验开始前手动 reset）
@@ -25,6 +25,8 @@ GLOBAL_TIME_SECONDS: float = 0.0
 
 PRIMARY_LLM_BASE_URL = "https://api.gptbest.vip/v1"
 DEFAULT_BLT_BASE_URL = "https://api.bltcy.ai/v1"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+BLT_PROVIDER_BASE_KEYWORDS = ("bltcy.ai", "gptbest.vip", "blt", "gptbest")
 
 
 def reset_global_tokens():
@@ -574,6 +576,13 @@ class LLMClient:
         raise NotImplementedError("rerank 仅支持 BltClient，请使用 BltClient 调用。")
 
 
+class OpenAICompatibleClient(LLMClient):
+    """通用 OpenAI Chat Completions 兼容接口。"""
+
+    def __init__(self, api_key: str, model: str, base_url: str = DEFAULT_OPENAI_BASE_URL):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
 class DeepSeekClient(LLMClient):
     def __init__(self, api_key: str, model: str, base_url: str = "https://api.deepseek.com"):
         super().__init__(api_key=api_key, model=model, base_url=base_url)
@@ -721,6 +730,44 @@ def parse_provider_model(model_str: str) -> Tuple[str, str]:
     return provider.lower(), model
 
 
+def first_env(*names: str) -> str:
+    """按顺序读取第一个非空环境变量。"""
+    for name in names:
+        value = str(os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def default_chat_base_url() -> str:
+    """未显式配置 base_url 时的 Chat Completions 默认入口。"""
+    if first_env("OPENAI_API_KEY"):
+        return DEFAULT_OPENAI_BASE_URL
+    return DEFAULT_BLT_BASE_URL
+
+
+def looks_like_blt_base(base_url: str | None) -> bool:
+    lowered = str(base_url or "").strip().lower()
+    return any(keyword in lowered for keyword in BLT_PROVIDER_BASE_KEYWORDS)
+
+
+def create_chat_client(
+    api_key: str,
+    model: str,
+    base_url: str | None = None,
+) -> LLMClient:
+    """
+    创建用于 Chat Completions 的客户端。
+
+    BLT base 继续使用 BltClient 以保留其双 base 回退逻辑；其它 base 走通用
+    OpenAI-compatible 客户端。
+    """
+    resolved_base = str(base_url or "").strip() or default_chat_base_url()
+    if looks_like_blt_base(resolved_base):
+        return BltClient(api_key=api_key, model=model, base_url=resolved_base)
+    return OpenAICompatibleClient(api_key=api_key, model=model, base_url=resolved_base)
+
+
 class ClientFactory:
     @staticmethod
     def from_env():
@@ -750,11 +797,14 @@ class ClientFactory:
         if provider == 'ollama':
             base_url = base_url or "http://localhost:11111/v1"
             return OllamaClient(api_key=api_key or '', model=model, base_url=base_url)
+        if provider in ('openai', 'openai-compatible', 'openai_compatible', 'compatible'):
+            base_url = base_url or DEFAULT_OPENAI_BASE_URL
+            return OpenAICompatibleClient(api_key=api_key or os.getenv('OPENAI_API_KEY', ''), model=model, base_url=base_url)
         if provider in ('blt', 'bltcy', 'plato'):
             return BltClient(api_key=api_key or os.getenv('BLT_API_KEY', ''), model=model, base_url=base_url or os.getenv('BLT_API_BASE', 'https://api.bltcy.ai/v1'))
         if provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
             return CSTCloudClient(api_key=api_key or os.getenv('CSTCLOUD_API_KEY', ''), model=model, base_url=base_url or 'https://uni-api.cstcloud.cn/v1')
-        raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'blt'、'cstcloud' 或 'ollama'")
+        raise ValueError(f"不支持的提供商: {provider}，请使用 'openai'、'deepseek'、'siliconflow'、'blt'、'cstcloud' 或 'ollama'")
 
     @staticmethod
     def from_config(_config: dict | None = None):
