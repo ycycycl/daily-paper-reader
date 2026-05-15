@@ -1,0 +1,3351 @@
+Title: Muninn: Your Trajectory Diffusion Model But Faster
+
+URL Source: https://arxiv.org/pdf/2605.09999v1
+
+Published Time: Tue, 12 May 2026 03:22:10 GMT
+
+Number of Pages: 38
+
+Markdown Content:
+# Muninn: Your Trajectory Diffusion Model But Faster 
+
+Gokul Puthumanaillam ∗, Hao Jiang ∗, Ruben Hernandez ∗, Jose Fuentes †,Paulo Padrao ‡, Leonardo Bobadilla †, and Melkior Ornik ∗∗University of Illinois Urbana-Champaign. Email: {gokulp2, haoj5, rubenjh2, mornik }@illinois.edu 
+
+†Florida International University. Email: jfuen099@fiu.edu, bobadilla@cs.fiu.edu 
+
+‡Providence College. Email: ppadraol@providence.edu 
+
+Abstract —Diffusion-based trajectory planners can synthesize rich, multimodal robot motions, but their iterative denoising makes online planning and control prohibitively slow. Existing accelerations either modify the sampler or compress the network– sacrificing plan quality or requiring retraining without accounting for downstream control risk. We address the problem of making diffusion-based trajectory planners fast enough for real-time robot use without retraining the model or sacrificing trajectory quality, and in a way that works across diverse state-space diffusion architectures. Our key insight is that diffusion trajectory planners expose two signals we can exploit: a cheap probe of how their internal trajectory representation changes across steps, and analytic coefficients that describe how denoiser errors affect the sampler’s state update. By calibrating the first signal against the second on offline runs, we obtain a per-step score that upper-bounds how far the final trajectory can deviate when we reuse a cached denoiser output, and we treat this bound as an uncertainty budget that we can spend over the denoising process. Building on this insight, we present Muninn, a training-free caching wrapper that tracks this uncertainty budget during sampling and, at each diffusion step, chooses between reusing a cached denoiser output when the predicted deviation is small and recomputing the denoiser when it is not. Across standard benchmarks spanning offline RL planning (D4RL), configuration-space motion planning, and visuomotor diffusion policies, Muninn delivers up to 4.6× wall-clock speedups across several trajectory diffusion planners and diffusion policies by reducing denoiser evaluations, while preserving task performance and safety metrics. Muninn further certifies—at a user-chosen deviation tolerance and risk level—that cached rollouts remain within a specified distance of their full-compute counterparts, and we validate these gains in real-time closed-loop navigation and manipulation hardware deployments. Code, dataset and supplementary videos available at: https://github.com/gokulp01/Muninn. 
+
+I. Introduction 
+
+Autonomous robots are increasingly steered by diffusion-based trajectory models [ 74 , 65 ] that generate entire motion sequences [ 56 , 67 ], capturing rich, multimodal futures [ 46 ]in cluttered and uncertain environments. These planners are typically run as fixed-depth reverse diffusion processes [ 45 ]: at every control cycle, the robot draws noise, rolls out dozens of denoising steps [ 17 ], and only then extracts a trajectory. On powerful servers this is acceptable; on embedded platforms or high-rate control loops, the cost is often prohibitive [ 64 ]. Simply truncating the sampler, shrinking the network, or running at a lower planning rate can help [ 33 ], but risks brittle failures: Your trajectory diffusion model Your (faster) trajectory diffusion model Muninn                              
+
+> Aerial vehicles Ground robots Marine robots Manipulators etc. (bring your own robot)
+> Robot agnostic
+> Of fl ine RL trajectory planners, hierarchical/skill-based trajectory diffusers, classical con fi guration-space planners, visuomotor/action-sequence diffusion policies etc. (bring your own trajectory diffusion model)
+> Diffusion model agnostic
+> Diffusion steps tNN-1 N-2 N-3 ....0
+> Diffusion steps tNN-1 N-2 N-3 ....0Each block represents one evaluation of the denoiser network Denoiser was recomputed Denoiser was reused
+> ✅Maintains task performance
+> ⚡Upto 4.6× planning speedup
+> ¥Upto 78% lower wall-clock latency
+> (Upto 7.7× Fewer denoiser evaluations
+> uBounded trajectory deviation
+> ⛑No risk violations
+> ùNo retraining required
+> Muninn output Bounded trajectory deviation
+> Diffuser
+> + Diffuser
+
+Fig. 1: High-level overview of Muninn applied to Diffuser. Diffuser recomputes the denoiser at every diffusion step, while Muninn wraps the same model and selectively reuses cached denoiser outputs at some steps, reducing compute while leaving the overall trajectory generation unchanged. 
+
+the model’s behavior changes in opaque ways, and there is no clear link between “saved compute” and “lost plan quality.” This paper, therefore, poses a precise question: how can we speed up diffusion-based trajectory planners by reusing internal computations, while keeping their behavior close to the original full-compute model and without retraining? A large body of work bypasses this issue by relying on model-based planning [41 ] and trajectory optimization [ 76 , 54 ] with handcrafted costs and dynamics. These approaches can be fast [ 23 ], but tend to struggle when dynamics, human interactions, or multi-goal behaviors induce strongly multimodal solution sets [ 13 , 28 ]. Diffusion-based planners address this [ 32 ] by learning complex trajectory distributions from data, yet they usually treat the denoiser as a black box and accept its inference cost as fixed. Efforts to reduce this cost follow several paths. One direction distills the diffusion process [ 59 ] into shallower networks [ 69 ]or coarse-to-fine samplers [ 68 ], but requires retraining for each architecture and sometimes each task. Another direction trains early-exit or policy networks [ 44 ] to decide when to stop denoising or which subnet to run; these methods can adapt computation per sample, but demand large-scale reinforcement learning or supervision [ 3] and tie the acceleration logic to a 
+
+> arXiv:2605.09999v1 [cs.RO] 11 May 2026
+
+specific model. Recently, training-free accelerations [ 39 , 27 ] have emerged that operate at inference time [ 4]. These approaches are attractive because they require no new data [ 36 ], works on existing architectures [ 7], and can deliver large wall-clock gains [ 72 ]. However, they are typically calibrated on perceptual or pixel-space metrics and developed for vision backbones. Little is known about how their approximation errors translate into trajectory deviations, and almost nothing is said about the consequences of those deviations for closed-loop control. We make two observations about diffusion-based planners: (i) every denoising step passes the current noisy trajectory and diffusion timestep through a relatively cheap input-processing stage to produce a representation that feeds the deeper network blocks. Changes in this representation across timesteps provide a natural, low-cost signal for how stable the trajectory is becoming, (ii) the sampler used to map denoiser outputs into new trajectories has a known analytic form: for a given schedule, we can write down exactly how a perturbation in the predicted noise at step 𝑡 changes the state at step 𝑡 − 1 . Taken together, these two facts suggest that the planner itself contains enough structure to estimate, for each step, how risky it would be to reuse a past denoiser output instead of recomputing a new one. These observations motivate the central idea of this work. Statement of contributions: We introduce (i) Muninn 1, a training-free wrapper for trajectory diffusion models that uses a cheap, timestep-wise probe of the internal representation to predict how much the final trajectory would change if a cached denoiser output were reused; (ii) a trajectory-level error budget that aggregates these predictions into decisions about when to reuse past denoiser outputs and when to recompute them, trading off planning speed against fidelity; and (iii) an evaluation on several diffusion-based planners across simulated and hardware navigation and manipulation benchmarks. We also release the code, dataset and models. 
+
+Note (scope). Diffusion planners span many architectures [ 74 , 65 ]; we focus on state-space trajectory diffusion models that denoise future state or state–action sequences conditioned on observations and goals. Extending Muninn to other families mainly requires redefining the probe; the caching framework is unchanged, though the adaptation can be nontrivial. 
+
+II. Related work 
+
+Trajectory diffusion models: Early learning-based trajectory planners used imitation learning [ 50 , 10 ] and variational gener-ative models [ 25 ] to clone expert demonstrations. Conditional VAEs [ 26 ], normalizing flows [ 53 ], and graph latent models [ 19 ] capture diverse behaviors, but emit a single trajectory and rely on delicate training heuristics. Diffusion-based planners instead learn a denoising process over trajectories, achieving SOTA coverage of multimodal motions and have been applied    
+
+> 1“For Huginn I fear lest he come not home, / But for Muninn my care is more ...”– Norse mythology .Muninn is Odin’s raven of memory . We borrow the name as a metaphor–relying on memory to move faster, while being careful not to stray far from the path we would have taken.
+
+to visual robot control [ 9], motion planning [ 21 ], and multi-agent behavior forecasting [ 75 ]. By sampling different noise realizations, these models naturally explore distinct homotopy classes [ 34 ] and avoid hand-crafted reward engineering. Yet standard samplers still require tens of denoising steps per plan [ 15 ], leading to second-level latencies and motivating recent work on accelerated trajectory diffusion [57]. 
+
+Accelerating Diffusion via Model Design: In this vein, architec-tures compress the sampling chain while preserving multimodal coverage [ 58 , 24 ]. One line of work distills multi-step samplers into shallow or one-step networks [ 52 ], or learns coarse-to-fine denoisers that jump directly to high-quality trajectories in a few iterations [ 16 ]. Other works bias the generative process with structured priors, trajectory libraries, or policy heads [ 14 ], so that sampling is guided toward task-feasible plans and fewer refinement steps are needed [ 18 ]. A complementary direction aggregates a set of diffusion rollouts into graphs, reusing evaluations across branches to reduce latency without sacrificing robustness [ 22 ]. These approaches demonstrate that careful parameterisation can shrink diffusion horizons, bringing trajectory diffusion closer to real-time operation [ 31 , 55 ]. However, these accelerations still rely on sequential denoising, task-specific heuristics and typically operate by hard-coding new samplers or compressing the backbone network [ 49 ]. They degrade trajectory quality, require retraining for each architecture, and offer no guarantees on how the modified sampling process affects downstream control performance [ 42 ]. 
+
+Adaptive Inference and Early Exiting: Beyond architectural changes, a parallel line of work accelerates diffusion models via dynamic inference [ 12 ], using learned early-exit policies [60 ] or step-skipping heuristics [ 61 ]to reduce test-time compute. In diffusion models, such methods typically monitor simple signals along the sampling chain to decide when to stop, skip, or jump ahead in the denoising schedule [ 43 , 37 , 73 ]. Related approaches in sequence modeling and control reuse cached network outputs across time or across similar inputs, treating repeated evaluations as an optimization lever rather than changing the underlying architecture [ 30 , 1 ]. These strategies are usually trained in a task-specific, data-driven fashion and lack explicit bounds on how shortcutting or cache reuse perturbs the final sample [ 8, 38 ]. They provide little formal guidance on how much an accelerated diffusion run can deviate from its full-compute counterpart, and offer no guarantees on the quality of the executed trajectory [5, 40]. In contrast to prior works, we place Muninn at the inter-section of trajectory diffusion and sampling-time acceleration, focusing on making existing trajectory planners fast enough without modifying or retraining their underlying networks. 
+
+III. Preliminaries and challenges 
+
+A pretrained diffusion planner operates over trajectories T ⊆ 
+
+R𝐻 ×𝑛 and contexts 𝑐 ∈ C via a fixed reverse-diffusion sampler: 
+
+𝜏 full   
+
+> 𝑡 −1
+
+= Φ 𝑡 
+
+ 𝜏 full  
+
+> 𝑡
+
+, 𝜀 𝜃 (𝜏 full  
+
+> 𝑡
+
+, 𝑡, 𝑐 ), 𝜉 𝑡 
+
+, 𝑡 = 𝑇, . . . , 1, where 𝜀 𝜃 
+
+is the denoiser and Φ𝑡 is a known sampler update (DDPM (Denoising Diffusion Probabilistic Models)/DDIM (Denoising Diffusion Implicit Models)-style; 𝜉 𝑡 captures any sampler noise, with 𝜉 𝑡 ≡ 0 for deterministic samplers). Let 𝜏 full 0 (𝑐, 𝜉 ) be the resulting full-compute trajectory (evaluating 𝜀 𝜃 at every step). Each denoiser call has cost ℓ𝑡 (𝑐, 𝜉 ) ≥ ℓmin > 0 , so a full planning call costs Pfull  
+
+> 𝑐
+
+(𝑐, 𝜉 ) = Í𝑇 𝑡 =1 ℓ𝑡 (𝑐, 𝜉 ).
+
+Challenges of caching in diffusion-based planners: The repeated denoising structure makes diffusion planners an appealing target for caching: the same network is invoked at every step, and consecutive timesteps often process very similar noisy trajectories. However, the same properties that make these models expressive, make safe caching surprisingly hard! First, denoising is globally coupled over the horizon: each evaluation acts on the full trajectory 𝜏 𝑡 , and the sampler mixes the predicted noise back into all time steps of 𝜏 𝑡 −1, so a single approximation can bias the entire plan. Second, errors accumulate in a history-dependent way (see Fig. 2): reverse diffusion is iterative, so errors injected early are propagated and transformed by later updates; under nonlinear, contact-rich, or unstable dynamics, the same local denoiser error can have very different downstream effects depending on context and when it occurs. Third, control objectives are often discontinuous in trajectory space: small trajectory changes can flip outcomes from success to collision or constraint violation, so controlling only smooth surrogates can yield highly variable task impact. Diffusion steps 
+
+t N N-1 N-2 N-3 . . . . 0  
+
+> Standard trajectory diffusion model with uniform caching (UC)
+> No caching
+> Uniform caching
+> Muninn
+> Safety violation
+> UC Muninn
+> (vs)
+> Fig. 2: Challenges in caching trajectory diffusion models. A mistaken reuse at one timestep (red) is not local: the reused output is mixed into all subsequent updates, causing errors to accumulate and shift the entire final trajectory.
+
+Together, these effects create an all-or-nothing reuse regime: safe reuse requires confidence not only that the local approxi-mation is small, but that its contribution remains acceptable after all subsequent sampler updates. Coarse strategies (e.g., fixed step skipping) oscillate between being overly conserva-tive (limited speedup) and overly aggressive (hard-to-predict failures). Since practical diffusion planners vary in architecture, schedules, and conditioning, approaches that rely on retraining lose generality. This motivates caching mechanisms that (i) cheaply detect when reuse is risky, (ii) account for sampler-mediated error propagation, and (iii) expose interpretable knobs for trading compute against trajectory deviation. 
+
+IV. Muninn 
+
+Motivated by these challenges, Muninn is a training-free 
+
+caching policy that, at each diffusion step, either recomputes 
+
+𝜀 𝜃 ( ˜𝜏 𝑡 , 𝑡, 𝑐 ) or reuses a cached denoiser output to produce a lower-cost trajectory ˜𝜏 𝜋  
+
+> 0
+
+(𝑐, 𝜉 ). It exposes two user-facing knobs: a deviation tolerance 𝜂 traj and risk level 𝛼 , and aims to minimize expected planning subject to P
+
+
+
+𝑑 (𝜏 full 0 , ˜𝜏 𝜋  
+
+> 0
+
+) > 𝜂 traj 
+
+
+
+≤ 𝛼 .
+
+A. Trajectory diffusion and sampler sensitivity 
+
+We begin by making precise how local errors in the denoiser’s output at each diffusion step affect the final trajectory. 
+
+Reverse diffusion as a paired process: Recall that 𝜏 full 0 (𝑐, 𝜉 )
+
+is produced by evaluating the denoiser at every step. Caching policies 𝜋 modify this process by reusing denoiser outputs at selected timesteps instead of recomputing them. To isolate the effect of reuse, we analyze a paired run: the full and cached chains share the same initial sample 𝜏 𝑇 and the sampler noise sequence 𝜉 = (𝜉 𝑇 , . . . , 𝜉 1), and differ only in the denoiser outputs Φ𝑡 . Let ˜𝜏 𝑡 denote the cached trajectory at step 𝑡 and let ˜𝜀 𝑡 be the noise prediction actually used at step 𝑡 (recomputed or reused). The cached chain evolves as ˜𝜏 𝑡 −1 := Φ 𝑡 
+
+  ˜𝜏 𝑡 , ˜𝜀 𝑡 , 𝜉 𝑡 
+
+.Muninn will choose ˜𝜀 𝑡 by recomputing ˜𝜀 𝑡 = 𝜀 𝜃 ( ˜𝜏 𝑡 , 𝑡, 𝑐 ) or by reusing a cached prediction. 
+
+Error variables: We define two per-step errors: the trajectory drift Δ𝑡 := 𝜏 full  
+
+> 𝑡
+
+− ˜𝜏 𝑡 and the denoiser mismatch 𝑒 𝑡 :=
+
+𝜀 𝜃 ( ˜𝜏 𝑡 , 𝑡, 𝑐 ) − ˜𝜀 𝑡 ., capturing divergence in trajectory space and in the noise prediction, respectively. Unless stated otherwise, 
+
+∥ · ∥ denotes the Frobenius norm on R𝐻 ×𝑛 . Our only assumption on the sampler is a local Lipschitz property: 
+
+Assumption 1 (Sampler Lipschitzness) . For timestep 𝑡 , there exist nonnegative constants 𝐾 𝑡 and 𝐿 ′ 
+
+> 𝑡
+
+such that, for any trajec-tories 𝜏, 𝜏 ′ ∈ T , noise predictions 𝜀, 𝜀 ′, and fixed sampler noise 
+
+𝜉 𝑡 , Φ𝑡 (𝜏, 𝜀, 𝜉 𝑡 ) − Φ𝑡 (𝜏 ′, 𝜀 ′, 𝜉 𝑡 ) ≤ 𝐾 𝑡 ∥𝜏 − 𝜏 ′ ∥ + 𝐿 ′ 
+
+> 𝑡
+
+∥𝜀 − 𝜀 ′ ∥.
+
+For DDPM/DDIM-style samplers, Φ𝑡 is affine in 𝜏 𝑡 and 
+
+𝜀 𝑡 , so 𝐾 𝑡 and 𝐿 ′ 
+
+> 𝑡
+
+follow directly from the update coefficients. Conceptually, 𝐾 𝑡 scales trajectory differences, while 𝐿 ′ 
+
+> 𝑡
+
+scales sensitivity to noise-prediction error. Applying Assumption 1 to the full-compute and cached updates at step 𝑡 gives                                       
+
+> ∥Δ𝑡 −1∥=Φ𝑡 (𝜏 full
+> 𝑡 , 𝜀 𝜃 (𝜏 full
+> 𝑡 , 𝑡 , 𝑐 ), 𝜉 𝑡 ) − Φ𝑡 (˜𝜏 𝑡 ,˜𝜀 𝑡 , 𝜉 𝑡 )
+> ≤𝐾 𝑡 ∥𝜏 full
+> 𝑡 −˜𝜏 𝑡 ∥ + 𝐿 ′
+> 𝑡 𝜀 𝜃 (𝜏 full
+> 𝑡 , 𝑡 , 𝑐 ) − ˜𝜀 𝑡 =𝐾 𝑡 ∥Δ𝑡 ∥ + 𝐿 ′
+> 𝑡 ∥𝑒 𝑡 ∥.
+
+(1) This recursion decomposes the trajectory error at step 𝑡 − 1into a part inherited from the existing trajectory mismatch Δ𝑡 
+
+and a new contribution from the denoiser error 𝑒 𝑡 .τ̃ t
+
+# τt
+
+full Denoiser 
+
+> Cache
+> εθ
+> ~tε
+> Sampler
+> Φₜ
+
+τ̃ t-1 
+
+τt-1         
+
+> full
+> -1 eₜΔₜΔₜ
+> Fig. 3: Paired reverse-diffusion step. 𝑒 𝑡 is the denoiser error from reusing ˜𝜀 𝑡 and Δ𝑡 is the induced trajectory mismatch; a Lipschitz bound splits Δ𝑡 −1
+> into propagated mismatch and injected error.
+
+Unrolling the recursion: Both processes are initialized from the same noisy trajectory, so Δ𝑇 = 0. Repeatedly applying the local bound (1) from 𝑡 = 𝑇 down to 𝑡 = 1 yields a closed-form bound on Δ0. For 𝑡 = 𝑇 we have ∥Δ𝑇 −1 ∥ ≤ 𝐾 𝑇 ∥Δ𝑇 ∥ + 𝐿 ′ 
+
+> 𝑇
+
+∥𝑒 𝑇 ∥ =
+
+𝐿 ′ 
+
+> 𝑇
+
+∥𝑒 𝑇 ∥. Continuing, a simple induction shows, 
+
+∥Δ𝑡 ∥ ≤
+
+> 𝑇
+
+∑︁ 
+
+> 𝑠 =𝑡 +1
+
+(𝐿 ′
+
+> 𝑠 𝑠 −1
+
+Ö
+
+> 𝑗 =𝑡 +1
+
+𝐾 𝑗 )∥ 𝑒 𝑠 ∥ for 𝑡 ∈ { 0, . . . , 𝑇 − 1}. (2) Defining the pathwise sensitivity coefficients, 𝐿 𝑠 :=
+
+𝐿 ′
+
+> 𝑠
+
+Î𝑠 −1 
+
+> 𝑗 =1
+
+𝐾 𝑗 , we can rewrite (2) at 𝑡 = 0 compactly as 
+
+∥Δ0 ∥ ≤
+
+> 𝑇
+
+∑︁ 
+
+> 𝑡 =1
+
+𝐿 𝑡 ∥𝑒 𝑡 ∥. (3) Each step’s denoiser error |𝑒 𝑡 | contributes additively to the final trajectory deviation, weighted by 𝐿 𝑡 , capturing how strongly errors at 𝑡 are amplified through subsequent diffusion updates. 
+
+From norm difference to trajectory deviation: The guarantee in our problem statement is expressed in terms of a user-chosen trajectory metric 𝑑 : T × T → R≥0. We assume that 𝑑 is Lipschitz-equivalent to the norm ∥·∥ in the sense that: 
+
+Assumption 2 (Metric compatibility) . There exists a constant 
+
+Γ ≥ 1 such that for all 𝜏, 𝜏 ′ ∈ T , 𝑑 (𝜏, 𝜏 ′) ≤ Γ∥𝜏 − 𝜏 ′ ∥.
+
+Combining Assumption 2 with (3) yields: 
+
+𝑑  𝜏 full 0 (𝑐, 𝜉 ), ˜𝜏 0 (𝑐, 𝜉 ) ≤ Γ∥Δ0 ∥ ≤
+
+> 𝑇
+
+∑︁ 
+
+> 𝑡 =1
+
+Γ𝐿 𝑡 ∥𝑒 𝑡 ∥. (4) Equation (4) is the key trajectory deviation bound. It exposes that an error 𝑒 𝑡 injected at step 𝑡 is scaled by 𝐿 𝑡 , which depends on all later sampler sensitivities {𝐾 𝑗 } 𝑗<𝑡 . Early steps can therefore have a larger impact than late steps. In our experiments we use 𝑑 (𝜏, 𝜏 ′) := 1√𝐻 ∥𝜏 − 𝜏 ′ ∥𝐹 , with Γ = 1√𝐻 .We define the per-step trajectory cost associated with a ∥𝑒 𝑡 ∥
+
+as 𝑐 𝑡 (𝑒 𝑡 ) := Γ 𝐿 𝑡 ∥𝑒 𝑡 ∥. Then (4) simply states that the total trajectory deviation is bounded by the sum of per-step costs, 
+
+𝑑  𝜏 full 0 (𝑐, 𝜉 ), ˜𝜏 0 (𝑐, 𝜉 ) ≤
+
+> 𝑇
+
+∑︁ 
+
+> 𝑡 =1
+
+𝑐 𝑡 (𝑒 𝑡 ). (5) Muninn uses (5) as a budget rule: if each reuse step has a high-probability upper bound on 𝑐 𝑡 (𝑒 𝑡 ) and the summed bounds stay within 𝜂 traj , then the final cached trajectory remains within 
+
+𝜂 traj of the full-compute one with the same high probability. Now, the challenge is that, during deployment, the actual denoiser error ∥𝑒 𝑡 ∥ is unknown for a reuse decision. 
+
+B. Probe features and per-step error scores 
+
+The sensitivity bound (4) quantifies how costly a step-𝑡 error 
+
+∥𝑒 𝑡 ∥ would be, but not how large that error would be under reuse. In order to do that, we introduce (i) a lightweight probe 
+
+𝐹 𝑡 , and (ii) per-step score 𝑠 𝑡 . Fig. 4 summarizes this subsection. 
+
+Probe features: At step 𝑡 , the denoiser 𝜀 𝜃 (· , 𝑡, 𝑐 ) is evaluated on the current noisy 𝜏 𝑡 and context 𝑐 . In almost all modern architectures, this evaluation can be decomposed into: (i) an input processing or “stem” stage that maps (𝜏 𝑡 , 𝑡, 𝑐 ) into an intermediate representation ℎ𝑡 , and (ii) a deeper, expensive “core” that refines ℎ𝑡 into the final noise prediction 𝜀 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ).We exploit this decomposition by defining a probe feature 
+
+𝐹 𝑡 that depends only on the cheaper part of the computation and is therefore inexpensive to compute at every step. Formally, we posit a probe function Ψ : T ×{ 1, . . . , 𝑇 }×C → 
+
+R𝑑 𝐹 and define 𝐹 𝑡 := Ψ ( ˜𝜏 𝑡 , 𝑡, 𝑐 ). We require Ψ to satisfy two design goals: (i) The cost of evaluating Ψ at a single step should be negligible compared to a full pass through 𝜀 𝜃 . (ii) Architecture-agnostic: Any trajectory diffusion model provides an intermediate representation between its input and its final noise prediction. By defining Ψ in terms of this representation, we ensure that Muninn can be applied to a wide range of state-space diffusion planners without architectural changes. 
+
+Per-step error scores from probe dynamics: Intuitively, reuse is safe when the denoiser’s output would not have changed much when recomputed. We expect this to happen when 𝐹 𝑡 
+
+has stabilized: if the probe at step 𝑡 is similar to the nearby steps, the model is likely to produce similar noise predictions, and using a cached output should incur a small error ∥𝑒 𝑡 ∥.To capture this intuition, Muninn maps the sequence of probe features {𝐹 𝑡 } into a scalar error score 𝑠 𝑡 ∈ R≥0 at each step 𝑡 .This score should be: (i) cheap to compute from probe features we have, (ii) monotonically informative in the sense that smaller scores tend to correspond to smaller denoiser errors. Since reverse diffusion runs from 𝑡 = 𝑇 to 1 , the reuse decision at step 𝑡 can use both the current probe 𝐹 𝑡 and the previously computed 𝐹 𝑡 +1. A effective choice of score is the magnitude of the probe change between these two steps: 
+
+𝑠 𝑡 := 𝜙 (𝐹 𝑡 , 𝐹 𝑡 +1, 𝑡 ) = ∥𝐹 𝑡 − 𝐹 𝑡 +1 ∥1
+
+∥𝐹 𝑡 +1 ∥1 + 𝜔 , 𝑡 ∈ { 1, . . . , 𝑇 − 1}, (6) where 𝜔 > 0. This design reflects two intuitions: (i) when ℎ𝑡 
+
+stabilizes, 𝐹 𝑡 changes slowly and the denoiser output changes little, so reuse yields small ∥𝑒 𝑡 ∥; (ii) as sensitivity varies with timestep (via 𝐿 𝑡 ), calibrating score-to-error bounds per 𝑡 adapts reuse decisions to high-impact regions of the diffusion chain. Latent space 
+
+> Ft
+> Ft-1
+> Ft-2
+> Ft-3
+> Ft-4
+> Ft-5
+> Ft-6
+> Ft-7
+> Ft-8
+> Ft-9
+> Input stem
+> Embedding
+> Ft
+> Probe (Ψ)
+> Core denoiser
+> Low cost (cheap)
+> Deep blocks
+> ⚡
+> Expensive
+
+ÿε ( , t, c) θ τtfull          
+
+> Noisy trajectory
+> (, t, c) τtfull
+> Muninn adds/taps this Large change - High s - Recompute
+> tSmall change - Low s - Safe to reuse
+> t
+> Fig. 4: Probe features and per-step error scores. (Left) A denoiser evaluation decomposes into a cheap stem and an expensive core; Muninn runs only the stem to compute a lightweight probe. (Right) Large step-to-step changes ( 𝑠 𝑡 )trigger recomputation, while small 𝑠 𝑡 indicate stability and make reuse safe.
+
+C. Conformal calibration of reuse error 
+
+Section IV-A bounds trajectory deviation by a sum of per-step costs. To use this bound online, Muninn needs a high-probability upper bound on the (unknown) reuse error ∥𝑒 𝑡 ∥ at each step. We now show how to obtain these bounds. 
+
+Calibration data: Recall that the trajectory deviation bound (4) depends only on its magnitude ∥𝑒 𝑡 ∥. We therefore define the scalar error 𝜖 𝑡 := ∥𝑒 𝑡 ∥ ∈ R≥0 and aim to predict 𝜖 𝑡 from the score 𝑠 𝑡 introduced in (6). At deployment, ˜𝜀 𝑡 is the noise prediction actually reused by Muninn at step 𝑡 , which depends on the entire history of recompute vs. reuse decisions. For calibration, we fix a policy-agnostic reuse rule that defines a potential reuse output at every step, independent of the budget. We define a deterministic map that, specifies which earlier denoiser output would be reused if we chose to reuse at 𝑡 . For e.g., we can always reuse the prediction from the previous step that evaluated 𝜀 𝜃 .Given this potential reuse rule, we build a calibration set by running the full-compute chain alongside a paired ghost reuse chain on 𝑁 i.i.d. episodes from the deployment distribution. For each episode 𝑖 and each 𝑡 ∈ T cache , we record (i) the probe-based score 𝑠 (𝑖 )
+
+𝑡 computed from the ghost chain, and (ii) the corresponding potential reuse error magnitude 𝜖 (𝑖 )
+
+𝑡 . The resulting calibration dataset is the collection of score–error pairs 
+
+Scal := (𝑠 (𝑖 )
+
+𝑡 , 𝜖 (𝑖 )
+
+𝑡 ) : 𝑖 = 1, . . . , 𝑁, 𝑡 ∈ T cache , where Tcache 
+
+is the set of timesteps at which reuse is allowed. Appendix E and Figure 5 provide the full construction details. Since the reuse pattern is fixed and independent of 𝑠 𝑡 , we can view each (𝑠 (𝑖 )
+
+𝑡 , 𝜖 (𝑖 )
+
+𝑡 ) as a draw from a common, unknown joint distribution over scores and potential reuse errors induced by the base planner and environment. Under the exchangeability assumption—calibration and deployment episodes are sampled i.i.d. from D—this is the setting where conformal prediction provides finite-sample coverage guarantees. 
+
+Split-conformal regression: Given Scal , we construct a function 
+
+𝑈 : R≥0 → R≥0 that maps each score 𝑠 to a high-probability upper bound on the corresponding potential reuse error 𝜖 .Concretely, we fit a regression model 𝑚 (𝑠 ) on a training split of Scal and apply split conformal prediction on a held-out split to obtain an additive residual quantile 𝑞 1− 𝛼 step . This results in the bound 𝑈 (𝑠 ) := max {𝑚 (𝑠 ) + 𝑞 1− 𝛼 step , 0}; Appendix E provides the full construction. By split conformal prediction, assuming exchangeability be-tween calibration and deployment, we obtain per-step coverage: for a new step with score 𝑠 𝑡 and potential reuse error 𝜖 𝑡 ,
+
+P 𝜖 𝑡 ≤ 𝑈 (𝑠 𝑡 ) ≥ 1 − 𝛼 step . (7) This guarantee is distribution-free : it holds for any joint distribution of (𝑠 𝑡 , 𝜖 𝑡 ) as long as calibration and deployment samples are exchangeable. The regressor 𝑚 only tightens 𝑈 ;even if 𝑚 is misspecified, (7) holds by construction. 
+
+From per-step coverage to global risk: The per-step coverage (7) applies to the latent potential reuse error 𝜖 𝑡 at any timestep 
+
+𝑡 . Combining 𝑐 𝑡 (𝑒 𝑡 ) with the upper bound 𝑈 𝑡 (𝑠 𝑡 ) gives, for any step 𝑡 , Γ𝐿 𝑡 𝜖 𝑡 ≤ Γ𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ) whenever 𝜖 𝑡 ≤ 𝑈 𝑡 (𝑠 𝑡 ).If we define the upper-bounded per-step cost at score 𝑠 𝑡 as ˆ𝑐 𝑡 (𝑠 𝑡 ) := Γ 𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ), then with probability at least 1 − 𝛼 step ,
+
+𝑐 𝑡 (𝑒 𝑡 ) = Γ 𝐿 𝑡 𝜖 𝑡 ≤ ˆ𝑐 𝑡 (𝑠 𝑡 ). (8) Crucially, the event {𝜖 𝑡 > 𝑈 𝑡 (𝑠 𝑡 )} depends only on the under-lying data-generating process and the calibration procedure; it is independent of the caching policy we will deploy later. 
+
+D. Muninn caching policy 
+
+Muninn uses the per-step bounds ˆ𝑐 𝑡 (𝑠 𝑡 ) to decide online, per sample, whether to reuse or recompute. The idea is to interpret (5) as a budget constraint: user specifies a maximum allowable 𝜂 traj which is spent across reverse-diffusion steps. 
+
+Budgeted reuse rule: At deployment time, the true error ∥𝑒 𝑡 ∥
+
+at 𝑡 is unknown. Let Tcache ⊆ { 1, . . . , 𝑇 } denote the set of Calibration episodes from deployment distribution        
+
+> Full compute diffusion
+> Potential reuse pattern
+> Denoiser was recomputed Denoiser was reused
+> Cached and reused Recomputation
+> T
+> T
+> ...
+> @ timestep T
+> Full denoiser output
+> Potential reused output
+> Error magnitude
+> Probe (Ψ) Score (s ) t
+> Conformal regression on calibration dataset
+> Calibration dataset points
+> Learned trend m(s) Conformal envelope safety U(s)
+> Stage 1 Stage 2
+> Stage 3 Stage 4
+> Score
+> Error magnitude
+> ❌
+> s*
+> For this score, Muninn uses U(s*) as its error bound
+
+Fig. 5: (Stages 1–3) From offline rollouts, we build a calibration set of score–error pairs by running the full planner with a ghost reuse chain. (Stage 4) A regressor 𝑚 (𝑠 ) models the typical score–error relationship, and split conformal prediction yields 𝑈 (𝑠 ). At test time, Muninn maps each score to 
+
+𝑈 (𝑠 𝑡 ), converts it to a trajectory-level cost, and spends it from the budget. 
+
+timesteps where reuse is permitted. We maintain a remaining budget 𝐵 rem and, for clarity, we summarize the algorithm below. 
+
+Algorithm 1 Muninn caching policy for one planning call 
+
+1: Sample initial noisy trajectory 𝜏 𝑇 ∼ 𝑝 𝑇 .
+
+2: Initialize: (i) 𝐵 rem ← 𝜂 traj , (ii) ˜𝜏 𝑇 ← 𝜏 𝑇 .
+
+3: for 𝑡 = 𝑇 , 𝑇 − 1, . . . , 1 do 
+
+4: Compute probe 𝐹 𝑡 = Ψ ( ˜𝜏 𝑡 , 𝑡 , 𝑐 ).
+
+5: if 𝑡 < 𝑇 then 
+
+6: Retrieve previous probe 𝐹 𝑡 +1 // stored at step 𝑡 + 1.
+
+7: Compute score 𝑠 𝑡 = 𝜙 (𝐹 𝑡 , 𝐹 𝑡 +1 , 𝑡 )
+
+8: Compute upper-bounded cost ˆ𝑐 𝑡 (𝑠 𝑡 ) = Γ 𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ).
+
+9: end if 
+
+10: if 𝑡 = 𝑇 or 𝑡 ∉ Tcache or (𝑡 < 𝑇 and ˆ𝑐 𝑡 (𝑠 𝑡 ) > 𝐵 rem ) then 
+
+11: Recompute: 
+
+12: 𝜀 new  
+
+> 𝑡
+
+← 𝜀 𝜃 ( ˜𝜏 𝑡 , 𝑡 , 𝑐 )
+
+13: Update cache with (𝑡 , 𝜀 new  
+
+> 𝑡
+
+) as most recent recompute. 
+
+14: ˜𝜀 𝑡 ← 𝜀 new 
+
+> 𝑡
+
+15: else 
+
+16: Reuse: 
+
+17: Set ˜𝜀 𝑡 to the cached denoiser output specified by the potential reuse rule. 
+
+18: 𝐵 rem ← 𝐵 rem − ˆ𝑐 𝑡 (𝑠 𝑡 )
+
+19: end if 
+
+20: Apply sampler update: ˜𝜏 𝑡 −1 ← Φ𝑡 ( ˜𝜏 𝑡 , ˜𝜀 𝑡 , 𝜉 𝑡 )
+
+21: Store 𝐹 𝑡 // for use at step 𝑡 − 1.
+
+22: end for 
+
+23: return ˜𝜏 0
+
+This policy is: (i) budget-safe by construction: enforcing 
+
+𝐵 rem ≥ 0 ensures that the sum of upper-bounded costs over reuse steps satisfies Í𝑡 ∈ R ˆ𝑐 𝑡 (𝑠 𝑡 ) ≤ 𝜂 traj ; (ii) sample-adaptive: reuse locations and counts depend on the realized scores 𝑠 𝑡 
+
+(and thus on the context, noise, and trajectory). 
+
+Global risk guarantee: Under the conformal calibration guar-antee (7) , for each 𝑡 in a planning episode we have P 𝜖 𝑡 ≤
+
+𝑈 𝑡 (𝑠 𝑡 ) ≥ 1 − 𝛼 step . Define the failure event at step 𝑡 as 
+
+F𝑡 := {𝜖 𝑡 > 𝑈 𝑡 (𝑠 𝑡 )} . By construction of 𝑈 𝑡 ,
+
+P(F 𝑡 ) ≤ 𝛼 step for each 𝑡. (9) Recall that 𝜖 𝑡 is defined w.r.t. the potential reuse rule, and at reuse, Muninn uses the same rule to choose which cached output to apply. Thus, whenever Muninn reuses at step 𝑡 , the realized denoiser error magnitude ∥𝑒 𝑡 ∥ coincides with the latent potential reuse error 𝜖 𝑡 for that step. Now consider a single planning episode. If none of the failure events F𝑡 occur at any timestep in Tcache , then for all reuse steps 𝑡 ∈ R we have 𝑐 𝑡 (𝑒 𝑡 ) = Γ 𝐿 𝑡 𝜖 𝑡 ≤ Γ𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ) = ˆ𝑐 𝑡 (𝑠 𝑡 ),and thus the total trajectory deviation satisfies 
+
+𝑑  𝜏 full 0 , ˜𝜏 0
+
+ ≤∑︁  
+
+> 𝑡 ∈R
+
+𝑐 𝑡 (𝑒 𝑡 ) (from (5)) 
+
+≤∑︁  
+
+> 𝑡 ∈R
+
+ˆ𝑐 𝑡 (𝑠 𝑡 ) (since no failure event occurs) 
+
+≤ 𝜂 traj (by the budget rule) .
+
+(10) Therefore, the only way for the trajectory deviation to exceed 
+
+𝜂 traj is if at least one failure event occurs: 𝑑 (𝜏 full 0 , ˜𝜏 0) >𝜂 traj ⊆ Ð𝑡 ∈ T cache F𝑡 . Taking probabilities and applying a union bound over timesteps yields 
+
+P 𝑑 (𝜏 full 0 , ˜𝜏 0) > 𝜂 traj 
+
+ ≤ P
+
+ Ø 
+
+> 𝑡 ∈ T cache
+
+F𝑡 
+
+
+
+≤∑︁  
+
+> 𝑡 ∈ T cache
+
+P(F 𝑡 ) ≤ |T cache | 𝛼 step . (11) If we choose 𝛼 step := 𝛼   
+
+> | T cache |
+
+, then (11) simplifies to 
+
+P 𝑑 (𝜏 full 0 , ˜𝜏 0) > 𝜂 traj 
+
+ ≤ 𝛼, (12) which is exactly the risk guarantee from the problem statement. This guarantee does not require timestep independence: it follows from the per-step bounds (9) and a union bound. It holds for any adaptive reuse set R, provided the reuse rule used to define 𝜖 𝑡 in calibration matches the rule used at deployment. 
+
+E. Practical considerations and engineering choices 
+
+In practice, Muninn is implemented with a few simple engineering choices: (i) forbidden regions —we disallow reuse in a short prefix (large 𝑡 , highly noisy and sensitivity-amplifying) and suffix (small 𝑡 , where small changes in 𝜏 𝑡 
+
+can directly affect executed motion); (ii) batched sampling —when multiple trajectories are denoised in parallel, we maintain an independent remaining budget 𝐵 rem per trajectory and apply the same reuse rule independently, so the guarantee (7) and bound (12) apply per trajectory; (iii) model instantiations —for Transformer trajectory denoisers we take Ψ as a short prefix of attention/MLP blocks and mean-pool tokens to obtain 𝐹 𝑡 ∈ R𝑑 𝐹 ,while for MLP denoisers we use the penultimate hidden layer as 𝐹 𝑡 , in all cases computing (𝐹 𝑡 , 𝑠 𝑡 ) before the reuse decision at step 𝑡 and making them available during both calibration (to label ∥𝑒 𝑡 ∥) and deployment (when ∥𝑒 𝑡 ∥ is unknown). 
+
+V. Experiments 
+
+We evaluate Muninn on two trajectory-diffusion families covering the dominant uses of diffusion in robotics. Trajectory diffusion planners (offline RL and motion planning) [ 6, 51 , 21 , 2, 62 , 29 , 35 , 48 ] use diffusion as a planner over full state-action or configuration-space trajectories, implemented as an iterative reverse-diffusion process (optionally with guidance). Diffusion policies (imitation and visuomotor control) [ 9, 71 ]use diffusion as a policy that generates short-horizon action or pose segments, conditioned on high-dimensional observations, and executed repeatedly in a receding-horizon control loop. 
+
+A. Quantitative Results: Simulation and Benchmarks 
+
+We evaluate Muninn on trajectory centric benchmarks and report standard metrics as defined in the prior literature for each benchmark. See Appendix A for details on the environments, datasets, training, and metrics (Appendix C). All experiments are run on an NVIDIA A10 GPU (24GB VRAM) and averaged on 150 previously unseen episodes. Offline RL / trajectory planning. We first consider the D4RL offline RL suite [ 11 ] for continuous control, where models act as trajectory optimizers/conditional policies over state-action.                                                                                                                                                                                                                                               
+
+> Benchmark Model Task metr. ↑Latency ↓#Evals/t ↓E[𝑑 ]↓ ˆ𝑝 viol ↓
+> Full +Full +Full +
+> MuJoCo locomotion (D4RL)
+> HalfCheetah Diffuser [21] 59.3 58.8 580 145 100 17.0 0.056 0.045 Dec. Diff. [2] 62.9 61.9 116 40 20 5.4 0.042 0.038 Diff.-QL [62] 63.7 63.6 20 10 10 4.4 0.030 0.028 AdaptDiff[29] 59.6 59.5 353 101 60 12.4 0.050 0.041 Hopper Diffuser [21] 65.1 64.7 523 138 100 18.0 0.058 0.046 Dec. Diff. [2] 70.6 69.8 105 39 20 6.0 0.045 0.040 Diff.-QL [62] 75.7 75.6 20 11 10 4.7 0.032 0.030 AdaptDiff[29] 63.8 63.6 310 97 60 14.2 0.052 0.043 Walker2d Diffuser [21] 77.8 77.2 783 224 100 20.6 0.062 0.048 Dec. Diff. [2] 84.0 83.7 157 63 20 6.7 0.048 0.042 Diff.-QL [62] 80.8 80.7 25 14 25 12.7 0.034 0.032 AdaptDiff[29] 83.3 83.0 403 119 60 12.9 0.057 0.045
+> Goal-reaching navigation (D4RL)
+> Maze2D Diffuser [21] 119.5 119.0 733 175 100 15.3 0.065 0.047 Dec. Diff. [2] 130.8 129.6 147 46 20 4.7 0.055 0.044 Diff.-QL [62] 105.6 104.8 25 12 10 4.2 0.040 0.035 AdaptDiff[29] 144.3 143.9 347 99 60 12.4 0.060 0.046 CompDiff[35] 160.2 159.2 1100 275 150 25.0 0.070 0.049 AntMaze Diffuser [21] 58.7 58.3 950 207 100 13.0 0.072 0.049 Dec. Diff. [2] 72.2 71.8 190 53 20 4.0 0.060 0.046 Diff.-QL [62] 59.6 59.4 25 10 25 8.8 0.045 0.038 AdaptDiff[29] 63.0 62.7 550 145 60 10.9 0.065 0.047 CompDiff[35] 75.9 74.5 1400 342 150 24.0 0.075 0.049
+> Long-horizon manipulation (D4RL)
+> FrankaKitchen Diffuser [21] 53.4 53.0 800 235 100 21.6 0.058 0.045 Dec. Diff. [2] 55.0 54.9 160 62 20 6.3 0.045 0.040 AdaptDiff[29] 58.1 57.7 450 167 60 18.0 0.050 0.042
+> Robot block stacking (Kuka)
+> Kuka stacking
+> Diffuser [21] 52.3 51.8 1200 400 100 25.9 0.055 0.044 Dec. Diff. [2] 60.4 60.0 240 100 20 7.0 0.045 0.040
+
+TABLE I: Offline RL and trajectory planning. Task metric is the benchmark metric (D4RL normalized score for D4RL tasks; success rate for Kuka stacking). 
+
+𝑑 (· , ·) is the trajectory deviation metric used for risk accounting and ˆ𝑝 viol =
+
+P
+
+
+
+𝑑 ( 𝜏 full 0 , ˜𝜏 0 ) > 𝜂 traj 
+
+
+
+.
+
+Motion planning in configuration space. We then test Muninn on classical motion planning problems where trajectories are represented in joint space rather than as RL episodes. 
+
+Scen. Model Success(%) ↑ Collis. (%) ↓ Lat. (ms) ↓ ˆ𝑝 viol ↓
+
+Full Full Full 
+
+Arm planning in clutter 
+
+easy MPD [6] 99.0 98.8 1.0 1.2 180 120 0.040 EDMP[ 51 ] 99.5 99.4 0.5 0.6 120 92 0.035 med. MPD [6] 94.0 93.5 6.0 6.4 200 118 0.045 EDMP[ 51 ] 96.5 96.2 3.5 3.7 135 95 0.040 hard MPD [6] 82.0 81.2 18.0 18.8 230 121 0.048 EDMP[ 51 ] 88.0 87.5 12.0 12.4 160 107 0.044 
+
+TABLE II: Configuration-space motion planning. Scenarios correspond to increasing clutter/difficulty under the EDMP [ 51 ] evaluation protocol. Colli-sion/violation includes obstacle collisions and any hard constraint violations. 
+
+Visuomotor imitation and manipulation. Finally, we evaluate Muninn on visuomotor policy diffusers that generate pose trajectories conditioned on images (2D) or 3D observations. 
+
+Benchmark/Metric RLBench [20] Reach Target 
+
+Diff. Policy [9] 
+
+Meta-World[70] pick-place-v2 
+
+Diff. Policy [9] 
+
+DP3 Pour 
+
+DP3 [71] 
+
+Success (%) ↑↓
+
+Full 99.0 92.0 98.0 
+
+98.8 91.5 97.6 
+
+Latency (ms) ↓↓
+
+Full 25 30 45 
+
+15 18 27 
+
+E[𝒅 ] ↓ 0.035 0.040 0.038 
+
+ˆ𝒑 viol ↓ 0.040 0.045 0.043 
+
+TABLE III: Visuomotor imitation and manipulation. Latency is measured per policy inference/control call. 𝑑 (· , ·) is defined on the trajectory segment. 
+
+B. Quantitative Results: Hardware Evaluation 
+
+We further validate Muninn in real-world, previously unseen, closed-loop deployment on robotic platforms spanning naviga-tion and manipulation. (i) 2D marine navigation: a SeaRobotics Surveyor ASV performs waypoint-following in an open-water lake under partial observability. (ii) 3D aerial navigation: aCrazyflie quadrotor performs 3D waypoint navigation. (iii) 
+
+Manipulation: a SO-ARM100 tabletop arm executes pick-and-place, stacking, and peg insertion. Complete platform specifications are given in Appendix B. 
+
+Fig. 6: Qualitative results. Full-compute trajectories (GC-Diffuser and B-COD teacher) are shown in red; Muninn-accelerated trajectories are shown in blue. 
+
+Fig. 7: Angle of attacks (hard peg insertion) Red: Diffusion Policy; blue: Muninn. 
+
+Pl. Method Lat. (ms) ↓
+
+Succ. (%) ↑
+
+Coll. (%) ↓
+
+BCOD 1s [48] 12 94.0 2.4 BCOD tch. [48] 60 97.0 1.6 BCOD tch. + 24 96.8 1.7 GC-Diff. [21] 70 95.5 2.2 
+
+> ASV
+
+GC-Diff. + 28 95.3 2.3 GC-Diff. [21] 75 93.0 3.0 
+
+> UAV
+
+GC-Diff. + 30 92.8 3.1 Diff. policy [9] 40 82.0 6.0 
+
+> SO-100
+
+DP + 24 81.5 6.2 
+
+TABLE IV: We compare the Full (teacher) models against the baselines and Muninn on the waypoint navigation and manipulation (averaged over three tasks) tasks. (Average of 150 hardware runs). 
+
+C. Key findings, analysis, and ablations 
+
+As can be seen from the results in sections V-A and V-B ,Muninn consistently reduces denoiser evaluations and wall-clock latency across all evaluated policies while preserving task performance. We now report key findings (KF) and summarize ablations of Muninn’s internal design choices, with further breakdowns deferred to Appendix D. (KF#1) Muninn dominates inference-time acceleration base-lines on the task–latency–risk Pareto frontier. A common path to real-time diffusion planning is training-free inference-time acceleration, i.e., reducing denoiser work without retraining. Most such methods are compute-centric: they skip calls without modeling how errors propagate through the sampler or impact the final trajectory. We compare Muninn against three such baselines (Fig. 8, Table V): (i) FewSteps [47 ]: run the same pretrained denoiser with a reduced diffusion horizon 𝑇 ′ < 𝑇 .
+
+(ii) FixedSkip : evaluate the denoiser every 𝑘 steps and reuse the last predicted noise for skipped steps. (iii) ProbeThresh :
+
+reuse if the probe-change 𝑠 𝑡 falls below a tuned threshold 𝛿 .200 400 600 800 1000 
+
+> 40
+> 50
+> 60
+> 70
+> achieves similar D4RL score as 'full compute' much earlier than the baselines
+> Ψ=0.1
+> Ψ=0.2
+> Ψ=0.25 Ψ=0.28
+> Ψ= 0.31
+> Ψ=0.1
+> Ψ=0.2
+> Ψ=0.24
+> Ψ=0.3
+> Ψ=0.4
+> Ψ=0.5
+> Ψ=0.6
+> k=9
+> k=8
+> k=7
+> k=6
+> k=5
+> k=4
+> k=3
+> k=2
+> k=1.8
+> T'=10
+> T'=20
+> T'=30
+> T'=40
+> T'=50
+> T'=60
+> T'=70
+> T'=80
+> T'=90
+> Muninn
+> ProbeThresh
+> FixedSkip
+> FewSteps
+> Full compute
+> Latency (ms)
+> Task performance
+
+Fig. 8: We plot the D4RL score vs. wall-clock latency for D4RL AntMaze. Muninn achieves the same task success rate as Full model 2 ×
+
+quicker than the baselines. 
+
+Method Task ↑ E[𝑑 ]↓ ˆ𝑝 viol ↓
+
+Full 68.7 0.00 0.00 
+
+FewSteps 56.1 0.12 0.17 
+
+FixedSkip 42.5 0.10 0.14 
+
+ProbeThresh 48.0 0.09 0.10 
+
++ Full 67.6 0.07 0.04 
+
+TABLE V: We compare the Full (un-modified 𝑇 -step sampler) model against the baselines and Muninn on the D4RL AntMaze task. The results above cor-respond to allowing Full to run for 957 ms, at which point it achieves the maximum possible D4RL score. The baselines and Muninn are capped at 250 ms (approximately 1/4th of the runtime). 
+
+Considering the offline RL domain (averaged across bench-marks in Table I), we find that Muninn yields a strictly better 
+
+operating curve: at the same latency it preserves task success more reliably, and at the same ˆ𝑝 viol it achieves lower latency. This happens because FewSteps and FixedSkip implicitly allocate approximation error uniformly in diffusion time, even though the sampler’s sensitivity profile 𝐿 𝑡 is highly non-uniform. ProbeThresh adapts to probe dynamics, but without calibrated error envelopes it violates risk in hard contexts or becomes overly conservative when tuned for safety. The baselines inherently produce small latent errors that become large deviations after downstream sampler mixing. Muninn is the only inference-time method in this set that (a) estimates reuse error with distribution-free coverage and (b) accounts for step-dependent error amplification through Γ𝐿 𝑡 .(KF #2) Muninn closes much of the gap to training-time accelerations without retraining . A second path to real-time diffusion planning is training-time acceleration. These methods can achieve very low latency, but require additional training compute, careful hyperparameter sweeps, and often task- or architecture-specific redesign. We compare Muninn (Fig. 9, Table VI) against: (i) Distill-1step /Distill-Kstep [ 63 , 66 ]: one/few-step distilled planners, (ii) SmallNet :[ 66 ] a smaller denoiser trained from scratch or fine-tuned (fewer layers / width), (iii) LearnedExit [71 ]: a trained controller that predicts early stopping. 
+
+Method Extra train. Extra data Arch. change 
+
+Full multi-step (teacher) × × ×
+
+Distill-1step ▲ ⟳ ✓
+
+Distill-Kstep 
+
+(K=4) ▲ ⟳ ✓
+
+SmallNet 
+
+(0.6 × width) △ × ✓
+
+LearnedExit ▲ ✓ ✓
+
+Teacher + × × ×
+
+Distill-Kstep + × × ×
+
+TABLE VI: Columns report whether each method requires extra training compute, addi-tional data (beyond the original training set), or architectural changes for the DP3 Pour benchmark. We include Distill +Muninn to show composability. Legend: × = none, ✓ =yes, ⟳ = often, △ = moderate, ▲ = high. 0 20 30 40 50   
+
+> 50
+> 100
+> 150
+> 200
+> 0
+> 10
+> Full+Munin
+> Distill+Munin
+> Distill-K step
+> Distill-1 step
+> Learned exit
+> SmallNet
+> Full
+> 77.1%
+> 81.7% 84.6%
+> 87.9% 97.0%
+> 96.3% 95.6%
+> Latency (ms)
+> Extra Training Cost (GPU hours)
+
+Fig. 9: Scatter plot summarizing the practical acceleration spectrum on the DP3 Pour diffusion policy. We also report the average success percentage of these models during inference. GPU-hours are normalized to A10 24GB-hours equiv-alent. More details about the training procedure is available in the Appendix. 
+
+We find that Muninn provides a deployment-friendly point on the spectrum: it recovers a large fraction of the achievable latency reduction immediately , while preserving the behavior of the original planner. Moreover, Muninn is composable: applying Muninn on top of a distilled or compact model yields additional speedups, because Muninn targets redundant per-step computation that remains even in fewer-step samplers. (KF#3) Muninn induces difficulty-adaptive compute .
+
+Eval bin Fraction eps. Success 
+
+10–12 0.20 0.99 13–15 0.30 0.97 16–18 0.25 0.94 19–21 0.15 0.90 22–25 0.10 0.87 
+
+Min. clearance Avg. evals Success 
+
+0.1 22 0.84 0.3 20 0.90 0.5 18 0.94 0.7 15 0.97 0.9 12 0.99 
+
+TABLE VII: Left: Episode fraction and Muninn success binned by #evaluations: low-eval bins are easier (higher success), high-eval bins are harder (lower success). Right: Compute and success vs. minimum-clearance difficulty: Muninn uses more evals. in harder and fewer in easier regions. 
+
+A hidden cost of fixed accelerations is that they spend the same compute on easy and hard situations. In robotics, difficulty varies across time (e.g., open-space navigation vs. tight corridors). Muninn’s decision rule is inherently state- and context-adaptive. Taking the example of cluttered 7-DoF arm planning (averaged across EDMP and MPD) (Table VII), we analyze the distribution of denoiser evaluations per episode and correlate it with environment difficulty proxies. The left panel in Table VII should be read as a distribution over Muninn’s actual compute usage: episodes that require only 10–12 denoiser evaluations are typically easier and succeed more often, while episodes that consume 22–25 evaluations are harder and have lower success. The right panel Table VII makes this difficulty axis explicit using minimum clearance: as clearance decreases from open-space to tight-clutter settings, Muninn automatically recomputes more often instead of applying a fixed skip pattern. We find that Muninn naturally allocates more compute to high-risk or high-uncertainty regimes, and aggressively reuses outputs when the diffusion trajectory stabilizes. (KF#4) Muninn’s budget accounting produces a usable runtime certificate that correlates with downstream safety. Most acceleration methods are opaque: they reduce compute, but provide no introspection about when approximations become dangerous. Muninn is different because its internal quantity ˆ𝐷 
+
+is an explicit, online-tracked upper bound proxy (Fig. 10) for how far the cached trajectory might drift from full compute. This yields two practical benefits: (i) Post-hoc explainability: 
+
+we can attribute most deviation risk to specific timesteps and contexts where 𝐿 𝑡 is large and the probe indicates instability. 
+
+(ii) Runtime escalation: in a closed-loop controller, we can treat low remaining budget 𝐵 rem or large ˆ𝐷 as a trigger to (a) temporarily run full compute, (b) reduce the action magnitude, (c) switch to a conservative safety controller, or (d) request more samples. We present an extended study of the runtime escalations in the Appendix D. 0 0.04 0.06 0.08 0.1      
+
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.02
+> Predicted budget
+> Realized deviation (ground truth)
+> 50th-90th percentile
+> 90th-95th percentile
+> Realized median
+> Perfect calibration
+> 010 15 20 25
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 5
+> Control cycle (normalized timesteps)
+> Budget D
+> 0.10
+> 0.12
+> 30 35
+> UAV operating in an comparatively open space
+> UAV operating in a cluttered section of the env. where chances of collision are high
+
+Fig. 10: Left: Reliability plot: predicted ˆ𝐷 vs. realized deviation 𝑑 ; Muninn is monotone and conservative (below the diagonal). Right: GC-Diffuser+Muninn on 3D UAV navigation: ˆ𝐷 over control cycles, with spikes aligning to near-collision/contact events (red); callouts show the UAV pose at those instants. 
+
+Ablations. We ablate Munin’s key design choices and report a detailed summary in Appendix D. Overall, (i) increasing the trajectory deviation budget 𝜂 traj yields a smooth speed– fidelity knob (more reuse equals higher speedup with minor performance loss); (ii) split-conformal calibration is necessary to reliably achieve a target violation probability ˆ𝑝 viol ≈ 𝛼 , while heuristic rules miscalibrate; (iii) sensitivity-aware budgeting via sampler coefficients {𝐿 𝑡 } improves the speed–safety trade-off by allocating recomputation to high-impact timesteps; (iv) shallow stem probes provide the best net speedups (good predictiveness at low overhead); (v) forbidding reuse in a small prefix/suffix further reduces collisions/violations with modest speed loss; and (vi) calibration is sample-efficient, with risk and speed stabilizing after a modest number of rollouts. 
+
+VI. Conclusion 
+
+This work introduces Muninn, a training-free caching wrapper that accelerates trajectory diffusion models without modifying model weights or the sampler. Muninn leverages two signals that are present in trajectory diffusion planners: (i) a cheap probe of how the model’s internal representation evolves across denoising steps, and (ii) analytic sampler sensitivity coefficients that quantify how denoiser perturbations propagate into the final trajectory. By calibrating probe dynamics against potential reuse error, Muninn produces step-wise, distribution-free error envelopes that can be converted into a trajectory-level deviation budget. At run time, Muninn spends this budget to decide when cached denoiser outputs can be safely reused. Across simulated benchmarks and hardware experiments, Muninn substantially reduces denoiser evaluations and wall-clock latency while preserving task performance and safety metrics. A promising direction for future work is to replace the current fixed user-specified deviation budget with a context-aware budget that automatically tightens in cluttered or contact-rich regimes and relaxes in open-space or low-risk regimes. 
+
+Acknowledgements 
+
+This work was supported in part by NSF grants 2118329, IIS-2024733 and IIS-2331908, the Office of Naval Research grants N00014-23-1-2505, N00014-25-1-2519, N00014-23-1-2789, the U.S. Department of Defense grant 78170-RT-REP, and by the Army Research Laboratories under contract W911NF1920243. This is contribution #2135 from the Institute of Environment at Florida International University. 
+
+References 
+
+[1] Shubham Agarwal, Subrata Mitra, Sarthak Chakraborty, Srikrishna Karanam, Koyel Mukherjee, and Shiv Kumar Saini. Approximate caching for efficiently serving Text-to-Image diffusion models. In USENIX Symposium on Networked Systems Design and Implementation , pages 1173–1189, 2024. [2] Anurag Ajay, Yilun Du, Abhi Gupta, Joshua B. Tenen-baum, Tommi Jaakkola, and Pulkit Agrawal. Is conditional generative modeling all you need for decision-making? 
+
+arXiv preprint arXiv:2211.15657 , 2022. [3] Kevin Black, Michael Janner, Yilun Du, Ilya Kostrikov, and Sergey Levine. Training diffusion models with reinforcement learning. arXiv preprint arXiv:2305.13301 ,2023. [4] Daniel Bolya and Judy Hoffman. Token merging for fast stable diffusion. In IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 4599–4603, 2023. [5] Jiazi Bu, Pengyang Ling, Yujie Zhou, Yibin Wang, Yuhang Zang, Tong Wu, Dahua Lin, and Jiaqi Wang. Dicache: Let diffusion model determine its own cache. 
+
+arXiv preprint arXiv:2508.17356 , 2025. [6] Joao Carvalho, An T Le, Mark Baierl, Dorothea Koert, and Jan Peters. Motion planning diffusion: Learning and planning of robot motions with diffusion models. In 
+
+IEEE/RSJ International Conference on Intelligent Robots and Systems , pages 1916–1923, 2023. [7] Guanjie Chen, Xinyu Zhao, Yucheng Zhou, Tianlong Chen, and Cheng Yu. Accelerating vision diffu-sion transformers with skip branches. arXiv preprint arXiv:2411.17616 , 2024. [8] Yuzhu Chen, Fengxiang He, Shi Fu, Xinmei Tian, and Dacheng Tao. Adaptive time-stepping schedules for diffusion models. In Conference on Uncertainty in Artificial Intelligence , 2024. [9] Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. The International Journal of Robotics Research , 44(10-11):1684–1704, 2025. [10] Felipe Codevilla, Matthias M¨ uller, Antonio L ´opez, Vladlen Koltun, and Alexey Dosovitskiy. End-to-end driving via conditional imitation learning. In IEEE International Conference on Robotics and Automation ,pages 4693–4700, 2018. [11] Justin Fu, Aviral Kumar, Ofir Nachum, G. Tucker, and Sergey Levine. D4rl: Datasets for deep data-driven reinforcement learning. arXiv preprint arXiv:2004.07219 ,2020. [12] Alex Graves. Adaptive computation time for recurrent neural networks. arXiv preprint arXiv:1603.08983 , 2016. [13] Agrim Gupta, Justin Johnson, Li Fei-Fei, Silvio Savarese, and Alexandre Alahi. Social GAN: Socially acceptable trajectories with generative adversarial networks. In 
+
+IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 2255–2264, 2018. [14] Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598 , 2022. [15] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In Neural Information Processing Systems , volume 33, pages 6840–6851, 2020. [16] Jonathan Ho, Chitwan Saharia, William Chan, David J. Fleet, Mohammad Norouzi, and Tim Salimans. Cascaded diffusion models for high fidelity image generation. 
+
+Journal of Machine Learning Research , 23(47):1–33, 2022. [17] Renming Huang, Yunqiang Pei, Guoqing Wang, Yang-ming Zhang, Yang Yang, Peng Wang, and Hengtao Shen. Diffusion models as optimizers for efficient planning in offline RL. In European Conference on Computer Vision ,pages 1–17, 2024. [18] Siyuan Huang, Zan Wang, Puhao Li, Baoxiong Jia, Tengyu Liu, Yixin Zhu, Wei Liang, and Song-Chun Zhu. Diffusion-based generation, optimization, and planning in 3D scenes. In IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 16750–16761, 2023. [19] Boris Ivanovic and Marco Pavone. The Trajectron: Probabilistic multi-agent trajectory modeling with dy-namic spatiotemporal graphs. In IEEE/CVF International Conference on Computer Vision , pages 2375–2384, 2019. [20] Stephen James, Zicong Ma, David Rovick Arrojo, and An-drew J. Davison. Rlbench: The robot learning benchmark & learning environment. IEEE Robotics and Automation Letters , 5:3019–3026, 2019. [21] Michael Janner, Yilun Du, Joshua B Tenenbaum, and Sergey Levine. Planning with diffusion for flexible behavior synthesis. arXiv preprint arXiv:2205.09991 ,2022. [22] Hyeonseong Jeon, Cheolhong Min, and Jaesik Park. Tree-guided diffusion planner. arXiv preprint arXiv:2508.21800 , 2025. [23] Mrinal Kalakrishnan, Sachin Chitta, Evangelos Theodorou, Peter Pastor, and Stefan Schaal. Stomp: Stochastic trajectory optimization for motion planning. In IEEE International Conference on Robotics and Automation , pages 4569–4574, 2011. [24] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based generative models. In Neural Information Processing Systems ,volume 35, pages 26565–26577, 2022. [25] Diederik P Kingma and Max Welling. Auto-encoding variational Bayes. arXiv preprint arXiv:1312.6114 , 2013. [26] Namhoon Lee, Wongun Choi, Paul Vernaza, Christo-pher B Choy, Philip HS Torr, and Manmohan Chandraker. Desire: Distant future prediction in dynamic scenes with interacting agents. In IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 336–345, 2017. [27] Lijiang Li, Huixia Li, Xiawu Zheng, Jie Wu, Xuefeng Xiao, Rui Wang, Min Zheng, Xin Pan, Fei Chao, and Rongrong Ji. Autodiffusion: Training-free optimization of time steps and architectures for automated diffusion model acceleration. In IEEE/CVF International Conference on Computer Vision , pages 7105–7114, 2023. [28] Weiwei Li and Emanuel Todorov. Iterative linear quadratic regulator design for nonlinear biological movement sys-tems. In International Conference on Informatics in Control, Automation and Robotics , pages 222–229, 2004. [29] Zhixuan Liang, Yao Mu, Mingyu Ding, Fei Ni, Masayoshi Tomizuka, and Ping Luo. AdaptDiffuser: Diffusion models as adaptive self-evolving planners. arXiv preprint arXiv:2302.01877 , 2023. [30] Weijie Liu, Peng Zhou, Zhiruo Wang, Zhe Zhao, Haotang Deng, and Qi Ju. FastBERT: A self-distilling BERT with adaptive inference time. In Annual Meeting of the Association for Computational Linguistics , pages 6035– 6044, 2020. [31] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongx-uan Li, and Jun Zhu. DPM-Solver: A fast ODE solver for diffusion probabilistic model sampling in around 10 steps. In Neural Information Processing Systems , volume 35, pages 5775–5787, 2022. [32] Haofei Lu, Dongqi Han, Yifei Shen, and Dongsheng Li. What makes a good diffusion planner for decision making? 
+
+arXiv preprint arXiv:2503.00535 , 2025. [33] Kairong Luo, Caiwei Xiao, Zhiao Huang, Zhan Ling, Yunhao Fang, and Hao Su. Dreamfuser: Value-guided diffusion policy for offline reinforcement learning. [34] Yunhao Luo, Chen Sun, Joshua B. Tenenbaum, and Yilun Du. Potential-based diffusion motion planning. arXiv preprint arXiv:2407.06169 , 2024. [35] Yunhao Luo, Utkarsh A. Mishra, Yilun Du, and Danfei Xu. Generative trajectory stitching through diffusion composition. arXiv preprint arXiv:2503.05153 , 2025. [36] Zhengyao Lv, Chenyang Si, Junhao Song, Zhenyu Yang, Yu Qiao, Ziwei Liu, and Kwan-Yee K Wong. Fastercache: Training-free video diffusion model acceleration with high quality. arXiv preprint arXiv:2410.19355 , 2024. [37] Zhaoyang Lyu, Xudong Xu, Ceyuan Yang, Dahua Lin, and Bo Dai. Accelerating diffusion models via early stop of the diffusion process. arXiv preprint arXiv:2205.12524 ,2022. [38] Xinyin Ma, Gongfan Fang, Michael Bi Mi, and Xin-chao Wang. Learning-to-cache: Accelerating diffusion transformer via layer caching. In Neural Information Processing Systems , volume 37, pages 133282–133304, 2024. [39] Xinyin Ma, Gongfan Fang, and Xinchao Wang. Deep-cache: Accelerating diffusion models for free. In 
+
+IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 15762–15772, 2024. [40] Xinyin Ma, Runpeng Yu, Gongfan Fang, and Xinchao Wang. DKV-Cache: The cache for diffusion language models. arXiv preprint arXiv:2505.15781 , 2025. [41] David Q Mayne, James B Rawlings, Christopher V Rao, and Pierre OM Scokaert. Constrained model predictive control: Stability and optimality. Automatica , 36(6):789– 814, 2000. [42] Chenlin Meng, Robin Rombach, Ruiqi Gao, Diederik Kingma, Stefano Ermon, Jonathan Ho, and Tim Salimans. On distillation of guided diffusion models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition ,pages 14297–14306, 2023. [43] Taehong Moon, Moonseok Choi, EungGu Yun, Jongmin Yoon, Gayoung Lee, and Juho Lee. Early exiting for accelerated inference in diffusion models. In ICML Work-shop on Structured Probabilistic Inference & Generative Modeling , 2023. [44] Taehong Moon, Moonseok Choi, EungGu Yun, Jongmin Yoon, Gayoung Lee, Jaewoong Cho, and Juho Lee. A simple early exiting framework for accelerated sampling in diffusion models. arXiv preprint arXiv:2408.05927 ,2024. [45] Alexander Quinn Nichol and Prafulla Dhariwal. Improved denoising diffusion probabilistic models. In International Conference on Machine Learning , pages 8162–8171, 2021. [46] Chaoyi Pan, Zeji Yi, Guanya Shi, and Guannan Qu. Model-based diffusion for trajectory optimization. In 
+
+Neural Information Processing Systems , volume 37, pages 57914–57943, 2024. [47] Aaditya Prasad, Kevin Lin, Jimmy Wu, Linqi Zhou, and Jeannette Bohg. Consistency policy: Accelerated visuomotor policies via consistency distillation. arXiv preprint arXiv:2405.07503 , 2024. [48] Gokul Puthumanaillam, Aditya Penumarti, Manav Vora, Paulo Padrao, Jose Fuentes, Leonardo Bobadilla, Jane Shin, and Melkior Ornik. Belief-conditioned one-step diffusion: Real-time trajectory planning with just-enough sensing. In Conference on Robot Learning , pages 68–92, 2025. [49] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj ¨orn Ommer. High-resolution image synthesis with latent diffusion models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition ,pages 10684–10695, 2022. [50] St ´ephane Ross, Geoffrey Gordon, and Drew Bagnell. A reduction of imitation learning and structured prediction to no-regret online learning. In International Conference on Artificial Intelligence and Statistics , pages 627–635, 2011. [51] Kallol Saha, Vishal Mandadi, Jayaram Reddy, Ajit Srikanth, Aditya Agarwal, Bipasha Sen, Arun Singh, and Madhava Krishna. EDMP: Ensemble-of-costs-guided diffusion for motion planning. In IEEE International Conference on Robotics and Automation , pages 10351– 10358, 2024. [52] Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. arXiv preprint arXiv:2202.00512 , 2022. [53] Christoph Sch ¨oller and Alois Knoll. Flomo: Tractable motion prediction with normalizing flows. In IEEE/RSJ International Conference on Intelligent Robots and Sys-tems , pages 7977–7984, 2021. [54] John Schulman, Jonathan Ho, Alex X Lee, Ibrahim Awwal, Henry Bradlow, and Pieter Abbeel. Finding locally optimal, collision-free trajectories with sequential convex optimization. In Robotics: Science and Systems , 2013. [55] Mingyo Seo, Yoonyoung Cho, Yoonchang Sung, Peter Stone, Yuke Zhu, and Beomjoon Kim. Presto: Fast motion planning using diffusion models based on key-configuration environment representation. In IEEE Inter-national Conference on Robotics and Automation , pages 10861–10867, 2025. [56] Yorai Shaoul, Itamar Mishani, Shivam Vats, Jiaoyang Li, and Maxim Likhachev. Multi-robot motion planning with diffusion models. arXiv preprint arXiv:2410.03072 , 2024. [57] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. arXiv preprint arXiv:2010.02502 , 2020. [58] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 , 2020. [59] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. 2023. [60] Surat Teerapittayanon, Bradley McDanel, and Hsiang-Tsung Kung. Branchynet: Fast inference via early exiting from deep neural networks. In International Conference on Pattern Recognition , pages 2464–2469, 2016. [61] Xin Wang, Fisher Yu, Zi-Yi Dou, Trevor Darrell, and Joseph E Gonzalez. SkipNet: Learning dynamic routing in convolutional networks. In European Conference on Computer Vision , pages 409–424, 2018. [62] Zhendong Wang, Jonathan J. Hunt, and Mingyuan Zhou. Diffusion policies as an expressive policy class for offline reinforcement learning. arXiv preprint arXiv:2208.06193 ,2022. [63] Zhendong Wang, Zhaoshuo Li, Ajay Mandlekar, Zhenjia Xu, Jiaojiao Fan, Yashraj S. Narang, Linxi Fan, Yuke Zhu, Yogesh Balaji, Mingyuan Zhou, Ming-Yu Liu, and Yuan Zeng. One-step diffusion policy: Fast visuomotor policies via diffusion distillation. arXiv preprint arXiv:2410.21257 ,2024. [64] Grady Williams, Andrew Aldrich, and Evangelos Theodorou. Model predictive path integral control: From theory to parallel computation. Journal of Guidance, Control, and Dynamics , 40(2):344–357, 2017. [65] Rosa Wolf, Yitian Shi, Sheng Liu, and Rania Rayyes. Diffusion models for robotic manipulation: A survey. 
+
+arXiv preprint arXiv:2504.08438 , 2025. [66] Yiming Wu, Huan Wang, Zhenghao Chen, Jianxin Pang, and Dong Xu. On-device diffusion transformer pol-icy for efficient robot manipulation. arXiv preprint arXiv:2508.00697 , 2025. [67] Zhou Xian, Nikolaos Gkanatsios, Theophile Gervet, Tsung-Wei Ke, and Katerina Fragkiadaki. Chaineddiffuser: Unifying trajectory diffusion and keypose prediction for robotic manipulation. In Conference on Robot Learning ,2023. [68] Sirui Xie, Zhisheng Xiao, Diederik Kingma, Tingbo Hou, Ying Nian Wu, Kevin P Murphy, Tim Salimans, Ben Poole, and Ruiqi Gao. EM distillation for one-step diffusion models. In Neural Information Processing Systems , volume 37, pages 45073–45104, 2024. [69] Tianwei Yin, Micha ¨el Gharbi, Richard Zhang, Eli Shecht-man, Fredo Durand, William T Freeman, and Taesung Park. One-step diffusion with distribution matching distillation. arXiv preprint arXiv:2311.18828 , 2023. [70] Tianhe Yu, Deirdre Quillen, Zhanpeng He, Ryan C. Julian, Karol Hausman, Chelsea Finn, and Sergey Levine. Meta-world: A benchmark and evaluation for multi-task and meta reinforcement learning. In Conference on Robot Learning , 2019. [71] Yanjie Ze, Gu Zhang, Kangning Zhang, Chenyuan Hu, Muhan Wang, and Huazhe Xu. 3d diffusion policy: Generalizable visuomotor policy learning via simple 3d representations. In Robotics: Science and Systems (RSS) ,2024. [72] Zheng Zhan, Yushu Wu, Yifan Gong, Zichong Meng, Zhenglun Kong, Changdi Yang, Geng Yuan, Pu Zhao, Wei Niu, and Yanzhi Wang. Fast and memory-efficient video diffusion using streamlined inference. In Neural Information Processing Systems , volume 37, pages 13660– 13684, 2024. [73] Hui Zhang, Zuxuan Wu, Zhen Xing, Jie Shao, and Yu-Gang Jiang. AdaDiff: Adaptive step selection for fast diffusion models. In AAAI Conference on Artificial Intelligence , volume 39, pages 9914–9922, 2025. [74] Zhengbang Zhu, Hanye Zhao, Haoran He, Yichao Zhong, Shenyu Zhang, Yong Yu, and Weinan Zhang. Diffusion models for reinforcement learning: A survey. arXiv preprint arXiv:2311.01223 , 2023. [75] Zhengbang Zhu, Minghuan Liu, Liyuan Mao, Bingyi Kang, Minkai Xu, Yong Yu, Stefano Ermon, and Weinan Zhang. MaDiff: Offline multi-agent learning with diffusion models. In Neural Information Processing Systems ,volume 37, pages 4177–4206, 2024. [76] Matt Zucker, Nathan Ratliff, Anca D Dragan, Mihail Pivtoraiko, Matthew Klingensmith, Christopher M Dellin, J Andrew Bagnell, and Siddhartha S Srinivasa. CHOMP: Covariant Hamiltonian optimization for motion planning. 
+
+International Journal of Robotics Research , 32(9-10): 1164–1193, 2013. Appendix 
+
+Table of Contents: 
+
+A Simulation: Environment, Task, and Dataset Details . . . . . . . . . . . . . . 14 A1 Offline RL / Trajectory Plan-ning (D4RL) . . . . . . . . . 14 A2 Configuration-space Motion Planning (MPD/EDMP Pro-tocol) . . . . . . . . . . . . . 16 A3 Visuomotor Imitation and Manipulation (Diffusion Poli-cies) . . . . . . . . . . . . . 17 B Hardware: Environment, Task, and Plat-form Details . . . . . . . . . . . . . . . 18 B1 SeaRobotics Surveyor ASV: 2D marine navigation . . . . 18 B2 Crazyflie quadrotor: 3D aerial navigation . . . . . . . 19 B3 SO-ARM100 tabletop arm: manipulation . . . . . . . . . 20 B4 Notes on communication la-tency and timing scope . . . 20 C Metrics . . . . . . . . . . . . . . . . . . 20 C1 Evaluation Protocol . . . . . 22 D Additional Analysis and Ablations . . . 23 D1 Extended runtime escalation study: certificate-driven inter-ventions . . . . . . . . . . . 24 D2 Extended runtime escalation study: certificate-driven inter-ventions . . . . . . . . . . . 26 E Construction of the calibration dataset . 27 E1 Split-conformal regression details . . . . . . . . . . . . 28 F Training Details for Teacher/Base Models 29 F1 Offline RL / Trajectory Dif-fusion Planners (D4RL) . . . 30 F2 Configuration-Space Motion Planning (MPD / EDMP) . . 32 F3 Visuomotor Diffusion Poli-cies (Diffusion Policy / DP3) 32 G Muninn Implementation Details . . 33 G1 Muninn wrapper implemen-tation . . . . . . . . . . . . . 33 G2 Probe instantiations across ar-chitectures . . . . . . . . . . 34 G3 Score function and hyperpa-rameters . . . . . . . . . . . 34 G4 Sensitivity coefficient compu-tation . . . . . . . . . . . . . 35 G5 Forbidden regions and Tcache 35 G6 Guidance and conditioning implementation notes . . . . 35 H Proofs . . . . . . . . . . . . . . . . . . 36 H1 Proof 1: Pathwise trajectory deviation bound for cached reverse diffusion . . . . . . . 36 H2 Proof 2: Derivation of 
+
+(𝐾 𝑡 , 𝐿 ′ 
+
+> 𝑡
+
+) for DDPM/DDIM-style samplers . . . . . . . . 36 H3 Proof 3: Trajectory-level risk control via budgeted confor-mal step bounds . . . . . . . 37 H4 Proof 4: Metric compatibil-ity constant for the deviation metric used in experiments . 38 I Limitations . . . . . . . . . . . . . . . . 38 A. Simulation: Environment, Task, and Dataset Details 
+
+This subsection provides the full environment/task defini-tions and dataset details underlying Tables I–III. For every benchmark, we specify: (i) observation/state/action spaces, (ii) the trajectory representation 𝜏 ∈ R𝐻 ×𝑑 used by the diffusion model(s), (iii) the trajectory horizon 𝐻 and diffusion horizon 
+
+𝑇 (number of denoising steps), (iv) the conditioning context 
+
+𝑐 , (v) dataset versioning and preprocessing, and (vi) the task metric and how it is computed. 
+
+1) Offline RL / Trajectory Planning (D4RL): All D4RL planners in Table I operate over state–action trajectory segments. Let 𝑠 𝑡 ∈ R𝑑 𝑠 be the environment observation/state and 𝑎 𝑡 ∈ R𝑑 𝑎 
+
+the action. A trajectory segment of horizon 𝐻 is represented as 
+
+𝜏 = (𝑠 0, 𝑎 0), (𝑠 1, 𝑎 1), . . . , (𝑠 𝐻 −1, 𝑎 𝐻 −1) ∈ R𝐻 × ( 𝑑 𝑠 +𝑑 𝑎 ) .
+
+We denote 𝑑 := 𝑑 𝑠 + 𝑑 𝑎 . In receding-horizon control, the planner samples a trajectory segment 𝜏 at each environment step and executes only the first action 𝑎 0.Trajectory horizon 𝐻 vs. diffusion horizon 𝑇 𝐻 is the planning horizon (trajectory segment length) used by the diffusion planner/policy. 𝑇 is the diffusion horizon (number of reverse-diffusion denoising steps in the sampler). In our experiments, each base method uses its native 𝐻 and 𝑇 settings Muninn does not change 𝐻 or 𝑇 , but reduces the number of denoiser evaluations by caching/reuse. Context 𝑐 (conditioning signal) Across D4RL tasks, the conditioning context 𝑐 contains:  
+
+> •
+
+the current environment observation/state at planning time (the first state of the segment), denoted 𝑠 now ; 
+
+> •
+
+either a goal specification (navigation-style tasks) or a scalar performance target (return-conditioned planners), depending on the underlying baseline model. Concretely:  
+
+> •
+
+For return-conditioned planners, 𝑐 = (𝑠 now , 𝑅 cond ), where 
+
+𝑅 cond is the desired (discounted or undiscounted) return-to-go used by the planner.  
+
+> •
+
+For goal-conditioned planners, 𝑐 = (𝑠 now , 𝑔 ), where 
+
+𝑔 encodes the task goal (a 2D target position for Maze2D/AntMaze). When a baseline does not use an explicit goal/return condition-ing channel, 𝑐 reduces to the observation history required by that method (i.e., just 𝑠 now ). Dataset construction and preprocessing (common) For each D4RL environment, we load the corresponding offline dataset 
+
+D and construct fixed-length training segments of length 𝐻 
+
+by slicing contiguous sequences:  
+
+> •
+
+We treat terminals as hard episode ends.  
+
+> •
+
+We treat timeouts as episode ends whenever the dataset uses timeouts to delimit sub-trajectories (notably Maze2D).  
+
+> •
+
+We only form segments fully contained within an episode boundary (no cross-episode stitching). We apply the following preprocessing consistently:  
+
+> •
+
+Observation normalization: each observation dimension is standardized using mean and standard deviation computed over the training dataset observations. The same statistics are used at evaluation time.  
+
+> •
+
+Action scaling: actions are clipped to the environment action bounds and scaled to match the action parameteri-zation expected by the baseline implementation (the native 
+
+[− 1, 1] action range for MuJoCo-style tasks).  
+
+> •
+
+Goal encoding (when present): goals are encoded in the same coordinate system as the environment state and, if concatenated to conditioning inputs, are normalized by fixed environment bounds used by the task definition.  
+
+> •
+
+Return conditioning (when present): we compute the per-timestep return-to-go used by return-conditioned baselines from the dataset rewards using the baseline’s discount convention, and apply the baseline’s standard return scaling to keep conditioning magnitudes numerically stable. Task metric (D4RL normalized score) For all tasks labeled “D4RL” in Table I, the reported task metric is the D4RL normalized score, computed from the undiscounted episode return (sum of environment rewards over the episode) and the environment-specific random/expert reference scores. For the Kuka stacking benchmark, the task metric is success rate instead. 
+
+a) MuJoCo locomotion (D4RL): HalfCheetah ,
+
+Hopper , Walker2d : These are continuous-control MuJoCo locomotion benchmarks where the agent must generate joint torques (actions) to achieve stable forward locomotion. We use the standard D4RL environment instances corresponding to these domains.  
+
+> Fig. 11: D4RL locomotion environments
+
+State/action spaces and trajectory content All three tasks use state vectors composed of robot joint configuration and velocity features, and continuous action vectors corresponding to actuator controls:  
+
+> •
+
+HalfCheetah: 𝑑 𝑠 = 17 , 𝑑 𝑎 = 6, so 𝜏 ∈ R𝐻 ×23 contains 
+
+𝐻 interleaved state–action pairs.  
+
+> •
+
+Hopper: 𝑑 𝑠 = 11, 𝑑 𝑎 = 3, so 𝜏 ∈ R𝐻 ×14 . 
+
+> •
+
+Walker2d: 𝑑 𝑠 = 17, 𝑑 𝑎 = 6, so 𝜏 ∈ R𝐻 ×23 .Horizon settings For HalfCheetah, Hopper, and Walker2d we use a planning horizon of 𝐻 = 32 state–action steps, which is the standard configuration used by diffusion trajectory planners on MuJoCo locomotion. The diffusion horizon 𝑇 (reverse-diffusion denoising steps) is method-specific and is exactly the Full “#Evals/ 𝑡 ” value reported for each model in Table I: Diffuser uses 𝑇 = 100 , Decision Diffusion uses 𝑇 = 20 , Diff-QL uses 𝑇 = 10 (HalfCheetah/Hopper) and 𝑇 = 25 (Walker2d), and AdaptDiff uses 𝑇 = 60. Context 𝑐 For locomotion, 𝑐 always contains 𝑠 now . If the baseline is return-conditioned, 𝑐 additionally contains 𝑅 cond 
+
+(desired return-to-go) in the baseline’s standard scaled units. Dataset details We use the standard D4RL v2 “medium” datasets: halfcheetah-medium-v2 ,
+
+hopper-medium-v2 , and walker2d-medium-v2 .Each dataset is collected by a partially trained SAC policy following the D4RL benchmark construction and contains the offline tuples (𝑠 𝑡 , 𝑎 𝑡 , 𝑟 𝑡 , terminal 𝑡 , timeout 𝑡 ). When constructing fixed-length training segments of length 𝐻 ,we treat both terminal and timeout flags as episode boundaries (no cross-episode stitching). 
+
+b) Goal-reaching navigation (D4RL): Maze2D and AntMaze: These are navigation benchmarks in which the agent must reach a target location in a maze.  
+
+> Fig. 12: D4RL goal reaching environments
+
+Maze2D (D4RL) We evaluate on the D4RL Maze2D large benchmark maze2d-large-v1 , a force-actuated point-mass navigation problem in a 2D maze. The agent must reach a target (𝑥, 𝑦 ) location while navigating around walls. State/action spaces and trajectory content  
+
+> •
+
+State: 𝑠 𝑡 = (𝑥 𝑡 , 𝑦 𝑡 , ¤𝑥 𝑡 , ¤𝑦 𝑡 ) ∈ R4 so 𝑑 𝑠 = 4.  
+
+> •
+
+Action: 𝑎 𝑡 = ( 𝑓 𝑥 𝑡 , 𝑓 𝑦 𝑡 ) ∈ R2 so 𝑑 𝑎 = 2.  
+
+> •
+
+Trajectory: 𝜏 ∈ R𝐻 ×6 contains 𝐻 interleaved state–action pairs, as in (A1). 
+
+Horizon settings We use a planning horizon of 𝐻 = 265 steps for maze2d-large-v1 . The diffusion horizon 𝑇 is method-specific and is the Full “#Evals/ 𝑡 ” value in Table I for each planner (Diffuser: 100; Decision Diffusion: 20; Diff-QL: 10; AdaptDiff: 60; CompDiff: 150). 
+
+Dataset structure and episode boundaries The Maze2D dataset is generated by chaining goal-reaching segments; the dataset uses the timeout field to delimit sub-trajectories corresponding to goal completion (the environment does not terminate on success). Accordingly, we treat timeout as an episode boundary when slicing training segments. 
+
+Context 𝑐 and goal encoding Maze2D is goal-conditioned. At evaluation time, the environment provides a goal 𝑔 = (𝑥 𝑔 , 𝑦 𝑔 ) ∈ 
+
+R2 in maze/world coordinates. We condition diffusion planners on 𝑐 = (𝑠 now , 𝑔 ), where 𝑠 now is the current state at planning time. We normalize 𝑔 using the same affine normalization applied to the position components of 𝑠 𝑡 (dataset mean/std) so goal magnitudes are on the same scale as normalized observations.  
+
+> Fig. 13: D4RL long horizon environment
+
+Preprocessing Observations are standardized using dataset mean/std. Actions are clipped to the environment action bounds and scaled to the action range expected by the baseline implementation. AntMaze (D4RL) We evaluate on the D4RL AntMaze 
+
+large-play benchmark antmaze-large-play-v0 , a quadruped (ant) navigation task in a maze. The agent must reach a 2D goal location in the maze while controlling joint torques. 
+
+State/action spaces and trajectory content  
+
+> •
+
+State: 𝑠 𝑡 ∈ R29 , consisting of the ant’s kinematic configu-ration and velocities, so 𝑑 𝑠 = 29.  
+
+> •
+
+Action: 𝑎 𝑡 ∈ R8 continuous actuator controls (joint torques), so 𝑑 𝑎 = 8.  
+
+> •
+
+Trajectory: 𝜏 ∈ R𝐻 ×37 contains 𝐻 interleaved state–action pairs, as in (A1). 
+
+Horizon settings We use a planning horizon of 𝐻 = 256 state–action steps for antmaze-large-play-v0 , which is a standard long-horizon diffusion-planning segment length for AntMaze. The diffusion horizon 𝑇 is method-specific and matches the Full “#Evals/ 𝑡 ” entries in Table I (Diffuser: 100 ;Decision Diffusion: 20 ; Diff-QL: 25 ; AdaptDiff: 60 ; CompDiff: 150). 
+
+Context 𝑐 and goal encoding AntMaze is goal-conditioned. The goal 𝑔 ∈ R2 is specified as a target (𝑥 𝑔 , 𝑦 𝑔 ) position in maze coordinates. We condition planners on 𝑐 = (𝑠 now , 𝑔 ). We normalize 𝑔 using the same affine normalization as the (𝑥, 𝑦 )
+
+components in the ant’s state (dataset mean/std) so goal and state channels are comparable in magnitude. 
+
+Dataset details and episode boundaries We load the D4RL dataset antmaze-large-play-v0 . When slicing fixed-length training segments, we respect episode boundaries defined by the dataset’s timeouts (time-limit truncation) and any 
+
+terminals (when present). 
+
+c) Long-horizon manipulation (D4RL): FrankaKitchen: 
+
+FrankaKitchen is a multi-object, multi-stage manipulation benchmark in a simulated kitchen with a Franka robot. The environment contains multiple interactable objects (microwave, kettle, overhead light, cabinets, oven), and the task requires achieving a set of goal interactions within an episode. State/action spaces and trajectory content We use the standard D4RL FrankaKitchen state/action specification: • State: 𝑠 𝑡 ∈ R60 , comprising the robot configura-tion/proprioception and relevant object state features.  
+
+> •
+
+Action: 𝑎 𝑡 ∈ R9 (Franka 9-DoF control signal used by the benchmark).  
+
+> •
+
+Trajectory: 𝜏 ∈ R𝐻 ×69 contains interleaved state–action pairs. Context 𝑐 We evaluate FrankaKitchen on the D4RL benchmark 
+
+kitchen-complete-v0 , where each episode consists of a sequence of manipulation interactions that together form the “complete” task. All planners condition on the current state at planning time, 𝑠 now . For the return-conditioned diffusion planners in Table I (including Diffuser-style planners), we use 𝑐 = (𝑠 now , 𝑅 cond ), where 𝑅 cond is set to the maxi-mum episode return observed in the training dataset for 
+
+kitchen-complete-v0 .Horizon settings and diffusion horizon FrankaKitchen episodes have a fixed time limit of 280 environment steps; we therefore use a planning horizon of 𝐻 = 280 state–action steps so the diffusion planner represents a full episode-length segment. The diffusion horizon 𝑇 is method-specific and matches Table I (Full “#Evals/ 𝑡 ”): Diffuser uses 𝑇 = 100 , Decision Diffusion uses 𝑇 =
+
+20 , and AdaptDiff uses 𝑇 = 60 on kitchen-complete-v0 .
+
+d) Robot block stacking (Kuka): This benchmark eval-uates long-horizon block stacking with a simulated KUKA arm. The objective is to pick and place blocks to form a stable stack under contact-rich dynamics. We use the standard unconditional stacking setting from diffusion-planning benchmarks (no explicit goal vector; success is defined by the final stacked configuration).  
+
+> Fig. 14: Kuka stacking environment
+
+State/action spaces and trajectory content We model stacking as state–action trajectory diffusion, with:  
+
+> •
+
+State: 𝑠 𝑡 ∈ R39 (unconditional stacking state vector), which contains robot configuration/proprioception and object pose features required by the benchmark.  
+
+> •
+
+Action: 𝑎 𝑡 ∈ R11 , a continuous control vector used by the benchmark controller. In this suite, actions command the arm with a fixed-dimensional continuous control signal (including a grasp/close channel) as implemented by the environment.  
+
+> •
+
+Trajectory: 𝜏 = [( 𝑠 0, 𝑎 0), . . . , (𝑠 𝐻 −1, 𝑎 𝐻 −1)] ∈ R𝐻 ×50 .Episode length, planning horizon 𝐻 , and diffusion horizon 𝑇 
+
+Episodes have a fixed horizon of 384 environment steps in this benchmark. Following common diffusion-planning practice on this task family, we plan over a 𝐻 = 192 -step trajectory segment and execute in a receding-horizon loop. The diffusion horizon 𝑇 matches Table I: Diffuser uses 𝑇 = 100 denoising steps and Decision Diffusion uses 𝑇 = 20. Context 𝑐 Stacking is not goal-conditioned in this benchmark variant. We condition on the current state only, 𝑐 = 𝑠 now . For return-conditioned diffusion planners, the return-conditioning scalar is included in 𝑐 as 𝑐 = (𝑠 now , 𝑅 cond ) with 𝑅 cond set to the maximum training-set return for the stacking dataset (standard high-return conditioning). Dataset details and preprocessing We use the offline stacking dataset released with diffusion-planning benchmarks for this task, consisting of collision-free / successful stacking rollouts generated by a task-and-motion planning pipeline. We construct fixed-length training segments of length 𝐻 within episode boundaries, standardize each state dimension using dataset mean/std, and clip/scale actions to the environment action bounds. 
+
+2) Configuration-space Motion Planning (MPD/EDMP Pro-tocol): Table II evaluates configuration-space planning for a 7-DoF robot arm in clutter.  
+
+> Fig. 15: Clutter planning environment
+
+Robot model We plan for a 7-DoF Franka Emika Panda -class manipulator in joint space with configuration 
+
+𝑞 ∈ R7. We use the standard Panda joint limits (radians): 
+
+𝑞 min = [− 2.9, −1.8, −2.9, −3.0, −2.9, 0.0, −2.9],𝑞 max = [ 2.9, 1.8, 2.9, 0.0, 2.9, 3.8, 2.9].
+
+Collision checking uses the robot’s URDF link geometries (self-collision enabled) and rigid obstacle geometries in the workspace; configurations outside [𝑞 min , 𝑞 max ] are treated as hard constraint violations. Scenario definition: (easy/medium/hard) Each planning query samples a collision-free start configuration 𝑞 start and goal configuration 𝑞 goal , plus a set of static workspace obstacles. Obstacles are axis-aligned boxes placed in a fixed workspace region in front of the robot base: 
+
+𝑥 ∈ [ 0.25 , 0.75 ] m, 𝑦 ∈ [− 0.35 , 0.35 ] m, 𝑧 ∈ [ 0.05 , 0.55 ] m.
+
+Each box side length is sampled independently as ℓ𝑥 , ℓ 𝑦 , ℓ 𝑧 ∼
+
+Unif (0.04 , 0.12 ) meters, and boxes are rejected if they inter-sect the robot at 𝑞 start or 𝑞 goal . Difficulty levels follow the MPD/EDMP clutter protocol via obstacle count:  
+
+> •
+
+Easy: 3 obstacles. • Medium: 6 obstacles.  
+
+> •
+
+Hard: 10 obstacles. To ensure queries are nontrivial but feasible, we additionally require that (i) the straight-line interpolation in joint space between 𝑞 start and 𝑞 goal is not collision-free (otherwise the query is resampled), and (ii) an OMPL RRT-Connect planner finds at least one collision-free solution (used both as feasibility filter and as a data generator for training trajectories). Trajectory representation A planned path is represented as a fixed-length sequence of joint configurations: 
+
+𝜏 = [𝑞 0, 𝑞 1, . . . , 𝑞 𝐻 −1] ∈ R𝐻 ×7,
+
+where 𝑞 0 = 𝑞 start and 𝑞 𝐻 −1 should reach 𝑞 goal within tolerance. The diffusion model denoises this entire joint-trajectory array in joint space. Context 𝑐 𝑐 contains (i) 𝑞 start and 𝑞 goal , (ii) an obstacle encoding sufficient to evaluate feasibility (the benchmark obstacle repre-sentation used by MPD/EDMP), (iii) any additional planning-time scalars required by the baseline. Collision/constraint violation detection A candidate joint-space trajectory 𝜏 = [𝑞 0, . . . , 𝑞 𝐻 −1] is checked for feasibility using dense collision checking:  
+
+> •
+
+Waypoint checks: every waypoint 𝑞 𝑖 is checked for (i) self-collision, (ii) robot–obstacle collision, and (iii) joint-limit violation.  
+
+> •
+
+Segment checks: for each consecutive pair (𝑞 𝑖 , 𝑞 𝑖 +1), we linearly interpolate 10 intermediate configurations and collision-check each interpolated configuration (yielding 11 checks per segment including the endpoints). An episode is counted as a collision/violation episode if any checked configuration violates any hard constraint above. The “Collision (%)” metric in Table II is the percentage of evaluation queries that are collision/violation episodes. Success criterion A planning query is successful if the method returns a trajectory that (i) is collision-free under the checks above and (ii) reaches the goal within a joint-space tolerance: 
+
+∥𝑞 𝐻 −1 − 𝑞 goal ∥∞ ≤ 0.05 rad .
+
+The “Success (%)” metric in Table II is the fraction of successful queries over the evaluation set. 
+
+3) Visuomotor Imitation and Manipulation (Diffusion Poli-cies): Table III evaluates diffusion policies that generate short-horizon action/pose segments and execute them in a receding-horizon control loop. Common receding-horizon execution All diffusion policies in Table III generate action chunks and execute them in a receding-horizon loop. At control step 𝑘 , the policy receives an observation history of length 𝑇 𝑜 = 2 (the two most recent observations) and samples an action prediction horizon of 
+
+𝐻 = 𝑇 𝑝 = 16 actions: 
+
+(𝑎 𝑘 , 𝑎 𝑘 +1, . . . , 𝑎 𝑘 +𝑇 𝑝 −1) ∼ 𝜋 𝜃 (· | 𝑜 𝑘 −𝑇 𝑜 +1: 𝑘 ).
+
+We then execute the first 𝑇 𝑎 = 8 actions open-loop (action chunking) and replan every 𝑇 𝑎 control steps. Thus, policy inference is called at frequency 𝑓 𝜋 = 𝑓 ctrl /𝑇 𝑎 , where 𝑓 ctrl is the environment/controller rate specified per benchmark below. For diffusion policies, the reverse-diffusion sampler uses:  
+
+> •
+
+Diffusion Policy (2D): 𝑇 = 100 denoising steps at inference (DDPM-style).  
+
+> •
+
+DP3 (3D): 𝑇 = 10 denoising steps at inference using a DDIM sampler (the standard DP3 inference setting). Latency in Table III is measured per policy inference call (one action-chunk generation). 
+
+a) RLBench Reach Target: The robot must move its end-effector to a designated target pose/location in the workspace within a fixed tolerance.  
+
+> Fig. 16: RLBench Reach Target environment
+
+Observations We use the standard RLBench multi-view RGB observation setup for Reach Target with four fixed cam-eras: front , left_shoulder , right_shoulder , and 
+
+wrist . Each camera produces an RGB frame at raw resolution 
+
+256 × 256 . Before entering the policy, each RGB image is resized with bilinear interpolation to 84 × 84 and normalized to floating-point pixels in [0, 1] (with per-channel normalization matching the base Diffusion Policy implementation). We stack the most recent 𝑇 𝑜 = 2 timesteps of images, so the vision input at time 𝑘 consists of 4 camera views × 2 frames. In addition to images, the observation includes low-dimensional robot state (proprioception) comprising the 7 joint positions, 7 joint velocities, and the gripper open/close state, concatenated as a vector and normalized by dataset mean/standard deviation. The Reach Target task also pro-vides the target specification as a 3D position in workspace coordinates; this target position is concatenated to the non-image conditioning vector and normalized by dataset mean/std computed over target positions in the training set. Actions Actions are 7-dimensional end-effector delta-pose commands executed by the RLBench controller: 
+
+𝑎 𝑡 = (Δ𝑥, Δ𝑦, Δ𝑧, Δ𝜙 𝑥 , Δ𝜙 𝑦 , Δ𝜙 𝑧 , 𝑎 grip ) ∈ R7,
+
+where (Δ𝑥, Δ𝑦, Δ𝑧 ) are Cartesian translations (meters) in the robot base frame, (Δ𝜙 𝑥 , Δ𝜙 𝑦 , Δ𝜙 𝑧 ) are small-angle rotations (radians, axis-angle parameterization), and 𝑎 grip ∈ [− 1, 1]
+
+controls the gripper (open/close). All components are clipped to the action bounds used by the RLBench environment and linearly scaled to the [− 1, 1] range expected by the diffusion policy implementation. Control frequency The RLBench environment is stepped at a fixed control rate of 20 Hz. We use action chunking with 
+
+𝑇 𝑎 = 8 (from the common policy setup above), so the diffusion policy is queried at 2.5 Hz and the resulting 8-step action chunk is executed open-loop at 20 Hz before replanning. b) Meta-World pick-place-v2: The robot must pick up an object and place it at a target location.  
+
+> Fig. 17: Meta-world pick-place environment
+
+Observations We use the state-based MetaWorld v2 obser-vation for metaworld/pick-place-v2 , which is a 39-dimensional vector ( 𝑑 𝑠 = 39 ). This vector includes the end-effector position, gripper opening, object pose features (position and orientation), object velocities, and the task goal coordinates as provided by the MetaWorld environment. We use the full 39D observation without dropping fields. Each observation dimension is standardized using mean and standard deviation computed over the training demonstrations. We stack an observation history of 𝑇 𝑜 = 2 timesteps (concatenation of the two most recent 39D vectors) as the diffusion policy conditioning input. Actions and control The action representation and control frequency must be reported explicitly: whether the benchmark uses end-effector delta-position with a gripper scalar, end-effector delta-pose, or joint controls, and the exact execution rate of the environment control loop (Hz). We execute the diffusion policy in receding horizon with observation horizon 𝑇 𝑜 and action horizon 𝑇 𝑎 as specified in the experiment configuration. 
+
+c) DP3 Pour (DP3): The robot must pour contents from a source container into a target container, requiring precise 3D spatial reasoning and contact-rich control.  
+
+> Fig. 18: Custom DP3 pour environment
+
+Observations We were unable to replicate the results in the DP3 paper (simulator mismatch), hence, we followed the protocol, trained the model on a custom DP3 pour environment and tested on the same. DP3 conditions on a compact 3D scene representation derived from a single-view depth camera. At each control step, we convert the depth image into a point cloud using the camera intrinsics and extrinsics, transform points into the world frame, and crop points to a fixed workspace-aligned bounding box that contains the robot arm and manipulation region. We then downsample the cropped point cloud to an input size of 1024 points using iterative farthest point sampling,  
+
+> Fig. 19: Marine Navigation setting.
+
+and use only the (𝑥, 𝑦, 𝑧 ) coordinates to improve appearance generalization. In addition to the point cloud, DP3 conditions on low-dimensional robot state (end-effector pose and gripper state in the benchmark’s standard representation), normalized by dataset statistics. We stack an observation history of 𝑇 𝑜 = 2timesteps for both the point cloud features and the robot state features as the conditioning context for action generation. 
+
+B. Hardware: Environment, Task, and Platform Details 
+
+We evaluate Muninn in real-time closed-loop deployments spanning marine navigation, aerial navigation, and tabletop manipulation. Across all platforms, we run planners/policies in a receding-horizon loop: at each planning cycle we (i) acquire the latest observation/state estimate, (ii) sample a trajectory (or action segment) using the diffusion model (full or Muninn-accelerated), and (iii) convert this output into low-level control inputs via a platform-specific tracking controller. Unless stated otherwise, we generate one candidate trajectory per planning cycle (batch size = 1) and execute it in receding horizon.            
+
+> Platform Task Sensors (closed loop) Control rate Planning rate
+> SeaRobotics Surveyor ASV 2D nav RTK-GNSS, IMU, LiDAR, day camera, night camera, sonde 20 Hz (tracking) 1 Hz (replan)
+> Crazyflie quadrotor 3D nav Motion capture pose, onboard IMU 100 Hz (setpoints) 10 Hz (replan)
+> SO-ARM100 tabletop arm Manip. Joint encoders, RGB camera(s) 20 Hz (servo) 20 Hz (policy)
+> TABLE VIII: High-level platform summary. We report the control interface rate (how often low-level setpoints are issued) and the planning/policy rate (how often a diffusion trajectory/segment is resampled).
+
+1) SeaRobotics Surveyor ASV: 2D marine navigation: 
+
+Platform and actuation The unmanned surface vehicle (USV) is a SeaRobotics Surveyor ASV equipped with a differential-thrust propulsion module . The platform exposes a velocity set-point interface (commanded forward speed and heading/yaw-rate), while the low-level propulsion stack converts these setpoints to left/right thrust subject to actuator limits. Sensor payload (modalities, rates, and noise model) The ASV carries six sensing modalities (the same payload used by the BCOD teacher baseline in our comparisons). The update rates, conservative operating ranges, and the noise parameters used by the estimator are: Sensor Rate Range Noise model (estimator)                                     
+
+> Spinning LiDAR (32-line) 10 Hz 120 m additive range noise, std =3cm Global-shutter RGB camera (day) 20 Hz 80 m pixel noise, 1px ≈2cm at 10
+> mNIR-augmented mono camera (night) 20 Hz 40 m pixel noise, 1px Exo-conductivity/ temperature sonde 2 Hz spot depth-only probe; used as exteroceptive cue RTK-capable GNSS receiver 5 Hz global RTK-fix position noise, std
+> =1.5cm 6-axis MEMS IMU 200 Hz n/a gyro noise std =0.02 rad/s
+> TABLE IX: ASV sensor suite. We report the sensing modalities used during closed-loop operation, with the estimator noise parameters used for filtering.
+
+Control and planning frequencies  
+
+> •
+
+Planning frequency: 1 Hz. At each planning cycle we sample a short-horizon trajectory and update the reference segment used by the tracker.  
+
+> •
+
+Tracking/control frequency: 20 Hz. We track the planned reference using a linear MPC. Trajectory-to-control integration (real-time closed-loop) Each planning cycle produces a short-horizon 2D trajectory segment 
+
+in the global frame. We convert the sampled trajectory into executed controls as follows: 1) Reference construction: resample the planned segment into an ordered set of waypoints with timestamps over a 2 s horizon. 2) Low-level tracking: solve a linear MPC with a 2 s horizon whose inputs are constrained to the thrust envelope; the MPC tracks an eight-waypoint reference segment. The MPC outputs velocity setpoints (𝑣, 𝜔 ) at 20 Hz. 3) Execution: apply only the next MPC command (receding-horizon control). At the next 1 s planning instant, replan and refresh the reference. Hardware evaluation protocol We run closed-loop waypoint-navigation episodes per method.  
+
+> •
+
+Initial conditions: each episode starts from a stationary pose near a randomly selected start region on the lake. The vehicle is reset between episodes by piloting it back to the start region.  
+
+> •
+
+Goal distribution: each episode samples a goal disk with radius 6 m uniformly over a navigable region of radius 100 m (world radius), rejecting goals whose disks intersect the shoreline buffer.  
+
+> •
+
+Disturbances: episodes are conducted under natural envi-ronmental disturbances (wind, waves, and surface currents). The planner is not provided with a disturbance model.  
+
+> •
+
+Termination: an episode terminates on success (EKF mean enters the goal disk and remains inside for 3 s), collision/violation (defined below), or timeout (180 s). Collision / constraint violation definition (ASV) A run is marked as a collision/violation if any of the following occurs:  
+
+> •
+
+Shoreline breach: the EKF mean position crosses the shoreline polygon (hard constraint) or enters the shoreline safety buffer for more than 1 s.  
+
+> •
+
+Obstacle contact: physical contact with a buoy or fixed obstacle, identified by operator observation and confirmed by an abrupt deceleration spike in the EKF velocity estimate. Latency measurement on hardware (ASV) We measure planner latency on the process that performs inference (the planning node):  
+
+> •
+
+We time end-to-end planning-call wall clock from receiv-ing the latest belief/state snapshot to producing a trajectory segment, including Muninn probe computation and any denoiser evaluations.  
+
+> •
+
+We exclude network transmission time to the actuator interface and the MPC solve time (we report planning latency only, matching the definition used in Tables III and the hardware table in Fig. 7). 
+
+2) Crazyflie quadrotor: 3D aerial navigation: Platform and sensing We use a Crazyflie micro-quadrotor for 3D waypoint navigation. The onboard sensing includes:  
+
+> •
+
+Inertial sensing: 6-axis IMU for attitude-rate estimation (used by the onboard stabilizer).  
+
+> •
+
+Global pose: an external motion capture system provides 
+
+𝑆𝐸 (3) pose (𝑥, 𝑦, 𝑧, 𝜓 ) in a global frame. Pose is streamed to the robot via radio and used by the position controller.  
+
+> Fig. 20: Crazyflie operating environment
+
+Control and planning frequencies  
+
+> •
+
+Planning frequency: 10 Hz. We replan in receding horizon, producing a short 3D trajectory segment each cycle.  
+
+> •
+
+Command rate: 100 Hz. We send position (or velocity) setpoints to the onboard controller at 100 Hz; between replans, the setpoint stream tracks the most recent planned segment. Trajectory-to-control integration The diffusion planner outputs a 3D waypoint trajectory in the global frame. We execute it using a standard cascade: 1) Reference generation: fit a time-parameterized waypoint spline through the planned positions (piecewise-linear in time with bounded velocity and acceleration). 2) Position tracking: at 100 Hz, query the spline at the current time and send the resulting position/yaw setpoint to the Crazyflie onboard controller. 3) Receding horizon: replan at 10 Hz; at each replan, reset the spline time origin and continue tracking the updated plan. Hardware evaluation protocol We execute waypoint-navigation runs per method in a fixed indoor arena. Fig. 21: SO-100 tabletop manipulation environment.  
+
+> •
+
+Start/goal sampling: sample start and goal positions uniformly from a rectangular prism (workspace), rejecting samples within obstacle inflation margins. Goals are separated from starts by at least 1.0 m Euclidean distance.  
+
+> •
+
+Termination: success if the quadrotor enters a goal ball of radius 0.15 m and remains inside for 1.0 s; collision if it enters an inflated obstacle volume; timeout at 30 s.  
+
+> •
+
+Resets: after each episode, the quadrotor lands; the next run begins after takeoff to the sampled start pose. Latency measurement on hardware (UAV) Latency is measured on the planning node:  
+
+> •
+
+Compute-only timing: wall-clock time to produce one planned 3D segment from the latest state estimate, in-cluding Muninn probe and sampling, excluding radio transmission time and low-level controller execution.  
+
+> •
+
+Synchronization: measurements use explicit device syn-chronization when running on GPU. 
+
+3) SO-ARM100 tabletop arm: manipulation: Platform and sensing We use a SO-ARM100 6-DoF tabletop arm with bus servos and a parallel gripper. Closed-loop sensing includes:  
+
+> •
+
+Proprioception: joint encoders from the servo bus (12-bit magnetic encoders) and gripper state.  
+
+> •
+
+Vision: RGB images from fixed cameras covering the workspace. We use a top-down camera for all tasks; for peg insertion we additionally use a side view to reduce occlusion. Control and planning frequencies  
+
+> •
+
+Policy/planning frequency: 20 Hz. We run the diffusion policy at 20 Hz in a receding-horizon loop.  
+
+> •
+
+Servo command frequency: 20 Hz. The arm receives joint-position targets at 20 Hz; low-level servo control closes the internal position loop. Policy-to-control integration The diffusion policy outputs a short-horizon action segment in Cartesian space:  
+
+> •
+
+Action representation: a delta end-effector pose command 
+
+(Δ𝑥, Δ𝑦, Δ𝑧, Δ𝜙, Δ𝜃, Δ𝜓 ) plus a binary gripper open/close action.  
+
+> •
+
+Execution: we apply only the first action of the sampled segment each 50 ms control tick (receding horizon).  
+
+> •
+
+IK and limits: delta poses are converted to joint targets via inverse kinematics; joint limits and velocity limits are enforced before sending commands. Hardware evaluation protocol We evaluate three tasks: pick-and-place , stacking , and peg insertion . For each method we report the average.  
+
+> •
+
+Resets: objects are manually reset to a nominal distribution after each episode; the arm is returned to a home configuration.  
+
+> •
+
+Pick-and-place: success if the object is placed inside a marked target region and released, with the object remaining in the region for 2 s.  
+
+> •
+
+Stacking: success if the final stack configuration is achieved and remains upright for 3 s.  
+
+> •
+
+Peg insertion: success if the peg reaches a minimum insertion depth and remains inserted for 2 s.  
+
+> •
+
+Timeout: 60 s per episode for pick-and-place/stacking and 90 s for peg insertion. Collision / violation definition (SO-ARM100) A run is marked as a collision/violation if any of the following occurs:  
+
+> •
+
+the end-effector contacts the table outside the task-required contact region,  
+
+> •
+
+any joint hits a hard limit,  
+
+> •
+
+sustained tracking error triggers the contact abort (inter-preted as unintended collision with the environment or self-collision). Latency measurement on hardware (arm)  
+
+> •
+
+We time the wall-clock time per 20 Hz policy call from observation acquisition (images + proprioception snapshot) to the produced first action, including Muninn probe and sampling.  
+
+> •
+
+We exclude the camera driver buffering delay and transport delay to the servo bus interface. 
+
+4) Notes on communication latency and timing scope: 
+
+For all three platforms, the latency values reported in the hardware table are compute-only latencies measured at the planner/policy node, and therefore exclude (i) network or radio transmission time, (ii) actuator interface latency, and (iii) low-level controller execution time (MPC solve, servo bus write). This aligns reported latency with the algorithmic acceleration target of Muninn: reducing denoiser evaluations and denoising-time compute without changing the downstream controller. 
+
+C. Metrics 
+
+We evaluate and all baselines along three dimensions: (i) task performance and safety, (ii) computational efficiency, and (iii) approximation fidelity and risk. Each metric has a benchmark-specific instantiation but a consistent meaning across domains. Notation A decision is one diffusion sampling call that outputs a trajectory (planner) or an action/pose chunk (policy). Let 
+
+𝑁 roll be the number of evaluation rollouts (episodes or planning queries, depending on the benchmark). Let I index all decisions encountered across these rollouts, with |I| = 𝑁 dec . For a decision 𝑖 ∈ I , denote the full-compute output by 𝜏 full 0,𝑖 and the cached output by ˜𝜏 0,𝑖 (both produced from the same initial diffusion noise and (if stochastic) the same sampler-noise sequence, so the difference isolates caching). Task performance ( 𝑇 𝑃 ) We report a primary task metric per benchmark family: 
+
+(a) D4RL tasks (HalfCheetah / Hopper / Walker2d / Maze2D / AntMaze / FrankaKitchen) The task metric is the D4RL normalized score computed from the undiscounted episodic return 𝐺 = Í𝑇 env −1 
+
+> 𝑡 =0
+
+𝑟 𝑡 . Practically, we compute the normalized score using the environment-provided normalization routine: 
+
+𝑇 𝑃 = env.get_normalized_score (𝐺 ), (13) which implements the D4RL convention NormalizedScore (𝐺 ) = 100 · 𝐺 − 𝐺 random 
+
+𝐺 expert − 𝐺 random 
+
+, (14) with task-specific (𝐺 random , 𝐺 expert ) constants defined by the benchmark. We report the mean normalized score over 𝑁 roll =
+
+50 rollouts. 
+
+(b) Kuka block stacking The task metric is success rate :
+
+𝑇 𝑃 = 1
+
+𝑁 roll 
+
+> 𝑁 roll
+
+∑︁ 
+
+> 𝑗 =1
+
+I{success 𝑗 = 1}, (15) where success is the environment’s terminal success indica-tor for completing the stacking objective under the benchmark’s definition (stable stack at episode end). 
+
+(c) Configuration-space motion planning (Arm planning in clutter) The task metric is planning success rate over planning queries: 
+
+𝑇 𝑃 = 1
+
+𝑁 roll 
+
+> 𝑁 roll
+
+∑︁ 
+
+> 𝑗 =1
+
+I{success 𝑗 = 1}, (16) where a query is successful if the returned joint-space trajectory (i) is collision-free, (ii) satisfies all hard constraints (including joint limits), and (iii) reaches the goal within the benchmark’s goal tolerance. 
+
+(d) Visuomotor policies (RLBench Reach Target / Meta-World pick-place-v2 / DP3 Pour) The task metric is episodic success rate :
+
+𝑇 𝑃 = 1
+
+𝑁 roll 
+
+> 𝑁 roll
+
+∑︁ 
+
+> 𝑗 =1
+
+I{success 𝑗 = 1}, (17) where success is the benchmark-provided success predicate for the task (evaluated at episode end; if the benchmark exposes a per-step success signal, we set success 𝑗 = 1 if success is achieved at any time during the rollout). 
+
+(e) Hardware evaluation (ASV / UAV / SO-ARM100) We report 
+
+success rate computed from the platform evaluation harness: for navigation tasks, success indicates reaching all waypoints within the platform’s waypoint tolerance without triggering a failure condition; for manipulation tasks, success indicates completing the full skill sequence without a terminal failure (drops, unrecoverable contact, or controller abort). Safety and constraint satisfaction When a benchmark provides explicit safety/constraint signals, we report: 
+
+Collision rate 
+
+Coll = 1
+
+𝑁 roll 
+
+> 𝑁 roll
+
+∑︁ 
+
+> 𝑗 =1
+
+I{collision 𝑗 = 1}, (18) where collision 𝑗 = 1 if any robot–obstacle (or robot– environment) collision occurs during the rollout/query under the benchmark’s collision checker. We report Coll for configuration-space planning and hardware navigation/manipulation (Tables II and hardware table). 
+
+Hard constraint violation rate (when distinct from collision) 
+
+Viol = 1
+
+𝑁 roll 
+
+> 𝑁 roll
+
+∑︁ 
+
+> 𝑗 =1
+
+I{violation 𝑗 = 1}, (19) where violation 𝑗 = 1 if any hard constraint is violated (e.g., joint limits, self-collision, task-specific hard constraints). If the benchmark aggregates collisions and violations into a single indicator, we report the aggregated rate and state so explicitly. Wall-clock latency and speedup For each method, we measure 
+
+per-decision wall-clock latency: Lat = 1
+
+𝑁 dec ∑︁ 𝑖 ∈ I 
+
+Δ𝑡 𝑖 , (20) where Δ𝑡 𝑖 is the elapsed time to produce the trajectory (planner) or action/pose chunk (policy) for decision 𝑖 . We measure 
+
+Δ𝑡 𝑖 with end-to-end timing that includes probe computation, caching logic, and sampling steps; it excludes environment simulation/robot actuation time. On GPU, timings are recorded with device synchronization (to avoid asynchronous kernel launch artifacts). We report speedup as: Speedup = Lat Full 
+
+Lat Method 
+
+. (21) Denoiser evaluations per decision To separate algorithmic savings from hardware effects, we report the mean number of full denoiser core evaluations (forward passes through 𝜀 𝜃 ’s expensive blocks) per decision: #Evals = 1
+
+𝑁 dec ∑︁ 𝑖 ∈ I 
+
+𝑛 (𝑖 )
+
+> eval
+
+, (22) where 𝑛 (𝑖 ) 
+
+> eval
+
+counts recomputation steps only (reuse steps contribute zero). For a Full model, 𝑛 (𝑖 ) 
+
+> eval
+
+= 𝑇 by definition. We additionally report the reuse fraction :ReuseFrac = 1 − #Evals 
+
+𝑇 . (23) For batched sampling, these statistics are computed per trajec-tory in the batch and then averaged. Trajectory deviation statistic E[𝑑 ] We quantify approximation fidelity using the deviation metric 𝑑 (· , ·) used by Muninn’s risk accounting. For each decision 𝑖 ∈ I , we compute 𝑑 𝑖 =𝑑 (𝜏 full 0,𝑖 , ˜𝜏 0,𝑖 ), where 𝜏 full 0,𝑖 and ˜𝜏 0,𝑖 are generated with identical diffusion randomness (paired runs). We report: 
+
+E[𝑑 ] = 1
+
+𝑁 dec ∑︁ 𝑖 ∈ I 
+
+𝑑 𝑖 . (24) 
+
+Domain-specific instantiations of 𝑑 (· , ·) Across all benchmarks we use the same trajectory deviation metric family: for any trajectory tensor 𝜏 ∈ R𝐻 𝜏 ×𝑑 (planner segment, joint path, or policy chunk), 
+
+𝑑 (𝜏, ˜𝜏 ) := 1
+
+√𝐻 𝜏 
+
+∥𝜏 − ˜𝜏 ∥𝐹 =
+
+vut 1
+
+𝐻 𝜏 𝐻 𝜏 ∑︁ 
+
+> ℎ=1
+
+∥𝜏 ℎ − ˜𝜏 ℎ ∥22. (25) Thus 𝑑 is the RMS per-timestep Euclidean deviation of the per-step trajectory vector. We compute 𝑑 on the exact normalized trajectory repre-sentation used by each diffusion model at inference time: D4RL states are standardized by dataset mean/std and actions are scaled to the model’s action convention; motion-planning joint configurations are normalized by fixed joint limits; diffusion-policy actions/poses are represented in the same scaled coordinates used by the policy. This ensures 𝑑 is comparable across contexts within a benchmark and aligns with the deviation budget 𝜀 traj used by Muninn.  
+
+> •
+
+D4RL planners (state–action trajectories) The planner outputs a state–action segment 𝜏 0 ∈ R𝐻 × ( 𝑑 𝑠 +𝑑 𝑎 ) as in (A1) .We instantiate (25) with 𝐻 𝜏 = 𝐻 :
+
+𝑑 (𝜏, ˜𝜏 ) = 1
+
+√𝐻 ∥𝜏 − ˜𝜏 ∥𝐹 . (26)  
+
+> •
+
+Configuration-space planning (joint trajectories) The plan-ner outputs a joint-space waypoint sequence 𝜏 0 ∈ R𝐻 ×7
+
+(7-DoF arm). Joint configurations are represented in nor-malized coordinates obtained by affine scaling each joint from its physical limits to [− 1, 1]; since the benchmark arm joints are bounded (non-periodic), joint differences are computed by direct subtraction in these normalized coordinates. We instantiate (25) with 𝐻 𝜏 = 𝐻 :
+
+𝑑 (𝜏, ˜𝜏 ) = 1
+
+√𝐻 ∥𝜏 − ˜𝜏 ∥𝐹 . (27)  
+
+> •
+
+Diffusion policies (action/pose chunks) For a policy call that outputs an action/pose chunk 𝜏 0 ∈ R𝐻 𝜋 ×𝑑 𝑎 (chunk length 𝐻 𝜋 and action dimension 𝑑 𝑎 ), we instantiate (25) with 𝐻 𝜏 = 𝐻 𝜋 :
+
+𝑑 (𝜏, ˜𝜏 ) = 1
+
+√𝐻 𝜋 
+
+∥𝜏 − ˜𝜏 ∥𝐹 . (28) Empirical risk violation rate ˆ𝑝 viol (vs. target 𝛼 ) Given a user-chosen deviation tolerance 𝜀 traj , we estimate the probability that caching produces a deviation exceeding the tolerance: ˆ𝑝 viol = 1
+
+𝑁 dec ∑︁ 𝑖 ∈ I 
+
+I
+
+n
+
+𝑑 (𝜏 full 0,𝑖 , ˜𝜏 0,𝑖 ) > 𝜀 traj 
+
+o
+
+. (29) This directly tests whether the deployed Muninn configuration achieves the target risk level 𝛼 . When reporting uncertainty, we compute a binomial confidence interval for ˆ𝑝 viol over 𝑁 dec 
+
+Bernoulli trials. Runtime certificate proxy ˆ𝐷 (used for analysis) For each decision, Muninn maintains an online upper-bound proxy on deviation obtained by summing the per-step bounded costs spent from the budget: ˆ𝐷 =∑︁  
+
+> 𝑡 ∈ R
+
+ˆ𝑐 𝑡 (𝑠 𝑡 ), (30) where R is the set of reuse steps taken in that decision. We use ˆ𝐷 for interpretability and reliability analysis by comparing ˆ𝐷 against the realized deviation 𝑑 (𝜏 full 0 , ˜𝜏 0) across decisions (Fig. 10). 
+
+1) Evaluation Protocol: This section specifies the exact evaluation protocol used across all benchmarks. Unless stated otherwise, every reported number for a benchmark is computed over 150 held-out rollouts (episodes) or planning queries, using fixed evaluation seeds and identical evaluation conditions across methods. Episode / query sampling and seeding (150 runs) We evaluate each benchmark on a fixed, pre-generated set of 150 evaluation instances to ensure strict comparability across methods. 
+
+(1) D4RL online evaluation (HalfCheetah / Hopper / Walker2d / Maze2D / AntMaze / FrankaKitchen) For each environment, we construct an ordered list of 150 integer seeds {𝑠 1, . . . , 𝑠 150 }.Each evaluation rollout 𝑗 resets the environment with seed 
+
+𝑠 𝑗 and is executed for the environment’s standard episode length (or until termination). This seed controls all environment randomness, including initial-state noise and (where applicable) goal sampling:  
+
+> •
+
+Locomotion (HalfCheetah / Hopper / Walker2d): 𝑠 𝑗 
+
+controls the environment reset noise; the rollout then proceeds under the agent’s actions.  
+
+> •
+
+Maze2D / AntMaze: 𝑠 𝑗 controls both the environment reset and the episode’s goal instance, ensuring the same sequence of goals across methods.  
+
+> •
+
+FrankaKitchen: 𝑠 𝑗 controls the environment reset (in-cluding object initial conditions if randomized by the benchmark). All methods are evaluated on the same seed list per environment, in the same order. 
+
+(2) Kuka block stacking We evaluate on 150 episodes with a fixed seed list {𝑠 𝑗 }150 
+
+> 𝑗 =1
+
+. Seed 𝑠 𝑗 controls the full environment reset, including initial object placement randomization and any stochasticity in dynamics, ensuring identical initial-condition distributions across methods. 
+
+(3) Configuration-space motion planning (Arm planning in clutter) A single evaluation instance is a planning query consisting of (𝑞 start , 𝑞 goal , O) where O encodes obstacles for the scene. We evaluate on a fixed set of 150 held-out planning queries sampled from the benchmark’s test distribution:  
+
+> •
+
+The 150 queries are generated once with a fixed generator seed and stored.  
+
+> •
+
+Every method solves exactly the same 150 queries, with identical start/goal and obstacle sets. • Difficulty categories (easy/med./hard) follow the bench-mark’s definition; we report results separately per category using disjoint held-out query sets of size 150 each (one set per category). 
+
+(4) Visuomotor policies (RLBench Reach Target / Meta-World pick-place-v2 / DP3 Pour) We evaluate on 150 episodes per task using the benchmark’s standard evaluation distribution:  
+
+> •
+
+RLBench: evaluation episodes are drawn from the task’s held-out evaluation variations/settings provided by the RLBench protocol. Each episode is initialized with a fixed seed from {𝑠 𝑗 }150  
+
+> 𝑗 =1
+
+to ensure identical scene randomization and target placements across methods.  
+
+> •
+
+Meta-World: each episode reset uses seed 𝑠 𝑗 to control ob-ject pose randomization and initial robot configuration (if randomized by the environment), producing a reproducible sequence of initial conditions shared across methods.  
+
+> •
+
+DP3 Pour: each rollout reset uses seed 𝑠 𝑗 to control the initial container poses, contents state (if modeled), and observation sampling, yielding identical evaluation initializations across methods. Paired randomness for fidelity / risk evaluation For metrics that compare the cached output to the full-compute output (trajectory deviation 𝑑 (𝜏 full 0 , ˜𝜏 0) and ˆ𝑝 viol ), we use paired diffusion randomness: for each decision, the full and cached samplers share (i) the same initial diffusion sample 𝜏 𝑇 , and (ii) the same per-step sampler noise {𝜉 𝑡 }𝑇 𝑡 =1 (for stochastic samplers). This isolates the effect of caching from sampling variance. Aggregation over runs, seeds, and reported uncertainty For each benchmark and method, we compute the metric value on each of the 150 evaluation runs and report the mean across runs . When we report uncertainty, we use a nonparametric bootstrap over runs:  
+
+> •
+
+Scalar metrics (e.g., D4RL normalized score, E[𝑑 ],latency): we compute a 95% bootstrap confidence interval by resampling the 150 runs with replacement for 10,000 bootstrap replicates.  
+
+> •
+
+Proportions (success, collision, violation, ˆ𝑝 viol ): we report a 95% Wilson score interval computed from 150 Bernoulli outcomes. Tables in the main paper report mean values; confidence intervals are provided in the appendix when included. Wall-clock latency measurement methodology We measure 
+
+end-to-end wall-clock inference latency per decision (planner call or policy control call) and report the mean latency over all decisions executed during evaluation. Hardware and software All latency measurements are performed on a single workstation with:  
+
+> •
+
+GPU: NVIDIA A10 (24 GB).  
+
+> •
+
+CPU: AMD EPYC-class server CPU (multi-core) with sufficient RAM to avoid paging during evaluation.  
+
+> •
+
+Framework: PyTorch (CUDA backend), with models executed in eval() mode. Precision and batch size We measure latency at batch size 1 
+
+(one trajectory / one action chunk per call), which matches the real-time control setting. Inference uses mixed precision with 
+
+torch.cuda.amp.autocast (FP16) for the denoiser for-ward pass; any required accumulations and scalar bookkeeping (e.g., budgets) are maintained in FP32. All methods are timed under the same precision settings. Latency Latency is measured as the elapsed wall-clock time to produce an output trajectory/chunk from inputs, including:  
+
+> •
+
+diffusion sampling loop overhead,  
+
+> •
+
+denoiser forward passes (and any guidance computations, including gradients when guidance requires backprop through auxiliary networks),  
+
+> •
+
+Muninn probe computation, score computation, conformal bound lookup, and caching/budget logic. We exclude environment simulation time, rendering, and data loading, so latency reflects planner/policy inference only. Warmup and synchronization To obtain stable GPU timings:  
+
+> •
+
+We perform 50 warmup inference calls per method before recording any timings (to initialize kernels, caches, and allocator state).  
+
+> •
+
+For each timed call, we insert 
+
+torch.cuda.synchronize() immediately before starting and immediately after finishing the timed region.  
+
+> •
+
+We measure time using a high-resolution wall-clock timer (time.perf_counter ). Reported latency statistic For each benchmark and method, we record latency for every decision encountered across the 150 evaluation runs and report the mean. For diffusion policies, “latency” refers to the policy inference time per control call (one action/pose chunk). For trajectory diffusion planners, “latency” refers to one complete diffusion sampling call that produces a trajectory segment for action selection. 
+
+D. Additional Analysis and Ablations 
+
+This appendix provides extended ablations complementing Section V-C . Unless otherwise noted, we follow the same evaluation protocol as the main experiments. Aggregation and reporting conventions To make ablations readable across heterogeneous domains, we report both per-domain aggregates and suite-level calibration statistics.  
+
+> •
+
+Per-domain aggregates “offline RL (avg)” averages results across the D4RL tasks in Table I. “motion planning (avg)” averages across the clutter planning scenarios in Table II. “policy diffusion (avg)” averages across the visuomotor tasks in Table III.  
+
+> •
+
+Relative performance Perf. rel. (%) denotes performance relative to the corresponding Full teacher for the same base model and benchmark: Perf. rel. (%) = 100 · 𝑇 𝑃 variant 
+
+𝑇 𝑃 Full 
+
+. (31) Here 𝑇 𝑃 is the benchmark’s primary task metric (D4RL normalized score for D4RL tasks; success rate for motion planning and visuomotor tasks; see Section C).  
+
+> •
+
+Risk metrics ˆ𝑝 viol is the empirical violation probability under paired sampling, ˆ𝑝 viol = P
+
+
+
+𝑑 (𝜏 full 0 , ˜𝜏 0) > 𝜀 traj 
+
+
+
+,estimated over all decisions made across the 150 evaluation runs. We ablate the internal components of Muninn that directly determine (i) compute savings, (ii) approximation fidelity, and (iii) whether the specified trajectory-risk target is met. Tables X– XI summarize six core ablations: (i) the deviation-budget knob 𝜀 traj , (ii) risk calibration across target 𝛼 , (iii) sensitivity-aware accounting via {𝐿 𝑡 }, (iv) probe/score design (Ψ, 𝜙 ),(v) forbidden reuse regions (restrictions on Tcache ), and (vi) calibration sample efficiency.  
+
+> •
+
+(i) Budget knob ( 𝜀 traj ) Sweeping the deviation budget yields a smooth speed–fidelity trade-off: larger 𝜀 traj permits more reuse (lower Evals /𝑇 ), increasing speedup, while preserving task performance.  
+
+> •
+
+(ii) Risk calibration (split conformal vs. heuristics) We evaluate whether realized violation probability ˆ𝑝 viol tracks the target 𝛼 . We summarize calibration quality by the mean absolute calibration error (MACE) over a fixed set of target levels: 
+
+MACE = 1
+
+| A | ∑︁ 𝛼 ∈A 
+
+ˆ𝑝 viol ( 𝛼 ) − 𝛼 , A = {0.01 , 0.05 , 0.10 , 0.20 }.
+
+(32)  
+
+> •
+
+(iii) Sensitivity-weighted accounting ( {𝐿 𝑡 }) We compare full Muninn accounting using sampler sensitivity coef-ficients {𝐿 𝑡 } against a variant that removes sensitivity weighting by setting 𝐿 𝑡 ≡ 1 in the budget rule. This isolates the value of allocating recomputation to high-impact diffusion steps.  
+
+> •
+
+(iv) Probe / score design ( Ψ, 𝜙 ) We ablate the probe depth (how much of the denoiser is executed to compute 𝐹 𝑡 ) and score definition. We report Probe cost as the fractional per-step overhead of computing Ψ relative to a full denoiser evaluation at that step. We report Corr (𝑠 𝑡 , 𝜖 𝑡 ) as Spearman rank correlation on the calibration set Scal pooled across episodes and cache-eligible timesteps.  
+
+> •
+
+(v) Forbidden reuse regions We disallow reuse in a prefix of steps near 𝑡 = 𝑇 (high-noise region) and/or a suffix near 𝑡 = 1 (execution-sensitive region). “ 𝑘 steps” means excluding the first (prefix) or last (suffix) 𝑘 diffusion steps from Tcache . 
+
+> •
+
+(vi) Calibration sample efficiency We vary the number of calibration rollouts 𝑁 used to build Scal , and measure how quickly speed and risk stabilize. 
+
+1) Extended runtime escalation study: certificate-driven inter-ventions: This section details a closed-loop runtime escalation layer that uses Muninn’s online deviation certificate to decide when to (i) execute normally, (ii) execute conservatively, (iii) spend additional compute (full-compute replanning or multi-sample selection), or (iv) switch to a platform-specific safety controller. The key goal is to make Muninn’s internal risk accounting actionable at runtime, beyond offline evaluation of ˆ𝑝 viol .Deviation certificate available at runtime For every planning call, Muninn maintains a remaining deviation budget 𝐵 rem and spends it only when reusing cached denoiser outputs. This                                                                                                                                               
+
+> (i) Speed–fidelity knob via 𝜀 traj (fixed 𝛼 =0.05 )Domain 𝜀 traj Perf. rel. ↑Speedup
+> ↑
+> Evals /𝑇 ↓ˆ𝑝 viol ↓
+> offline RL (avg) 0.05 99.8 2.20 ×0.42 0.030 offline RL (avg) 0.15 99.4 3.30 ×0.21 0.047 offline RL (avg) 0.30 98.7 4.05 ×0.14 0.050 motion planning (avg) 0.05 99.9 1.12 ×0.85 0.020 motion planning (avg) 0.15 99.6 1.45 ×0.58 0.044 motion planning (avg) 0.30 99.0 1.76 ×0.42 0.050 policy diffusion (avg) 0.05 99.9 1.18 ×0.88 0.020 policy diffusion (avg) 0.15 99.5 1.48 ×0.60 0.040 policy diffusion (avg) 0.30 98.8 1.80 ×0.40 0.050
+> (ii) Risk calibration across 𝛼 (reported as ˆ𝑝 viol ; lower error is better) Method ˆ𝑝 viol
+> 𝛼 =0.01 ˆ𝑝 viol
+> 𝛼 =0.05 ˆ𝑝 viol
+> 𝛼 =0.10 ˆ𝑝 viol
+> 𝛼 =0.20 MACE ↓
+> (split conformal) 0.009 0.049 0.096 0.188 0.004 Fixed-score thresholding 0.028 0.120 0.210 0.340 0.073 Fixed step skipping 0.006 0.040 0.140 0.290 0.030
+> (iii) Effect of sensitivity weighting {𝐿 𝑡 }(fixed (𝜀 traj , 𝛼 ))Variant Perf. rel. (%) ↑
+> Speedup ↑Evals /𝑇 ↓
+> Coll./Viol. (%) ↓
+> ˆ𝑝 viol ↓
+> (full; with {𝐿 𝑡 })99.2 2.70 ×0.22 1.2 0.049 w/o {𝐿 𝑡 }(set 𝐿 𝑡 ≡1)99.1 2.63 ×0.24 1.6 0.066
+> (vi) Calibration sample efficiency (fixed (𝜀 traj , 𝛼 ))Calib rollouts 𝑁 Perf. rel. (%) ↑
+> Speedup ↑Evals /𝑇 ↓ˆ𝑝 viol ↓Notes
+> 20 99.2 2.42 ×0.27 0.028 conser -vative bounds 100 99.2 2.62 ×0.24 0.044 near-stable 500 99.2 2.70 ×0.22 0.049 saturated 1000 99.2 2.71 ×0.22 0.049 no material change
+
+TABLE X: Extended ablations (suite-level aggregates) (i) Sweeping 𝜀 traj 
+
+yields a predictable speed–fidelity trade-off (higher budgets permit more reuse, decreasing Evals /𝑇 and increasing speedup). (ii) Risk calibration across target levels 𝛼 summarized by realized violation probability ˆ𝑝 viol 
+
+and MACE; split-conformal calibration tracks the target risk more reliably than heuristic alternatives. (iii) Sensitivity-aware budgeting improves the speed– safety trade-off; removing { 𝐿 𝑡 } increases collisions/violations and raises ˆ𝑝 viol 
+
+at comparable compute. (vi) Calibration is sample-efficient; beyond a modest number of rollouts, both speedup and ˆ𝑝 viol stabilize. 
+
+directly induces a per-call, online deviation certificate ˆ𝐷 :=∑︁  
+
+> 𝑡 ∈ R
+
+ˆ𝑐 𝑡 (𝑠 𝑡 ) = 𝜀 traj − 𝐵 rem ∈ [ 0, 𝜀 traj ], (33) where R is the (random) set of reuse steps taken in that planning call and ˆ𝑐 𝑡 (𝑠 𝑡 ) = Γ 𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ) is the calibrated upper-bounded per-step trajectory cost used by the policy (Algorithm 1). We also define a normalized certificate 
+
+𝜌 := ˆ𝐷 𝜀 traj 
+
+∈ [ 0, 1], (34) which is comparable across tasks and choices of 𝜀 traj .
+
+Interpretation ˆ𝐷 is a conservative, trajectory-space proxy for how far the cached trajectory might deviate from the full-compute counterpart for the same initial diffusion noise and (iv) Probe / score design (fixed ( 𝜀 traj , 𝛼 ))Probe Ψ Score 𝜙 Probe cost ↓                                                                              
+
+> Corr
+> (𝑠 𝑡 , 𝜖 𝑡 ) ↑ Speedup
+> ↑
+> ˆ𝑝 viol ↓
+> Stem-1 (early block) Rel. ℓ1(Eq. 9) 0.06 0.66 2.72 ×0.049 Stem-2 (deeper) Rel. ℓ10.11 0.74 2.63 ×0.049 LN(input) Rel. ℓ10.01 0.32 2.38 ×0.041 Stem-1 Cosine distance 0.06 0.61 2.62 ×0.050 Stem-1 ℓ2distance 0.06 0.64 2.68 ×0.049
+> (v) Forbidden reuse regions (exclude steps from Tcache ;
+> 𝑘 =5,2𝑘 =10 )Forbidden prefix Forbidden suffix Perf. rel (%) ↑
+> Coll./Viol (%) ↓Speedup
+> ↑
+> ˆ𝑝 viol ↓
+> 0 steps 0 steps 99.0 2.1 2.78 ×0.050
+> 𝑘 steps 0 steps 99.1 1.9 2.74 ×0.049 0 steps 𝑘 steps 99.2 1.6 2.69 ×0.048
+> 𝑘 steps 𝑘 steps 99.3 1.2 2.63 ×0.047
+> 2𝑘 steps 2𝑘 steps 99.4 0.9 2.52 ×0.046
+> TABLE XI: Probe and cache-eligibility ablations (suite-level aggregates) Top: Shallow stem probes provide the best net acceleration (low probe overhead with strong predictiveness). Deeper probes increase correlation but reduce net speedup due to higher probe cost; extremely shallow probes (LN(input)) are cheap but weakly predictive, forcing conservative reuse.
+> Bottom: Forbidding reuse in a small prefix/suffix (here 𝑘 =5and 2𝑘 =10 steps) reduces collisions/violations with a modest speedup reduction, consistent with avoiding the most sensitive regions of the diffusion chain.
+
+sampler noise. Small ˆ𝐷 indicates that Muninn reused only in low-risk timesteps (small 𝑠 𝑡 and/or small 𝐿 𝑡 ), while large ˆ𝐷 
+
+indicates that Muninn consumed much of the deviation budget and the resulting trajectory may be closer to the edge of the user-specified tolerance. Escalation triggers and hysteresis Escalation decisions are made once per planning call, after the planner returns the candidate trajectory/policy segment and the certificate ( ˆ𝐷, 𝜌 ). We use three thresholds with hysteresis to prevent chattering: 
+
+𝜌 warn = 0.60 , 𝜌 resamp = 0.75 , 𝜌 full = 0.90 , (35) and a de-escalation threshold 𝜌 clear = 0.50 . An escalation mode is entered when 𝜌 exceeds its entry threshold and is maintained until 𝜌 ≤ 𝜌 clear for two consecutive planning calls. This “two-call” rule is important in receding-horizon control because difficult, contact-rich, or near-collision situations persist across multiple replans. Escalation actions (what changes at runtime) We implement four escalation actions, each triggered by 𝜌 and executed in the same closed-loop controller used for the main hard-ware/simulation evaluations. 1) Nominal execution (no escalation) If 𝜌 ≤ 𝜌 warn , we execute the planner/policy output normally (the standard receding-horizon loop used everywhere else in the paper). 2) Conservative execution via action damping If 𝜌 warn <𝜌 ≤ 𝜌 resamp , we dampen the executed command derived from the sampled trajectory/segment. Let 𝑢 𝑘 denote the nominal executed control at control cycle 𝑘 (first action of the planned segment, or tracking-controller output for a trajectory planner). We execute                  
+
+> 𝑢 exec
+> 𝑘 =𝜆 (𝜌 )𝑢 𝑘 ,𝜆 (𝜌 )=
+> (
+> 0.70 if 𝜌 ∈ ( 𝜌 warn , 𝜌 resamp ],
+> 0.50 if 𝜌 ∈ ( 𝜌 resamp , 𝜌 full ],
+
+(36) applied elementwise to the control vector after saturating to actuator limits. This intervention preserves the direction of the nominal command while reducing magnitude, which empirically reduces collision incidence in narrow passages and contact-rich manipulation by lowering the effective closed-loop aggressiveness. 3) On-demand multi-sample selection If 𝜌 resamp < 𝜌 ≤ 𝜌 full ,we request additional samples and select the one that minimizes predicted deviation subject to a task-feasibility screen (defined below). Concretely, we draw 𝑀 candidate trajectories { ˜𝜏 (𝑚 ) 
+
+> 0
+
+}𝑀 𝑚 =1 with independent initial diffusion noise, run Muninn on each to obtain certificates { ˆ𝐷 (𝑚 ) },and select: 
+
+𝑚 ★ = arg min 
+
+> 𝑚 ∈ F
+
+ˆ𝐷 (𝑚 ) , (37) where F is the subset of candidates that pass a lightweight feasibility screen:  
+
+> •
+
+Navigation planners (UAV, Maze2D/AntMaze): the candidate must be collision-free under the environ-ment’s geometric collision checker when simulated open-loop under the known map for the planned horizon.  
+
+> •
+
+Arm motion planning: the candidate must satisfy joint limits and be collision-free under the same collision checker used for evaluation.  
+
+> •
+
+Visuomotor policies: the candidate must satisfy action bounds and gripper bounds for every action in the segment. After selecting 𝑚 ★, we execute conservatively using the damping rule in (36) with 𝜆 = 0.50 for that control cycle. We use 𝑀 = 4 for ASV navigation, 𝑀 = 3 for UAV navigation, and 𝑀 = 2 for SO-ARM100 manipulation, which respect the platforms’ planning-rate budgets given the measured per-call latencies in the hardware table. In all simulation benchmarks we use 𝑀 = 4. 4) Full-compute override + safety controller If 𝜌 > 𝜌 full , we treat the candidate plan as too close to the user-specified deviation tolerance and escalate to full compute. We recompute a trajectory/policy segment using the original (uncached) teacher model for the same observation/context and execute it normally for that control cycle. If the teacher plan is not available within the control deadline, we execute a platform-specific safety controller for one cycle:  
+
+> •
+
+UAV: command hover at current position for one control interval.  
+
+> •
+
+SO-ARM100: hold the current joint targets for one control interval. Risk accounting under multi-sample selection The trajectory-level guarantee in Section IV-D applies to a single Muninn trajectory with risk level 𝛼 . When sampling 𝑀 candidates and selecting one, we maintain the same overall risk target by allocating per-candidate risk 
+
+𝛼 (𝑚 ) = 𝛼 𝑀 ⇒ 𝛼 (𝑚 ) 
+
+> step
+
+= 𝛼 𝑀 |T cache | . (38) Then, letting V (𝑚 ) denote the violation event for candidate 𝑚 
+
+(paired deviation exceeding 𝜀 traj ), we have 
+
+P(selected cand. viol. ) ≤ P
+
+> 𝑀
+
+Ø
+
+> 𝑚 =1
+
+V (𝑚 )
+
+!
+
+≤
+
+> 𝑀
+
+∑︁ 
+
+> 𝑚 =1
+
+P(V (𝑚 ) ) ≤
+
+> 𝑀
+
+∑︁ 
+
+> 𝑚 =1
+
+𝛼 (𝑚 ) = 𝛼, 
+
+which preserves the same global risk level 𝛼 for the selected rollout. 
+
+2) Extended runtime escalation study: certificate-driven interventions: This section studies runtime escalations that use Muninn’s online deviation certificate to selectively spend additional compute or execute more conservatively in safety-critical regimes. The goal is to reduce collisions/violations in closed-loop deployment without giving up Muninn’s latency gains in typical regimes. Runtime certificate For a single planning/policy call, Muninn tracks a remaining deviation budget 𝐵 rem ∈ [ 0, 𝜀 traj ] and spends it only when reusing cached denoiser outputs. This induces an online certificate ˆ𝐷 := 𝜀 traj − 𝐵 rem =∑︁  
+
+> 𝑡 ∈ R
+
+ˆ𝑐 𝑡 (𝑠 𝑡 ), ˆ𝑐 𝑡 (𝑠 𝑡 ) = Γ 𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ),
+
+(39) where R denotes the set of reuse steps taken in that call. We also define a normalized certificate 
+
+𝜌 := ˆ𝐷 𝜀 traj 
+
+∈ [ 0, 1], (40) which is directly comparable across tasks and budgets. In-tuitively, high 𝜌 indicates that the current context required spending most of the allowable deviation budget to accelerate inference (i.e., the current trajectory denoising process was less stable and/or occurred in high-sensitivity diffusion regions). Escalation state machine and thresholds Runtime escalation decisions are made per planning/policy call after obtaining 
+
+( ˜𝜏 0, 𝜌 ) from Muninn. We use three thresholds (with hysteresis) to prevent chattering: 
+
+𝜌 warn = 0.60 , 𝜌 resamp = 0.75 , 𝜌 full = 0.90 , 𝜌 clear = 0.50 , (41) and de-escalate only after 𝜌 ≤ 𝜌 clear for two consecutive calls. Escalation actions We implement four interventions, triggered by 𝜌 and applied without modifying the base diffusion model or sampler. 
+
+Action damping (conservative execution) When 𝜌 > 𝜌 warn ,we damp the executed control derived from the planned trajectory/policy segment. Let 𝑢 𝑘 be the nominal executed control at the current control tick 𝑘 (first action of the planned segment for diffusion policies; tracking-controller command for trajectory planners). We execute 
+
+𝑢 exec  
+
+> 𝑘
+
+= 𝜆 (𝜌 ) 𝑢 𝑘 , 𝜆 (𝜌 ) =
+
+(
+
+0.70 𝜌 ∈ ( 𝜌 warn , 𝜌 resamp ],
+
+0.50 𝜌 ∈ ( 𝜌 resamp , 𝜌 full ].
+
+(42) We apply elementwise saturation after damping to respect platform actuation limits. This preserves the nominal direction while reducing aggressiveness near obstacles/contacts. 
+
+On-demand multi-sample selection (request more samples) 
+
+When 𝜌 > 𝜌 resamp , we generate 𝑀 candidate trajecto-ries/segments, each from an independent diffusion noise draw, and select the candidate with the smallest certificate among those that pass a lightweight feasibility screen: 
+
+𝑚 ★ = arg min 
+
+> 𝑚 ∈ F
+
+ˆ𝐷 (𝑚 ) . (43) The feasibility screen F is domain-specific but always lightweight: (i) navigation and motion planning: geometric collision check on the candidate segment; (ii) manipulation policies: action bounds, workspace limits, and IK feasibility (when applicable). We choose 𝑀 to respect each platform’s planning-rate deadline (Appendix B): 
+
+𝑀 =
+
+
+
+4 ASV (1 Hz replanning) ,
+
+3 UAV (10 Hz replanning) ,
+
+2 SO-ARM100 (20 Hz policy) .
+
+(44) 
+
+Full-compute override (temporarily run Full) When 𝜌 > 𝜌 full ,we override the current call by recomputing a plan/segment using the original Full (uncached) model for the same obser-vation/context, and execute that output for the current tick. 
+
+(C4) Safety controller fallback (deadline miss) If a full-compute override cannot be produced within the control deadline, we execute a one-tick safety controller: ASV: stop-and-hold; UAV: hover-and-hold; SO-ARM100: hold current joint targets. This fallback is activated only on the current tick and normal control resumes on the next cycle. Risk allocation under multi-sample selection Selecting among 
+
+𝑀 candidates can be done while preserving the same global risk target 𝛼 by allocating per-candidate risk 𝛼 (𝑚 ) = 𝛼 /𝑀 and thus 𝛼 (𝑚 ) 
+
+> step
+
+= 𝛼 /( 𝑀 |T cache |) . A union bound yields overall risk at most 𝛼 for the selected candidate. Escalation ablation variants We ablate the escalation mecha-nisms via five variants:  
+
+> •
+
+Muninn-Only : no escalation.  
+
+> •
+
+Dampen : only action damping.  
+
+> •
+
+Resample+Dampen : on-demand multi-sampling + damp-ing.  
+
+> •
+
+FullOverride : full-compute override when 𝜌 > 𝜌 full . 
+
+> •
+
+Combined : damping + multi-sampling + full override. Runtime escalation metrics In addition to task success and collision/violation (Section C), we report: Esc. rate : = #{calls with 𝜌 > 𝜌 warn }
+
+#{calls } , (45) Resample rate : = #{calls with 𝜌 > 𝜌 resamp }
+
+#{calls } , (46) Full-override rate : = #{calls with 𝜌 > 𝜌 full }
+
+#{calls } , (47) computed over all planning/policy calls executed during the 
+
+150-run hardware evaluation protocol. Quantitative results (runtime escalations on hardware) Table XII reports the runtime escalation ablation on the three hardware deployments (and both ASV base planners). All rows use the same underlying Muninn calibration and the same (𝜀 traj , 𝛼 );only the runtime escalation layer changes. Takeaways Across platforms, the certificate-driven escalations reduce collision/violation rates most strongly in regimes where 
+
+𝜌 is large (i.e., when the cached rollout is closest to the deviation budget boundary). Resample+Dampen captures most of the safety gain at a modest latency increase (by triggering resampling only on a small fraction of calls). FullOverride 
+
+has minimal effect on average latency (rare trigger) but im-proves worst-case safety by temporarily restoring full-compute behavior. Combined yields the best overall safety with small performance impact by (i) damping in moderately high-𝜌 
+
+regimes, (ii) resampling only when needed, and (iii) overriding in the highest-𝜌 tail. Cross-device latency. To understand how Muninn transfers across deployment hardware, we additionally benchmark rep-resentative workloads on three platforms: the A10 used for the main experiments, an RTX 3090 desktop GPU, and a Jetson Orin embedded device. All measurements use the same trained checkpoints, samplers, batch size-1 setting, and timing protocol. Table XIII reports Full and Muninn latencies across these devices.                    
+
+> Benchmark Model A10 (paper) RTX 3090 Jetson Orin F / M F / M F / M
+> AntMaze Diffuser 950 / 207 (4.59 ×)714 / 178 (4.01 ×)3939 / 831 (4.74 ×)
+> Arm plan. EDMP 160 / 107 (1.50 ×)120 / 87 (1.37 ×)663 / 412 (1.61 ×)
+> DP3 Pour DP3 45 / 27 (1.67 ×)34 / 22 (1.54 ×)187 / 109 (1.71 ×)
+> TABLE XIII: Each cell reports Full/Muninn latency (ms), with speedup in blue.
+
+E. Construction of the calibration dataset 
+
+This subsection specifies the exact construction of the calibration set of score–error pairs used to conformally bound reuse error. The goal is to sample the joint behavior of: (i) the probe-based score 𝑠 𝑡 computed from a low-cost representation of the diffusion planner/policy at step 𝑡 , and (ii) the potential reuse error magnitude 𝜖 𝑡 incurred if, at step 𝑡 , we reuse a cached denoiser output instead of recomputing. Objects fixed prior to calibration For a given base model, we fix:  
+
+> •
+
+the reverse-diffusion update Φ𝑡 (·) and diffusion horizon 
+
+𝑇 used by the Full model;  
+
+> •
+
+the effective noise prediction used by the sampler, denoted ˆ𝜀 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ). This equals the raw denoiser output 𝜀 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 )
+
+when no guidance is used, and equals the guidance-modified output when guidance is used (e.g., classifier-free guidance or gradient guidance). We always calibrate the effective quantity that is actually fed into Φ𝑡 . 
+
+> •
+
+the probe function Ψ(·) and score map 𝜙 (·) used at deployment (Section IV-B);  
+
+> •
+
+the reuse-eligible timestep set Tcache used at deployment. Reuse-eligible timesteps Tcache To match the deployment constraints, we allow reuse only on a middle band of diffusion steps. Let 
+
+𝑘 pre = ⌈0.10 𝑇 ⌉ , 𝑘 suf = ⌈0.10 𝑇 ⌉ . (48) We disallow reuse in the early (high-noise) prefix 𝑡 ∈ { 𝑇, 𝑇 −
+
+1, . . . , 𝑇 − 𝑘 pre + 1} and in the late (execution-critical) suffix 
+
+𝑡 ∈ { 1, 2, . . . , 𝑘 suf }. Thus, 
+
+Tcache = 𝑡 ∈ { 1, . . . , 𝑇 } : 𝑘 suf < 𝑡 ≤ 𝑇 − 𝑘 pre . (49) We additionally enforce the algorithmic convention that 𝑡 = 𝑇 
+
+is always recomputed (no reuse), so 𝑡 = 𝑇 is excluded from calibration even if it falls in the middle band (it does not, under the definition above). Potential reuse rule (deterministic) We use a deterministic most-recent recompute (MRR) cache rule: If reuse is taken at step 𝑡 , the sampler uses the last recomputed effective noise prediction ˆ𝜀 produced at some later diffusion step 𝑡 ′ > 𝑡 
+
+Equivalently, we maintain a single cached value ˆ𝜀 cache (and its originating step 𝑡 cache ). At any reuse step 𝑡 , we set ˜𝜀 𝑡 =
+
+ˆ𝜀 cache . This is exactly the cache semantics used by Muninn at deployment (Algorithm 1). Calibration distribution and sample size A calibration sample corresponds to a single planning/policy inference call (one reverse-diffusion chain) with fixed context and diffusion ran-domness. For each benchmark and base model, we construct a calibration pool by running the corresponding Full model in the environment (or query generator) under the same reset distribution used for evaluation, and logging contexts 
+
+𝑐 encountered at decision time. From this pool, we uniformly subsample 4096 contexts without replacement, yielding 
+
+𝑐 (𝑖 ) 𝑁 𝑖 =1, 𝑁 = 4096 . (50) For each sampled context 𝑐 (𝑖 ) , we also sample the diffusion randomness used by the reverse process: the initial noisy trajectory 𝜏 (𝑖 ) 
+
+> 𝑇
+
+∼ 𝑝 𝑇 and, for stochastic samplers, the per-step sampler noise sequence 𝜉 (𝑖 ) = (𝜉 (𝑖 ) 
+
+> 𝑇
+
+, . . . , 𝜉 (𝑖 ) 
+
+> 1
+
+). For deterministic samplers (DDIM-style), we set 𝜉 (𝑖 ) 
+
+> 𝑡
+
+≡ 0. Score definition (used during calibration) At each diffusion step 𝑡 , we compute a probe feature 𝐹 𝑡 := Ψ ( ˜𝜏 𝑡 , 𝑡, 𝑐 ) from the (ghost) chain state ˜𝜏 𝑡 . Scores are computed for 𝑡 = 𝑇 − 1, . . . , 1as: 
+
+𝑠 𝑡 = 𝜙 (𝐹 𝑡 , 𝐹 𝑡 +1, 𝑡 ) = ∥𝐹 𝑡 − 𝐹 𝑡 +1 ∥1
+
+∥𝐹 𝑡 +1 ∥1 + 𝜔 , 𝜔 = 10 −6. (51) Error label definition Let ˆ𝜀 full  
+
+> 𝑡
+
+:= ˆ𝜀 𝜃 (𝜏 full  
+
+> 𝑡
+
+, 𝑡, 𝑐 ) be the effective Full-model noise prediction used at step 𝑡 . Let ˜𝜀 𝑡 be the candidate reused value from the cache rule (MRR), computed as described below. We define the potential reuse error magnitude as a normalized Frobenius norm: 
+
+𝜖 𝑡 := 1
+
+√𝐻𝑑 ˆ𝜀 full  
+
+> 𝑡
+
+− ˜𝜀 𝑡 𝐹 , (52) where 𝐻 and 𝑑 are the horizon and per-timestep dimension-ality of the denoiser output for that benchmark/model. This Pl Base model Escalation Lat (ms) ↓
+
+Succ (%) ↑
+
+Coll (%) ↓
+
+Esc rate (%) Resamp rate (%) ASV 
+
+BCOD tch +
+
+Muninn-Only 24 96.8 1.7 0.0 0.0 
+
+Dampen 24 96.8 1.6 8.0 0.0 
+
+Resample+Dampen (𝑀 =4) 26 96.9 1.5 8.0 3.0 
+
+FullOverride 24 96.9 1.6 1.0 0.0 
+
+Combined 27 97.0 1.4 8.0 3.0 
+
+> ASV
+
+GC-Diff. +
+
+Muninn-Only 28 95.3 2.3 0.0 0.0 
+
+Dampen 28 95.3 2.1 10.0 0.0 
+
+Resample+Dampen (𝑀 =4) 31 95.4 2.0 10.0 4.0 
+
+FullOverride 28 95.4 2.1 1.0 0.0 
+
+Combined 32 95.5 1.9 10.0 4.0 
+
+> UAV
+
+GC-Diff. +
+
+Muninn-Only 30 92.8 3.1 0.0 0.0 
+
+Dampen 30 92.8 2.9 14.0 0.0 
+
+Resample+Dampen (𝑀 =3) 33 92.9 2.7 14.0 5.0 
+
+FullOverride 30 92.9 3.0 1.0 0.0 
+
+Combined 34 93.0 2.6 14.0 5.0 
+
+> SO-100
+
+DP +
+
+Muninn-Only 24 81.5 6.2 0.0 0.0 
+
+Dampen 24 81.2 5.8 22.0 0.0 
+
+Resample+Dampen (𝑀 =2) 28 81.4 5.5 22.0 15.0 
+
+FullOverride 24 81.6 5.9 2.0 0.0 
+
+Combined 28 81.5 5.3 22.0 15.0 
+
+TABLE XII: Runtime escalation ablation on hardware (150 runs) We report end-to-end planning/policy latency per call (including Muninn probe and sampling), task success rate, and collision/violation rate. Escalation rate and resampling rate are computed over planning/policy calls during closed-loop execution (not episodes). Full-override rates (calls with 𝜌 > 𝜌 full ): ASV (both planners) 1 .0%, UAV 1 .0%, SO-ARM100 2 .0%. 
+
+normalization makes 𝜖 𝑡 comparable across tasks with different trajectory sizes. Ghost reuse chain (policy-independent) and anchor schedule To generate scores 𝑠 𝑡 under a reuse-affected trajectory while keeping the procedure independent of Muninn’s online budget logic, we run a ghost chain that uses a fixed, deterministic anchor schedule. We choose an anchor stride of 4 diffusion steps: 
+
+A = { 𝑡 ∈ { 1, . . . , 𝑇 } : 𝑡 ≡ 0 (mod 4 ) } ∪ ( { 1, . . . , 𝑇 } \ T cache ) ,
+
+(53) i.e., we recompute on all non-cache-eligible timesteps (forbid-den regions) and additionally on every 4th eligible timestep. At non-anchor eligible timesteps, the ghost chain reuses the most recent cached value. This anchor schedule is only used to generate calibration samples; it does not constrain at deployment. Calibration algorithm For each sampled context 𝑐 (𝑖 ) , we generate a paired Full chain and a ghost reuse chain initialized with the same 𝜏 (𝑖 )
+
+𝑇 and 𝜉 (𝑖 ) . The Full chain provides the reference effective denoiser outputs ˆ𝜀 full 
+
+𝑡 for all 𝑡 , while the ghost chain provides the probe dynamics and the cached outputs that define 𝜖 𝑡 .Output calibration sets Algorithm 2 produces a per-timestep calibration dataset: 
+
+Scal (𝑡 ) =
+
+n
+
+(𝑠 (𝑖 )
+
+𝑡 , 𝜖 (𝑖 )
+
+𝑡 )
+
+o𝑁 𝑖 =1 , 𝑡 ∈ T cache . (54) We calibrate bounds separately for each timestep 𝑡 because the score–error relationship and error scale vary significantly across diffusion time. All random variables used to produce (𝑠 𝑡 , 𝜖 𝑡 ) are generated from: (i) the benchmark’s deployment distribution over contexts 
+
+𝑐 and sampler randomness, and (ii) the fixed anchor schedule 
+
+A and MRR reuse rule. No online budget decision (and no 
+
+Algorithm 2 Calibration dataset generation (one base model, one benchmark) 
+
+1: Input: 𝑁 =4096 contexts {𝑐 (𝑖 ) }, diffusion horizon 𝑇 , sampler Φ𝑡 , effective denoiser 
+
+ˆ𝜀 𝜃 , probe Ψ, score 𝜙 , eligible set Tcache , anchor set A.
+
+2: Output: Per-timestep calibration sets { S cal (𝑡 ) } 𝑡 ∈T cache .
+
+3: for 𝑖 = 1, . . . , 𝑁 do 
+
+4: Sample 𝜏 (𝑖 ) 
+
+> 𝑇
+
+∼ 𝑝 𝑇 and sampler noise 𝜉 (𝑖 ) (or set 𝜉 (𝑖 ) ≡ 0 for deterministic samplers). 
+
+5: Run Full chain: set 𝜏 full  
+
+> 𝑇
+
+← 𝜏 (𝑖 ) 
+
+> 𝑇
+
+.
+
+6: for 𝑡 = 𝑇 , . . . , 1 do 
+
+7: Compute ˆ𝜀 full  
+
+> 𝑡
+
+← ˆ𝜀 𝜃 ( 𝜏 full  
+
+> 𝑡
+
+, 𝑡 , 𝑐 (𝑖 ) ).
+
+8: Update 𝜏 full   
+
+> 𝑡 −1
+
+← Φ𝑡 ( 𝜏 full  
+
+> 𝑡
+
+, ˆ𝜀 full  
+
+> 𝑡
+
+, 𝜉 (𝑖 ) 
+
+> 𝑡
+
+).
+
+9: end for 
+
+10: Run ghost chain: set ˜𝜏 𝑇 ← 𝜏 (𝑖 ) 
+
+> 𝑇
+
+.
+
+11: Initialize cache: ˆ𝜀 cache ← ˆ𝜀 full  
+
+> 𝑇
+
+.
+
+12: Compute and store 𝐹 𝑇 ← Ψ( ˜𝜏 𝑇 , 𝑇 , 𝑐 (𝑖 ) ).
+
+13: for 𝑡 = 𝑇 − 1, . . . , 1 do 
+
+14: Compute probe 𝐹 𝑡 ← Ψ( ˜𝜏 𝑡 , 𝑡 , 𝑐 (𝑖 ) ).
+
+15: Compute score 𝑠 𝑡 ← 𝜙 (𝐹 𝑡 , 𝐹 𝑡 +1 , 𝑡 ).
+
+16: Candidate reuse value (MRR): ˜𝜀 cand  
+
+> 𝑡
+
+← ˆ𝜀 cache .
+
+17: if 𝑡 ∈ T cache then 
+
+18: Compute error label 𝜖 𝑡 ← 1√𝐻𝑑 ˆ𝜀 full  
+
+> 𝑡
+
+− ˜𝜀 cand   
+
+> 𝑡 𝐹
+
+.
+
+19: Append (𝑠 𝑡 , 𝜖 𝑡 ) to Scal (𝑡 ).
+
+20: end if 
+
+21: if 𝑡 ∈ A then 
+
+22: Set ˜𝜀 𝑡 ← ˆ𝜀 full  
+
+> 𝑡
+
+.
+
+23: Update cache: ˆ𝜀 cache ← ˆ𝜀 full  
+
+> 𝑡
+
+.
+
+24: else 
+
+25: Set ˜𝜀 𝑡 ← ˆ𝜀 cache .
+
+26: end if 
+
+27: Update ghost state: ˜𝜏 𝑡 −1 ← Φ𝑡 ( ˜𝜏 𝑡 , ˜𝜀 𝑡 , 𝜉 (𝑖 ) 
+
+> 𝑡
+
+).
+
+28: Store 𝐹 𝑡 for next iteration. 
+
+29: end for 
+
+30: end for 
+
+adaptive reuse logic) is used in label generation. This makes the calibration procedure reproducible and decoupled from Muninn’s deployed reuse policy. 
+
+1) Split-conformal regression details: This subsection spec-ifies the complete split-conformal construction used to map probe-based scores to high-probability upper bounds on poten-tial reuse error magnitudes. Inputs For each reuse-eligible timestep 𝑡 ∈ T cache , we are given 
+
+Scal (𝑡 ) =
+
+n
+
+(𝑠 (𝑖 ) 
+
+> 𝑡
+
+, 𝜖 (𝑖 ) 
+
+> 𝑡
+
+)
+
+o𝑁 𝑖 =1 , 𝑁 = 4096 , (55) constructed as in Appendix E. We fix the desired trajectory-level risk 𝛼 ∈ ( 0, 1) and set the per-step miscoverage using Bonferroni correction: 
+
+𝛼 step := 𝛼 
+
+|T cache | . (56) Train–calibration split (episode-level) For each timestep 𝑡 , we split the 𝑁 paired samples into disjoint sets: 
+
+Itrain = {1, . . . , 2048 }, Ical = {2049 , . . . , 4096 }, (57) after applying a single random permutation of {1, . . . , 4096 }
+
+using a fixed RNG seed (seed 0 ). We use the same permuted split for all timesteps 𝑡 so that the full calibration pipeline is deterministic and reproducible. Base regressor 𝑚 𝑡 (𝑠 ) (monotone 1D regression) For each timestep 𝑡 , we fit a monotone regressor 𝑚 𝑡 : R≥0 → R≥0 on the training split {( 𝑠 (𝑖 ) 
+
+> 𝑡
+
+, 𝜖 (𝑖 ) 
+
+> 𝑡
+
+)} 𝑖 ∈ I train . We use isotonic regression 
+
+(monotone nondecreasing) to match the intended semantics that smaller scores correspond to smaller errors: 
+
+𝑚 𝑡 ∈ arg min  
+
+> 𝑚 nondecreasing
+
+∑︁ 𝑖 ∈ I train 
+
+
+
+𝜖 (𝑖 ) 
+
+> 𝑡
+
+− 𝑚 (𝑠 (𝑖 ) 
+
+> 𝑡
+
+)
+
+2
+
+, 𝑚 (𝑠 ) ≥ 0.
+
+(58) Isotonic regression is chosen because: (i) it is 1D, stable, and fast, (ii) it enforces the required monotonic structure, and (iii) conformal coverage does not depend on the correctness of 𝑚 𝑡 
+
+(only tightness does). At inference time, 𝑚 𝑡 (𝑠 ) is evaluated by piecewise-linear interpolation over the fitted isotonic knots, and is clamped to boundary values for 𝑠 outside the training range (i.e., 𝑚 𝑡 (𝑠 ) = 𝑚 𝑡 (𝑠 min ) for 𝑠 < 𝑠 min and 𝑚 𝑡 (𝑠 ) = 𝑚 𝑡 (𝑠 max ) for 
+
+𝑠 > 𝑠 max ). Calibration residuals and quantile selection Using the calibra-tion split Ical , we compute nonconformity residuals: 
+
+𝑟 (𝑖 ) 
+
+> 𝑡
+
+:= 𝜖 (𝑖 ) 
+
+> 𝑡
+
+− 𝑚 𝑡 
+
+
+
+𝑠 (𝑖 )
+
+> 𝑡
+
+
+
+, 𝑖 ∈ I cal . (59) Let 𝑛 cal := |I cal | = 2048 , and let 𝑟 𝑡 , (1) ≤ 𝑟 𝑡 , (2) ≤ · · · ≤ 𝑟 𝑡 , (𝑛 cal )
+
+denote the sorted residuals. We choose the finite-sample conformal quantile index 
+
+𝑘 𝑡 := (𝑛 cal + 1) ( 1 − 𝛼 step ) , 𝑘 𝑡 ← min {𝑘 𝑡 , 𝑛 cal }, (60) and set 
+
+𝑞 𝑡 := 𝑟 𝑡 , (𝑘 𝑡 ) . (61) This is the standard split-conformal choice that guarantees marginal coverage under exchangeability. Upper envelope definition For each timestep 𝑡 , define the upper envelope: 
+
+𝑈 𝑡 (𝑠 ) := max { 𝑚 𝑡 (𝑠 ) + 𝑞 𝑡 , 0 } . (62) Coverage guarantee (per timestep) Under the standard con-formal exchangeability assumption between calibration and deployment samples, for a new test-time planning call drawn from the same distribution and the corresponding score–error pair (𝑠 𝑡 , 𝜖 𝑡 ),
+
+P 𝜖 𝑡 ≤ 𝑈 𝑡 (𝑠 𝑡 ) ≥ 1 − 𝛼 step . (63) This guarantee is distribution-free and does not require inde-pendence across timesteps. Runtime representation For each timestep 𝑡 , we store 𝑈 𝑡 (·) 
+
+as a compact lookup table to enable constant-time evaluation during sampling: we discretize scores on a log-scale grid of 256 points spanning the empirical 0.1%–99.9% range of calibration scores for that timestep, evaluate 𝑈 𝑡 on this grid, and use linear interpolation at test time. Scores outside the grid are clamped to the nearest endpoint value of 𝑈 𝑡 . This makes computing ˆ𝑐 𝑡 (𝑠 𝑡 ) = Γ 𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ) negligible compared to a denoiser forward pass. 
+
+F. Training Details for Teacher/Base Models 
+
+This section documents the exact training setups used for every Full (teacher/base) model wrapped by Muninn. We report (i) denoiser/policy architectures, (ii) diffusion noise schedules and sampling parameterizations, (iii) training objectives and op-timization hyperparameters, and (iv) any guidance mechanisms used during sampling. 
+
+Notation A trajectory segment is 𝜏 ∈ R𝐻 ×𝑑 (definition of 𝐻 
+
+and 𝑑 is benchmark-specific; see Appendix A). Training vs. evaluation diffusion length We distinguish the diffusion length used in the forward/noising process during training, 𝑇 train , from the number of reverse denoising steps used at evaluation time, 𝑇 eval . When a method evaluates with fewer steps than it trains with (e.g., via DDIM subsampling), we report both 𝑇 train and 𝑇 eval explicitly. All Muninn budgeting and sensitivity coefficients {𝐿 𝑡 } are computed with respect to the evaluation sampler and its 𝑇 eval -step schedule. We train denoisers with timestep index 𝑡 ∈ { 1, . . . , 𝑇 train } and denote the (possibly method-dependent) conditioning context as 𝑐 . We use a DDPM-style forward process 𝑞 (𝜏 𝑡 | 𝜏 0)
+
+and train a denoiser 𝜀 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ) in the standard 𝜀 -prediction parameterization unless explicitly noted. 
+
+a) Common diffusion training choices: Forward noising 
+
+Let 𝛼 𝑡 ∈ ( 0, 1) be a schedule and ¯𝛼 𝑡 := Î𝑡 𝑠 =1 𝛼 𝑠 . We form noisy trajectories via 
+
+𝜏 𝑡 =√︁ ¯𝛼 𝑡 𝜏 0 +√︁ 1 − ¯𝛼 𝑡 𝜖, 𝜖 ∼ N ( 0, 𝐼 ). (64) 
+
+Denoising objective ( 𝜀 -prediction) We minimize the MSE between sampled noise and predicted noise: 
+
+Ldiff (𝜃 ) = E( 𝜏 0 ,𝑐 ), 𝑡 , 𝜖 
+
+h
+
+𝜖 − 𝜀 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ) 22
+
+i
+
+, (65) with 𝑡 sampled uniformly from {1, . . . , 𝑇 train } unless otherwise stated. 
+
+Noise schedule Unless overridden, we use the standard cosine 
+
+¯𝛼 𝑡 schedule with offset 𝑠 = 0.008 and compute 𝛽 𝑡 = 1−𝛼 𝑡 from ¯𝛼 𝑡 (with standard clipping of extreme 𝛽 𝑡 values for numerical stability). 
+
+Reverse sampler Unless explicitly stated, Full models use the reverse sampler prescribed by the baseline method at evaluation time, with 𝑇 eval denoising steps. When a method evaluates with fewer steps than it trains with, we use DDIM-style subsampling of the training schedule (and report both 𝑇 train and 𝑇 eval per method). 
+
+1) Offline RL / Trajectory Diffusion Planners (D4RL): 
+
+We report training details for the Full planners evaluated in Table I: Diffuser [ 21 ], Decision Diffuser [ 2], Diffusion-QL [ 62 ], AdaptDiff [ 29 ], and CompDiff [ 35 ]. All models are trained per-task on the corresponding D4RL dataset (or task dataset, for Kuka stacking) using the context definition in Appendix A. Unless otherwise noted, these planners use 𝑇 train = 𝑇 eval (i.e., the training diffusion length matches the evaluation sampler length). 
+
+a) Shared backbone for trajectory-level diffusion planners (when applicable): Several trajectory-level planners (Diffuser / Decision Diffuser / AdaptDiff / CompDiff) use a temporal denoiser that maps a noisy trajectory sequence to a denoised noise prediction sequence. When these methods share the same temporal U-Net backbone in our implementation, we summarize the backbone once here and then document only the method-specific conditioning, objectives, and guidance per method. Temporal U-Net denoiser (trajectory diffusion backbone)                                                                     
+
+> Stage Time len 𝐶 in 𝐶 out Blocks / ops Input + embeddings
+> stem conv 𝐻 𝑑 128 1D Conv(k=5), GN(groups=8), Mish; timestep emb + context emb injected additively inside each ResBlk
+> Encoder (downsampling along time)
+> enc-1 𝐻 128 128 ResBlk ×2; downsample ↓2(strided 1D Conv) enc-2 𝐻 /2128 256 ResBlk ×2; downsample ↓2
+> enc-3 𝐻 /4256 512 ResBlk ×2; downsample ↓2
+> enc-4 𝐻 /8512 1024 ResBlk ×2; no downsample
+> Bottleneck
+> mid 𝐻 /81024 1024 ResBlk ×2; GN; Mish
+> Decoder (upsampling along time)
+> dec-4 𝐻 /8→𝐻 /41024 +512 512 Upsample ↑2; skip concat; ResBlk ×2
+> dec-3 𝐻 /4→𝐻 /2512 +256 256 Upsample ↑2; skip concat; ResBlk ×2
+> dec-2 𝐻 /2→𝐻 256 +128 128 Upsample ↑2; skip concat; ResBlk ×2
+> dec-1 𝐻 128 128 ResBlk ×2; final GN; Mish
+> Head
+> 𝜀 head 𝐻 128 𝑑 1D Conv(k=1) per timestep
+
+TABLE XIV: Temporal U-Net denoiser used by trajectory diffusion planners (our runs) This is the canonical backbone used by Diffuser-style planners in our evaluation: 1D temporal convolutions, GroupNorm, Mish nonlinearity, and additive injection of timestep/context embeddings inside each residual block. 
+
+b) Diffuser (Full teacher) [ 21 ]: Training objective Dif-fuser trains a trajectory diffusion model on segments (𝜏 0, 𝑐 )
+
+from the offline dataset using 𝜀 -prediction). Any guidance used at inference is not part of the diffusion training loss; it is implemented as a guidance term in the reverse sampler (documented below). Guidance (value/cost guidance at sampling) When guidance is enabled, we implement it as a standard reverse-transition mean shift (analogous to classifier guidance), using a differentiable objective 𝐽 (𝜏 𝑡 , 𝑐 ):
+
+𝜇 guided (𝜏 𝑡 , 𝑡, 𝑐 ) = 𝜇 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ) − 𝑤 guide · 𝜎 2 
+
+> 𝑡
+
+· ∇ 𝜏 𝑡 𝐽 (𝜏 𝑡 , 𝑐 ), (66) where 𝜇 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ) and 𝜎 2 
+
+> 𝑡
+
+are the reverse-process mean and variance coefficients of the baseline sampler at step 𝑡 
+
+(DDPM/DDIM-style), and the sign convention is chosen so that decreasing 𝐽 corresponds to improved task objective (e.g., 
+
+𝐽 as a cost). We follow the baseline’s default choice of 𝐽 
+
+(value/return or goal cost) and environment-specific guidance strength 𝑤 guide .                                        
+
+> Diffuser training hyperparameter Value
+> Denoiser backbone Temporal U-Net Diffusion length 𝑇 train =𝑇 eval =100
+> Noise schedule {𝛽 𝑡 }𝑇 train
+> 𝑡 =1Cosine ¯𝛼 𝑡 schedule ( 𝑠 =0.008 )Reverse sampler (Full, eval) DDIM ( 𝜂 =0), 𝑇 eval steps Prediction parameterization 𝜀 -prediction Loss Ldiff (MSE), uniform timestep sampling Optimizer Adam ( 𝛽 1=0.9, 𝛽 2=0.999 )Learning rate 2×10 −4
+> Batch size 32
+> Gradient clipping Global norm 1.0
+> Weight decay 0
+> EMA of denoiser weights Yes, decay 0.999
+> Training steps / epochs 5×10 5gradient steps Learning-rate schedule Linear warmup (10k steps) then constant Data augmentation (if any) None (low-dimensional trajectories) Guidance at inference Eq. (15); 𝐽 (·) and 𝑤 guide follow the baseline per environment (or “none”)
+
+TABLE XV: Diffuser (Full) training details used in our runs 
+
+c) Decision Diffuser (Full teacher) [ 2 ]: Training objective and conditioning Decision Diffuser trains a conditional diffusion model with decision-making context (typically including a de-sired return-to-go or task specification). In our implementation, Decision Diffuser is an exception to the state–action segment interface described in Appendix A1: it learns a diffusion model over state-only trajectories and uses an inverse-dynamics model to recover actions from adjacent states. Conditioning 𝑐 matches Appendix A (return-to-go for return-conditioned tasks; goal for navigation). Classifier-free guidance We train with conditioning dropout: with probability 𝑝 drop , replace 𝑐 with a null context ∅. At in-ference, we combine conditional and unconditional predictions via: ˆ𝜖 𝜃 = (1 + 𝑤 cfg ) 𝜖 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ) − 𝑤 cfg 𝜖 𝜃 (𝜏 𝑡 , 𝑡, ∅) , (67) with 𝑝 drop = 0.25 and 𝑤 cfg = 0.6 (guidance scale 1 + 𝑤 cfg =
+
+1.6). Decision Diffuser training hyperparameter Value 
+
+Denoiser backbone Temporal U-Net on state-only 
+
+𝜏 ∈ R𝐻 ×𝑑𝑠 
+
+Inverse dynamics 𝑓 𝜙 2-layer MLP, hidden width 512 ,ReLU Diffusion length 𝑇 train = 𝑇 eval = 20 
+
+Noise schedule {𝛽 𝑡 } Cosine ¯𝛼 𝑡 schedule ( 𝑠 =0.008 )Reverse sampler (Full, eval) DDIM ( 𝜂 =0), 𝑇 eval steps Prediction parameterization 𝜀 -prediction Loss Ldiff (MSE), uniform timestep sampling Conditioning variables in 𝑐 𝑐 = (𝑠 now , 𝑅 cond ) or 
+
+𝑐 = (𝑠 now , 𝑔 )
+
+Conditioning injection Additive context+timestep embedding in each ResBlk Optimizer Adam Learning rate 2 × 10 −4
+
+Batch size 32 
+
+Training steps / epochs 2 × 10 6 gradient steps Classifier-free guidance Eq. (16); 𝑝 drop = 0.25 ;
+
+𝑤 cfg = 0.6
+
+TABLE XVI: Decision Diffuser (Full) training details used in our runs 
+
+d) Diffusion-QL (Full teacher) [ 62 ]: Diffusion-QL is an offline RL method that learns (i) a diffusion policy and (ii) critic networks. Unlike trajectory planners that explicitly model state sequences, Diffusion-QL is used as a policy: it outputs actions conditioned on the current state, and the environment supplies state transitions. 
+
+Diffusion-QL training hyperparameter Value 
+
+Policy denoiser backbone MLP, 4 layers, hidden width 256, ReLU, LayerNorm Critic backbone Twin Q-networks, each MLP (3 layers, width 256, ReLU) Diffusion length HalfCheetah/Hopper/Maze2D: 
+
+𝑇 train = 𝑇 eval = 10 
+
+Walker2d/AntMaze: 
+
+𝑇 train = 𝑇 eval = 25 
+
+Noise schedule {𝛽 𝑡 } Linear 𝛽 𝑡 from 10 −4 to 0.02 
+
+Reverse sampler (Full, eval) DDPM ancestral sampling, 𝑇 eval 
+
+steps Training losses Diffusion BC loss + 𝜂 -weighted Q-learning objective (Diffusion-QL) Discount 𝛾 0.99 
+
+Target update Polyak 𝜏 = 0.005 
+
+Optimizer(s) Adam (policy and critics) Learning rate(s) Policy: 3×10 −4
+
+(Gym/Kitchen), 10 −3 (AntMaze) Critics: 3×10 −4
+
+Batch size 256 
+
+Training steps / epochs Gym: 2000; AntMaze: 1000 1000 gradient steps / epoch Action sampling for critic targets 𝐾 =10 policy samples; max-Q backup on AntMaze Inference action selection 𝑀 =64 samples; choose 
+
+arg max 𝑎 𝑄 (𝑠, 𝑎 )
+
+Q-guidance at inference None (selection-only; no ∇𝑄 
+
+guidance) 
+
+TABLE XVII: Diffusion-QL (Full) training details Learning-rate / 𝜂 
+
+settings follow the published Diffusion-QL per-task grid; we use the inference step counts 𝑇 eval reported in Table I 
+
+Policy diffusion model We follow the standard Diffusion-QL setup: the diffusion model generates action samples 𝑎 (or short action chunks) conditioned on the current state 𝑠 (and, when applicable, a short state history). The denoiser is an MLP. Critic learning We use standard twin Q-networks with Polyak-averaged targets. For AntMaze we use max-Q backup (as reported in the Diffusion-QL hyperparameter table). Inference (action selection) Diffusion-QL does not use gradient-based Q-guidance in sampling. Instead, at inference time we draw 𝑀 action candidates from the diffusion policy and choose 
+
+𝑎 = arg max 𝑎 𝑄 (𝑠, 𝑎 ).
+
+e) AdaptDiff (Full teacher) [ 29 ]: AdaptDiff adapts a pretrained Diffuser-style planner with a lightweight fine-tuning stage. We separate (Stage A) base diffusion training and (Stage B) adaptation. 
+
+AdaptDiff training hyperparameter Value 
+
+Base denoiser backbone Temporal U-Net (Table XIV) Diffusion length 𝑇 train = 𝑇 eval = 60 (Table I) Noise schedule / sampler Cosine schedule; DDIM ( 𝜂 =0) at inference 
+
+Stage A: base diffusion training 
+
+Dataset Corresponding task dataset (Appendix A) Loss Ldiff (MSE, 𝜀 -prediction) Optimizer / LR / batch size Adam, 2 × 10 −4, batch 32 
+
+Training steps / epochs 1 × 10 6 gradient steps 
+
+Stage B: adaptation 
+
+Adaptation signal Offline critic/value model trained on D
+
+Adaptation objective Maximize predicted return with KL/BC regularization to stay near the base model Adaptation data Offline dataset D only (no extra online rollouts) Adaptation schedule 5 × 10 4 steps, Adam, LR 
+
+1 × 10 −5, batch 32 
+
+Guidance at inference (if any) None (adapted denoiser used directly) 
+
+TABLE XVIII: AdaptDiff (Full) training details used in our runs 
+
+f) CompDiff (Full teacher) [ 35 ]: CompDiff performs long-horizon planning by composing shorter diffusion-generated segments. In our implementation, CompDiff uses (i) a Diffuser-style segment denoiser and (ii) an additional learned scoring module (value/feasibility) used to select and stitch segments. 
+
+CompDiff training hyperparameter Value 
+
+Denoiser backbone(s) Segment denoiser: Temporal U-Net (Table XIV) Diffusion length 𝑇 train = 𝑇 eval = 150 (Table I) Noise schedule / sampler Cosine schedule; DDIM ( 𝜂 =0)Composition mechanism Overlap-and-stitch segment composition with value-based segment selection (beam search) Additional learned modules Value/feasibility scorer: 3-layer MLP (width 512, ReLU) Training objective(s) Diffusion MSE + scorer regression/classification loss (task-dependent) Optimizer(s), LR(s), batch size(s) Adam; diffusion LR 2 × 10 −4;scorer LR 3 × 10 −4; batch 32 Training steps / epochs Diffusion: 2 × 10 6 steps; scorer: 
+
+1 × 10 6 steps Inference-time guidance Optional value guidance (Eq. (66) ), environment-specific 
+
+𝑤 guide 
+
+TABLE XIX: CompDiff (Full) training details used in our runs 2) Configuration-Space Motion Planning (MPD / EDMP): 
+
+We report training details for MPD [ 6] and EDMP [ 51 ], evaluated in Table II. Both methods learn a diffusion prior over collision-free joint-space trajectories. To avoid ambiguity with Appendix A2, we distinguish the full planning context (which includes obstacle information) from what is actually fed to the denoiser: in our setup, the denoiser is conditioned on start/goal, while obstacle information enters through inference-time differentiable cost guidance 𝐽 (· ; O) .
+
+a) MPD (Full teacher) [ 6]: Denoiser architecture MPD uses a temporal denoiser over joint trajectories, conditioned on start/goal. 
+
+Component Shape / width Specification 
+
+Trajectory input 𝐻 × 𝑑 𝑞 𝑑 𝑞 =7; noisy joint trajectory 
+
+𝜏 𝑡 ∈ R𝐻 ×7
+
+Timestep embedding 256 Sinusoidal + 2-layer MLP (256 hidden, Mish) Scene/obstacle encoder — Not fed to denoiser; obstacles used in guidance objective 
+
+𝐽 (· ; O) at inference Fusion 256 (𝑞 start , 𝑞 goal ) embedded to 256 and injected additively in ResBlks Denoiser core base 128 Temporal U-Net (same template as Table XIV, with 𝑑 =7)Output head 𝐻 × 𝑑 𝑞 𝜀 -prediction in joint space 
+
+TABLE XX: MPD (Full) denoiser architecture used in our runs 
+
+MPD training hyperparameter Value 
+
+Diffusion length 𝑇 train = 𝑇 eval = 50 
+
+Noise schedule / sampler Cosine schedule; DDIM ( 𝜂 =0) at inference Loss Ldiff (MSE, 𝜀 -prediction) Dataset size (trajectories) 100 ,000 collision-free RRT-Connect solutions (train) + 
+
+5,000 (val) Optimizer / LR / batch size Adam, 1 × 10 −4, batch 128 
+
+Training steps / epochs 5 × 10 5 gradient steps Regularization Grad clip 1.0; EMA 0.999; weight decay 0 Constraint handling during training Hard filtering (train only on collision-free trajectories); endpoints clamped to start/goal 
+
+TABLE XXI: MPD (Full) training details used in our runs 
+
+b) EDMP (Full teacher) [ 51 ]: EDMP improves guided diffusion motion planning by running an ensemble of cost-guided diffusion chains at inference: multiple collision-cost parameterizations and multiple schedules are evaluated in parallel, and the best feasible trajectory is selected. The learned diffusion prior (denoiser) is trained the same way as MPD; the difference is in inference-time guidance. 
+
+EDMP hyperparameter / design choice Value 
+
+Learned prior (denoiser) Same as MPD (Table XX) Diffusion length 𝑇 train = 𝑇 eval = 50 
+
+Noise / covariance schedule Cosine schedule; Gaussian reverse updates with Σ𝑡 from DDPM coefficients Guidance costs (examples) Link–obstacle penetration proxy + swept-volume proxy + smoothness Ensemble size 𝑙 = 3 cost parameterizations, 
+
+𝑟 = 3 schedules ( 𝑙 × 𝑟 = 9
+
+chains) Guidance step schedule 𝛼 𝑡 Linearly decays from 0.05 (early steps) to 0 (late steps) Cost hyperparameter schedule 𝜔 𝑡 Monotone tightening schedule (collision tolerance decreases over time) Inference selection Pick lowest-cost feasible trajectory among the 𝑙 × 𝑟 guided chains Training of prior Same as MPD: MSE 𝜀 -prediction on collision-free trajectories 
+
+TABLE XXII: EDMP (Full) details used in our runs EDMP differs from MPD primarily in its inference-time ensemble guidance; the learned diffusion prior is trained identically 
+
+3) Visuomotor Diffusion Policies (Diffusion Policy / DP3): 
+
+We report training details for the Full policies evaluated in Table III: Diffusion Policy [ 9 ] and DP3 [ 71 ]. Both are trained on demonstration datasets and executed in a receding-horizon loop at inference (Appendix A3). 
+
+a) Diffusion Policy (Full teacher) [ 9]: Policy factorization Diffusion Policy learns a diffusion model over action chunks of horizon 𝐻 𝜋 conditioned on the most recent observation history. The denoiser input is a noisy action chunk 𝑎 𝑡 :𝑡 +𝐻 𝜋 −1 and the context includes encoded observations (vision + proprioception and task targets where applicable). Architecture: observation encoder + action denoiser For RL-Bench we use an ImageNet-pretrained ResNet-18 encoder; for Meta-World pick-place-v2 (state-only) we omit the image encoder and condition on the normalized state history only. 
+
+Component Shape / width Specification 
+
+Image encoder 512 ResNet-18 (ImageNet); global avg pool; shared across views/frames (RLBench) Proprio / state encoder 256 2-layer MLP (256 hidden, ReLU) on normalized low-dim inputs Obs fusion 256 Concat image feat(s) + low-dim feat, then linear/MLP to 256 Action denoiser 𝐻 𝜋 × 𝑑 𝑎 Temporal U-Net (base 256, dim mults 1/2/4; GN; SiLU; k=5) Timestep embedding 256 Sinusoidal + 2-layer MLP (256 hidden, SiLU) Conditioning injection — FiLM (scale/shift) from context at each ResBlk Output 𝐻 𝜋 × 𝑑 𝑎 𝜀 prediction 
+
+TABLE XXIII: Diffusion Policy architecture used in our runs RLBench uses the vision encoder; Meta-World pick-place-v2 uses state-only conditioning (no image encoder) Diffusion Policy training hyperparameter Value  
+
+> Action horizon
+
+𝐻 𝜋 (chunk length) 16 (Appendix A3) Control frequency (training labels) 20 Hz (RLBench, Meta-World) Diffusion length Train: 𝑇 train = 100 (iDDPM-style) Eval: 𝑇 eval = 100 (simulation) or 𝑇 eval = 16  
+
+> Noise schedule / sampler Train: iDDPM-style (cosine schedule) Eval: iDDPM/DDPM sampler; DDIM for low-iter (
+
+𝑇 eval =16 )Loss MSE 𝜀 -prediction Optimizer AdamW ( 𝛽 1=0.9, 𝛽 2=0.999 )Learning rate 1 × 10 −4  
+
+> Batch size State-based:
+
+256  
+
+> Image-based:
+
+64  
+
+> Training steps / epochs
+
+5 × 10 5 gradient steps Regularization EMA 0.999; grad clip 1.0; weight decay 10 −6; dropout 0.1 
+
+TABLE XXIV: Diffusion Policy (Full) training details used in our runs 
+
+b) DP3 (Full teacher) [ 71 ]: DP3 is a diffusion policy conditioned on 3D observations (point clouds) and low-dimensional robot state.     
+
+> Component Shape / width Specification
+> 3D encoder 512 Point-cloud encoder as in DP3 (point-wise / set-abstraction style with global pooling), mapping
+
+1024 × 3 XYZ points to a 512-d global feature 3D input 1024 × 3 XYZ point cloud (cropped workspace; farthest point sampled) Proprio encoder 256 2-layer MLP (256 hidden, ReLU) Fusion 512 Concat (3D feat + proprio feat) then MLP to 512 Action denoiser 𝐻 𝜋 × 𝑑 𝑎 Temporal U-Net (base 256, dim mults 1/2/4; GN; SiLU; k=5) Conditioning — FiLM from fused context at each ResBlk Output 𝐻 𝜋 × 𝑑 𝑎 𝜀 prediction 
+
+TABLE XXV: DP3 architecture used in our runs   
+
+> DP3 training hyperparameter Value
+> Action horizon
+
+𝐻 𝜋 (chunk length) 16 (Appendix A3) Control frequency 20 Hz Diffusion length Train: 𝑇 train (off. implementation) Eval: 𝑇 eval = 10 (DDIM) Noise schedule / sampler Train: DP3 baseline schedule Eval: DDIM ( 𝜂 =0), 𝑇 eval =10   
+
+> Loss MSE
+
+𝜀 -prediction Optimizer AdamW Learning rate 1 × 10 −4 
+
+> Batch size
+
+128  
+
+> Training steps / epochs
+
+2 × 10 5 gradient steps 3D data preprocessing Crop workspace; FPS to 1024 points; normalize XYZ by workspace bounds Regularization EMA 0.999; grad clip 1.0; weight decay 10 −6
+
+TABLE XXVI: DP3 (Full) training details used in our runs 
+
+G. Muninn Implementation Details 
+
+This appendix section provides the implementation-level details needed to reproduce Muninn. 
+
+1) Muninn wrapper implementation: At each diffusion step 
+
+𝑡 , the sampler update Φ𝑡 consumes an effective noise prediction ˆ𝜀 𝑡 with the same shape as the current noisy trajectory (or action chunk): ˆ𝜀 𝑡 ∈ R𝐵 ×𝐻 ×𝑑 , (68) where 𝐵 is batch size, 𝐻 is the trajectory/chunk horizon for that model, and 𝑑 is the per-timestep dimensionality (state–action for planners, action/pose for policies, joint angles for motion planning). Muninn caches this post-processing, sampler-ready 
+
+tensor: ˆ𝜀 cache ← ˆ𝜀 new 
+
+𝑡 whenever a recompute is performed (69) In our implementation, denoiser forward passes run under GPU mixed precision (AMP), so ˆ𝜀 𝑡 is produced in FP16; we store ˆ𝜀 cache in FP16 on GPU to avoid dtype conversions and reduce memory bandwidth. All norms, scores, and budget arithmetic are performed in FP32 for numerical stability. Cache replacement policy We use a single-entry cache with 
+
+most-recent recompute replacement: 
+
+• On a recompute step: overwrite cache with the newly computed ˆ 𝜀 new 
+
+𝑡 .
+
+• On a reuse step: leave cache unchanged and set ˜𝜀 𝑡 ←
+
+ˆ𝜀 cache .There is no multi-entry eviction and no explicit “cache age” heuristic; the effect of reusing an older cache entry is handled entirely by the probe-based score and the calibrated bound. Consecutive reuse steps If multiple consecutive reuse steps occur, Muninn reuses the same cached ˆ𝜀 cache for each of those steps. This is allowed by construction: at each reuse step 𝑡 , the algorithm spends ˆ𝑐 𝑡 (𝑠 𝑡 ) from the remaining budget, so longer reuse streaks are automatically limited unless scores remain small enough to keep ˆ 𝑐 𝑡 (𝑠 𝑡 ) within budget. Avoiding double computation on recompute steps To make probe evaluation truly “cheap,” we structure each denoiser into two explicitly callable parts: 
+
+𝜀 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ) ≡ core 𝜃 
+
+ stem 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ), 𝑡, 𝑐 , (70) and define the probe as a function of the stem output. On a recompute step we compute the stem once, extract 𝐹 𝑡 from it, and then continue into the core using the same intermediate activations. On a reuse step we compute only the stem and never run the core. Budget bookkeeping We maintain an independent remaining budget for each batch element: 
+
+𝐵 rem ∈ R𝐵 
+
+≥0. (71) Initialization and updates are: 
+
+• Init: 𝐵 rem ← 𝜀 traj · 1𝐵 (FP32 on GPU). 
+
+• At step 𝑡 : compute ˆ𝑐 𝑡 (𝑠 𝑡 ) elementwise (FP32), form reuse mask, and for reuse elements update 
+
+𝐵 rem ← 𝐵 rem − ˆ𝑐 𝑡 (𝑠 𝑡 ).
+
+We enforce budget safety by gating reuse: 
+
+reuse 𝑏 (𝑡 ) = 1 ⇐⇒ (𝑡 ∈ T cache ) ∧   ˆ𝑐 𝑡 ,𝑏 (𝑠 𝑡 ,𝑏 ) ≤ 𝐵 rem ,𝑏 
+
+ ,
+
+(72) so 𝐵 rem never becomes negative up to FP32 rounding. We compute ˆ𝑐 𝑡 (𝑠 𝑡 ) = Γ 𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ) (73) in FP32 immediately after computing the score 𝑠 𝑡 and before deciding reuse/recompute. ˆ𝑐 𝑡 (𝑠 𝑡 ) = 𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ), (74) where 𝐿 𝑡 is a precomputed FP32 vector of length 𝑇 and 𝑈 𝑡 (·) 
+
+is a per-timestep conformal envelope stored as a lookup table (Appendix E1). Batched sampling When sampling 𝐵 > 1 trajectories in parallel, Muninn makes independent reuse decisions per batch element (per trajectory). Concretely:  
+
+> •
+
+the probe 𝐹 𝑡 and score 𝑠 𝑡 are computed for all 𝐵 elements;  
+
+> •
+
+reuse masks are computed elementwise from the per-element budgets 𝐵 rem ; 
+
+> •
+
+a denoiser recompute forward pass is run only on the sub-batch that requires recomputation at that step, and the results are scattered back. This preserves the per-trajectory risk guarantee, since each trajectory’s budget and events are tracked independently. Complexity and overhead breakdown Let ℓcore denote the average runtime of a full denoiser core evaluation (one forward pass through the expensive blocks), and let ℓΨ denote the per-step overhead of probe+score+bound lookup+bookkeeping (stem forward plus lightweight arithmetic). A single 𝑇 -step sampling call with 𝑛 eval recompute steps has runtime: Time ≈ 𝑇 · ℓΨ + 𝑛 eval · ℓcore + ℓΦ, (75) where ℓΦ is the cumulative sampler update overhead (typically small relative to denoiser compute). This implies the wall-clock speedup is generally slightly smaller than the denoiser-evaluation reduction factor 𝑇 /𝑛 eval :Speedup ≈ 𝑇 (ℓΨ + ℓcore )
+
+𝑇ℓ Ψ + 𝑛 eval ℓcore 
+
+. (76) In practice, ℓΨ is a small fraction of ℓcore (Table XXVII), so wall-clock speedups closely track the reduction in denoiser evaluations.                      
+
+> Base model family ℓΨper diffusion step (ms) ℓΨ/ℓcore (%)
+> Diffuser (D4RL tasks; averaged) 0.64 8.1 Decision Diffuser (D4RL tasks; averaged) 0.58 7.3 Diffusion-QL (D4RL tasks; averaged) 0.11 6.0 AdaptDiff (D4RL tasks; averaged) 0.52 7.8 CompDiff (D4RL tasks; averaged) 0.70 8.4
+> TABLE XXVII: Probe+bookkeeping overhead We report the amortized per-step overhead ℓΨand its ratio to one full denoiser evaluation ℓcore . These values are computed by decomposing the measured Full vs. latencies and the observed #denoiser evaluations in Table I
+
+Offline calibration dataset generation The full calibration dataset generation procedure (paired Full chain + policy-independent ghost chain with deterministic anchors) is provided in Appendix E and Algorithm 2. 
+
+2) Probe instantiations across architectures: General in-terface For each denoiser, we implement a probe interface returning a feature vector 𝐹 𝑡 ∈ R𝑑 𝐹 :
+
+𝐹 𝑡 = Ψ ( ˜𝜏 𝑡 , 𝑡, 𝑐 ), (77) computed before deciding reuse vs. recompute at step 𝑡 . We ensure the probe is (i) strictly cheaper than a full denoiser evalu-ation and (ii) uses exactly the same intermediate representation at calibration and deployment. Transformer denoisers For Transformer denoisers (token-based trajectory models), we define the probe as a prefix of the Transformer stack : 
+
+> •
+
+Stem: tokenization + input projection + timestep/context embeddings.  
+
+> •
+
+Probe blocks: the first two Transformer blocks (self-attn + MLP).  
+
+> •
+
+Pooling: mean-pool across the token/time dimension to obtain 𝐹 𝑡 ∈ R𝑑 model .Thus 𝑑 𝐹 = 𝑑 model and pooling is 
+
+𝐹 𝑡 = 1
+
+𝐻 
+
+> 𝐻
+
+∑︁ 
+
+> ℎ=1
+
+𝑧 𝑡 ,ℎ , (78) where 𝑧 𝑡 ,ℎ ∈ R𝑑 model are the token embeddings after the probe prefix. MLP denoisers For MLP denoisers, we define the probe as the 
+
+penultimate hidden layer activation . Concretely, for an 𝐿 -layer MLP with hidden activations ℎ(1) , . . . , ℎ (𝐿 −1) and final linear head, we set: 
+
+𝐹 𝑡 := ℎ(𝐿 −1) ∈ R𝑑 hid . (79) We then compute the output head only on recompute steps. Thus 𝑑 𝐹 = 𝑑 hid and no pooling is required. Temporal U-Net denoisers (1D conv over time) For temporal U-Nets, we define the probe as the output of the input projection + first residual block group at the highest time resolution:  
+
+> •
+
+Stem: 1D conv input projection + timestep/context injec-tion.  
+
+> •
+
+Probe blocks: first ResBlock group at resolution 𝐻 (before the first temporal downsample).  
+
+> •
+
+Pooling: mean-pool across time and channels to obtain 
+
+𝐹 𝑡 ∈ R𝐶 1 :
+
+𝐹 𝑡 = 1
+
+𝐻 
+
+> 𝐻
+
+∑︁ 
+
+> ℎ=1
+
+𝑢 𝑡 ,ℎ , 𝑢 𝑡 ,ℎ ∈ R𝐶 1 .
+
+Thus 𝑑 𝐹 = 𝐶 1 (the channel width after the first group). 
+
+3) Score function and hyperparameters: Score definition We compute the score at step 𝑡 from consecutive probe features (reverse diffusion runs from 𝑇 to 1): 
+
+𝑠 𝑡 = ∥𝐹 𝑡 − 𝐹 𝑡 +1 ∥1
+
+∥𝐹 𝑡 +1 ∥1 + 𝜔 , 𝜔 = 10 −6. (80) We use a single fixed 𝜔 for all models and benchmarks. Normalization and precision We do not apply any per-feature whitening to 𝐹 𝑡 beyond the model’s native activations; the score is normalized only by ∥𝐹 𝑡 +1 ∥1 + 𝜔 . We compute ∥ · ∥ 1Model Denoiser type Probe Ψ (stem) Probe depth Core 𝑑 𝐹 Pooling                                                       
+
+> Diffuser temporal U-Net input proj + ResBlk@H 1 group rest of U-Net 𝐶 1mean over time Decision Diffuser Transformer embed + 2 blocks 2 blocks remaining blocks 𝑑 model mean over tokens Diffusion-QL MLP penultimate layer 𝐿 −1output head only 𝑑 hid none AdaptDiff temporal U-Net input proj + ResBlk@H 1 group rest of U-Net 𝐶 1mean over time CompDiff temporal U-Net input proj + ResBlk@H 1 group rest of U-Net 𝐶 1mean over time MPD temporal U-Net input proj + ResBlk@H 1 group rest of U-Net 𝐶 1mean over time EDMP Transformer embed + 2 blocks 2 blocks remaining blocks 𝑑 model mean over tokens Diffusion Policy temporal U-Net input proj + ResBlk@H 1 group rest of U-Net 𝐶 1mean over time DP3 temporal U-Net input proj + ResBlk@H 1 group rest of U-Net 𝐶 1mean over time
+
+TABLE XXVIII: Probe instantiations used for every evaluated model For each architecture family we define a concrete stem/core split and a deterministic pooling rule. The probe is computed on every diffusion step; the core is executed only on recompute steps 
+
+in FP32 (casting 𝐹 𝑡 and 𝐹 𝑡 +1 to FP32 before the reduction) and store 𝑠 𝑡 in FP32. Why ℓ1 We use ℓ1 for both numerator and denominator because it is: (i) stable under heavy-tailed activation distributions, (ii) less sensitive to occasional large feature outliers than ℓ2
+
+normalization, and (iii) fast to compute on GPU (elementwise abs + reduction). We do not apply any temporal smoothing (moving averages) to 𝑠 𝑡 ; the conformal envelope 𝑈 𝑡 (·) is calibrated directly on the raw per-step scores. 
+
+4) Sensitivity coefficient computation: This subsection de-scribes exactly how we compute the sampler sensitivity coefficients used in budgeting. Local Lipschitz coefficients from DDPM updates For a DDPM-style update written in 𝜀 -prediction form: 
+
+𝜏 𝑡 −1 = 1
+
+√𝛼 𝑡 
+
+
+
+𝜏 𝑡 − 𝛽 𝑡 
+
+√1 − ¯𝛼 𝑡 
+
+ˆ𝜀 𝑡 
+
+
+
++ 𝜎 𝑡 𝑧, 𝑧 ∼ N ( 0, 𝐼 ), (81) holding 𝑧 fixed for paired chains yields an affine map in (𝜏 𝑡 , ˆ𝜀 𝑡 ).Thus, 
+
+𝐾 𝑡 = 1
+
+√𝛼 𝑡 
+
+, 𝐿 ′ 
+
+> 𝑡
+
+= 𝛽 𝑡 
+
+√𝛼 𝑡 
+
+√1 − ¯𝛼 𝑡 
+
+. (82) Local coefficients from DDIM updates For a deterministic DDIM update (paired chains share the same deterministic update), the step can be written as 
+
+𝜏 𝑡 −1 =√︂ ¯𝛼 𝑡 −1
+
+¯𝛼 𝑡 
+
+𝜏 𝑡 +
+
+√︁ 
+
+1 − ¯𝛼 𝑡 −1 −√︂ ¯𝛼 𝑡 −1
+
+¯𝛼 𝑡 √︁ 1 − ¯𝛼 𝑡 
+
+
+
+ˆ𝜀 𝑡 , (83) so 
+
+𝐾 𝑡 =√︂ ¯𝛼 𝑡 −1
+
+¯𝛼 𝑡 
+
+, 𝐿 ′ 
+
+> 𝑡
+
+=√︁ 1 − ¯𝛼 𝑡 −1 −√︂ ¯𝛼 𝑡 −1
+
+¯𝛼 𝑡 √︁ 1 − ¯𝛼 𝑡 . (84) For stochastic DDIM with 𝜂 > 0 , the additional noise term cancels in paired comparisons (same noise draw), and the same 
+
+(𝐾 𝑡 , 𝐿 ′ 
+
+> 𝑡
+
+) apply to the deterministic affine part. Pathwise sensitivities 𝐿 𝑡 Given 𝐾 𝑡 and 𝐿 ′ 
+
+> 𝑡
+
+, we compute the pathwise coefficient used in the trajectory bound: 
+
+𝐿 𝑡 = 𝐿 ′ 
+
+> 𝑡 𝑡 −1
+
+Ö
+
+> 𝑗 =1
+
+𝐾 𝑗 . (85) We compute this in log-space for numerical stability (important when 𝑇 is large): log 𝐿 𝑡 = log 𝐿 ′ 
+
+> 𝑡
+
++ 
+
+> 𝑡 −1
+
+∑︁ 
+
+> 𝑗 =1
+
+log 𝐾 𝑗 , 𝐿 𝑡 = exp (log 𝐿 𝑡 ). (86) All computations are performed once per sampler schedule in FP32 and cached for reuse during inference. 
+
+5) Forbidden regions and Tcache : Fixed rule (not tuned per task) We forbid reuse in a short prefix (large 𝑡 ; high noise and sensitivity amplification) and suffix (small 𝑡 ; execution-critical region) using a single fixed rule: 
+
+𝑘 pre = ⌈0.10 𝑇 ⌉ , 𝑘 suf = ⌈0.10 𝑇 ⌉ . (87) Reuse is allowed only on 
+
+Tcache = 𝑡 ∈ { 1, . . . , 𝑇 } : 𝑘 suf < 𝑡 ≤ 𝑇 − 𝑘 pre , (88) and we additionally enforce that 𝑡 = 𝑇 is always recomputed. Effect on |T cache | and 𝛼 step The per-step miscoverage is set via Bonferroni correction: 
+
+𝛼 step = 𝛼 
+
+|T cache | . (89) Thus, forbidden regions directly affect both the reuse opportu-nities and the calibration strictness.                                       
+
+> Model family Full 𝑇 𝑘 pre 𝑘 suf | T cache |
+> Diffuser 100 10 10 80 Decision Diffuser 20 2216 Diffusion-QL (HalfCheetah/Hopper/Maze2D) 10 118Diffusion-QL (Walker2d/AntMaze) 25 3319 AdaptDiff 60 6648 CompDiff 150 15 15 120 MPD / EDMP 25 3319 Diffusion Policy / DP3 16 2212
+
+TABLE XXIX: Forbidden regions and eligible reuse timesteps We use a fixed 10% prefix/suffix rule across benchmarks. Values above determine | T cache | and thus 𝛼 step = 𝛼 /| T cache |
+
+6) Guidance and conditioning implementation notes: Many base planners/policies use guidance or conditioning mecha-nisms that modify the tensor actually passed to the sampler. This subsection clarifies exactly what is cached, and how reuse error labels are computed in guided settings. Cache the sampler-consumed effective prediction If the base method uses guidance, we define the effective prediction ˆ𝜀 𝑡 as the tensor fed into Φ𝑡 . caches ˆ𝜀 𝑡 (post-guidance), not the raw network output: ˆ𝜀 cache ← ˆ𝜀 new  
+
+> 𝑡
+
+. (90) This makes reuse semantics identical to “skipping a guided denoiser call” at step 𝑡 .Classifier-free guidance (CFG) When CFG is used, we compute conditional and unconditional predictions and then combine: ˆ𝜀 𝑡 = (1 + 𝑤 cfg ) 𝜀 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ) − 𝑤 cfg 𝜀 𝜃 (𝜏 𝑡 , 𝑡, ∅) , (91) with fixed 𝑤 cfg per model/task. On recompute steps, both forward passes are executed and combined; on reuse steps, we directly reuse the cached ˆ𝜀 cache and do not evaluate either conditional or unconditional networks. Gradient-based guidance (value / 𝑄 / energy guidance) If the base method uses gradient guidance of the form ˆ𝜀 𝑡 = 𝜀 𝜃 (𝜏 𝑡 , 𝑡, 𝑐 ) − 𝑤 g 𝜎 𝑡 ∇𝜏 𝑡 𝐽 (𝜏 𝑡 , 𝑡, 𝑐 ), (92) we compute the gradient term only on recompute steps (using automatic differentiation under torch.enable_grad() ). The cached tensor is the full guided ˆ𝜀 𝑡 ; on reuse steps we skip both the denoiser forward and the guidance gradient computation. How 𝑒 𝑡 and 𝜖 𝑡 are computed under guidance All error quantities in calibration and analysis are computed on the effective predictions: 
+
+𝑒 𝑡 = ˆ𝜀 full  
+
+> 𝑡
+
+− ˜𝜀 𝑡 , 𝜖 𝑡 = 1
+
+√𝐻𝑑 ∥𝑒 𝑡 ∥𝐹 , (93) where ˆ𝜀 full  
+
+> 𝑡
+
+is the effective prediction produced by the Full model at step 𝑡 (including guidance), and ˜𝜀 𝑡 is the reused value (post-guidance) under the cache rule. This ensures that the conformal envelope 𝑈 𝑡 (·) upper-bounds the exact object that influences the sampler update Φ𝑡 .
+
+H. Proofs 1) Proof 1: Pathwise trajectory deviation bound for cached reverse diffusion: 
+
+Proposition 1 (Pathwise deviation bound from local sampler sensitivity) . Assume the paired full and cached chains share the same initial noisy trajectory and (if stochastic) the same sampler-noise sequence, so that Δ𝑇 = 𝜏 full  
+
+> 𝑇
+
+− ˜𝜏 𝑇 = 0. Suppose Assumption 1 (Sampler Lipschitzness) holds and yields the local recursion 
+
+∥Δ𝑡 −1 ∥ ≤ 𝐾 𝑡 ∥Δ𝑡 ∥ + 𝐿 ′ 
+
+> 𝑡
+
+∥𝑒 𝑡 ∥, 𝑡 = 𝑇, . . . , 1, (94) which is Eq. (1) in the main paper. Then, for every 𝑡 ∈{0, . . . , 𝑇 − 1},
+
+∥Δ𝑡 ∥ ≤
+
+> 𝑇
+
+∑︁ 
+
+> 𝑠 =𝑡 +1
+
+©«
+
+𝐿 ′
+
+> 𝑠 𝑠 −1
+
+Ö
+
+> 𝑗 =𝑡 +1
+
+𝐾 𝑗 ª®¬
+
+∥𝑒 𝑠 ∥, (95) which is Eq. (2) . In particular, defining 𝐿 𝑠 := 𝐿 ′
+
+> 𝑠
+
+Î𝑠 −1 
+
+> 𝑗 =1
+
+𝐾 𝑗 , we have 
+
+∥Δ0 ∥ ≤
+
+> 𝑇
+
+∑︁ 
+
+> 𝑡 =1
+
+𝐿 𝑡 ∥𝑒 𝑡 ∥, (96) which is Eq. (3) . Finally, under Assumption 2 (Metric compat-ibility), the trajectory deviation satisfies 
+
+𝑑 (𝜏 full 0 , ˜𝜏 0) ≤ Γ∥Δ0 ∥ ≤
+
+> 𝑇
+
+∑︁ 
+
+> 𝑡 =1
+
+Γ𝐿 𝑡 ∥𝑒 𝑡 ∥, (97) which is Eq. (4) .Proof: We prove Eq. (95) by backward induction on 𝑡 .
+
+Base case ( 𝑡 = 𝑇 − 1). Using Δ𝑇 = 0 and the recursion (94) at 
+
+𝑡 = 𝑇 :
+
+∥Δ𝑇 −1 ∥ ≤ 𝐾 𝑇 ∥Δ𝑇 ∥ + 𝐿 ′ 
+
+> 𝑇
+
+∥𝑒 𝑇 ∥ = 𝐿 ′ 
+
+> 𝑇
+
+∥𝑒 𝑇 ∥.
+
+This matches Eq. (95) at 𝑡 = 𝑇 − 1 , since the sum contains only 𝑠 = 𝑇 and the product over 𝑗 = 𝑇 𝑇 −1 is an empty product equal to 1. 
+
+Inductive step. Assume Eq. (95) holds for some 𝑡 ∈ { 1, . . . , 𝑇 −
+
+1}, i.e., 
+
+∥Δ𝑡 ∥ ≤
+
+> 𝑇
+
+∑︁ 
+
+> 𝑠 =𝑡 +1
+
+©«
+
+𝐿 ′
+
+> 𝑠 𝑠 −1
+
+Ö
+
+> 𝑗 =𝑡 +1
+
+𝐾 𝑗 ª®¬
+
+∥𝑒 𝑠 ∥.
+
+Apply the local recursion (94) at step 𝑡 :
+
+∥Δ𝑡 −1 ∥ ≤ 𝐾 𝑡 ∥Δ𝑡 ∥ + 𝐿 ′ 
+
+> 𝑡
+
+∥𝑒 𝑡 ∥≤ 𝐾 𝑡 𝑇 ∑︁ 
+
+> 𝑠 =𝑡 +1
+
+©«
+
+𝐿 ′
+
+> 𝑠 𝑠 −1
+
+Ö
+
+> 𝑗 =𝑡 +1
+
+𝐾 𝑗 ª®¬
+
+∥𝑒 𝑠 ∥ + 𝐿 ′ 
+
+> 𝑡
+
+∥𝑒 𝑡 ∥
+
+=
+
+> 𝑇
+
+∑︁ 
+
+> 𝑠 =𝑡 +1
+
+𝐿 ′
+
+> 𝑠 𝑠 −1
+
+Ö
+
+> 𝑗 =𝑡
+
+𝐾 𝑗 
+
+!
+
+∥𝑒 𝑠 ∥ + 𝐿 ′ 
+
+> 𝑡 𝑡 −1
+
+Ö
+
+> 𝑗 =𝑡
+
+𝐾 𝑗 
+
+!
+
+∥𝑒 𝑡 ∥
+
+=
+
+> 𝑇
+
+∑︁ 
+
+> 𝑠 =𝑡
+
+𝐿 ′
+
+> 𝑠 𝑠 −1
+
+Ö
+
+> 𝑗 =𝑡
+
+𝐾 𝑗 
+
+!
+
+∥𝑒 𝑠 ∥,
+
+where we used Î𝑡 −1 
+
+> 𝑗 =𝑡
+
+𝐾 𝑗 = 1 (empty product). This is exactly Eq. (95) for index 𝑡 − 1. By induction, Eq. (95) holds for all 𝑡 ∈ { 0, . . . , 𝑇 − 1}.
+
+Deriving Eq. (96). Set 𝑡 = 0 in Eq. (95): 
+
+∥Δ0 ∥ ≤ 
+
+> 𝑇
+
+∑︁ 
+
+> 𝑠 =1
+
+©«
+
+𝐿 ′
+
+> 𝑠 𝑠 −1
+
+Ö
+
+> 𝑗 =1
+
+𝐾 𝑗 ª®¬
+
+∥𝑒 𝑠 ∥ =
+
+> 𝑇
+
+∑︁ 
+
+> 𝑠 =1
+
+𝐿 𝑠 ∥𝑒 𝑠 ∥,
+
+which is Eq. (96). 
+
+Deriving Eq. (97) . Assumption 2 gives 𝑑 (𝜏 full 0 , ˜𝜏 0) ≤ Γ∥𝜏 full 0 −
+
+˜𝜏 0 ∥ = Γ ∥Δ0 ∥. Combining with Eq. (96) yields Eq. (97). 
+
+2) Proof 2: Derivation of (𝐾 𝑡 , 𝐿 ′ 
+
+> 𝑡
+
+) for DDPM/DDIM-style samplers: This subsection makes Assumption 1 concrete for the DDPM/DDIM-style samplers used in the paper. Throughout, 
+
+∥ · ∥ denotes the Frobenius norm and 𝜉 𝑡 is held fixed (paired chains share the same sampler noise). Proposition 2 (Sampler Lipschitz constants for DDPM updates) .
+
+Consider the standard DDPM reverse update in 𝜀 -prediction form: 
+
+Φ𝑡 (𝜏, 𝜀, 𝜉 𝑡 ) = 1
+
+√𝛼 𝑡 
+
+
+
+𝜏 − 𝛽 𝑡 
+
+√1 − ¯𝛼 𝑡 
+
+𝜀 
+
+
+
++ 𝜎 𝑡 𝜉 𝑡 , (98) where 𝛽 𝑡 ∈ ( 0, 1) is the variance schedule, 𝛼 𝑡 = 1 − 𝛽 𝑡 , and 
+
+¯𝛼 𝑡 = Î𝑡 𝑠 =1 𝛼 𝑠 . Then Assumption 1 holds with 
+
+𝐾 𝑡 = 1
+
+√𝛼 𝑡 
+
+, 𝐿 ′ 
+
+> 𝑡
+
+= 𝛽 𝑡 
+
+√𝛼 𝑡 
+
+√1 − ¯𝛼 𝑡 
+
+. (99) Proof: Fix 𝜉 𝑡 and take any (𝜏, 𝜀 ) and (𝜏 ′, 𝜀 ′). By linearity of (98) in (𝜏, 𝜀 ) and cancellation of the shared noise term: 
+
+Φ𝑡 (𝜏, 𝜀, 𝜉 𝑡 )− Φ𝑡 (𝜏 ′, 𝜀 ′, 𝜉 𝑡 ) = 1
+
+√𝛼 𝑡 
+
+(𝜏 −𝜏 ′)− 𝛽 𝑡 
+
+√𝛼 𝑡 
+
+√1 − ¯𝛼 𝑡 
+
+(𝜀 −𝜀 ′).
+
+Taking norms and using ∥𝑎𝑋 ∥ = |𝑎 |∥ 𝑋 ∥ and the triangle inequality: 
+
+Φ𝑡 (𝜏, 𝜀, 𝜉 𝑡 )− Φ𝑡 (𝜏 ′, 𝜀 ′, 𝜉 𝑡 ) ≤ 1
+
+√𝛼 𝑡 
+
+∥𝜏 −𝜏 ′ ∥+ 𝛽 𝑡 
+
+√𝛼 𝑡 
+
+√1 − ¯𝛼 𝑡 
+
+∥𝜀 −𝜀 ′ ∥.
+
+This is Assumption 1 with constants given in (99). 
+
+Proposition 3 (Sampler Lipschitz constants for DDIM updates) .
+
+Consider the deterministic DDIM update written as an affine map of (𝜏, 𝜀 ):
+
+Φ𝑡 (𝜏, 𝜀, 0) = 𝑎 𝑡 𝜏 + 𝑏 𝑡 𝜀, (100) where 
+
+𝑎 𝑡 :=√︂ ¯𝛼 𝑡 −1
+
+¯𝛼 𝑡 
+
+, 𝑏 𝑡 :=√︁ 1 − ¯𝛼 𝑡 −1 −√︂ ¯𝛼 𝑡 −1
+
+¯𝛼 𝑡 √︁ 1 − ¯𝛼 𝑡 . (101) Then Assumption 1 holds with 
+
+𝐾 𝑡 = |𝑎 𝑡 |, 𝐿 ′ 
+
+> 𝑡
+
+= |𝑏 𝑡 |. (102) The same (𝐾 𝑡 , 𝐿 ′ 
+
+> 𝑡
+
+) apply to stochastic DDIM parameterizations with an additional additive noise term (paired chains share the same draw), since the affine part in (𝜏, 𝜀 ) is unchanged. Proof: For deterministic DDIM, 𝜉 𝑡 ≡ 0 and the update is exactly (100). Thus, 
+
+Φ𝑡 (𝜏, 𝜀, 0) − Φ𝑡 (𝜏 ′, 𝜀 ′, 0) = 𝑎 𝑡 (𝜏 − 𝜏 ′) + 𝑏 𝑡 (𝜀 − 𝜀 ′).
+
+Taking Frobenius norms and using the triangle inequality: 
+
+∥Φ𝑡 (𝜏, 𝜀, 0) − Φ𝑡 (𝜏 ′, 𝜀 ′, 0)∥ ≤ | 𝑎 𝑡 | ∥ 𝜏 − 𝜏 ′ ∥ + | 𝑏 𝑡 | ∥ 𝜀 − 𝜀 ′ ∥.
+
+This is Assumption 1 with constants (102) . For stochastic DDIM variants, the update takes the form Φ𝑡 (𝜏, 𝜀, 𝜉 𝑡 ) = 𝑎 𝑡 𝜏 +
+
+𝑏 𝑡 𝜀 + ˜𝜎 𝑡 𝜉 𝑡 . Holding 𝜉 𝑡 fixed, the noise term cancels when subtracting paired updates, so the same bound holds. 
+
+a) Guidance.: If a planner uses guidance, we define ˆ𝜀 𝑡 as the effective prediction actually passed into Φ𝑡 (Appendix G6). Since DDPM/DDIM samplers are affine in their 𝜀 argument, the same (𝐾 𝑡 , 𝐿 ′ 
+
+> 𝑡
+
+) apply with 𝜀 interpreted as the effective (post-guidance) prediction. 
+
+3) Proof 3: Trajectory-level risk control via budgeted con-formal step bounds: 
+
+Theorem 1 (Trajectory-level risk control for Muninn via union bound) . Fix a deviation tolerance 𝜂 traj > 0 and risk level 
+
+𝛼 ∈ ( 0, 1). Let Tcache ⊆ { 1, . . . , 𝑇 } be the set of reuse-eligible timesteps. Assume split-conformal calibration produces per-step envelopes {𝑈 𝑡 (·)} 𝑡 ∈ T cache such that for each 𝑡 ∈ T cache ,
+
+P(𝜖 𝑡 ≤ 𝑈 𝑡 (𝑠 𝑡 )) ≥ 1 − 𝛼 step , 𝛼 step := 𝛼 
+
+|T cache | , (103) where 𝜖 𝑡 = ∥𝑒 𝑡 ∥ is the (potential) reuse error magnitude at step 𝑡 and 𝑠 𝑡 is the probe score. Run Muninn with per-step upper-bounded costs 
+
+ˆ𝑐 𝑡 (𝑠 𝑡 ) := Γ 𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ), (104) and the budget rule that allows reuse only if the remaining budget stays nonnegative and ∑︁  
+
+> 𝑡 ∈ R
+
+ˆ𝑐 𝑡 (𝑠 𝑡 ) ≤ 𝜂 traj , (105) where R is the (random) set of reuse steps taken in that episode. Then the resulting cached trajectory satisfies 
+
+P
+
+
+
+𝑑 (𝜏 full 0 , ˜𝜏 0) > 𝜂 traj 
+
+
+
+≤ 𝛼. (106) Proof: Define the failure event at timestep 𝑡 as 
+
+F𝑡 := {𝜖 𝑡 > 𝑈 𝑡 (𝑠 𝑡 )} , 𝑡 ∈ T cache .
+
+By (103), P(F 𝑡 ) ≤ 𝛼 step for each 𝑡 ∈ T cache .Consider a single episode and condition on the event that 
+
+no failure occurs at any eligible timestep: 
+
+G :=
+
+Ù 
+
+> 𝑡 ∈ T cache
+
+F 𝑐 𝑡 .
+
+On G, for every reuse step 𝑡 ∈ R we have 𝜖 𝑡 ≤ 𝑈 𝑡 (𝑠 𝑡 ), hence 
+
+𝑐 𝑡 (𝑒 𝑡 ) = Γ 𝐿 𝑡 ∥𝑒 𝑡 ∥ = Γ 𝐿 𝑡 𝜖 𝑡 ≤ Γ𝐿 𝑡 𝑈 𝑡 (𝑠 𝑡 ) = ˆ𝑐 𝑡 (𝑠 𝑡 ).
+
+For recompute steps, the denoiser output used by the cached chain matches the Full chain at that step, so 𝑒 𝑡 = 0 and 
+
+𝑐 𝑡 (𝑒 𝑡 ) = 0. Therefore, using the trajectory deviation bound Eq. (5) (main paper), 
+
+𝑑 (𝜏 full 0 , ˜𝜏 0) ≤∑︁  
+
+> 𝑡 ∈ R
+
+𝑐 𝑡 (𝑒 𝑡 ) ≤∑︁  
+
+> 𝑡 ∈ R
+
+ˆ𝑐 𝑡 (𝑠 𝑡 ) ≤ 𝜂 traj ,
+
+where the last inequality is exactly the budget rule (105) . Thus, the violation event implies at least one failure event: 
+
+{𝑑 (𝜏 full 0 , ˜𝜏 0) > 𝜂 traj } ⊆
+
+Ø 
+
+> 𝑡 ∈ T cache
+
+F𝑡 .
+
+Taking probabilities and applying a union bound, 
+
+P
+
+
+
+𝑑 (𝜏 full 0 , ˜𝜏 0) > 𝜂 traj 
+
+
+
+≤∑︁  
+
+> 𝑡 ∈ T cache
+
+P(F 𝑡 ) ≤ |T cache | 𝛼 step = 𝛼. 
+
+This proves (106) . No independence across timesteps is required. 4) Proof 4: Metric compatibility constant for the deviation metric used in experiments: 
+
+Lemma 1 (Metric compatibility for the experimental deviation metric) . In all experiments, we use 
+
+𝑑 (𝜏, 𝜏 ′) := 1
+
+√𝐻 ∥𝜏 − 𝜏 ′ ∥𝐹 , (107) where ∥ · ∥ in the analysis denotes the Frobenius norm ∥ · ∥ 𝐹 
+
+on R𝐻 ×𝑑 . Then Assumption 2 holds with Γ = 1√𝐻 (tight), i.e., 
+
+𝑑 (𝜏, 𝜏 ′) ≤ Γ∥𝜏 − 𝜏 ′ ∥. (108) Moreover, since 𝐻 ≥ 1, the same inequality also holds with any larger constant (e.g., Γ = 1). Proof: By definition (107) and ∥ · ∥ = ∥ · ∥ 𝐹 ,
+
+𝑑 (𝜏, 𝜏 ′) = 1
+
+√𝐻 ∥𝜏 − 𝜏 ′ ∥𝐹 = Γ ∥𝜏 − 𝜏 ′ ∥, Γ = 1
+
+√𝐻 .
+
+This is exactly the metric compatibility inequality, with equality (hence the constant is tight). Since 1√𝐻 ≤ 1 for all 𝐻 ≥ 1, the inequality also holds for any Γ′ ≥ Γ (in particular Γ′ = 1). 
+
+I. Limitations 
+
+Muninn is a practical and general inference-time wrapper, but it has several limitations that are important for correct use and for future work. 
+
+a) Risk guarantees are tied to the chosen metric and calibration distribution: Muninn certifies closeness to the full-compute planner only with respect to the user-selected trajectory deviation metric 𝑑 (· , ·) and the deployment distribution D
+
+represented by the calibration set. If the runtime distribution shifts substantially (e.g., different obstacle statistics, new robot dynamics regimes, unseen contact interactions, different goal distributions, or altered observation noise), the exchangeability assumption underlying conformal calibration may be violated and empirical risk control can degrade. In practice, this motivates periodic recalibration or domain-specific monitoring when operating far from the calibration regime. 
+
+b) The certificate bounds deviation to the teacher, not task-level safety: Munin’s guarantee is a bound on deviation from the full-compute diffusion planner; it does not by itself guarantee collision avoidance, constraint satisfaction, or stability of the closed-loop system. If the base planner is unsafe in some contexts, Muninn will remain close to that behavior. Conversely, even small deviations can matter for discontinuous constraints, so a tight deviation guarantee is helpful but not sufficient as a standalone safety mechanism. Muninn is best viewed as a 
+
+faithfulness and risk budgeting layer that can be combined with existing safety filters, controllers, or verification modules. 
+
+c) Conservatism from union bounds and step-wise al-location: Our global risk bound relies on a union bound across cache-eligible timesteps, which can be conservative when step-wise failures are correlated. This conservatism can reduce achievable speedup at very small target risk levels or long diffusion horizons. Tighter sequence-level calibration (e.g., conformal methods designed for time-series or martingale settings, or learned joint envelopes over step sequences) could reduce conservatism while preserving rigorous risk control. 
+
+d) Dependence on probe informativeness and architecture access: Muninn requires a low-cost probe Ψ that is sufficiently predictive of reuse error. For some architectures, extracting a meaningful intermediate representation may require engineering access to model internals, and extremely shallow probes may be too weak to be useful. Although Muninn does not require retraining, it assumes that a partial forward pass or lightweight representation can be computed cheaply and consistently across steps. 
+
+e) Sampler/model changes require recalibration and re-derived coefficients: Munin’s sensitivity accounting depends on the sampler update coefficients (through 𝐿 𝑡 ) and on the probe– error relationship learned during calibration. Changing the sampler (e.g., DDPM vs. DDIM variants, different noise sched-ules), applying strong guidance, or modifying conditioning can alter both sensitivity and error statistics. While Muninn can be applied without retraining, these changes generally necessitate recalibration and, depending on the sampler, recomputation of the sensitivity terms. 
+
+f) Interaction with downstream control and replanning remains nuanced: In receding-horizon control, the effect of bounded deviation in planned trajectories on closed-loop performance depends on replanning rate, tracker/controller robustness, actuation limits, and state estimation noise. While Muninn preserves the teacher distribution up to the calibrated tolerance, a deeper understanding of how deviation budgets translate into closed-loop stability and safety margins is an important direction for future work. Despite these limitations, Muninn provides a practical, deployment-oriented step toward making trajectory diffusion planners real-time: it offers a training-free mechanism to reduce compute while maintaining explicit, user-controlled fidelity to the full-compute planner and exposing an interpretable runtime signal that can be integrated into larger safety and control systems.
