@@ -1,0 +1,1540 @@
+Title: Structured Coupling for Flow Matching
+
+URL Source: https://arxiv.org/pdf/2605.07676v1
+
+Published Time: Mon, 11 May 2026 01:28:29 GMT
+
+Number of Pages: 34
+
+Markdown Content:
+# Structured Coupling for Flow Matching 
+
+Xavier Sumba, Carles Balsells-Rodas, Yingzhen Li 
+
+Imperial College London 
+
+{xxs22,cb221,yingzhen.li}@imperial.ac.uk 
+
+## Abstract 
+
+Standard flow matching scales well but typically relies on an unstructured source distribution, limiting its ability to learn interpretable latent structure. Latent-variable models, by contrast, capture structure but often sacrifice generative quality. We bridge this gap by proposing Structured Coupling for Flow Matching (SCFM), a cooperative framework that augments flow matching with structured latent rep-resentation learning. By introducing structured latent variables and exogenous noise into the source, SCFM jointly learns a structured prior (via latent variable modeling) and a continuous transport map (via flow matching). It uses a shared time-dependent recognition network for both latent variable model variational inference and intermediate-time flow velocity estimation. This yields a structurally informed yet unconditional, simulation-free flow model, where the latent variable model can also assist flow sampling. Empirically, SCFM facilitates unsupervised latent representation learning for clustering, disentanglement and downstream tasks, while remaining competitive with flow matching in sample quality, showing that meaningful structure can be learned without sacrificing generative fidelity 1.
+
+## 1 Introduction 
+
+Diffusion models [Ho et al., 2020, Nichol and Dhariwal, 2021, Song et al., a,b] and flow-based models [Lipman et al., 2023, Liu et al., 2022, Gat et al., 2024, Tong et al., 2024, Isobe et al., 2025] are central paradigms in modern generative modeling. Among flow-based approaches, flow matching has emerged as an effective framework for training continuous normalizing flows [Lipman et al., 2023, Eijkelboom et al., 2024, Albergo et al., 2025], combining scalable optimization with strong sample quality [Ma et al., 2024]. However, standard flow matching typically uses a fixed, unstructured source distribution, so the learned transport does not explicitly encourage latent structure useful for interpretation, clustering, disentanglement, or downstream tasks. Latent-variable models such as variational autoencoders (VAEs) [Kingma and Welling, 2014, Burda et al., 2015] address the complementary problem. By introducing an explicit latent space and amortized inference, they can learn structured and often interpretable representations, including representations that better separate underlying factors of variation [Dilokthanakul et al., 2016, Jiang et al., 2017a, Higgins et al., 2017, Chen et al., 2018b, Locatello et al., 2019]. However, their generative quality is often limited by restrictive decoder families or posterior approximations [Burgess et al., 2018]. This leaves a gap between methods that learn useful latent structure and methods that produce high-fidelity samples in a single, unified framework. To close this gap, we propose Structured Coupling for Flow Matching (SCFM), a framework that combines structured latent-variable learning with simulation-free flow matching in a stochastic-interpolant formulation [Albergo and Vanden-Eijnden, 2023, Albergo et al., 2025]. SCFM replaces the standard source with an augmented variable x0 = ( z, ε ), where z follows a learnable structured prior and ε provides exogenous transport degrees of freedom. During training, an encoder induces  
+
+> 1Code is available at https://github.com/cuent/scfm .Preprint.
+> arXiv:2605.07676v1 [cs.LG] 8 May 2026
+
+Table 1: Standard flow matching (FM) versus structured coupling for flow matching (SCFM).                                             
+
+> Aspect FM SCFM
+> Source fixed p0(x0)x0= ( z, ε ),pψ(z)p(ε)
+> Train coupling p0(x0)pdata (x1)pdata (x1)qϕ(z|x1)p(ε)(≈pθ(x1|z)pψ(z)p(ε))Interpolant It(x0,x1)same linear It
+> Posterior model none explicit shared qt,ϕ (x0|xt); at t= 1 , recovers VAE posterior qϕ(z|x1)
+> Sampling flow from fixed p0(x0)flow from pψ(z)p(ε); optional decoder proposal plus short refinement Endpoint branch none VAE-style prior and decoder learning Latent structure none explicit structured latents for clustering, disentanglement, and downstream tasks
+
+Figure 1: While standard flow matching (left) relies on a fixed, unstructured source, SCFM (right) replaces this with an augmented source x0 = ( z, ε ). An encoder induces a data-dependent coupling, distilling semantic structure into a learnable prior (indicated by colored latent clusters). Crucially, a single shared network serves as both the endpoint variational encoder for prior learning and the intermediate-time posterior estimator for flow velocity. This unified objective yields a structured latent space without sacrificing the continuous, simulation-free transport of standard flow models. the coupling between data and source variables, while a shared time-dependent recognition network acts as the variational encoder at the endpoint ( t = 1 ) and as the posterior mean estimator that defines the flow for intermediate times ( t < 1). A VAE-style endpoint objective aligns the aggregated posterior over z with the prior, so the flow is trained and sampled from the same structured source distribution. Through this VAE objective, the flow becomes structurally informed while remaining unconditional, enabling reconstruction, unconditional generation, and decoder-initialized refinement. SCFM therefore combines the representation-learning benefits of latent-variable models with the sample quality of flow matching. Our contributions are summarized as follows (also see Figure 1 and Table 1): • We introduce SCFM, a structured flow-matching framework that jointly learns a latent prior and a continuous transport map. The core idea is to use an augmented source variable 
+
+x0 = ( z, ε ), together with an encoder-induced coupling that separates semantic structure from transport flexibility. • We show how a shared time-dependent recognition network and VAE-style endpoint objec-tive align the training coupling with the sampling prior, while also enabling reconstruction and decoder-initialized refinement from endpoint proposals. Our approach integrates flow matching and VAE training in a cooperative framework, avoiding two-stage or independent training of different network components. • We demonstrate empirically that SCFM learns structural latent representations that are useful for clustering, disentanglement, and downstream classification, while preserving competitive sample generation quality. The decoder-initialized refinement method also improves VAE generation quality towards the levels of flow-matching models. 22 Preliminaries 
+
+(Variational) Flow matching. Continuous normalizing flows (CNFs) [Chen et al., 2018a] trans-forms samples from a source distribution into data by solving an ordinary differential equation: 
+
+dxt
+
+dt = vϕ,t (xt), x0 ∼ p0(x0), t ∈ [0 , 1] . (1) Likelihood-based CNF training requires tracking the change of density along the probability path 
+
+{pt}t∈[0 ,1] , which introduces numerical integration and Jacobian trace terms [Chen et al., 2018a, Grathwohl et al., 2019]. Flow matching [Lipman et al., 2023, Albergo and Vanden-Eijnden, 2023, Albergo et al., 2025, Ma et al., 2024] avoids these costs by learning vθ,t through regression against velocities induced by a prescribed path between source and target distributions. Once the vector field is learned, sampling simply draws x0 ∼ p0 and integrates the ODE (1) forward to t = 1 , producing samples that are approximately distributed as the data distribution pdata (x1).In detail, let Γ( x0, x1) be a coupling between a source distribution p0(x0) and the data distribution 
+
+pdata (x1). With f (t) = 1 − t, the interpolant 
+
+xt = f (t)x0 + (1 − f (t)) x1, t ∈ [0 , 1] , (2) defines a path from source samples to data samples. The corresponding conditional velocity field is 
+
+vt(xt | x0) = ∂tf (t)1−f (t)
+
+ x0 −xt
+
+. The marginal velocity field that transports the marginal distribution of 
+
+xt is obtained by averaging this conditional velocity over the posterior source distribution Γt(x0 | xt),which is defined by the interpolant (2) and the coupling Γ( x0, x1):
+
+vt(xt) = EΓt(x0|xt)[vt(xt | x0)] = ∂tf (t)1 − f (t)
+
+ EΓt(x0|xt)[x0] − xt
+
+ . (3) Flow matching trains a neural network-based velocity field to approximate the marginal velocity field (3) via regression. Instead, Variational Flow Matching (VFM) [Eijkelboom et al., 2024] introduces a recognition model qt,ϕ (x0 | xt) to approximate Γt(x0 | xt), so the induced vector field depends only on the approximate posterior mean (see Appendix A for details): 
+
+vϕ,t (xt) = ∂tf (t)1 − f (t)
+
+ Eqt,ϕ (x0|xt)[x0] − xt
+
+.
+
+Role of the source. In standard (variational) flow matching, the source distribution p0(x0) is usually fixed to a simple prior, such as an isotropic Gaussian. This choice is convenient for sampling, but the source coordinates are not trained to expose semantic structure; representation structure, if present, is only implicit in the learned transport. As we shall see, SCFM instead makes the source distribution learnable and structured by tying the source posterior in Eq. (3) to VAE-style endpoint losses at the data endpoint, while retaining the simulation-free training advantages of flow matching. 
+
+Variational autoencoders. VAEs [Kingma and Welling, 2014] build latent variable models for generative modelling, where such a model consists of a prior pψ (z), potentially with learnable parameters ψ for structural representation learning, and a stochastic decoder pθ (x1 | z). Training is done via minimizing the negative Evidence Lower Bound (ELBO), computed using an approximate posterior (stochastic encoder) qϕ(z | x1):
+
+LVAE (θ, ϕ, ψ ) = Epdata (x1)
+
+h
+
+− Eqϕ(z|x1)[log pθ (x1 | z)] + KL  qϕ(z | x1) ∥ pψ (z)i
+
+. (4) While VAEs are powerful for representation learning, they often yield lower sample quality than diffusion/flow-based models. As we shall see, SCFM exploits the VAE framework to structurally inform the flow’s source distribution, unifying the representation learning of VAEs with the high-fidelity generation of flow matching. 
+
+## 3 Structured Coupling for Flow Matching 
+
+We introduce SCFM, whose key ideas include (1) the encoder-induced coupling (Section 3.1), (2) time-split posterior matching and practical training loss (Section 3.2), and (3) flexible sampling modes (Section 3.3). Table 1 provides a summary of SCFM innovations over standard FM. In essence, SCFM makes the source marginal structural and learnable via encoder-induced coupling, while retaining the same linear interpolant and simulation-free training target. 33.1 Encoder- and Decoder-Induced Couplings 
+
+SCFM introduces structure by changing the source endpoint used by flow matching in order to achieve structural latent representation learning. We define the source variable as a concatenation of structural representation z and exogenous noise ε:
+
+x0 = ( z, ε ) ∈ RD , z ∈ Rdz , ε ∈ Rdε , D = dz + dε.
+
+We train a flow-matching generative model that, at sampling time, uses a learnable source prior factorized into a structural prior over z and a fixed exogenous-noise prior over ε:
+
+pψ (x0) = pψ (z) p(ε), p(ε) = N (0 , I dε ), (5) where pψ (z) is learnable. In our experiments, pψ (z) is chosen to impose structure on the latent space through a Gaussian mixture prior. Standard flow matching would typically use the independent coupling pψ (x0)pdata (x1). Instead, SCFM uses the encoder-induced coupling 
+
+Γenc  
+
+> ϕ
+
+(x0, x1) := pdata (x1) qϕ(z | x1) p(ε), x0 = ( z, ε ), (6) where qϕ(z | x1) is a learnable stochastic encoder. Thus, each interpolation path starts from a source endpoint whose structured coordinate is inferred from the data endpoint. This makes the latent representation part of the transport problem itself, rather than an auxiliary representation learned beside the flow. Under this coupling, the optimal flow-matching model transports the source marginal 
+
+Γenc  
+
+> ϕ
+
+(x0) = qagg  
+
+> ϕ
+
+(z) p(ε), qagg  
+
+> ϕ
+
+(z) := 
+
+Z
+
+pdata (x1) qϕ(z | x1) dx1, (7) to the data distribution pdata (x1). The resulting gap between the training marginal Γenc  
+
+> ϕ
+
+(x0) and the sampling prior pψ (x0) lies entirely in the structural prior over z. SCFM closes this prior-aggregated-posterior mismatch with VAE-style endpoint objective. With a stochastic decoder pθ (x1 | z), the VAE loss (4) is equivalent to 
+
+LVAE (θ, ϕ, ψ ) = KL  pdata (x1) qϕ(z | x1) ∥ pψ (z) pθ (x1 | z) + const . (8) At the global optimum of this objective, under sufficiently expressive networks and prior families [Hoffman and Johnson, 2016, Alemi et al., 2018], the aggregated posterior matches the learnable prior, qagg  
+
+> ϕ
+
+(z) = pψ (z) (see Appendix B.2). Consequently, the coupling used to train the flow is aligned with the source prior used at sampling time. Jointly training the flow and the latent-variable model has two complementary benefits: 1. Flow matching enhances the latent-variable model through deterministic transport-based sampling. When the KL in Eq. (8) is zero (i.e., the VAE loss is minimized to its global optimum), the encoder-induced coupling coincides with the following decoder-induced coupling 
+
+Γdec  
+
+> θ,ψ
+
+(x0, x1) := pψ (z) p(ε) pθ (x1 | z), x0 = ( z, ε ).
+
+Its t = 1 marginal is the latent-variable model 
+
+Γdec  
+
+> θ,ψ
+
+(x1) = pθ,ψ (x1) := 
+
+Z
+
+pψ (z) pθ (x1 | z) dz.
+
+Therefore SCFM supports an alternative deterministic sampling mode for generation: 
+
+x1 ∼ pθ,ψ (x1) ⇔ x0 = ( z, ε ) ∼ pψ (z) p(ε), x1 = x0 +
+
+Z 10
+
+vt(xt) dt. (9) This connection motivates the decoder-initialized refinement scheme in Section 3.3. 2. VAE enriches flow-matching models via structured latent representation learning. Beyond matching the prior to the aggregated posterior, the encoder qϕ(z | x1) is trained to approximate the posterior of the latent-variable model pθ,ψ (x1, z), thereby extracting compressed representations of the data into z. Through this VAE objective, the flow itself becomes structurally informed: both the learned source prior pψ (x0) and the encoder-induced coupling Γenc  
+
+> ϕ
+
+(x0, x1) that define flow training inherit the latent structure learned in z. Importantly, this is not external conditioning. The flow remains unconditional, while z still acquires semantic meaning in an unsupervised manner, which later supports disentanglement, clustering, and latent-space classification, and provides a degree of control through the learned latent variable. 43.2 Time-split Posterior Matching and Training Objectives 
+
+The remaining question is how to couple the endpoint latent-variable objective to flow matching without a second encoder. In standard FM, under the linear interpolant Eq. (2) , the marginal vector field depends on the posterior only through EΓt(x0|xt)[x0]. Similarly, SCFM uses a single time-dependent posterior-mean network over the structured source endpoint x0 = ( z, ε ).
+
+Proposition 3.1 (Structured source posterior velocity) . Under the encoder-induced coupling in Eq. (6) and the linear interpolant in Eq. (2) , the marginal velocity is 
+
+vt(xt) = ∂tf (t)1 − f (t)
+
+ EΓenc  
+
+> t(x0|xt)
+
+[x0] − xt
+
+ = ∂tf (t)1 − f (t)
+
+ EΓenc  
+
+> t(z,ε |xt)
+
+[( z, ε )] − xt
+
+ . (10) 
+
+Intermediate-time regime ( t < 1). For t < 1, SCFM reduces to variational flow matching on the structured source endpoint, using the fixed-covariance Gaussian approximate posterior (encoder) 
+
+qt,ϕ (x0 | xt) = N  μϕ(xt, t ), σ 2 
+
+> x0
+
+ID
+
+ ⇒ vϕ,t (xt) = ∂tf (t)1 − f (t) (μϕ(xt, t ) − xt) . (11) The induced vector field vϕ,t (xt) follows Eq. (10) but with the oracle posterior mean replaced by the encoder mean. The resulting posterior-matching objective is 
+
+J<1(ϕ) = Et∼ρ<1 Ept(xt)KL (Γ enc  
+
+> t
+
+(x0 | xt) ∥ qt,ϕ (x0 | xt)) , (12) where ρ<1 is a distribution over t supported on t < 1, and Γenc  
+
+> t
+
+is induced by the encoder coupling in Eq. (6) . As this matching objective is for training qt,ϕ (x0 | x1) only, we apply stop-gradient operation sg (·) to Γenc  
+
+> t
+
+(x0 | x1) and use an equivalent compact VFM objective instead: 
+
+LVFM (ϕ) = − Et∼ρ<1,(xt,x0)∼Γenc  
+
+> t(x0,xt)
+
+ log qt,ϕ (sg (x0) | sg (xt))  + const ., (13) where (xt, x0) are sampled from the encoder interpolant-induced joint. In practice, we draw x1 ∼
+
+pdata , then z ∼ qϕ(z | x1) and ε ∼ p(ε), set x0 = (sg( z), ε ), and form xt = f (t)x0 + (1 − f (t)) x1.Under the fixed-covariance Gaussian family in Eq. (11) , this KL is equivalent to posterior-mean regression, and hence to the usual time-weighted velocity regression (see Appendix B.3). 
+
+Endpoint regime ( t = 1 ). The exact posterior Γenc  
+
+> t
+
+(x0 | xt) of the encoder-induced coupling converges to qϕ(z | x1)p(ε) as t → 1, meaning that at t = 1 VFM training is no longer suitable. Instead, at t = 1 SCFM performs structural learning by minimising the VAE loss Eq. (8) , together with decoder training. In particular, the convergence result inspires us to use the same network for the mean μϕ(xt, t ) for both t < 1 and t = 1 . Furthermore, via splitting μϕ(x1, 1) = 
+
+
+
+μzϕ(x1), μ εϕ(x1)
+
+
+
+,the first dz coordinates of the mean network, together with an endpoint-only variance head branching from the mean network, parameterize the approximate posterior in the VAE 
+
+qϕ(z | x1) = N  μzϕ(x1), diag( σ2
+
+> ϕ
+
+(x1))  . (14) The exogenous variable ε is excluded from the decoder pθ (x1 | z). Again due to the exact posterior convergence result, by defining qεϕ(ε | x1) = N (μεϕ(x1), I dε ), we minimize the KL divergence 
+
+Rε(ϕ) = 12 Epdata (x1)
+
+h
+
+μεϕ(x1) 2i
+
+= KL( qεϕ(ε | x1) ∥ p(ε)) + const . (15) Thus at t = 1 the endpoint contribution to the total loss is Lend = LVAE + Rε. Appendix B.1 gives the endpoint-objective derivation. 
+
+Flow–encoder network sharing. The same mean network μϕ(xt, t ) serves as the intermediate-time posterior estimator and, at t = 1 , as the encoder mean μzϕ(x1); only the encoder variance head is endpoint-specific. The endpoint VAE term also encourages qagg  
+
+> ϕ
+
+(z) ≈ pψ (z), making the encoder-induced training marginal compatible with the sampling prior; see Eq. (8) and Section 3.1. This is a tractable regularizer rather than a guarantee of exact marginal alignment. 5VaDE    
+
+> MFCVAE
+> SCFM (β-VAE)
+> SCFM (β-TCVAE)
+> 70
+> 80
+> 90
+> Score (%)
+> MNIST clustering performance
+> NMI
+> ACC VAE
+> AAE
+> BiGAN
+> DIM
+> SCFM (ours)
+> 30
+> 40
+> 50
+> 60
+> 70
+> Accuracy (%)
+> CIFAR-10 latent-space probing
+> Linear probe
+> Nonlinear probe SD-VAE
+> Linear SD-VAE
+> Nonlinear SCFM
+> Linear SCFM
+> Nonlinear
+> 0
+> 20
+> 40
+> Accuracy (%)
+> ImageNet latent-space probing
+> Top-1
+> Top-5
+
+Figure 2: Structured latent representations. Left: MNIST clustering metrics, reported as mean with standard-deviation error bars over five runs. Middle: CIFAR-10 downstream probe accuracy from learned latent representations. Right: ImageNet latent-space probing with frozen representations. 
+
+Total loss objective. In practice, one SCFM training step, summarized in Algorithm 1 in appendix, optimizes the decomposed objective 
+
+LSCFM (θ, ϕ, ψ ) = LVFM (ϕ) + Lrec (θ, ϕ ) + LKL (ϕ, ψ ) + Rε(ϕ). (16) Here LVFM trains the shared posterior model away from the endpoint, Lrec + LKL = LVAE is the endpoint VAE term, and Rε anchors the exogenous coordinates. We use β-VAE [Higgins et al., 2017] or β-TCVAE [Chen et al., 2018b] endpoint losses to enforce structured latent learning under a GMM prior. Reconstruction is trained with either a perceptual loss or MSE; see Appendix B.4. 
+
+3.3 Sampling via Decoder-Initialized Refinement 
+
+SCFM supports two flow-based sampling modes. The standard mode (Algorithm 2 in appendix) is full ODE integration, similar to standard flow matching. For unconditional generation, we draw 
+
+z ∼ pψ (z) and ε ∼ p(ε), set x0 = ( z, ε ), and integrate vϕ,t (xt) from t = 0 to t = 1 . As SCFM also trains an encoder, if an observation x1 is available, the same procedure yields a reconstruction by replacing the prior draw with z ∼ qϕ(z | x1) while still sampling ε ∼ p(ε).The decoder in SCFM provides an alternative sampling mode, as it can be used to initialize the flow near the endpoint. This decoder-initialized refinement mode is summarized in Algorithm 3 in appendix. Given x0 = ( z, ε ), we first sample bx1 ∼ pθ (· | z) and then initialize the interpolant at some t0 ∈ [0 , 1) via xt0 = f (t0)x0 + (1 − f (t0)) bx1. We then integrate vϕ,t (xt) only on [t0, 1] ,trading fewer ODE evaluations for a stronger dependence on decoder quality. This is motivated by the fact that at the global optimum of VAE training we have Γdec  
+
+> θ,ψ
+
+(x0, x1) = Γ enc  
+
+> ϕ
+
+(x0, x1), so that flow sampling techniques are also applicable to decoder-induced couplings. 
+
+## 4 Experiments 
+
+We evaluate SCFM along three axes: structured representations, disentanglement, and sample quality. We report quantitative metrics and qualitative visualizations; Appendix F defines all metrics. 
+
+Experimental setups. All SCFM models use a learnable GMM prior over z. MNIST [LeCun et al., 2002] clustering and Cars3D [Reed et al., 2015]/Shapes3D [Kim and Mnih, 2018] disentanglement use separate models with β-VAE and β-TCVAE endpoint losses; Appendices E.1 and E.3 give the cor-responding setups. In contrast, CIFAR-10 [Krizhevsky et al., 2009] and ImageNet-128 [Russakovsky et al., 2015] reuse the same trained SCFM model for both latent evaluation and image generation. CIFAR-10 uses a U-Net backbone with a β-VAE endpoint objective augmented by LPIPS [Johnson et al., 2016, Zhang et al., 2018]; Appendix E.2 gives the training details. ImageNet-128 follows a latent-diffusion-style setup: a pretrained Stable-Diffusion VAE maps images to VAE latents, and SCFM is trained directly in this latent image space using a SiT-XL/2 backbone [Rombach et al., 2022, Ma et al., 2024]. Appendix E.4 gives the ImageNet-128 model, training, and sampling setup, and Appendix E.5 gives the probing setup. 
+
+4.1 Structured Latent Representations 
+
+We first evaluate the representations learning capabilities of SCFM. On MNIST we measure cluster alignment, while on CIFAR-10 and ImageNet-128 we measure how much class information remains accessible from frozen latents without label supervision by training probing classifiers post-hoc. 6Source 
+
+> Img.
+> Target
+> Img.
+> Elevation Azimuth
+> Car
+> type Source
+> Img.
+> Target
+> Img.
+> Floor
+> hue
+> Object
+> hue
+> Object
+> shape
+
+Figure 3: Qualitative disentanglement via factor swaps. Left: Cars3D factor swaps. Right: Shapes3D factor swaps. Each column shows one source-target pair; each swap row transfers one target factor while preserving the others. 
+
+Cars3D Shapes3D Method FactorVAE ↑ DCI ↑ FactorVAE ↑ DCI ↑
+
+> VAE
+
+β-VAE 0.887 ± 0.039 0.218 ± 0.045 0.883 ± 0.091 0.624 ± 0.122 
+
+β-TCVAE 0.855 ± 0.082 0.140 ± 0.019 0.873 ± 0.074 0.613 ± 0.114 Diffusion  DisDiff 0.976 ± 0.018 0.232 ± 0.019 0.902 ± 0.043 0.723 ± 0.013 FDAE 0.912 ± 0.020 0.329 ± 0.061 0.998 ± 0.003 0.762 ± 0.064 EncDiff 0.948 ± 0.017 0.357 ± 0.072 0.999 ± 0.001 0.952 ± 0.028 
+
+DyGA 0.846 ± 0.015 0.307 ± 0.032 0.958 ± 0.044 0.833 ± 0.054 Flow  SCFM ( β-VAE) 0.940 ± 0.019 0.337 ± 0.082 0.836 ± 0.034 0.779 ± 0.065 SCFM ( β-TCVAE) 0.977 ± 0.027 0.357 ± 0.078 0.957 ± 0.083 0.828 ± 0.054 
+
+Table 2: Quantitative comparison on Cars3D and Shapes3D using FactorVAE score and DCI (mean ±std). For SCFM, we report both β-VAE and β-TCVAE endpoint regularizers. Best results are shown in bold and second-best results are underlined. 
+
+MNIST clustering. On MNIST, we use a learnable GMM prior with K = 10 and compare SCFM against VaDE [Jiang et al., 2017b] and MFCVAE [Falck et al., 2021]. SCFM is trained with β-VAE [Higgins et al., 2017] and β-TCVAE [Chen et al., 2018b] endpoint losses. We report normalized mutual information (NMI) and clustering accuracy (ACC) over five runs. Figure 2 (left) summarizes the results, with full values in Appendix Table 10. SCFM ( β-VAE) performs best, followed by SCFM ( β-TCVAE). Relative to VaDE, the best SCFM variant improves NMI by nearly 8 points and ACC by more than 13 points. Predicted clusters          
+
+> ACC 90.4%
+> NMI 0.878
+> SCFM (β-VAE)
+> 4
+> 0
+> 6
+> 5
+> 9
+> 1
+> 7
+> 2
+> 3
+> 8
+> 0123456789
+> Matched cluster label
+
+Figure 4: MNIST latents. Figure 4 shows a largely label-aligned latent partition under the learned GMM, with most ambiguity between visually similar digits such as 3 and 5. Overall, z learns cluster-discriminative structure rather than acting only as a sampling coordinate. Ap-pendix G.1 provides the full comparison across models. 
+
+CIFAR-10 representation quality. On CIFAR-10, we set 
+
+K = 10 as a coarse structured prior, without assuming a one-to-one correspondence between mixture components and class labels. We therefore evaluate representation quality by freezing 
+
+z and training linear and nonlinear probes without data augmen-tation. SCFM results are averaged over five seeds, while baseline numbers are taken from Zhang et al. [2022]. Figure 2 (middle) shows that SCFM achieves the best linear probe accuracy and the second-best nonlinear probe accuracy; full values are in Appendix Table 11. It outperforms VAE [Kingma and Welling, 2014], AAE [Makhzani et al., 2015], and BiGAN [Donahue et al., 2016] on both probes while remaining competitive with DIM [Hjelm et al., 2019]. The source therefore retains class-relevant information despite being trained without labels. Appendix G.3 shows reliable separation of vehicle classes, with most confusion among visually similar animal classes; Appendix G.2 visualizes samples across mixture-components with coherent appearance statistics. 7Table 3: Sample quality on CIFAR-10 and ImageNet-128. Left: FID 50K on CIFAR-10 and ImageNet-128; lower is better. For ImageNet-128, cond. denotes a class-conditional SiT-XL/2 base-line trained with ImageNet labels, while uncond. removes label conditioning. Right: representative SCFM samples, with ImageNet-128 samples on the top row and CIFAR-10 samples below.          
+
+> Dataset Model FID 50k ↓
+> CIFAR-10 Flow Matching 2.137 SCFM (ours) 2.117
+> ImageNet-128 SiT-XL/2 (cond.) 17.243 SiT-XL/2 (uncond.) 26.349 SCFM (ours) 17.180
+
+ImageNet-128 representation quality. We next test whether these representation gains persist at ImageNet scale. SCFM is trained in the Stable-Diffusion VAE latent space with a K = 100 GMM prior, and we evaluate frozen z with linear and nonlinear probes. Figure 2 (right) summarizes the ImageNet-128 results, with full values in Appendix Table 12. Relative to a frozen SD-VAE [Rombach et al., 2022] encoder, SCFM improves linear Top-1/Top-5 accuracy from 8.00 /13 .23 to 9.07 /23 .14 and nonlinear Top-1/Top-5 accuracy from 12 .34 /26 .54 to 
+
+27 .96 /53 .08 . These gains indicate that the structured latent variable z retains substantially more class-accessible information than the pretrained VAE latent baseline. 
+
+4.2 Disentanglement 
+
+To test whether the learned structured latent variable supports controllable generative factors, we evaluate SCFM on Cars3D and Shapes3D, using ground-truth factors only for evaluation. Following Locatello et al. [2019], models are trained without factor labels, with latent dimension 10 and a learnable GMM prior with K = 10 components. For each endpoint regularizer, we train 10 models while sweeping β; qualitative swaps are taken from the best run. Table 2 reports FactorVAE and DCI disentanglement scores, with VAE and diffusion baselines from Chi et al. [2026]. SCFM is competitive on both datasets. On Cars3D, SCFM ( β-TCVAE) attains the best FactorVAE score and a DCI score comparable to the strongest baselines, while SCFM ( β-VAE) remains competitive on both metrics. On Shapes3D, prior diffusion models perform best, but both SCFM variants remain strong in the fully unsupervised setting. Figure 3 shows qualitative factor swaps obtained by interpolating in latent space and generated with full ODE sampling. SCFM transfers target factors while largely preserving the remaining attributes, although cylinder-to-cube transitions remain harder. Overall, SCFM learns factor-sensitive latent structure. 
+
+4.3 Image Generation 14.2G    
+
+> 92.6G
+> 171.0G
+> 249.4G
+> 406.2G
+> 798.1G
+> 1.58T
+> 1.97T
+> 2.37T
+> 2.76T
+> 3.54T
+> 3.78T
+> 3.93T
+> Cumulative FLOPs
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> FID
+> decoder
+> NFE=1
+> NFE=2
+> NFE=3
+> NFE=5
+> NFE=10
+> NFE=20
+> NFE=25
+> NFE=30
+> NFE=35
+> NFE=45
+> NFE=48
+> NFE=50
+> FID vs Actual Sampling FLOPs
+> Decoder-refinement ( xt/t0= 0.8 )
+> Decoder
+> Full flow
+
+Figure 5: CIFAR-10 FID vs. cumulative sampling FLOPs. We compare decoder-only sampling, decoder refinement from xt with t0 = 0 .8, and full-flow sampling. Decoder refinement improves the quality–compute trade-off, approaching full-flow FID with fewer FLOPs. Finally, we test whether adding a struc-tured latent source preserves the sam-ple quality of flow matching. Table 3 reports FID 50K on CIFAR-10 and ImageNet-128 together with represen-tative full-flow SCFM samples. On CIFAR-10, SCFM reaches 2.117 
+
+FID, essentially matching the 2.137 
+
+flow-matching baseline [Lipman et al., 2023]. Thus, learning structured source does not degrade sample quality. We also evaluate decoder-initialized re-finement for compute–quality trade-off. Figure 5 shows that short refinement im-proves over decoder-only sampling with substantially fewer FLOPs; Appendix Figure 8 shows samples from all three modes. 8Table 4: Model complexity. We report trainable parameters and FLOPs for one batch-size-one forward pass through each model.                     
+
+> Dataset Backbone Model Params FLOPs / forward
+> CIFAR-10 U-Net Flow Matching 73.6M 40.4G CIFAR-10 U-Net SCFM 101M 95.4G ImageNet-128 SiT-XL/2 Flow Matching 675M 58.1G ImageNet-128 SiT-XL/2 SCFM 1.1B 153G
+
+On ImageNet-128, SCFM is unconditional at generation time, sampling z ∼ pψ (z) rather than using class labels. It reaches 17 .180 FID, slightly improving over class-conditional SiT-XL/2 ( 17 .243 )and substantially outperforming unconditional SiT-XL/2 ( 26 .349 ). This suggests that the learned structured source remains effective for large-scale unconditional generation, even at ImageNet scale. Additional uncurated samples for all datasets are shown in Appendix H. 
+
+## 5 Discussion 
+
+Related work overview Related work around SCFM falls into three main categories. First, latent-variable models such as VAEs and their structured-prior extensions learn useful representations for clustering and disentanglement, but their generation quality is typically constrained by the decoder family and by direct sampling from the latent-variable model [Kingma and Welling, 2014, Burda et al., 2015, Dilokthanakul et al., 2016, Jiang et al., 2017b, Falck et al., 2021, Higgins et al., 2017, Burgess et al., 2018, Chen et al., 2018b, Locatello et al., 2019]. Second, diffusion- and transport-based methods improve the source distribution or coupling geometry through learned priors, optimal-transport pairings, or variational couplings, but generally do not treat the source itself as a learned representation space [Sang-gil et al., 2022, Guan et al., 2023, Tong et al., 2024, Albergo et al., 2024, Wang et al., 2024, Silvestri et al., 2025]. Third, recent flow-matching approaches begin to target representation learning more directly through latent-variable transport, structured flow autoencoding, disentangled flows, or joint encoder-generator training [Guo and Schwing, 2025, Zhang et al., 2025, Xu et al., 2026, Ukita and Okita, 2026, Chi et al., 2026]. SCFM is closest to the last category, but differs in that it learns a structured source distribution for a stochastic interpolant: the latent variable is part of the source endpoint being transported, not only a conditioning signal or a factorization of the velocity field. Appendix D provides an extended related-work discussion. 
+
+Comparison with guidance SCFM is distinct from guidance-based generation. Classifier-free guidance and conditional flow-matching models steer sampling by injecting external conditioning signals, such as labels or prompts, into the denoising or velocity network [Ho and Salimans, 2022]. SCFM instead samples unconditionally from pψ (z)p(ε), without labels, prompts, or an external guidance term. The latent variable z can still shape generation because it is part of the source endpoint transported by the flow. Thus, SCFM provides implicit structural control through the learned source distribution, rather than explicit conditioning at sampling time. 
+
+Summary and future work SCFM combines a learnable structured latent prior with flow-based transport in a single generative framework. Across MNIST, CIFAR-10, Cars3D, Shapes3D, and ImageNet-128, it yields strong clustering and representation quality over VAE-based baselines while remaining competitive with strong flow-based generators in sample quality. These results support the claim that learning a structured source can make flow matching substantially more useful as a representation model without giving up its main generative strengths. In particular, the same structured latent source that improves representation quality does not force a trade-off against generation quality. However, SCFM still has several limitations. First, it is more expensive than standard flow matching, since it introduces endpoint latent-variable components and an auxiliary decoder, increasing both parameter count and training FLOPs; Table 4 quantifies this overhead which is notable but not unacceptable. Second, decoder-based sampling modes depend on the quality of the endpoint latent-variable model: if the latent model is poorly trained or suffers from posterior collapse, reconstruction quality degrades and decoder-initialized refinement becomes less effective. Future work should therefore focus on reducing this additional cost, improving decoder robustness, and extending SCFM to larger-scale, multimodal, and conditional regimes. 9References 
+
+Michael Albergo, Nicholas M. Boffi, and Eric Vanden-Eijnden. Stochastic interpolants: A unifying framework for flows and diffusions. Journal of Machine Learning Research , 26(209):1–80, 2025. URL http://jmlr.org/papers/v26/23-1605.html .Michael Samuel Albergo and Eric Vanden-Eijnden. Building normalizing flows with stochastic interpolants. In The Eleventh International Conference on Learning Representations , 2023. URL 
+
+https://openreview.net/forum?id=li7qeBbCR1t .Michael Samuel Albergo, Mark Goldstein, Nicholas Matthew Boffi, Rajesh Ranganath, and Eric Vanden-Eijnden. Stochastic interpolants with data-dependent couplings. In Ruslan Salakhut-dinov, Zico Kolter, Katherine Heller, Adrian Weller, Nuria Oliver, Jonathan Scarlett, and Felix Berkenkamp, editors, Proceedings of the 41st International Conference on Machine Learning ,volume 235 of Proceedings of Machine Learning Research , pages 921–937. PMLR, 21–27 Jul 2024. URL https://proceedings.mlr.press/v235/albergo24a.html .Alexander Alemi, Ben Poole, Ian Fischer, Joshua Dillon, Rif A. Saurous, and Kevin Murphy. Fixing a broken ELBO. In Jennifer Dy and Andreas Krause, editors, Proceedings of the 35th International Conference on Machine Learning , volume 80 of Proceedings of Machine Learning Research , pages 159–168. PMLR, 10–15 Jul 2018. URL https://proceedings.mlr.press/v80/alemi18a. html .Yuri Burda, Roger Grosse, and Ruslan Salakhutdinov. Importance weighted autoencoders. arXiv preprint arXiv:1509.00519 , 2015. Christopher P Burgess, Irina Higgins, Arka Pal, Loic Matthey, Nick Watters, Guillaume Des-jardins, and Alexander Lerchner. Understanding disentangling in beta-vae. arXiv preprint arXiv:1804.03599 , 2018. Ricky T. Q. Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ordinary differential equations. In S. Bengio, H. Wallach, H. Larochelle, K. Grauman, N. Cesa-Bianchi, and R. Garnett, editors, Advances in Neural Information Processing Systems , volume 31. Curran Associates, Inc., 2018a. URL https://proceedings.neurips.cc/paper_files/paper/ 2018/file/69386f6bb1dfed68692a24c8686939b9-Paper.pdf .Ricky TQ Chen, Xuechen Li, Roger B Grosse, and David K Duvenaud. Isolating sources of disentanglement in variational autoencoders. Advances in neural information processing systems ,31, 2018b. Jinjin Chi, Taoping Liu, Mengtao Yin, Ximing Li, Yongcheng Jing, and Dacheng Tao. Disentangled representation learning via flow matching. arXiv preprint arXiv:2602.05214 , 2026. Nat Dilokthanakul, Pedro AM Mediano, Marta Garnelo, Matthew CH Lee, Hugh Salimbeni, Kai Arulkumaran, and Murray Shanahan. Deep unsupervised clustering with gaussian mixture varia-tional autoencoders. arXiv preprint arXiv:1611.02648 , 2016. Jeff Donahue, Philipp Krähenbühl, and Trevor Darrell. Adversarial feature learning. arXiv preprint arXiv:1605.09782 , 2016. Cian Eastwood and Christopher K. I. Williams. A framework for the quantitative evaluation of disentangled representations. In International Conference on Learning Representations , 2018. URL https://openreview.net/forum?id=By-7dz-AZ .Floor Eijkelboom, Grigory Bartosh, Christian A. Naesseth, Max Welling, and Jan-Willem van de Meent. Variational flow matching for graph generation. In A. Globerson, L. Mackey, D. Bel-grave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, editors, Advances in Neural Informa-tion Processing Systems , volume 37, pages 11735–11764. Curran Associates, Inc., 2024. doi: 10.52202/079017-0374. URL https://proceedings.neurips.cc/paper_files/paper/ 2024/file/15b780350b302a1bf9a3bd273f5c15a4-Paper-Conference.pdf .Fabian Falck, Haoting Zhang, Matthew Willetts, George Nicholson, Christopher Yau, and Chris C Holmes. Multi-facet clustering variational autoencoders. Advances in Neural Information Process-ing Systems , 34:8676–8690, 2021. 10 Itai Gat, Tal Remez, Neta Shaul, Felix Kreuk, Ricky TQ Chen, Gabriel Synnaeve, Yossi Adi, and Yaron Lipman. Discrete flow matching. Advances in Neural Information Processing Systems , 37: 133345–133385, 2024. Will Grathwohl, Ricky T. Q. Chen, Jesse Bettencourt, and David Duvenaud. Scalable reversible generative models with free-form continuous dynamics. In International Conference on Learning Representations , 2019. URL https://openreview.net/forum?id=rJxgknCcK7 .Jiaqi Guan, Xiangxin Zhou, Yuwei Yang, Yu Bao, Jian Peng, Jianzhu Ma, Qiang Liu, Liang Wang, and Quanquan Gu. Decompdiff: diffusion models with decomposed priors for structure-based drug design. In Proceedings of the 40th International Conference on Machine Learning , ICML’23. JMLR.org, 2023. Pengsheng Guo and Alex Schwing. Variational rectified flow matching. In Forty-second Interna-tional Conference on Machine Learning , 2025. URL https://openreview.net/forum?id= Rk18ZikrFI .Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter. GANs trained by a two time-scale update rule converge to a local nash equilibrium. In Advances in Neural Information Processing Systems , volume 30, 2017. Irina Higgins, Loic Matthey, Arka Pal, Christopher Burgess, Xavier Glorot, Matthew Botvinick, Shakir Mohamed, and Alexander Lerchner. beta-VAE: Learning basic visual concepts with a constrained variational framework. In International Conference on Learning Representations ,2017. URL https://openreview.net/forum?id=Sy2fzU9gl .R Devon Hjelm, Alex Fedorov, Samuel Lavoie-Marchildon, Karan Grewal, Phil Bachman, Adam Trischler, and Yoshua Bengio. Learning deep representations by mutual information estimation and maximization. In International Conference on Learning Representations , 2019. URL https: //openreview.net/forum?id=Bklr3j0cKX .Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. In NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications , 2022. URL https://openreview. net/forum?id=qw8AKxfYbI .Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. Matthew D Hoffman and Matthew J Johnson. Elbo surgery: yet another way to carve up the variational evidence lower bound. In Workshop in advances in approximate Bayesian inference, NIPS , volume 1, 2016. Noboru Isobe, Masanori Koyama, Jinzhe Zhang, Kenji Fukumizu, and Kohei Hayashi. Extended flow matching : a method of conditional generation with generalized continuity equation, 2025. URL https://openreview.net/forum?id=0QJPszYxpo .Zhuxi Jiang, Yin Zheng, Huachun Tan, Bangsheng Tang, and Hanning Zhou. Variational deep embedding: an unsupervised and generative approach to clustering. In Proceedings of the 26th International Joint Conference on Artificial Intelligence , IJCAI’17, page 1965–1972. AAAI Press, 2017a. ISBN 9780999241103. Zhuxi Jiang, Yin Zheng, Huachun Tan, Bangsheng Tang, and Hanning Zhou. Variational deep embedding: an unsupervised and generative approach to clustering. In Proceedings of the 26th International Joint Conference on Artificial Intelligence , pages 1965–1972, 2017b. Justin Johnson, Alexandre Alahi, and Li Fei-Fei. Perceptual losses for real-time style transfer and super-resolution. In Bastian Leibe, Jiri Matas, Nicu Sebe, and Max Welling, editors, Computer Vision – ECCV 2016 , pages 694–711, Cham, 2016. Springer International Publishing. ISBN 978-3-319-46475-6. Hyunjik Kim and Andriy Mnih. Disentangling by factorising. In International conference on machine learning , pages 2649–2658. PMLR, 2018. 11 Diederik P. Kingma and Max Welling. Auto-Encoding Variational Bayes. In 2nd International Conference on Learning Representations, ICLR 2014, Banff, AB, Canada, April 14-16, 2014, Conference Track Proceedings , 2014. Alex Krizhevsky, Geoffrey Hinton, et al. Learning multiple layers of features from tiny images. 2009. Yann LeCun, Léon Bottou, Yoshua Bengio, and Patrick Haffner. Gradient-based learning applied to document recognition. Proceedings of the IEEE , 86(11):2278–2324, 2002. Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. In The Eleventh International Conference on Learning Repre-sentations , 2023. URL https://openreview.net/forum?id=PqvMRDCJT9t .Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. arXiv preprint arXiv:2209.03003 , 2022. Francesco Locatello, Stefan Bauer, Mario Lucic, Gunnar Raetsch, Sylvain Gelly, Bernhard Schölkopf, and Olivier Bachem. Challenging common assumptions in the unsupervised learn-ing of disentangled representations. In Kamalika Chaudhuri and Ruslan Salakhutdinov, editors, 
+
+Proceedings of the 36th International Conference on Machine Learning , volume 97 of Pro-ceedings of Machine Learning Research , pages 4114–4124. PMLR, 09–15 Jun 2019. URL 
+
+https://proceedings.mlr.press/v97/locatello19a.html .Nanye Ma, Mark Goldstein, Michael S Albergo, Nicholas M Boffi, Eric Vanden-Eijnden, and Saining Xie. Sit: Exploring flow and diffusion-based generative models with scalable interpolant transformers. In European Conference on Computer Vision , pages 23–40. Springer, 2024. Alireza Makhzani, Jonathon Shlens, Navdeep Jaitly, Ian Goodfellow, and Brendan Frey. Adversarial autoencoders. arXiv preprint arXiv:1511.05644 , 2015. Alexander Quinn Nichol and Prafulla Dhariwal. Improved denoising diffusion probabilistic models. In International Conference on Machine Learning , pages 8162–8171. PMLR, 2021. Scott E Reed, Yi Zhang, Yuting Zhang, and Honglak Lee. Deep visual analogy-making. Advances in neural information processing systems , 28, 2015. Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF confer-ence on computer vision and pattern recognition , pages 10684–10695, 2022. Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej Karpathy, Aditya Khosla, Michael Bernstein, Alexander C. Berg, and Li Fei-Fei. ImageNet Large Scale Visual Recognition Challenge. International Journal of Computer Vision (IJCV) , 115 (3):211–252, 2015. doi: 10.1007/s11263-015-0816-y. Lee Sang-gil, Heeseung Kim, Chaehun Shin, Xu Tan, Chang Liu, Qi Meng, Tao Qin, Wei Chen, Sungroh Yoon, and Tie-Yan Liu. Priorgrad: Improving conditional denoising diffusion models with data-dependent adaptive prior. In International Conference on Learning Representations ,2022. URL https://openreview.net/forum?id=_BNiN4IjC5 .Gianluigi Silvestri, Luca Ambrogioni, Chieh-Hsin Lai, Yuhta Takida, and Yuki Mitsufuji. VCT: Train-ing consistency models with variational noise coupling. In Forty-second International Conference on Machine Learning , 2025. URL https://openreview.net/forum?id=CMoX0BEsDs .Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In Interna-tional Conference on Learning Representations , a. Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. In International Conference on Learning Representations , b. Alexander Tong, Kilian FATRAS, Nikolay Malkin, Guillaume Huguet, Yanlei Zhang, Jarrid Rector-Brooks, Guy Wolf, and Yoshua Bengio. Improving and generalizing flow-based generative models with minibatch optimal transport. Transactions on Machine Learning Research , 2024. ISSN 2835-8856. URL https://openreview.net/forum?id=CD9Snc73AW . Expert Certification. 12 Kosuke Ukita and Tsuyoshi Okita. High-performance self-supervised learning by joint training of flow matching. In The 29th International Conference on Artificial Intelligence and Statistics , 2026. URL https://openreview.net/forum?id=yW5dvLytON .Zhanpeng Wang, Shenghao Li, Chen Wang, Shuting Cao, Na Lei, and Zhongxuan Luo. Solving Prior Distribution Mismatch in Diffusion Models via Optimal Transport. arXiv e-prints , art. arXiv:2410.13431, October 2024. doi: 10.48550/arXiv.2410.13431. Yidan Xu, Yixin Wang, and XuanLong Nguyen. Structured flow autoencoders: Learning structured probabilistic representations with flow matching. In The Fourteenth International Conference on Learning Representations , 2026. URL https://openreview.net/forum?id=KYdfvF2SZN .Mingtian Zhang, Tim Z. Xiao, Brooks Paige, and David Barber. Improving vae-based representation learning, 2022. URL https://arxiv.org/abs/2205.14539 .Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman, and Oliver Wang. The unreasonable effectiveness of deep features as a perceptual metric. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , June 2018. Yichi Zhang, Yici Yan, Alex Schwing, and Zhizhen Zhao. Towards hierarchical rectified flow. In The Thirteenth International Conference on Learning Representations , 2025. URL https: //openreview.net/forum?id=6F6qwdycgJ .13 Appendix for “Structured Coupling for Flow Matching” 
+
+## Contents 
+
+A Extended Variational Flow-Matching Background 15 B SCFM: Extended Derivations and Implementation Details 16 
+
+B.1 Endpoint regime: posterior identity and endpoint objective . . . . . . . . . . . . . . . . . . . 16 B.2 Coupling consistency and prior matching . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 B.3 Intermediate-time regime: specialization to VFM . . . . . . . . . . . . . . . . . . . . . . . . 17 B.4 Practical SCFM Objective and Prior Parameterization . . . . . . . . . . . . . . . . . . . . . 18 
+
+C SCFM Algorithms 18 
+
+C.1 Training . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 C.2 Sampling . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 
+
+D Extended Related Work 19 E Experimental Details 20 
+
+E.1 MNIST Clustering Setup . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 E.2 CIFAR-10 Setup . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 E.3 Cars3D and Shapes3D Disentanglement Setup . . . . . . . . . . . . . . . . . . . . . . . . . 21 E.4 ImageNet-128 Setup . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 E.5 CIFAR-10 and ImageNet-128 Probing Setup . . . . . . . . . . . . . . . . . . . . . . . . . . 24 
+
+F Evaluation Metrics 24 
+
+F.1 Clustering Metrics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 F.2 Disentanglement Metrics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25 F.3 Generative Quality Metric . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25 F.4 Downstream Representation Metrics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26 
+
+G Additional Results and Diagnostics 26 
+
+G.1 MNIST Clustering and Latent Diagnostics . . . . . . . . . . . . . . . . . . . . . . . . . . . 26 G.2 CIFAR-10 Component-Level Generation Diagnostics . . . . . . . . . . . . . . . . . . . . . . 28 G.3 CIFAR-10 Latent Probe Diagnostics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29 G.4 ImageNet-128 Latent Probe Diagnostics . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29 
+
+H Additional Qualitative Samples 30 
+
+14 Appendix organization. Appendix A reviews the VFM background, and Appendix B gives the SCFM derivations and implementation details. Appendix C summarizes training and sampling, Appendix D extends the related-work discussion, and Appendices E–H collect experimental details, metrics, and additional results. 
+
+## A Extended Variational Flow-Matching Background 
+
+This appendix recalls the variational interpretation of flow matching introduced by Eijkelboom et al. [2024], specialized to the source-endpoint convention used in the main text. The key point is that the marginal vector field can be written as a posterior expectation over endpoints of the interpolant. Approximating this posterior with a variational distribution yields a variational inference objective; under a Gaussian variational family and a linear interpolant, this objective reduces to the usual flow-matching regression loss. Let Γ( x0, x1) be a coupling between a source endpoint x0 and a data endpoint x1, and let 
+
+xt = f (t)x0 + (1 − f (t)) x1.
+
+For the source-to-data convention used in the main text, conditioning on x0 gives the conditional velocity 
+
+vt(xt | x0) = ∂tf (t)1 − f (t)
+
+ x0 − xt
+
+. (17) The marginal vector field is the posterior average of these conditional velocities, 
+
+vt(xt) = EΓt(x0|xt) [vt(xt | x0)] , (18) where Γt(x0 | xt) is the posterior over source endpoints induced by the interpolant. Thus learning the marginal vector field can be viewed as approximating this endpoint posterior. Variational flow matching introduces a recognition model qt,ϕ (x0 | xt) and minimizes 
+
+LVFM (ϕ) = Et, xt [KL(Γ t(· | xt) ∥ qt,ϕ (· | xt))] . (19) Equivalently, up to a constant independent of ϕ,
+
+LVFM (ϕ) ≡ − Et, xt,x0 [log qt,ϕ (x0 | xt)] , x0 ∼ Γt(· | xt). (20) This is the variational inference view: flow matching is recast as posterior approximation over the endpoint variable that generated the intermediate state. Now assume a fixed-covariance Gaussian recognition family, 
+
+qt,ϕ (x0 | xt) = N  μϕ(xt, t ), σ 2 
+
+> x0
+
+I.
+
+Then Eq. (20) is equivalent, up to constants and a positive scale, to regression of the posterior mean: 
+
+LVFM (ϕ) ≡ E
+
+h
+
+∥μϕ(xt, t ) − x0∥2i
+
+. (21) Since Eq. (17) is affine in x0, posterior-mean regression can be written as a time-weighted velocity regression with the induced vector field 
+
+vϕ,t (xt) = ∂tf (t)1 − f (t)
+
+ μϕ(xt, t ) − xt
+
+, (22) Indeed, 
+
+LVFM (ϕ) ≡ Et, x0,x1
+
+" 1 − f (t)
+
+∂tf (t)
+
+2
+
+∥vϕ,t (xt) − vt(xt | x0)∥2
+
+#
+
+. (23) Thus, Gaussian VFM and standard flow matching use the same conditional velocity target, differing only by a time-dependent weighting of the regression loss. Under the linear schedule f (t) = 1 − t,this recovers the simulation-free flow-matching objective used by SCFM. The distinction is that SCFM applies this posterior matching to the structured source endpoint x0 = ( z, ε ) rather than to an unstructured noise variable. 15 B SCFM: Extended Derivations and Implementation Details 
+
+This appendix complements Section 3 with extended derivations and implementation details. Specif-ically, it gives the endpoint derivation, the endpoint consistency argument, the intermediate-time specialization to VFM, and the practical SCFM objective. 
+
+Shared posterior-matching view. We extend the posterior-matching construction (see Appendix A), such that the source endpoint becomes structured as x0 = ( z, ε ). The remainder of this appendix focuses on the two SCFM-specific regimes: the endpoint derivation at t = 1 and the intermediate-time specialization for t < 1.
+
+B.1 Endpoint regime: posterior identity and endpoint objective 
+
+At t = 1 , the interpolant endpoint is xt = x1. Under the encoder-induced coupling in Eq. (6) , the source posterior becomes 
+
+Γ1(x0 | x1) = qϕ(z | x1) p(ε), x0 = ( z, ε ).
+
+Using the SCFM decoder factorization 
+
+pθ,ψ (x1, x0) = pθ (x1 | z) pψ (z) p(ε),
+
+the shared posterior mean splits as 
+
+μϕ(x1, 1) =  μzϕ(x1), μ εϕ(x1),
+
+with latent posterior 
+
+qϕ(z | x1) = N  z; μzϕ(x1), diag( σ2
+
+> ϕ
+
+(x1)) .
+
+The endpoint mean is recovered from the shared velocity parameterization through 
+
+μϕ(x1, 1) = x1 + 1
+
+∂tf (1) vϕ, 1(x1). (24) For compactness, write 
+
+qx(z) := qϕ(z | x1), qεx(ε) := N  ε; μεϕ(x1), I dε
+
+.
+
+Because the decoder depends only on z, pθ (x1 | x0) = pθ (x1 | z). The endpoint KL then decomposes as 
+
+KL  qx qεx ∥ pψ (z) p(ε) = KL  qx ∥ pψ (z)
+
++ KL  qεx ∥ p(ε)
+
+= KL  qx ∥ pψ (z) + 12 ∥μεϕ(x1)∥2. (25) Likewise, 
+
+Eqxqεx
+
+ log pθ (x1 | x0) = Eqx
+
+ log pθ (x1 | z).
+
+Therefore the endpoint contribution is 
+
+Lend = Epdata (x1)
+
+h
+
+− Eqx log pθ (x1 | z) + KL  qx ∥ pψ (z) + 12 ∥μεϕ(x1)∥2i
+
+= LVAE + Rε.
+
+(26) This is exactly the endpoint decomposition stated in Section 3, with Rε matching the quadratic penalty in Eq. (15). 
+
+B.2 Coupling consistency and prior matching 
+
+For compactness, define the encoder-induced and decoder-induced latent joints 
+
+Γenc  
+
+> ϕ
+
+(x1, z) = pdata (x1) qϕ(z | x1)Γdec  
+
+> θ,ψ
+
+(x1, z) = pψ (z) pθ (x1 | z).
+
+16 Then 
+
+KL  Γenc  
+
+> ϕ
+
+∥ Γdec 
+
+> θ,ψ
+
+ = LVAE + const ,
+
+where the constant depends only on pdata . As in Section 3.1, the exact identity 
+
+qagg  
+
+> ϕ
+
+(z) = pψ (z)
+
+is a global-optimum statement that relies on sufficiently expressive encoder, decoder, and prior families [Hoffman and Johnson, 2016, Alemi et al., 2018]. In practice, the more relevant statement is that the endpoint term controls the prior–aggregated-posterior mismatch through an upper bound. Let 
+
+T (x1, z) = z be the projection onto the latent coordinate. Then 
+
+T#Γenc  
+
+> ϕ
+
+= qagg  
+
+> ϕ
+
+(z), T#Γdec  
+
+> θ,ψ
+
+= pψ (z),
+
+so the KL data-processing inequality under marginalization gives 
+
+KL  qagg  
+
+> ϕ
+
+(z) ∥ pψ (z) ≤ KL  Γenc  
+
+> ϕ
+
+∥ Γdec 
+
+> θ,ψ
+
+ = LVAE + const . (27) Consequently, reducing the endpoint VAE objective also reduces an upper bound on the mismatch between the encoder-induced training marginal and the sampling prior. If this joint KL is zero, then 
+
+Γenc  
+
+> ϕ
+
+(x1, z) = Γ dec  
+
+> θ,ψ
+
+(x1, z) a.e. and marginalizing over x1 yields 
+
+qagg  
+
+> ϕ
+
+(z) := 
+
+Z
+
+pdata (x1) qϕ(z | x1) dx1 = pψ (z).
+
+This is the endpoint consistency statement used in the main text: exact endpoint alignment recovers the same source marginal that is used at sampling time. 
+
+B.3 Intermediate-time regime: specialization to VFM 
+
+For t ∈ [0 , 1) , SCFM reduces to the same posterior-matching problem analyzed in Appendix A, now with structured endpoint variable x0 = ( z, ε ). We use the shared Gaussian family 
+
+qt,ϕ (x0 | xt) = N  μϕ(xt, t ), σ 2 
+
+> x0
+
+ID
+
+, (28) whose mean is shared with the endpoint encoder, while the endpoint covariance of qϕ(z | x1) is predicted by a separate variance head. Under the linear interpolant, 
+
+xt = f (t)x0 + (1 − f (t)) x1,
+
+the conditional velocity is 
+
+vt(xt | x0) = ∂tf (t)1 − f (t)
+
+ x0 − xt
+
+. (29) The corresponding variational objective is 
+
+LVFM (ϕ) = Et∼U [0 ,1) , xt∼pt
+
+h
+
+KL  Γt(· | xt) ∥ qt,ϕ (· | xt)i
+
+. (30) When training qt,ϕ , we use the equivalent stop-gradient form 
+
+LVFM (ϕ) ≡ − Et, (xt,x0)∼Γt
+
+h
+
+log qt,ϕ 
+
+ sg( x0) | sg( xt)i
+
++ const ., (31) where, in practice, x1 ∼ pdata , z ∼ qϕ(z | x1), ε ∼ p(ε), x0 = (sg( z), ε ), and xt = f (t)x0 + (1 −
+
+f (t)) x1. Under the Gaussian family in Eq. (28) , Appendix A implies that minimizing Eq. (30) is equivalent to posterior-mean regression and therefore to the time-weighted velocity regression 
+
+LVFM (ϕ) ≡ Et, x0,x1
+
+" 1 − f (t)
+
+∂tf (t)
+
+2
+
+∥vϕ,t (xt) − vt(xt | x0)∥2
+
+#
+
+,
+
+xt = f (t)x0 + (1 − f (t)) x1. (32) 17 B.4 Practical SCFM Objective and Prior Parameterization 
+
+The practical SCFM objective combines the intermediate-time VFM loss with an endpoint latent-variable objective: 
+
+LSCFM = LVFM + Ltrain end .
+
+The endpoint term is implemented as 
+
+Ltrain end = Lrec + Rz + Rε, Lrec = Lpix + αperc Lperc .
+
+The perceptual term can be instantiated with LPIPS [Zhang et al., 2018], following the use of perceptual reconstruction losses in image generation [Johnson et al., 2016]. The latent regularizer Rz
+
+is instantiated as either a β-VAE penalty [Higgins et al., 2017], 
+
+Rβ-VAE  
+
+> z
+
+= β KL  qϕ(z | x1) ∥ pψ (z),
+
+or a β-TCVAE-style regularizer [Chen et al., 2018b], 
+
+Rβ-TCVAE  
+
+> z
+
+= KL  qϕ(z | x1) ∥ pψ (z) + β TC  qagg  
+
+> ϕ
+
+(z),
+
+where qagg  
+
+> ϕ
+
+(z) = R pdata (x1)qϕ(z | x) dx and TC( q) = KL  q(z) ∥ Q 
+
+> j
+
+q(zj ). Thus, β-VAE and 
+
+β-TCVAE provide two endpoint regularizers for structured latent learning under the same prior. These choices affect only the endpoint term and leave LVFM unchanged. 
+
+GMM prior. We parameterize the structured prior as a learnable Gaussian mixture, 
+
+pψ (z) = 
+
+> K
+
+X
+
+> k=1
+
+πk N  z; μψ,k , diag( σ2
+
+> ψ,k
+
+),
+
+> K
+
+X
+
+> k=1
+
+πk = 1 .
+
+The KL term is estimated by sampling z = μzϕ(x) + σϕ(x) ⊙ ξ, with ξ ∼ N (0 , I ), and evaluating 
+
+KL( qϕ(z | x1)∥pψ (z)) = Eqϕ [log qϕ(z | x1) − log pψ (z)] . At sampling time, we draw z ∼ pψ (z)
+
+and ε ∼ N (0 , I ), forming the structured source x0 = ( z, ε ).
+
+## C SCFM Algorithms 
+
+This section collects compact pseudocode summaries of the practical SCFM procedures described in Sections 3.2 and 3.3. 
+
+C.1 Training 
+
+Algorithm 1 summarizes one SCFM training step, including the endpoint latent-variable terms and the intermediate-time flow-matching update. 
+
+Algorithm 1 One SCFM training step 
+
+Require: minibatch x1 ∼ pdata , velocity model vϕ,t , endpoint variance head σ2
+
+> ϕ
+
+(x1), decoder pθ (x1 | z),latent prior pψ (z) 
+
+> 1:
+
+Endpoint VAE regime:  
+
+> 2:
+
+Compute μϕ(x1, 1) =  μzϕ(x1), μ εϕ(x1) 
+
+> 3:
+
+Form qϕ(z | x1) = N  μzϕ(x1), diag( σ2
+
+> ϕ
+
+(x1))  
+
+> 4:
+
+Sample z ∼ qϕ(z | x1) and compute Lrec from pθ (x1 | z) 
+
+> 5:
+
+Compute LKL = KL  qϕ(z | x1) ∥ pψ (z) 
+
+> 6:
+
+Compute Rε = 12 ∥μεϕ(x1)∥2 
+
+> 7:
+
+Flow-matching regime:  
+
+> 8:
+
+Sample ε ∼ p(ε) = N (0 , I dε ) and set x0 =  sg( z), ε  
+
+> 9:
+
+Sample t ∼ U [0 , 1) and form xt = f (t)x0 + (1 − f (t)) x1 with f (t) = 1 − t 
+
+> 10:
+
+Compute LVFM =
+
+ 1−f (t) 
+
+> ∂tf(t)
+
+2
+
+vϕ,t (xt) − ∂tf (t)1−f (t)
+
+ x0 − xt
+
+ 2 
+
+> 11:
+
+Form LSCFM = LVFM + Lrec + LKL + Rε 
+
+> 12:
+
+Update (θ, ϕ, ψ ) using LSCFM 
+
+18 Algorithm 2 Full ODE SCFM sampling / reconstruction 
+
+Require: velocity model vϕ,t , endpoint variance head σ2
+
+> ϕ
+
+(x1), latent prior pψ (z), optional observation x1 
+
+> 1:
+
+if an observation x1 is available then  
+
+> 2:
+
+Compute μϕ(x1, 1) =  μzϕ(x1), μ εϕ(x1) 
+
+> 3:
+
+Form qϕ(z | x1) = N  μzϕ(x1), diag( σ2
+
+> ϕ
+
+(x1))  
+
+> 4:
+
+Sample z ∼ qϕ(z | x1) 
+
+> 5:
+
+else  
+
+> 6:
+
+Sample z ∼ pψ (z) 
+
+> 7:
+
+end if  
+
+> 8:
+
+Sample ε ∼ p(ε) = N (0 , I dε ) and set x0 = ( z, ε ) 
+
+> 9:
+
+Integrate the ODE with velocity field vϕ,t (xt) on t ∈ [0 , 1] with initial condition xt=0 = x0 
+
+> 10:
+
+return xt=1 
+
+Algorithm 3 Decoder-initialized refinement SCFM sampling / reconstruction 
+
+Require: start time t0 ∈ (0 , 1) , velocity model vϕ,t , endpoint variance head σ2
+
+> ϕ
+
+(x1), decoder pθ (x1 | z), latent prior pψ (z), optional observation x1 
+
+> 1:
+
+if an observation x1 is available then  
+
+> 2:
+
+Compute μϕ(x1, 1) =  μzϕ(x1), μ εϕ(x1) 
+
+> 3:
+
+Form qϕ(z | x1) = N  μzϕ(x1), diag( σ2
+
+> ϕ
+
+(x1))  
+
+> 4:
+
+Sample z ∼ qϕ(z | x1) 
+
+> 5:
+
+else  
+
+> 6:
+
+Sample z ∼ pψ (z) 
+
+> 7:
+
+end if  
+
+> 8:
+
+Sample ε ∼ p(ε) = N (0 , I dε ) and set x0 = ( z, ε ) 
+
+> 9:
+
+Sample bx1 ∼ pθ (· | z) 
+
+> 10:
+
+Form xt0 = f (t0)x0 + (1 − f (t0)) bx1 with f (t) = 1 − t 
+
+> 11:
+
+Integrate the ODE with velocity field vϕ,t (xt) on t ∈ [t0, 1] with initial condition xt=t0 = xt0 
+
+> 12:
+
+return xt=1 
+
+C.2 Sampling 
+
+Algorithm 2 gives the full ODE sampler, while Algorithm 3 summarizes the decoder-initialized refinement sampler that initializes near the data manifold using the decoder. 
+
+## D Extended Related Work 
+
+Structured priors and couplings. Several lines of work mitigate limitations of fixed, unstructured priors in diffusion- and transport-based models. PriorGrad [Sang-gil et al., 2022] learns a data-dependent Gaussian prior for conditional diffusion, while DecompDiff [Guan et al., 2023] uses decomposed priors for structured molecule generation. Other approaches leave the prior fixed but change the pairing between source and data samples, for example through minibatch optimal transport [Tong et al., 2024], data-dependent couplings in stochastic interpolants [Albergo et al., 2024], or post-hoc correction of prior mismatch with optimal transport maps [Wang et al., 2024]. These methods improve the transport problem or sampling geometry, but generally do not make the source itself a learned representation space. 
+
+Variational coupling. Variational Consistency Training [Silvestri et al., 2025] is closest to our use of an encoder for coupling: it learns a data-noise coupling with a VAE-style encoder and a KL penalty that keeps emitted noise close to the sampling prior, reducing variance in consistency training. SCFM uses a related variational mechanism for a different purpose. Rather than learning a coupling only to stabilize a consistency objective, we use the encoder to define a structured source posterior whose latent component is trained as a representation and whose marginal prior is learned jointly with the flow. 
+
+Flow matching for representations. Latent-variable formulations of flow and rectified-flow match-ing model transport ambiguity with hidden variables [Guo and Schwing, 2025, Zhang et al., 2025]. Structured Flow Autoencoders [Xu et al., 2026] are especially close in motivation: they use posterior-averaged conditional vector fields to combine flow matching with structured probabilistic represen-tations. Recent concurrent work, FlowFM [Ukita and Okita, 2026], jointly trains a representation 19 encoder and a conditional flow-matching generator for self-supervised learning, emphasizing down-stream recognition performance and computational efficiency on wearable-sensor data. Recent work on disentangled representation learning via flow matching [Chi et al., 2026] learns factor-conditioned latent-space flows and regularizes factor-specific velocity components to reduce cross-factor leakage. SCFM differs from these lines by learning a structured source distribution for a stochastic interpolant: the latent variable is part of the source endpoint being transported, not only a conditioning variable for a generator or a factorization of the velocity field. 
+
+Latent-variable models. Variational autoencoders and their extensions learn latent representations through amortized inference and variational training [Kingma and Welling, 2014, Burda et al., 2015]. This family includes structured-prior models for clustering, such as Gaussian-mixture and multi-facet variants [Dilokthanakul et al., 2016, Jiang et al., 2017b, Falck et al., 2021], as well as regularized objectives that encourage disentangled latent factors [Higgins et al., 2017, Burgess et al., 2018, Chen et al., 2018b, Locatello et al., 2019]. These methods show that explicit latent variables are effective for representation learning, but their sample quality is often limited by the decoder family and by the fact that generation is tied directly to the latent-variable model. SCFM inherits the representation-learning advantages of this line of work, but differs in how generation is performed: the latent model is used to learn a structured source and endpoint supervision, while the main sampler remains a flow that transports samples from the learned source prior to the data distribution. 
+
+## E Experimental Details 
+
+This appendix provides the implementation details needed to reproduce the experiments in Section 4. We describe the dataset-specific architectures, training schedules, latent dimensionalities, endpoint objectives, priors, samplers, and probing protocols used for MNIST, CIFAR-10, Cars3D, Shapes3D, and ImageNet-128. Unless otherwise stated, all models are trained without using class or factor labels; labels and ground-truth factors are used only for downstream probing or disentanglement evaluation. Experiments were run on a heterogeneous pool of GPUs: 2 NVIDIA RTX PRO 6000 Blackwell Server Edition GPUs, 2 NVIDIA A100 80GB PCIe GPUs, 2 NVIDIA RTX A6000 GPUs, and 3 Quadro RTX 6000 GPUs. For the Flow Matching baselines on CIFAR-10 and ImageNet-128, we use the same encoder backbone and training configuration as SCFM, but remove the structured endpoint branch. In particular, the baseline is trained only with the standard flow-matching regression objective and does not include the additional latent head, GMM prior, or VAE-style endpoint loss. This ensures that differences between FM and SCFM are attributable to the structured coupling and endpoint objective rather than changes in architecture or optimization. 
+
+E.1 MNIST Clustering Setup 
+
+Across all methods, we set the number of mixture components to K = 10 to match the ten MNIST classes and to keep the comparison aligned across models. Reported metrics are computed over five independent runs with different random seeds, and we report the mean and standard deviation across runs. Table 5: MNIST clustering settings.                                       
+
+> VaDE MFCVAE SCFM ( β-VAE) SCFM ( β-TCVAE)
+> Latent z∈R10 J=2 , z j=5 z∈R10 z∈R10
+> Components K=10 Kj=10 K=10 K=10
+> Objective β=1 + GMM MFCVAE + diag.
+> p(zj|cj)GMM + β=4 GMM + β=3 (TC) Batch size 256 256 256 256
+> Optimizer AdamW ( 10 −3)Adam ( 5×10 −4)AdamW ( 10 −3)AdamW ( 10 −3)
+
+20 E.2 CIFAR-10 Setup 
+
+Table 6 summarizes the encoder, decoder, training, and sampling settings used for the CIFAR-10 SCFM experiments. Table 6: SCFM CIFAR-10 network and training setup. The encoder parameterizes the shared posterior/recognition network, while the decoder is used for the endpoint reconstruction objective and decoder-initialized refinement. 
+
+Hyperparameter Encoder / recognition net Decoder 
+
+Role Shared qt,ϕ (x0 | xt)
+
+and endpoint encoder qϕ(z | x)
+
+Endpoint decoder 
+
+pθ (x | z)
+
+Backbone U-Net U-Net Channels 128 128 
+
+Depth 4 4
+
+Channel multipliers (2 , 2, 2) (2 , 2, 2) 
+
+Heads 1 –Head channels −1 –Attention resolution [2] –Dropout 0.3 –Latent dimension 64 
+
+Training length 1300 epochs, ≈ 508 K iterations Optimizer Adam, β1 = 0 .9, β2 = 0 .999 , ε = 10 −8
+
+Learning rate 5×10 −4 with polynomial decay Warmup 45 K steps, linear warmup from 10 −8
+
+Structured prior Learnable GMM prior pψ (z) with K = 10 components Reconstruction loss Pixel reconstruction with LPIPS augmentation Endpoint objective β-VAE with β = 2 .8
+
+EMA Enabled, decay 0.9999 
+
+Sampler Heun ODE sampler 
+
+E.3 Cars3D and Shapes3D Disentanglement Setup 
+
+Table 7 summarizes the dataset, training. We follow the standard disentanglement benchmark protocol of Locatello et al. [2019]: models are trained without access to ground-truth factor labels, while factor annotations are used only for evaluation. For each dataset and endpoint regularizer, we train models across 10 random seeds and sweep over the corresponding β values for the VAE-style objective. All models use convolutional encoder–decoder networks and a 10 -dimensional latent representation. Table 7: Cars3D and Shapes3D disentanglement setup. Models are trained without factor labels; ground-truth factors are used only for disentanglement evaluation. 
+
+Cars3D Shapes3D 
+
+Resolution 64 ×64 ×3 64 ×64 ×3
+
+Images 17 ,568 480 ,000 
+
+Factors 3 6
+
+Cardinalities 183 ×4×24 10 ×10 ×10 ×8×4×15 
+
+Factor names car ID, elevation, azimuth floor hue, wall hue, object hue, scale, shape, orientation Train labels None None Eval factors Used for metrics only Used for metrics only Latent dimension 10 10 
+
+Representation μϕ(x) μϕ(x)
+
+β-VAE sweep {1, 2, 4, 6, 8, 16 } {1, 2, 4, 6, 8, 16 }
+
+β-TCVAE sweep {1, 2, 4, 6, 8, 10 } {1, 2, 4, 6, 8, 10 }
+
+Training Adam, learning rate 10 −4, batch size 64 , 300 K steps 
+
+21 E.4 ImageNet-128 Setup 
+
+Table 8 summarizes the ImageNet-128 latent SCFM configuration. We build on a pretrained Stable-Diffusion VAE Rombach et al. [2022], using stabilityai/sd-vae-ft-ema to map 128 ×128 
+
+images into a 4-channel latent image space. The SCFM encoder operates on these VAE latents using a SiT-XL/2 transformer backbone, while the decoder also uses a transformer architecture to map the learned 64 -dimensional structured latent representation back to the VAE latent image space. The decoder architecture is depicted in Figure 6. The prior over z is modeled as a learnable GMM with 
+
+100 components. The model is trained with a β-VAE endpoint objective and an ℓ1 reconstruction loss, and samples are generated with the Dormand–Prince ODE solver. Table 8: ImageNet-128 SiT-XL/2 latent model setup. The encoder parameterizes the latent recognition pathway, while the decoder maps latent representations back to the VAE latent image space. Shared optimization and sampling settings are merged across both columns.                                                         
+
+> Hyperparameter Encoder / recognition net Decoder
+> Role Latent encoder Latent decoder Backbone SiT-XL/2 SiT-like decoder Input VAE latent image z∈R64
+> Patch size 2×2–In/out channels 4input channels 4output channels Hidden size 1152 1152
+> Depth 28 14
+> Attention heads 16 16
+> MLP ratio 4.04.0
+> Dropout Class dropout 0.1Dropout 0.0
+> Conditioning AdaLN-Zero time and null-token conditioning AdaLN on z
+> Latent dimension 64
+> VAE stabilityai/sd-vae-ft-ema , scaling factor 0.18215
+> Prior Learnable GMM prior with 100 components Training steps 400 KBatch size 256
+> Optimizer AdamW, β1= 0 .9,β2= 0 .95
+> Learning rate 1×10 −4with linear decay Reconstruction loss ℓ1reconstruction loss Endpoint objective β-VAE with β= 2 .8
+> Gradient clipping Maximum gradient norm 5.0
+> EMA Enabled, decay 0.9999
+> Sampler Dormand–Prince method of order 5 (Dopri5)
+
+22 Latent  𝒛 ∈ 𝐑 𝑩 ×zdim 
+
+𝒛 ⟶ 𝒄 
+
+Condition Projection 
+
+Learnable Query Tokens  𝑸 
+
+B × T × D
+
+𝐍 × Decoder Blocks 
+
+LayerNorm 
+
+Self -Attention 
+
+MLP 
+
+> adaLN from
+> c
+> adaLN from
+> c
+
+Final LayerNorm + adaLN(c) 
+
+Linear Projection 
+
+𝑫 ⟶ 𝒑 𝟐 ∙ 𝑪 
+
+Unpatchify 
+
+> Positional Embeddings
+
++
+
+Output  𝜇 
+
+B × C × H × W
+
+adaLN Modulation 
+
+SILU 
+
+Linear 
+
+shift_ 
+
+msa 
+
+scale_ 
+
+msa 
+
+gate_ 
+
+msa 
+
+shift_ 
+
+mlp 
+
+scale_ 
+
+mlp 
+
+gate_ 
+
+mlp   
+
+> 6×D
+
+Figure 6: SiT-like decoder architecture used in the ImageNet-128 SCFM setup. 
+
+23 E.5 CIFAR-10 and ImageNet-128 Probing Setup 
+
+Table 9 summarizes the probing protocols for CIFAR-10 and ImageNet-128. For CIFAR-10, we follow the latent probing setup of Zhang et al. [2022]. For ImageNet-128, we evaluate frozen latent representations with linear and nonlinear probes and compare SCFM against a frozen SD-VAE-FT-EMA encoder from Stable Diffusion [Rombach et al., 2022]. In both cases, probes are trained without data augmentation so that performance reflects information available in the frozen representation. Table 9: Probe settings for CIFAR-10 and ImageNet-128. After training, frozen latent representa-tions are evaluated with linear and nonlinear probes.                           
+
+> Component CIFAR-10 ImageNet-128
+> Representation μϕ(x)μϕ(x)
+> Target CIFAR-10 label ImageNet label Data augmentation None None Model-selection split Not specified 5% stratified holdout from ImageNet train Evaluation split Standard test split ImageNet validation split Linear probe Linear SVM Single linear layer on standardized features Nonlinear probe 2-layer MLP hidden size 200, ReLU Residual MLP hidden (4096 ,2048 ,1024)
+> GELU activations Regularization BatchNorm dropout 0.1
+> LayerNorm dropout 0.12 –0.15
+> weight decay 10 −4–2×10 −4
+> label smoothing 0.05 –0.1
+> Reporting Accuracy Top-1 / Top-5 accuracy
+
+## F Evaluation Metrics 
+
+F.1 Clustering Metrics 
+
+We evaluate clustering performance using two standard metrics: clustering accuracy (ACC) and normalized mutual information (NMI). 
+
+Clustering accuracy (ACC). ACC measures the alignment between predicted cluster assignments and ground-truth class labels, accounting for the permutation ambiguity of cluster indices. Since cluster IDs are arbitrary, we first compute an optimal mapping π from cluster IDs to class labels, and then measure the fraction of correctly assigned samples: 
+
+ACC = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+1{yi = π(ci)}, (33) where yi denotes the ground-truth label and ci the predicted cluster assignment. When the number of clusters matches the number of classes, π is obtained via Hungarian matching. For MFCVAE, we report facet-wise ACC using the cluster-to-label assignment induced by the dominant class within each cluster. 
+
+Normalized mutual information (NMI). NMI measures the statistical dependence between pre-dicted clusters and ground-truth labels, and is invariant to label permutations. It is defined based on the mutual information I(Y ; C) between labels Y and clusters C, normalized by their entropies. Using the arithmetic normalization adopted in our implementation: 
+
+NMI( Y, C ) = 2 I(Y ; C)
+
+H(Y ) + H(C) . (34) NMI ranges from 0 to 1, where 0 indicates no mutual information and 1 corresponds to perfect agreement between clusters and labels. 24 F.2 Disentanglement Metrics 
+
+We evaluate disentanglement using the FactorVAE score [Kim and Mnih, 2018] and the disentangle-ment component of the DCI framework [Eastwood and Williams, 2018]. 
+
+FactorVAE score. Let r(x) ∈ Rd denote the learned representation and let the data be generated by K independent factors. For each training example of the metric, we fix one ground-truth factor 
+
+k, sample a batch Bk while varying all other factors, encode the batch, and normalize each latent coordinate by its empirical standard deviation over the dataset: 
+
+s2 
+
+> j
+
+= Var pdata [rj (x)] .
+
+We then compute the within-batch variance of each normalized latent coordinate, 
+
+ˆvj (Bk) = Var x∈Bk
+
+ rj (x)
+
+sj
+
+
+
+,
+
+and predict the fixed factor using the index of the least-varying coordinate, 
+
+j⋆(Bk) = arg min  
+
+> j
+
+ˆvj (Bk).
+
+Accumulating many such pairs (j⋆(Bk), k ) yields a majority-vote classifier from latent dimensions to factors. The FactorVAE score is the resulting classification accuracy on held-out batches. Higher is better. 
+
+DCI disentanglement. The DCI framework measures disentanglement, completeness, and infor-mativeness from an importance matrix relating latent coordinates to ground-truth factors. Since Table 2 reports only the disentanglement component, we denote that score by DCI. Let R ∈ RL×K
+
+> ≥0
+
+be a relative-importance matrix, where Rij measures how much latent coordinate ci contributes to predicting factor zj , and each column is normalized so that PLi=1 Rij = 1 . For each latent coordinate, define the normalized row distribution 
+
+Pij = Rij 
+
+PKk=1 Rik 
+
+, Di = 1 − HK (Pi·),
+
+where 
+
+HK (Pi·) = −
+
+> K
+
+X
+
+> j=1
+
+Pij log K Pij .
+
+The overall disentanglement score is the importance-weighted average 
+
+DCI = 
+
+> L
+
+X
+
+> i=1
+
+ρiDi, ρi = 1
+
+K
+
+> K
+
+X
+
+> j=1
+
+Rij .
+
+This score is highest when each latent coordinate is primarily predictive of a single generative factor. 
+
+F.3 Generative Quality Metric Fréchet inception distance (FID). To evaluate image quality and diversity, we use FID [Heusel et al., 2017]. Let (mr , C r ) and (mg , C g ) denote the empirical mean and covariance of Inception features extracted from real and generated samples, respectively. FID is defined as 
+
+FID = ∥mr − mg ∥22 + Tr 
+
+
+
+Cr + Cg − 2( Cr Cg )1/2
+
+.
+
+Lower FID indicates that generated samples are closer to real data in the feature space, reflecting both fidelity and diversity. 25 F.4 Downstream Representation Metrics Linear and nonlinear probing. To evaluate whether the learned latent representation retains class-relevant semantic information, we freeze the encoder and train supervised probes on top of the latent code. Let 
+
+zi = rϕ(xi)
+
+denote the frozen representation of image xi. A linear probe trains a single linear classifier 
+
+h(z) = W z + b
+
+using labeled training examples, while keeping rϕ fixed. A nonlinear probe uses a small multilayer classifier on top of the same frozen representation. Probe performance is measured by Top-k classification accuracy on the held-out test set: 
+
+Top -k = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+1 yi ∈ TopK  h(zi), k  ,
+
+where TopK( h(zi), k ) denotes the set of k classes with the highest predicted scores. The usual classification accuracy corresponds to the special case k = 1 :
+
+Acc = Top -1 = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+1
+
+n
+
+arg max  
+
+> c
+
+hc(zi) = yi
+
+o
+
+.
+
+For CIFAR-10, we report Top-1 accuracy. For ImageNet-128, we report both Top-1 and Top-5 accuracy 
+
+## G Additional Results and Diagnostics 
+
+This section collects supplementary diagnostics for the representation-learning experiments in Sec-tion 4.1 and the image-generation experiments in Section 4.3. 
+
+G.1 MNIST Clustering and Latent Diagnostics Latent clustering. Figure 7 compares the latent spaces learned by MFCVAE, VaDE, and the two SCFM variants. Columns correspond to different models. The top row colors points by ground-truth digit label, while the bottom row colors the same embeddings by predicted cluster assignment after cluster-to-label matching. The SCFM variants produce more compact and label-consistent clusters than the VAE-based baselines, with SCFM ( β-VAE) achieving the best clustering performance in Table 10. Table 10: Clustering performance on MNIST (mean ± std). Baseline methods are VaDE [Jiang et al., 2017b] and MFCVAE [Falck et al., 2021].                             
+
+> Model NMI ↑ACC ↑
+> VaDE 79.93 ±0.77 77.33 ±0.33 MFCVAE 71.22 ±0.68 85.43 ±0.54 SCFM ( β-VAE) 87.84 ±0.86 90.44 ±0.60
+> SCFM ( β-TCVAE) 87.11 ±0.47 89.52 ±0.84
+
+26 True labels 
+
+MFCVAE VaDE SCFM (β-VAE) SCFM (β-TCVAE)           
+
+> Predicted clusters
+> ACC 85.0%
+> NMI 0.799
+> 9
+> 4
+> 1
+> 3
+> 9
+> 8
+> 2
+> 0
+> 6
+> 7
+> ACC 77.3%
+> NMI 0.712
+> 6
+> 9
+> 3
+> 0
+> 7
+> 4
+> 5
+> 1
+> 8
+> 2
+> ACC 90.4%
+> NMI 0.878
+> 4
+> 0
+> 6
+> 5
+> 9
+> 1
+> 7
+> 2
+> 3
+> 8
+> ACC 89.5%
+> NMI 0.871
+> 3
+> 4
+> 2
+> 15
+> 8
+> 7
+> 9
+> 0
+> 6
+> 0123456789
+
+Digit label / matched cluster label Figure 7: t-SNE visualization of the learned latent spaces on MNIST. Each column corresponds to a different model. The top row colors points by digit label, and the bottom row colors the same embeddings by matched cluster assignment. 27 G.2 CIFAR-10 Component-Level Generation Diagnostics 
+
+Figure 8 analyzes how the learned GMM prior organizes CIFAR-10 samples and how decoder-initialized refinement affects generation quality. Each row corresponds to one learned component. For each component, we compare decoder-only samples from the learned latent prior, full-flow samples obtained by integrating from the structured source, and decoder-initialized refinement samples initialized from the decoder and refined by the flow. The components are not class-pure, which is expected for CIFAR-10 without label supervision. Instead, samples within a component often share coherent appearance statistics, such as color palette, background structure, object scale, or coarse geometry. This suggests that the learned prior captures appearance modes rather than directly recovering semantic classes. The comparison across sampling modes highlights the cooperative role of the decoder and the flow. Decoder-only samples already capture coarse component-specific structure, while full-flow sampling improves realism and fine detail. Decoder-initialized refinement preserves the coarse structure proposed by the decoder while adding sharper edges and more realistic textures. In the last three columns, refinement starts from the decoder output at t0 = 0 .8 and uses only 5 NFE, compared with 
+
+50 NFE for full-flow sampling, yet remains visually close to the full-flow samples. This supports decoder-initialized refinement as a lower-cost sampling mode. c5              
+
+> z1z2z3z1z2z3z1z2z3
+> c9
+> c1
+> c6
+> c3
+> decoder p(xz)full flow ( z,)
+> decoder
+> refinement
+> (z,)
+
+Figure 8: Representative CIFAR-10 mixture components learned by SCFM. Each row corresponds to one learned GMM component. The first three columns show decoder-only samples pθ (x | z) for latent draws z assigned to the component. The next three columns show full-flow samples obtained from the structured source (z, ε ). The last three columns show decoder-initialized refinement samples initialized from the decoder output and refined by integrating from t0 = 0 .8 with 5 NFE. Although the components are not label-pure, they capture coherent appearance modes such as shared color palettes, backgrounds, object scale, and coarse geometry, while flow refinement improves visual detail without destroying component coherence. 28 G.3 CIFAR-10 Latent Probe Diagnostics 
+
+For CIFAR-10, we evaluate how much class-relevant information is accessible from the learned latent code. We train linear and nonlinear probes on frozen representations, without updating the SCFM encoder or using data augmentation. For SCFM, probe results are averaged over five independently trained models with different random seeds. Non-SCFM baseline results are reported from Zhang et al. [2022]. Table 11 reports CIFAR-10 probe accuracies, while Figure 9 shows latent-classifier diagnostics for a representative nonlinear probe. Table 11: CIFAR-10 probe accuracy from learned latent representations . Linear and nonlinear probe results are shown. SCFM is reported as the mean over five seeds, while the non-SCFM baseline numbers are taken from Zhang et al. [2022]. 
+
+Model Linear Probe ↑ Nonlinear Probe ↑
+
+VAE 39.59 54.61 AAE 37.76 52.81 BiGAN 44.90 52.54 DIM 49.62 69.13 
+
+SCFM (ours) 50.26 66.58 0 20 40 60 80             
+
+> Epoch
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Accuracy
+> Latent Classifier Validation Accuracy
+> MLP on z
+> Linear probe on z
+> air
+> auto
+> bird
+> cat
+> deer
+> dog
+> frog
+> horse
+> ship
+> truck
+> Predicted
+> air
+> auto
+> bird
+> cat
+> deer
+> dog
+> frog
+> horse
+> ship
+> truck
+> True
+> 0.71 0.06 0.08
+> 0.76 0.14
+> 0.07 0.52 0.08 0.12 0.07 0.09
+> 0.07 0.50 0.06 0.17 0.08
+> 0.08 0.08 0.62 0.08 0.07
+> 0.06 0.19 0.06 0.55 0.07
+> 0.05 0.07 0.05 0.76
+> 0.06 0.07 0.06 0.70
+> 0.07 0.06 0.78
+> 0.11 0.75
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Row-normalized fraction
+
+Figure 9: CIFAR-10 latent classifier diagnostics. Left: validation accuracy of an MLP trained on the frozen latent code z, with the linear-probe accuracy shown as a dashed baseline. Right: row-normalized confusion matrix for the latent MLP classifier. The representation separates vehicle classes reliably, while most residual confusion occurs among animal categories with similar pose and texture statistics. 
+
+G.4 ImageNet-128 Latent Probe Diagnostics 
+
+We evaluate whether the representation gains observed on smaller datasets persist at ImageNet scale. For ImageNet-128, we freeze the latent representation and train linear and nonlinear probes without data augmentation. Probe performance is measured using Top-1 and Top-5 accuracy, which quantify how much ImageNet class information is accessible from the latent space. We compare SCFM against a frozen Stable-Diffusion VAE encoder baseline using SD-VAE-FT-EMA [Rombach et al., 2022]. Table 12 shows that SCFM improves over the SD-VAE baseline for both probe families, with the largest gains under the nonlinear probe. This suggests that the SCFM latent space retains substantially more class-relevant information than the frozen VAE encoder alone, while still being learned through the generative training objective. 29 Table 12: ImageNet-128 latent-space probing. Frozen latent representations are evaluated with linear and nonlinear probes. The VAE baseline uses the frozen SD-VAE-FT-EMA encoder from Stable Diffusion [Rombach et al., 2022]. 
+
+Method Probe Top-1 Acc. ↑ Top-5 Acc. ↑
+
+SD-VAE-FT-EMA Linear 8.00 13.23 SD-VAE-FT-EMA Non-linear 12.34 26.54 SCFM (ours) Linear 9.07 23.14 
+
+SCFM (ours) Non-linear 27.96 53.08 
+
+## H Additional Qualitative Samples 
+
+MNIST Generation and reconstruction modes. Figure 10 evaluates whether the learned latent space remains useful for generation and reconstruction. Decoder-only samples provide an endpoint proposal, full-flow samples integrate from the learned source prior, and decoder-initialized refinement starts from the decoder output at t0 = 0 .9 and applies only 3 flow evaluations. The results show that the decoder captures the digit identity, while short flow refinement improves visual consistency. This illustrates the cooperative role of the VAE endpoint branch and the flow-matching transport in SCFM. Decoder          
+
+> Flow
+> (NFE=50)
+> Decoder
+> refinement
+> (NFE=3)
+> SCFM (β-VAE) Input
+> 0123456789
+> Decoder
+> Flow
+> (NFE=50)
+> Decoder
+> refinement
+> (NFE=3)
+> SCFM (β-VAE)
+
+Figure 10: MNIST generation and reconstruction with SCFM ( β-VAE). Top panel: generation with decoder-only samples from the learned prior, full-flow samples obtained by integrating from the source prior with 50 function evaluations (NFE), and decoder-initialized refinement initialized from the decoder output at t0 = 0 .9 and refined with 3 NFE. Bottom panel: reconstruction with input images, decoder-only reconstructions, full-flow reconstructions obtained by integrating from the encoder-induced source with 50 NFE, and decoder-initialized refinement initialized from the decoder output at t0 = 0 .9 and refined with 3 NFE. The rest of this section provides additional qualitative samples for the SCFM models. Figures 11, 12, 13, and 14 show additional uncurated full-flow samples for CIFAR-10, Shapes3D, Cars3D, and ImageNet-128, respectively. 30 Figure 11: Additional uncurated CIFAR-10 samples from SCFM. Samples are generated with full-flow sampling from the learned structured source prior. 31 Figure 12: Additional uncurated Shapes3D samples from SCFM. Samples are generated with full-flow sampling from the learned structured source prior. 32 Figure 13: Additional uncurated Cars3D samples from SCFM. Samples are generated with full-flow sampling from the learned structured source prior. 33 Figure 14: Additional uncurated ImageNet-128 samples from SCFM. Samples are generated with full-flow sampling from the learned structured source prior. 34

@@ -1,0 +1,1201 @@
+Title: ForgeVLA: Federated Vision-Language-Action Learning without Language Annotations
+
+URL Source: https://arxiv.org/pdf/2605.07474v1
+
+Published Time: Mon, 11 May 2026 01:09:48 GMT
+
+Number of Pages: 26
+
+Markdown Content:
+# ForgeVLA: Federated Vision-Language-Action Learning without Language Annotations 
+
+Yuhao Zhou 1,5, Yunpeng Zhu 2, Yang Zhou 1,5, Jindi Lyu 1,5, Jian Lan 3,Zhangyuan Wang 2, Dan Si 4, Thomas Seidl 3, Qing Ye 1,5, Jiancheng Lyu 1,5
+
+Sichuan University 1, Zhejiang University 2,Ludwig-Maximilians-Universität München 3, Lenovo Group Limited 4,Engineering Research Center of Machine Learning and Industry Intelligence, Ministry of Education 5
+
+sooptq@gmail.com , lvjiancheng@scu.edu.cn 
+
+# Abstract 
+
+Vision-Language-Action (VLA) models hold great promise for general-purpose robotic intelligence, yet scaling up such models is severely bottlenecked by the high cost of acquiring annotated training data. Fortunately, vision-equipped robots deployed across various domains already produce abundant vision-action pairs that can be leveraged to scale up VLA training more efficiently. However, these raw data cannot be centrally aggregated due to various constraints and also exhibit severe heterogeneity. To address these challenges, in this paper, we propose ForgeVLA, a federated VLA training framework that learns VLA models from distributed vision-action pairs without centralizing raw data or requiring manual annotations. Specifically, each client in ForgeVLA is equipped with an embodied instruction classifier that maps vision-action pairs to a predefined instruction set, recovering the missing language modality and forming complete vision-language-action triplets. Beyond triplet construction, we also identify vision-language feature collapse as a critical challenge that has been largely overlooked in prior federated VLA research. To mitigate this issue, ForgeVLA combines a client-side contrastive planning loss with a server-side adaptive aggregation strategy to learn task-discriminative representations efficiently. Extensive experiments across multiple benchmarks show that ForgeVLA significantly outperforms other baselines, and ablation studies further validate the contribution of each component. 
+
+# 1 Introduction 
+
+Vision-Language-Action (VLA) models integrate visual perception, language understanding, and motor control into a single policy, advancing toward general-purpose robotic intelligence [85, 16, 7, 31 ]. As with LLMs and VLMs [ 26 , 20 , 48 ], VLA models benefit from larger and more heterogeneous training corpora, with stronger cross-embodiment transfer observed at greater data scale [ 67 , 30 , 50 ,76 ]. However, unlike text or image-text pairs that can be collected at near-zero marginal cost, VLA training samples typically require physical execution, making data collection a central bottleneck for scaling VLA capabilities [14, 45]. Prior work has explored multiple directions to alleviate data scarcity in VLA training: data augmen-tation [ 35 , 34 , 45 ] provides limited additional diversity; simulation-based pipelines [ 63 , 24 , 47 ] are constrained by the reality gap; and generative models that synthesize visual trajectories [ 17 , 6, 33 ]still struggle to produce physically plausible action labels. These approaches all expand the training corpus synthetically , raising a natural question: can we source high-quality VLA training data at scale and low cost without relying on synthetic generation ?
+
+> Preprint.
+> arXiv:2605.07474v1 [cs.CV] 8 May 2026
+
+Historically, LLM and VLM scaling benefited from repurposing existing artifacts at low cost [ 66 ] ( e.g. ,decades of written text [ 11 , 64 ]). A similar opportunity may exist in robotics [ 28 ] as well: millions of vision-equipped robots deployed in manufacturing [ 22 ], warehousing [ 4 ], healthcare [ 23 ], autonomous driving [ 61 ], and other domains [ 18 , 2 , 71 ] could already log synchronized visual observations and action trajectories suitable for VLA training. The missing modality is natural-language task description, which is typically unnecessary at deployment time and difficult to recover post hoc because a continuous action stream admits multiple valid descriptions at different granularities. Thus, the bottleneck for scaling VLA may largely reduce to the absence of language annotations for otherwise valuable vision–action logs. Closing this annotation gap at scale faces two tightly coupled challenges: (1) Privacy : robotic data is siloed within independent organizations ( e.g. , factories and hospitals) under strict confidentiality constraints. (2) Heterogeneity : clients differ in embodiment, task distributions, sensing conditions, and environments, inducing severely non-independent and identically distributed (non-i.i.d.) data. Federated learning (FL) [ 46 , 25 ] provides a natural framework for this setting, allowing clients to exchange only model updates. However, existing federated VLA methods leave two issues unresolved: (1) Data : FedVLA [ 13 ] and FLAME [ 10 ] assume fully annotated VLA triplets at each client, offering no mechanism to incorporate the far more abundant unannotated vision–action logs. (2) Heterogeneity :we empirically find that standard non-i.i.d. mitigation strategies ( e.g. , FedProx [ 40 ]) do not transfer to VLA training and can even degrade performance (Table 2), suggesting a failure mode beyond conventional client drift. To address these challenges, we propose ForgeVLA , a federated framework that repurposes legacy vision–action logs for VLA training without centralizing raw data or manually annotating task instructions. On the data side, ForgeVLA equips each client with an embodied instruction classifier ,a pretrained VLM fine-tuned on a small public VLA dataset, that maps local vision-action pairs to a predefined instruction set entirely on-device, recovering the missing language modality. On the heterogeneity side, we trace the root cause to vision-language feature collapse and introduce (i) a contrastive planning loss that promotes task-discriminative representations during local training, and (ii) an adaptive aggregation strategy that preserves client update directions on the server. In summary, our main contributions are: 1. We identify the installed base of vision-equipped robots as a largely untapped opportunity to scale VLA training beyond curated or synthetic datasets. Because privacy constraints preclude centralized access, we propose ForgeVLA, a federated paradigm that recovers the missing language modality on-device via classification over a predefined instruction set and converts distributed legacy logs into usable VLA training data. 2. We show that prior methods fail to address heterogeneity in federated VLA training, and we trace the root cause to vision-language feature collapse under cross-domain distributional shifts. Motivated by this finding, we mitigate collapse with a contrastive planning loss for task-invariant local representation learning and a adaptive aggregation strategy on the server. 3. Extensive experiments show that ForgeVLA significantly outperforms federated baselines across multiple benchmarks. Source code will be released after publication. 
+
+# 2 Related Work 
+
+Vision-Language-Action Models : Vision-Language-Action (VLA) models provide an end-to-end paradigm for generalist robot control by integrating visual perception, language understanding, and action prediction within a single architecture. RT-2 [ 85 ] pioneered this direction, and the open-sourced OpenVLA line [ 31 , 32 ] further broadened its adoption while improving task performance and inference efficiency. Subsequent work has advanced VLA models along several axes, with many reporting state-of-the-art results on standard robotic manipulation benchmarks ( e.g. , dexterous manipulation, 3D spatial reasoning, action-prediction module design, and training frameworks [ 7,39, 51, 12, 70]). In parallel, multi-embodiment learning aims to train policies that generalize across heterogeneous robot platforms without manual action-space alignment [ 49 , 15 , 69 ]. Despite these advances, current VLA methods still rely on large-scale, high-quality annotated data, whose manual labeling cost and limited scalability remain a central bottleneck for robot learning. 
+
+Federated Vision-Language-Action Learning : Federated learning (FL) [ 46 , 78 ] enables collab-orative training across distributed clients without sharing raw data. Specifically, each client in FL 2optimizes locally and transmits only model updates to a central server for global aggregation [ 79 , 82 ]. A central challenge in FL is client heterogeneity. When client data are non-i.i.d., local updates can drift from the global optimum and slow or destabilize convergence. Accordingly, a range of methods [ 40 , 27 , 68 , 3, 58 , 80 , 81 ] mitigate non-i.i.d. effects via mechanisms such as proximal regularization, control variates, and client clustering. Privacy-enhancing techniques, including secure aggregation [ 8 ] and differential privacy [ 1 ], can be layered on top of standard FL to provide formal privacy guarantees, though prior gradient-leakage analyses [ 83 , 19 ] show that unprotected model updates can reveal training data. Recently, federated VLA has gained attention because robotic data are generated in a highly dis-tributed manner and are often difficult to centralize due to privacy regulations and communication constraints. In this line, FLAME [ 10 ] introduces an FL benchmark for robotic manipulation with over 160K demonstrations and evaluation protocols. FedVLA [ 13 ] proposes an FL framework for VLA, incorporating instruction-oriented scene parsing, a dual-gating mixture-of-experts architecture with token–expert joint routing, and expert-aware server aggregation. Unlike prior work that assumes fully annotated VLA triplets at each client, ForgeVLA targets a more realistic and challenging setting in which clients only store unannotated vision–action logs. Notably, ForgeVLA recovers the missing language modality on-device via classification over a predefined instruction set and addresses the vision-language feature collapse that arises under cross-domain federated VLA training. 
+
+# 3 Problem Formulation 
+
+We consider a standard FL setup consisting of one central server and N participating clients, indexed by i ∈ [N ] ≜ {1, 2, . . . , N }. Each client i holds a private local dataset Di containing Ki time-synchronized vision–action pairs, collected from its embodied robotic system: 
+
+Di = (vki , a ki ) Ki 
+
+> k=1
+
+, (1) where vki ∈ V denotes a visual observation sampled from the vision space V, and aki ∈ A denotes a corresponding robot action sampled from the action space A. A defining characteristic of our problem is that the local dataset Di lacks language instructions lki ∈ L due to unnecessity and ambiguity during deployments, where L is the language space and there are M distinct instructions in total. The global VLA model follows an encoder-decoder architecture, parameterized by θ = ( θenc , θ dec ) ∈
+
+Θvla . The vision-language encoder fθenc : V × L → Z maps a visual observation and a natural language instruction to a joint latent representation z ∈ Z , where Z is the latent embedding space. The action decoder fθdec : Z → A takes the joint latent representation z and predicts the corresponding robot action. The overall VLA mapping is thus the composition: fθ (v, l ) = fθdec (fθenc (v, l )) . To bridge the missing language modality locally, each client i owns a pretrained instruction classifier 
+
+cϕ : V × A → L , parameterized by ϕ ∈ Φ. This classifier generates a plausible language instruction 
+
+ˆlki = cϕ(vki , a ki ) from a local vision–action pair. Let ℓ(·, ·) denote a task-specific loss function, the local empirical loss on client i can be defined as: 
+
+Li(θ; Di, ϕ ) = 1
+
+KiKiX
+
+> k=1
+
+ℓ  fθdec 
+
+ fθenc 
+
+ vki , c ϕ(vki , a ki ) , a ki
+
+ . (2) Then, the objective of federated VLA learning is to find the optimal global VLA parameters θ =(θenc , θ dec ) that minimize the weighted sum of all local empirical losses, while adhering to the aforementioned privacy and heterogeneity constraints: 
+
+arg min 
+
+> θ∈Θvla
+> N
+
+X
+
+> i=1
+
+wi · L i(θ; Di, ϕ ), (3) where wi ≥ 0 are client-specific weights satisfying PNi=1 wi = 1 that helps combine clients’ local losses into a global optimization target. The most widely adopted wi is proportional to the local dataset size, i.e. , wi = Ki/ PNj=1 Kj .3Figure 1: [Left] : The key bottleneck for scalable VLA training is data scarcity, as high-quality annotated VLA data are limited, while large volumes of vision–action logs remain underutilized. 
+
+[Right] : ForgeVLA across N clients: ① Train an embodied instruction classifier on the central server; ② Clients download the pretrained classifier and the initialized global VLA model; ③ Perform on-device task classification to generate language annotations and construct a complete VLA training corpus; ④ Conduct local VLA training with the task loss and the contrastive planning loss; ⑤ Upload model updates to the server; ⑥ The server performs adaptive aggregation to update the global VLA model. This framework enables scalable VLA training from real-world robot logs at near-zero marginal cost while preserving privacy and mitigating data heterogeneity. 
+
+# 4 ForgeVLA 
+
+Figure 1 overviews the ForgeVLA architecture. On the server, we fine-tune a pretrained VLM on a small public VLA dataset to obtain an embodied instruction classifier cϕ. The server then broadcasts cϕ together with the initialized global VLA model fθ to all clients. 
+
+Figure 2: The Instruction Classifier. On each client, cϕ classifies local vision–action logs into the predefined instruction set, forming a VLA training corpus while keeping all raw data on-device to preserve privacy. The client then performs local VLA training with a contrastive planning loss to counteract heterogeneity-induced degradation. After local training, clients upload only model updates, and the server applies adaptive ag-gregation to reduce cross-client update conflicts. Over-all, ForgeVLA addresses three bottlenecks for scaling VLA: leveraging underutilized real-world vision–action data, avoiding centralized collection of sensitive logs, and mitigating client heterogeneity. 
+
+4.1 Embodied Instruction Classifier 
+
+To recover the missing task description in raw vi-sion–action logs and construct a valid local VLA training corpus, we propose an embodied instruction classifier built on a pretrained VLM. The classifier operates over a predefined set of M task instruc-tions, which is a practical design choice that covers the structured deployment scenarios common in industrial and service robotics. Figure 2 summarizes the design: we augment the VLM backbone with a lightweight attention-pooling head and a instruction classification layer. Given a vision–action pair, the pretrained VLM produces final-layer hidden states. The attention-pooling module computes weights over these states and aggregates them into a context vector via weighted summation. The classifier then maps the context vector to logits over the instruction set. Leveraging the pretrained VLM’s strong generalization, this classifier requires only lightweight fine-tuning on a small public VLA dataset (as shown in Section 7), enabling efficient and robust on-device annotation. 4(a) Centralized (b) FedAvg (c) FedProx 
+
+Figure 3: The illustrated distances and T-SNE [ 65 ] projections of latent feature representations learned by different models across different tasks. 
+
+4.2 Vision-Language Feature Collapse 
+
+Real-world robotic deployments exhibit pronounced cross-client heterogeneity. For example, manu-facturing robots operating in different factories often share only a small subset of overlapping tasks, yielding highly skewed and largely disjoint task distributions. This issue is further amplified in FL because privacy constraints preclude centralizing raw data to smooth such heterogeneity. Although numerous FL methods target non-i.i.d. data, we observe that directly applying them to federated VLA can severely degrade performance and even destabilize training, even when each client performs only a single local optimization step ( i.e. , classical client drift is largely eliminated). In preliminary experiments (Table 2), FedProx [ 40 ] performs substantially worse than vanilla Fe-dAvg [ 46 ] and sometimes fails to converge, indicating that existing non-i.i.d. remedies are insufficient for federated VLA. To diagnose the cause, we conduct a systematic analysis on Libero-Goal [ 42 ]. Specifically, we compare three models: (i) a centralized upper-bound model trained on aggregated data directly, (ii) FedAvg with each client holding data from three tasks, and (iii) FedProx under the same client partition. We then extract latent feature representations and visualize their pairwise distances across tasks. As shown in Figure 3, relative to centralized training, both FedAvg and FedProx yield tightly clustered task embeddings with small inter-task margins, indicating reduced ability to discriminate among distinct manipulation goals. FedProx exacerbates this effect, consistent with FedProx’s proximal term pulling local models toward a global model whose representations are already collapsed. These results reveal an underexplored failure mode in federated VLA: vision–language feature collapse , where heterogeneous federated training causes task-specific vision-language representations to lose discriminability. Notably, this mode is distinct from the conventional client drift studied in prior FL work, because it persists even with a single local step ( P = 1 , i.e. , no client drift). We note that while we visualize collapse on Libero-Goal, the consistently large improvements of ForgeVLA over FedAvg on all four LIBERO benchmarks (Table 1) suggest the phenomenon is general across task distributions. To mitigate this collapse, we propose a dual-strategy framework with complementary client-side and server-side components: 
+
+Contrastive Planning Loss : A direct way to mitigate vision–language feature collapse is to enforce discriminative margins between task representations in the training objective. To this end, we introduce a contrastive planning loss built on a global task representation bank {u1, u 2, . . . , u M }
+
+maintained by the central server. At the start of communication round e, the server broadcasts the current normalized bank U e = {ˆue
+
+> 1
+
+, ˆue
+
+> 2
+
+, . . . , ˆueM } to all clients, providing consistent anchors for local contrastive learning. For each local sample (vki , a ki ), let ˆlki = ltki denote the instruction predicted by cϕ, let zki = fθenc (vki , ˆlki ), and let ˆzki = zki /∥zki ∥2. During local training, client i computes the contrastive planning loss as follows: 
+
+Le 
+
+> CP ,i
+
+= − αCP 
+
+KiKiX
+
+> k=1
+
+(ˆ zki )⊤ ˆuetki
+
+τ − log 
+
+> M
+
+X
+
+> m=1
+
+exp 
+
+ (ˆ zki )⊤ ˆuem
+
+τ
+
+!
+
+, (4) 5where tki ∈ [M ] is the instruction index associated with ˆlki , τ is a fixed temperature hyperparameter, and each ˆuem is ℓ2-normalized. Finally, Le 
+
+> CP ,i
+
+is added to the local VLA training objective. After local training, each client computes the updated mean latent representation for each of its local tasks and uploads these task embedding to the server. The server then updates the global task representation bank via weighted aggregation, renormalizes each bank entry, and broadcasts the refreshed bank in the next communication round. This closed loop maintains discriminative task representations throughout federated training.   
+
+> (a) Simple Averaging
+> (b) Constrained Adap-tive Aggregation
+> (c) Unconstrained Adap-tive Aggregation
+
+Figure 4: Illustrations of Aggregations. 
+
+Adaptive Aggregation Strategy : As shown in Fig-ure 4 (a), simple averaging of heterogeneous client updates can cancel conflicting directions, producing a global update whose projection onto each client’s up-date direction is substantially attenuated. This cancel-lation slows convergence and degrades performance. Based on this observation, we propose a server-side adaptive aggregation strategy that solves a data-free optimization problem using only client updates. At communication round e, let Se ⊆ [N ] denote the clients that upload local models, let θe,P i denote client 
+
+i’s model after P local optimization iterations, let 
+
+gei = θe,P i − θe denote the uploaded update, and let ˜wei denote the server-side weight assigned to an uploaded update. We encourage the global update 
+
+θe+1 − θe to match each uploaded client update gei
+
+in projection by minimizing the deviation of the projection coefficient from 1, i.e. ,
+
+arg min 
+
+> θe+1
+
+X
+
+> i∈Se
+
+˜wei
+
+(θe+1 − θe)⊤gei
+
+∥gei ∥22 + εAG 
+
+− 1
+
+> 22
+
+, (5) where εAG > 0 is a small numerical stabilizer when a client update is nearly zero. While this objective promotes per-client update preservation, it can become unstable when client updates are highly conflicting (Figure 4 (c)). For example, if two clients’ updates are nearly anti-parallel, the unconstrained objective may drive ∥θe+1 − θe∥2 to grow without bound. To stabilize training, we regularize the solution by anchoring θe+1 to the sampled weighted average of the uploaded client models, yielding the final objective (Figure 4 (b)): 
+
+arg min 
+
+> θe+1
+
+X
+
+> i∈Se
+
+˜wei
+
+(θe+1 − θe)⊤gei
+
+∥gei ∥22 + εAG 
+
+− 1
+
+> 22
+
++ αAG θe+1 − θe + X
+
+> i∈Se
+
+˜wei gei
+
+! 22
+
+, (6) where αAG balances projection alignment and update regularization. Note that in the convergence analysis presented in the appendix, these server-side weights are defined as unbiased importance weights under partial client participation. 
+
+# 5 Algorithm, Complexity, and Privacy 
+
+Due to space limitations, we present key results here, with complete content deferred to the Appendix. 
+
+Algorithm : Full algorithm details are provided in the Algorithm 1 in the Appendix. 
+
+Complexity Analysis : ForgeVLA matches vanilla FedAvg’s asymptotic complexity: O(N EP ) time complexity and O(N ) space complexity, where N is the number of clients, E is the number of communication rounds, and P is the number of local optimization iterations per round. Please refer to the Appendix for full analysis. 
+
+Privacy : ForgeVLA provides standard FL privacy guarantees under the honest-but-curious server model. Existing privacy-enhancing paradigms originally designed for general FL are also fully compatible with ForgeVLA. Please refer to the Appendix for full analysis. 66 Experiment 
+
+Datasets and Models : We conduct experiments on four LIBERO benchmarks (LIBERO-Goal, LIBERO-Object, LIBERO-Spatial, LIBERO-10) [ 42 ], which are widely used VLA evaluation suites [ 31 , 51 , 56 , 12 ]. For training data, we simulate non-i.i.d. heterogeneity via task-level parti-tioning, assigning s tasks per client following community practices [ 40 , 72 , 37 ]. All local client data retain only vision–action pairs, with a fraction p of the full annotated dataset reserved to fine-tune the embodied instruction classifier, ensuring heterogeneous client data distributions. We use the InternVLA-M1 as our backbone [ 12 ], which follows the encoder-decoder VLA architecture. For training, we apply LoRA [ 21 ] (rank r) to the VLM encoder that holds most parameters, and full fine-tuning to the action decoder. 
+
+Baselines : We compare ForgeVLA against a set of representative baselines, including Centralized, Fe-dAvg [ 46 ], FedProx [ 40 ], FedVLA ∗1, and a FedVLA ∗ + CLIP [ 52 ] variant. Specifically, Centralized is a centralized oracle upper bound trained on full aggregated data, and FedVLA ∗ + CLIP is enhanced with pre-trained CLIP features for better vision-language alignment. We note that FedVLA ∗ uses a substantially smaller backbone (79M parameters vs. 3.9B for InternVLA-M1), which partly explains its lower absolute performance. 
+
+Metrics : We report four key evaluation metrics: (1) the number of trainable parameters, (2) the total number of model parameters, (3) task success rate, and (4) Pass @K, defined as the probability that a task succeeds at least once within K attempts. 
+
+Implementation Details : We run all experiments with N = 10 clients with full participation ratio of 1.0 and s = 3 tasks per client. Moreover, we use E = 20 communication rounds and set P = 5 local optimization iterations per round (implemented as local epochs) to avoid overfitting, with a per-client local batch size of 32. Additionally, a constant learning rate schedule with warmup is adopted for the VLM encoder ( 10 −5) and the action decoder ( 10 −4). Training uses the AdamW optimizer with zero weight decay, with hyperparameters αCP = 0 .2, αAG = 0 .1, and LoRA rank r = 32 for the VLM encoder. All experiments are conducted using Nvidia H800 GPUs with CUDA 12.8, Python 3.10.19, and PyTorch 2.6.0. For other baselines, we follow the default hyperparameters from their original works or corresponding implementations. For more details on hyperparameters and training settings, please refer to the Appendix. Unless otherwise specified, all experiments use the mentioned settings. 
+
+# 7 Analysis 
+
+Table 2: Well-established non-i.i.d. mit-igation strategies such as FedProx [ 40 ]result in even worse performance than vanilla FedAvg. Methods λ Success Rate (%) Libero-Goal FedAvg 0.0 28.0 FedProx 0.1 11.2 FedProx 0.2 8.4 FedProx 0.5 4.2 ForgeVLA 0.0 55.2 Main Results Table 1 presents the main performance com-parisons. Our ForgeVLA achieves the best performance among all federated methods across all settings, signifi-cantly outperforming other federated baselines while us-ing the same parameter budget as FedAvg, and substan-tially narrowing the gap with the centralized training up-per bound. Specifically, for the core success rate metric, ForgeVLA achieves 55.2% on LIBERO-Goal, a 26.4pp improvement over FedAvg, while existing federated VLA methods nearly fail with success rates below 10% (noting the backbone capacity difference discussed above). On LIBERO-Object, ForgeVLA reaches 98.6%, nearly match-ing the 98.8% centralized upper bound. For Pass @50 ,ForgeVLA achieves a perfect 100% across all datasets, on par with the centralized oracle and far exceeding all other federated baselines. Notably, ForgeVLA introduces no additional trainable parameters compared to FedAvg, further highlighting its efficiency. 
+
+FedProx Performance Degradation : We conduct experiments on LIBERO-Goal to evaluate Fed-Prox [ 40 ] with varying proximal regularization intensity controlled by λ in Table 2. From the table, we observe that FedProx exhibits severe performance degradation as λ increases. Specifically, starting from 28.0% for vanilla FedAvg ( λ = 0 .0), the success rate drops to 11.2% at λ = 0 .1, 8.4% at 
+
+λ = 0 .2, and only 4.2% at λ = 0 .5, while our ForgeVLA framework achieves 55.2% under the same 
+
+> 1Since official code for FedVLA [ 13 ] is unavailable, our FedVLA baseline uses a community implementation. Link is omitted for anonymity.
+
+7Table 1: The performance comparisons between different methods. Default settings are marked in gray . bold marks the best-performing results. Methods Datasets # Params (M) # Trainable Params (M) Success Rate (%) Pass @50 (%) Centralized LIBERO-Goal 3882.72 128.10 75.8 100 FedAvg LIBERO-Goal 3882.72 128.10 28.8 80 FedVLA ∗ LIBERO-Goal 79.23 79.23 0.2 10 FedVLA ∗ + CLIP LIBERO-Goal 519.82 92.90 6.2 20 ForgeVLA LIBERO-Goal 3882.72 128.10 55.2 ↑26.4% 100 Centralized LIBERO-Object 3882.72 128.10 98.8 100 FedAvg LIBERO-Object 3882.72 128.10 97.6 100 FedVLA ∗ LIBERO-Object 79.23 79.23 2.2 10 FedVLA ∗ + CLIP LIBERO-Object 519.82 92.90 18.2 30 ForgeVLA LIBERO-Object 3882.72 128.10 98.6 ↑1.0% 100 Centralized LIBERO-Spatial 3882.72 128.10 85.8 100 FedAvg LIBERO-Spatial 3882.72 128.10 68.6 90 FedVLA ∗ LIBERO-Spatial 79.23 79.23 0.4 10 FedVLA ∗ + CLIP LIBERO-Spatial 519.82 92.90 11.6 20 ForgeVLA LIBERO-Spatial 3882.72 128.10 72.6 ↑4.0% 100 Centralized LIBERO-10 3882.72 128.10 79 100 FedAvg LIBERO-10 3882.72 128.10 52.8 100 FedVLA ∗ LIBERO-10 79.23 79.23 0.4 10 FedVLA ∗ + CLIP LIBERO-10 519.82 92.90 9.4 20 ForgeVLA LIBERO-10 3882.72 128.10 63.6 ↑10.8% 100 setting. This result directly supports our claim that classical client-drift mitigation strategies designed for standard non-i.i.d. FL are insufficient for heterogeneous VLA federated learning, because the failure mode is vision-language feature collapse (Section 3.2) rather than client drift, and validates the effectiveness of ForgeVLA’s targeted approach. Table 3: Data & model scales for the classifier. 
+
+r p # Trainable Params (M) Accuracy (%) Libero-Goal 4 0.9 3.36 98.34 4 0.5 3.36 97.96 4 0.2 3.36 92.30 4 0.1 3.36 83.56 4 ODPT 3.36 76.68 8 ODPT 4.61 83.34 16 ODPT 7.10 85.56 32 ODPT 12.10 85.67 
+
+Data & Model Scale Analysis for the Clas-sifier : We evaluate our instruction classifier across varying data scales and model capac-ities on LIBERO-Goal, with results shown in Table 3. Fixed at LoRA rank r = 4 , the clas-sifier retains over 92% accuracy with 20% of full training data ( p = 0 .2), and maintains 76.68% accuracy in the most challenging one-data-per-task (ODPT) setting. In the ODPT setting, increasing LoRA rank r consistently improves accuracy, with performance satu-rating at r = 16 (85.56%). These results confirm our classifier’s high reliability under limited data and small model scales, provid-ing robust support for ForgeVLA. Table 4: Ablation Study of Components in ForgeVLA CP Loss Adaptive Aggregation Success Rate (%) 28.8 
+
+✓ 36.2 
+
+✓ 49 
+
+✓ ✓ 55.2 
+
+Ablation Study : We conduct an ablation study on LIBERO-Goal to validate the con-tribution of our two core components with 
+
+E = 10 and P = 10 in Table 4. As it can be seen, removing both components recovers the vanilla FedAvg baseline (28.8%). Adding only the CP loss improves performance to 36.2%, demonstrating its effectiveness in pre-serving task-specific vision-language align-ment. Additionally, adding only the adaptive aggregation yields a larger improvement to 49.0%. Combining both components achieves the full performance of ForgeVLA at 55.2%, showing their complementary benefits. 
+
+Sensitivity Analysis : We conduct a sensitivity analysis on four key hyperparameters of ForgeVLA, with results shown in Table 5. First, for the number of tasks per client s, both FedAvg and ForgeVLA 8Table 5: We conduct an ablation study on ForgeVLA’s key hyperparameters with E = 10 and P = 10 
+
+to evaluate the effectiveness of our design choices. Default settings are marked in gray . bold marks the best-performing results. 
+
+> (a) The number of task per client.
+
+Method s Success Rate (%) FedAvg 1 0.8 FedAvg 2 4.2 FedAvg 3 17.6 FedAvg 5 75.6 FedAvg 10 93.2 ForgeVLA 1 2ForgeVLA 2 28.7 ForgeVLA 3 41.6 ForgeVLA 5 85.6 ForgeVLA 10 95.4 
+
+> (b) The number of rank during training.
+
+Method r # Trainable (M) Success Rate (%) FedAvg 4 119.33 9.8 FedAvg 8 120.58 14.6 FedAvg 16 123.09 18.6 FedAvg 32 128.10 17.6 FedAvg 64 138.13 32 ForgeVLA 4 119.33 36.4 ForgeVLA 8 120.58 36.8 ForgeVLA 16 123.09 37.2 ForgeVLA 32 128.10 41.6 ForgeVLA 64 138.13 42.6  
+
+> (c) The hyperparameter αCP .
+
+Method αCP Success Rate (%) ForgeVLA 0 35.2 ForgeVLA 0.1 36 ForgeVLA 0.2 41.6 
+
+ForgeVLA 0.5 37 ForgeVLA 1 36 ForgeVLA 2 33.8  
+
+> (d) The hyperparameter αAG .
+
+Method αAG Success Rate (%) ForgeVLA 0 37.2 ForgeVLA 0.05 38.8 ForgeVLA 0.1 41.6 
+
+ForgeVLA 0.2 35.8 
+
+−−−−−−−−−−−−−−−−−−−−−−−−−−−−→
+
+> (a) Task: Pick up the black bowl next to the plate and place it on the plate.
+
+−−−−−−−−−−−−−−−−−−−−−−−−−−−−→
+
+> (b) Task: Pick up the barbecue sauce and place it in the basket.
+
+Figure 5: Real-world deployment of the trained ForgeVLA on the SO-ARM101 robotic platform. improve as s increases due to richer and more diverse local data, but ForgeVLA still significantly outperforms FedAvg across all s, especially in highly heterogeneous settings ( e.g. , 2% vs 0.8% at 
+
+s = 1 , 41.6% vs 17.6% at s = 3 ). Second, for LoRA rank r, ForgeVLA’s performance saturates at the default r = 32 with only mild gains from larger r, and it outperforms FedAvg at all ranks as well, showing no reliance on excessive trainable parameters. Third, for αCP , performance first rises then falls, peaking at the default 0.2, indicating moderate contrastive planning loss preserves task specificity. Fourth, for αAG , performance follows a similar trend, peaking at the default 0.1. Overall, ForgeVLA remains stable across reasonable hyperparameter ranges, with default settings achieving the best efficiency-performance trade-off. 
+
+Real-world Deployment : We deploy the trained ForgeVLA model on the physical robotic platform SO-ARM101 and evaluate it on representative tasks to provide a qualitative assessment of real-world transferability, as shown in Fig. 5. The robot successfully executes tested tasks, providing preliminary evidence that the learned policy transfers to physical systems. Owing to limited resources, this deployment is a proof-of-concept rather than a full real-world evaluation, and a systematic and quantitative study across a broader task set remains future work. 98 Conclusion 
+
+We propose ForgeVLA, a federated VLA training framework that unlocks distributed unannotated vision–action robotic logs for privacy-preserving VLA scaling. ForgeVLA recovers missing language annotations on-device via classification over a predefined instruction set, and mitigates the previously overlooked vision-language feature collapse in heterogeneous federated VLA settings through a con-trastive planning loss and an adaptive aggregation strategy. Extensive experiments show ForgeVLA significantly outperforms federated baselines across benchmarks. We believe ForgeVLA provides a practical paradigm to harness distributed real-world robotic data for advancing VLA models, and we discuss promising directions for extending the framework, including open-vocabulary instruction recovery, stronger privacy guarantees, etc., in the Appendix. 
+
+# References 
+
+[1] Martin Abadi, Andy Chu, Ian Goodfellow, H. Brendan McMahan, Ilya Mironov, Kunal Talwar, and Li Zhang. Deep learning with differential privacy. In ACM SIGSAC Conference on Computer and Communications Security , 2016. [2] Milad Abolhasani and Eugenia Kumacheva. The rise of self-driving labs in chemical and materials sciences. 
+
+Nature Synthesis , 2(6):483–492, 2023. doi: 10.1038/s44160-022-00231-0. [3] Durmus Alp Emre Acar, Yue Zhao, Ramon Matas Navarro, Matthew Mattina, Paul N. Whatmough, and Venkatesh Saligrama. Federated learning based on dynamic regularization. In International Conference on Learning Representations , 2021. [4] Amazon. Amazon launches a new AI foundation model to power its robotic fleet and de-ploys its 1 millionth robot, 2025. URL https://www.aboutamazon.com/news/operations/ amazon-million-robots-ai-foundation-model .[5] Omar Besbes, Yonatan Gur, and Assaf Zeevi. Non-stationary stochastic optimization. Operations Research ,63(5):1227–1244, 2015. doi: 10.1287/opre.2015.1408. URL https://pubsonline.informs.org/ doi/10.1287/opre.2015.1408 .[6] Kevin Black, Mitsuhiko Nakamoto, Pranav Atreya, Homer Walke, Chelsea Finn, Aviral Kumar, and Sergey Levine. Zero-shot robotic manipulation with pretrained image-editing diffusion models. In International Conference on Learning Representations (ICLR) , 2024. [7] Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom, Karol Hausman, Brian Ichter, et al. π0: A vision-language-action flow model for general robot control. In Robotics: Science and Systems (RSS) , 2025. [8] Keith Bonawitz, Vladimir Ivanov, Ben Kreuter, Antonio Marcedone, H. Brendan McMahan, Sarvar Patel, Daniel Ramage, Aaron Segal, and Karn Seth. Practical secure aggregation for privacy-preserving machine learning. In ACM SIGSAC Conference on Computer and Communications Security , 2017. [9] Keith Bonawitz, Hubert Eichner, Wolfgang Grieskamp, Dzmitry Huba, Alex Ingerman, Vladimir Ivanov, Chloe Kiddon, Jakub Koneˇ cn `y, Stefano Mazzocchi, Brendan McMahan, et al. Towards federated learning at scale: System design. Proceedings of Machine Learning and Systems , 1:374–388, 2019. [10] Santiago Bou Betran, Alberta Longhini, Miguel Vasco, Yuchong Zhang, and Danica Kragic. FLAME: A federated learning benchmark for robotic manipulation. arXiv preprint arXiv:2503.01729 , 2025. [11] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. In Advances in Neural Information Processing Systems , volume 33, pages 1877–1901, 2020. [12] Xinyi Chen, Yilun Chen, Yanwei Fu, Ning Gao, Jiaya Jia, Weiyang Jin, Hao Li, Yao Mu, Jiangmiao Pang, Yu Qiao, et al. InternVLA-M1: A spatially guided vision-language-action framework for generalist robot policy. arXiv preprint arXiv:2510.13778 , 2025. [13] Miao Cui, Tao Chang, Meihan Wu, Hongbin Xu, Chun Li, Ming Li, and Xiaodong Wang. FedVLA: Federated vision-language-action learning with dual gating mixture-of-experts for robotic manipulation. In 
+
+International Conference on Computer Vision (ICCV) , 2025. [14] Sudeep Dasari, Frederik Ebert, Stephen Tian, Suraj Nair, Bernadette Bucher, Karl Schmeckpeper, Siddharth Singh, Sergey Levine, and Chelsea Finn. RoboNet: Large-scale multi-robot learning. In Conference on Robot Learning (CoRL) , 2019. 
+
+10 [15] Ria Doshi, Homer Rich Walke, Oier Mees, Sudeep Dasari, and Sergey Levine. Scaling cross-embodied learning: One policy for manipulation, navigation, locomotion and aviation. In Proceedings of The 8th Conference on Robot Learning , volume 270 of Proceedings of Machine Learning Research , pages 496–512. PMLR, 2024. [16] Danny Driess, Fei Xia, Mehdi S. M. Sajjadi, Corey Lynch, Aakanksha Chowdhery, Brian Ichter, Ayzaan Wahid, Jonathan Tompson, Quan Vuong, Tianhe Yu, et al. PaLM-E: An embodied multimodal language model. In International Conference on Machine Learning (ICML) , 2023. [17] Yilun Du, Sherry Yang, Bo Dai, Hanjun Dai, Ofir Nachum, Josh Tenenbaum, Dale Schuurmans, and Pieter Abbeel. Learning universal policies via text-guided video generation. Advances in neural information processing systems , 36:9156–9172, 2023. [18] Tom Duckett, Simon Pearson, Simon Blackmore, and Bruce Grieve. Agricultural robotics: The future of robotic agriculture. Uk-ras white paper, EPSRC UK-RAS Network, 2018. [19] Jonas Geiping, Hartmut Bauermeister, Hannah Dröge, and Michael Moeller. Inverting gradients – how easy is it to break privacy in federated learning? In Advances in Neural Information Processing Systems ,2020. [20] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. Training compute-optimal large language models. In Advances in Neural Information Processing Systems (NeurIPS) , 2022. [21] Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations , 2022. [22] International Federation of Robotics. World robotics 2025 – industrial robots. Techni-cal report, IFR Statistical Department, Frankfurt, 2025. 4,664,000 industrial robots in op-erational use worldwide in 2024. Available at https://ifr.org/ifr-press-releases/news/ global-robot-demand-in-factories-doubles-over-10-years .[23] Intuitive Surgical, Inc. 2025 annual report, 2025. URL https://isrg.intuitive.com/ static-files/d01bbc25-f8cf-433b-8ebb-b5afc1926236 .[24] Stephen James, Zicong Ma, David Rovick Arrojo, and Andrew J. Davison. RLBench: The robot learning benchmark & learning environment. IEEE Robotics and Automation Letters , 2020. [25] Peter Kairouz, H. Brendan McMahan, Brendan Avent, Aurélien Bellet, Mehdi Bennis, Arjun Nitin Bhagoji, Kallista Bonawitz, Zachary Charles, Graham Cormode, Rachel Cummings, et al. Advances and open problems in federated learning. Foundations and Trends in Machine Learning , 14(1–2), 2021. [26] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models. arXiv preprint arXiv:2001.08361 , 2020. [27] Sai Praneeth Karimireddy, Satyen Kale, Mehryar Mohri, Sashank Reddi, Sebastian Stich, and Ananda Theertha Suresh. SCAFFOLD: Stochastic controlled averaging for federated learning. In Proceed-ings of the 37th International Conference on Machine Learning , volume 119 of Proceedings of Machine Learning Research , pages 5132–5143. PMLR, 2020. URL https://proceedings.mlr.press/v119/ karimireddy20a.html .[28] Ben Kehoe, Sachin Patil, Pieter Abbeel, and Ken Goldberg. A survey of research on cloud robotics and automation. IEEE Transactions on automation science and engineering , 12(2):398–409, 2015. [29] Ahmed Khaled, Konstantin Mishchenko, and Peter Richtarik. Tighter theory for local SGD on identical and heterogeneous data. In Proceedings of the Twenty Third International Conference on Artificial Intelligence and Statistics , volume 108 of Proceedings of Machine Learning Research , pages 4519–4529. PMLR, 2020. URL https://proceedings.mlr.press/v108/bayoumi20a.html .[30] Alexander Khazatsky, Karl Pertsch, Suraj Nair, Ashwin Balakrishna, Sudeep Dasari, Siddharth Karamcheti, Soroush Nasiriany, Mohan Kumar Srirama, Lawrence Yunliang Chen, Kirsty Ellis, et al. Droid: A large-scale in-the-wild robot manipulation dataset. arXiv preprint arXiv:2403.12945 , 2024. [31] Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan Foster, Grace Lam, Pannag Sanketi, et al. Openvla: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 , 2024. 
+
+11 [32] Moo Jin Kim, Chelsea Finn, and Percy Liang. Fine-tuning vision-language-action models: Optimizing speed and success. arXiv preprint arXiv:2502.19645 , 2025. [33] Po-Chen Ko, Jiayuan Mao, Yilun Du, Shao-Hua Sun, and Joshua B. Tenenbaum. Learning to act from actionless videos through dense correspondences. arXiv preprint arXiv:2310.08576 , 2023. [34] Ilya Kostrikov, Denis Yarats, and Rob Fergus. Image augmentation is all you need: Regularizing deep reinforcement learning from pixels. In International Conference on Learning Representations (ICLR) ,2021. [35] Michael Laskin, Kimin Lee, Adam Stooke, Lerrel Pinto, Pieter Abbeel, and Aravind Srinivas. Reinforce-ment learning with augmented data. In Advances in Neural Information Processing Systems (NeurIPS) ,volume 33, pages 19884–19895, 2020. [36] Gihun Lee, Minchan Jeong, Yongjin Shin, Sangmin Bae, and Se-Young Yun. Preservation of the global knowledge by not-true distillation in federated learning. In Advances in Neural Information Processing Systems (NeurIPS) , 2022. [37] Hongxia Li, Wei Huang, Jingya Wang, and Ye Shi. Global and local prompts cooperation via optimal transport for federated learning. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 12151–12161, 2024. [38] Qinbin Li, Bingsheng He, and Dawn Song. Model-contrastive federated learning. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 10713–10722, 2021. [39] Qixiu Li, Yaobo Liang, Zeyu Wang, Lin Luo, Xi Chen, Mozheng Liao, Fangyun Wei, Yu Deng, Sicheng Xu, Yizhong Zhang, Xiaofan Wang, Bei Liu, Jianlong Fu, Jianmin Bao, Dong Chen, Yuanchun Shi, Jiaolong Yang, and Baining Guo. CogACT: A foundational vision-language-action model for synergizing cognition and action in robotic manipulation. arXiv preprint arXiv:2411.19650 , 2024. [40] Tian Li, Anit Kumar Sahu, Manzil Zaheer, Maziar Sanjabi, Ameet Talwalkar, and Virginia Smith. Federated optimization in heterogeneous networks. In Conference on Machine Learning and Systems (MLSys) , 2020. [41] Sen Lin, Daouda Sow, Kaiyi Ji, Yingbin Liang, and Ness Shroff. Non-convex bilevel optimization with time-varying objective functions. Advances in Neural Information Processing Systems , 36:29692–29717, 2023. [42] Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qiang Liu, Yuke Zhu, and Peter Stone. Libero: Benchmarking knowledge transfer for lifelong robot learning. Advances in Neural Information Processing Systems , 36:44776–44791, 2023. [43] Boyi Liu, Lujia Wang, Ming Liu, and Cheng-Zhong Xu. Federated imitation learning: A novel framework for cloud robotic systems with heterogeneous sensor data. IEEE Robotics and Automation Letters , 2020. [44] Julien Mairal. Optimization with first-order surrogate functions. In Proceedings of the 30th International Conference on Machine Learning , volume 28 of Proceedings of Machine Learning Research , pages 783–791. PMLR, 2013. [45] Ajay Mandlekar, Soroush Nasiriany, Bowen Wen, Iretiayo Akinola, Yashraj Narang, Linxi Fan, Yuke Zhu, and Dieter Fox. MimicGen: A data generation system for scalable robot learning using human demonstrations. In Conference on Robot Learning (CoRL) , 2023. [46] H. Brendan McMahan, Eider Moore, Daniel Ramage, Seth Hampson, and Blaise Aguera y Arcas. Communication-efficient learning of deep networks from decentralized data. In International Conference on Artificial Intelligence and Statistics (AISTATS) , 2017. [47] Tongzhou Mu, Zhan Ling, Fanbo Xiang, Derek Yang, Xuanlin Li, Stone Tao, Zhiao Huang, Zhiwei Jia, and Hao Su. Maniskill: Generalizable manipulation skill benchmark with large-scale demonstrations. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) Datasets and Benchmarks Track , 2021. [48] Niklas Muennighoff, Alexander M. Rush, Boaz Barak, Teven Le Scao, Nouamane Tazi, Aleksandra Piktus, Sampo Pyysalo, Thomas Wolf, and Colin Raffel. Scaling data-constrained language models. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. [49] Octo Model Team, Dibya Ghosh, Homer Walke, Karl Pertsch, Kevin Black, Oier Mees, Sudeep Dasari, Joey Hejna, Tobias Kreiman, Charles Xu, Jianlan Luo, You Liang Tan, Lawrence Yunliang Chen, Pannag Sanketi, Quan Vuong, Ted Xiao, Dorsa Sadigh, Chelsea Finn, and Sergey Levine. Octo: An open-source generalist robot policy. In Proceedings of Robotics: Science and Systems , 2024. 
+
+12 [50] Open X-Embodiment Collaboration. Open X-embodiment: Robotic learning datasets and RT-X models. 
+
+IEEE International Conference on Robotics and Automation (ICRA) , 2024. [51] Delin Qu, Haoming Song, Qizhi Chen, Yuanqi Yao, Xinyi Ye, Yan Ding, Zhigang Wang, JiaYuan Gu, Bin Zhao, Dong Wang, and Xuelong Li. SpatialVLA: Exploring spatial representations for visual-language-action model. arXiv preprint arXiv:2501.15830 , 2025. [52] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervision. In International Conference on Machine Learning , pages 8748–8763. PMLR, 2021. [53] Meisam Razaviyayn, Mingyi Hong, and Zhi-Quan Luo. A unified convergence analysis of block successive minimization methods for nonsmooth optimization. SIAM Journal on Optimization , 23(2):1126–1153, 2013. doi: 10.1137/120891009. [54] Sashank Reddi, Zachary Charles, Manzil Zaheer, Zachary Garrett, Keith Rush, Jakub Koneˇ cný, Sanjiv Kumar, and H. Brendan McMahan. Adaptive federated optimization. In International Conference on Learning Representations (ICLR) , 2021. URL https://openreview.net/forum?id=LkFG3lB13U5 .[55] Desik Rengarajan, Nitin Ragothaman, Dileep Kalathil, and Srinivas Shakkottai. FEDORA: Federated ensemble-directed offline reinforcement learning. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. [56] Moritz Reuss, Ömer Erdinç Ya˘ gmurlu, Fabian Wenzel, and Rudolf Lioutikov. Multimodal diffusion transformer: Learning versatile behavior from multimodal goals. In Robotics: Science and Systems (RSS) ,2024. [57] Seonguk Seo, Jinkyu Kim, Geeho Kim, and Bohyung Han. Relaxed contrastive learning for federated learning. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2024. [58] Mingjia Shi, Yuhao Zhou, Kai Wang, Huaizheng Zhang, Shudong Huang, Qing Ye, and Jiancheng Lv. Prior: Personalized prior for reactivating the information overlooked in federated learning. Advances in Neural Information Processing Systems , 36:28378–28392, 2023. [59] Yujun Shi, Jian Liang, Wenqing Zhang, Vincent Y. F. Tan, and Song Bai. Towards understanding and mitigating dimensional collapse in heterogeneous federated learning. In International Conference on Learning Representations (ICLR) , 2023. [60] Sebastian U. Stich. Local SGD converges fast and communicates little. In International Conference on Learning Representations (ICLR) , 2019. URL https://openreview.net/forum?id=S1g2JnRcFX .[61] Pei Sun, Henrik Kretzschmar, Xerxes Dotiwalla, Aurelien Chouard, Vijaysai Patnaik, Paul Tsui, James Guo, Yin Zhou, Yuning Chai, Benjamin Caine, et al. Scalability in perception for autonomous driving: Waymo open dataset. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition ,pages 2446–2454, 2020. [62] Yue Tan, Guodong Long, Lu Liu, Tianyi Zhou, Qinghua Lu, Jing Jiang, and Chengqi Zhang. Fedproto: Federated prototype learning across heterogeneous clients. In Proceedings of the AAAI conference on artificial intelligence , volume 36, pages 8432–8440, 2022. [63] Josh Tobin, Rachel Fong, Alex Ray, Jonas Schneider, Wojciech Zaremba, and Pieter Abbeel. Domain randomization for transferring deep neural networks from simulation to the real world. In IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pages 23–30, 2017. [64] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al. LLaMA: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971 , 2023. [65] Laurens Van der Maaten and Geoffrey Hinton. Visualizing data using t-sne. Journal of machine learning research , 9(11), 2008. [66] Pablo Villalobos, Anson Ho, Jaime Sevilla, Tamay Besiroglu, Lennart Heim, and Marius Hobbhahn. Will we run out of data? limits of LLM scaling based on human-generated data. arXiv preprint arXiv:2211.04325 , 2022. 
+
+13 [67] Homer Rich Walke, Kevin Black, Tony Z Zhao, Quan Vuong, Chongyi Zheng, Philippe Hansen-Estruch, Andre Wang He, Vivek Myers, Moo Jin Kim, Max Du, et al. Bridgedata v2: A dataset for robot learning at scale. In Conference on Robot Learning , pages 1723–1736. PMLR, 2023. [68] Jianyu Wang, Qinghua Liu, Hao Liang, Gauri Joshi, and H. Vincent Poor. Tackling the objective inconsis-tency problem in heterogeneous federated optimization. In Advances in Neural Information Processing Systems , volume 33, 2020. [69] Lirui Wang, Xinlei Chen, Jialiang Zhao, and Kaiming He. Scaling proprioceptive-visual learning with heterogeneous pre-trained transformers. In Advances in Neural Information Processing Systems , 2024. [70] Junjie Wen, Yichen Zhu, Jinming Li, Zhibin Tang, Chaomin Shen, and Feifei Feng. DexVLA: Vision-language model with plug-in diffusion expert for general robot control. arXiv preprint arXiv:2502.05855 ,2025. [71] Russell B. Wynn, Veerle A.I. Huvenne, Timothy P. Le Bas, Bramley J. Murton, Douglas P. Connelly, Brian J. Bett, Henry A. Ruhl, Kirsty J. Morris, Jeffrey Peakall, Daniel R. Parsons, Esther J. Sumner, Stephen E. Darby, Robert M. Dorrell, and James E. Hunt. Autonomous underwater vehicles (AUVs): Their past, present and future contributions to the advancement of marine geoscience. Marine Geology , 352: 451–468, 2014. doi: 10.1016/j.margeo.2014.03.012. [72] Liping Yi, Han Yu, Chao Ren, Gang Wang, Xiaoguang Liu, and Xiaoxiao Li. Federated model hetero-geneous matryoshka representation learning. Advances in Neural Information Processing Systems , 37: 66431–66454, 2024. [73] Qiying Yu, Yang Liu, Yimu Wang, Ke Xu, and Jingjing Liu. Multimodal federated learning via contrastive representation ensemble. In International Conference on Learning Representations (ICLR) , 2023. [74] Tianhe Yu, Ted Xiao, Austin Stone, Jonathan Tompson, Anthony Brohan, Su Wang, Jaspiar Singh, Clayton Tan, Jodilyn Peralta, Brian Ichter, et al. Scaling robot learning with semantically imagined experience. 
+
+arXiv preprint arXiv:2302.11550 , 2023. [75] Yue Zhao, Meng Li, Liangzhen Lai, Naveen Suda, Damon Civin, and Vikas Chandra. Federated learning with non-IID data. arXiv preprint arXiv:1806.00582 , 2018. [76] Ruijie Zheng, Dantong Niu, Yuqi Xie, Jing Wang, Mengda Xu, Yunfan Jiang, Fernando Castañeda, Fengyuan Hu, You Liang Tan, Letian Fu, et al. Egoscale: Scaling dexterous manipulation with diverse egocentric human data. arXiv preprint arXiv:2602.16710 , 2026. [77] Kaiwen Zhou and Xin Eric Wang. FedVLN: Privacy-preserving federated vision-and-language navigation. In European Conference on Computer Vision (ECCV) , 2022. [78] Yuhao Zhou, Qing Ye, and Jiancheng Lv. Communication-efficient federated learning with compensated overlap-fedavg. IEEE Transactions on Parallel and Distributed Systems , 33(1):192–205, 2021. [79] Yuhao Zhou, Mingjia Shi, Yuanxi Li, Yanan Sun, Qing Ye, and Jiancheng Lv. Communication-efficient federated learning with single-step synthetic features compressor for faster convergence. In Proceedings of the IEEE/CVF international conference on computer vision , pages 5008–5017, 2023. [80] Yuhao Zhou, Mingjia Shi, Yuxin Tian, Yuanxi Li, Qing Ye, and Jiancheng Lv. Federated cinn clustering for accurate clustered federated learning. In ICASSP 2024-2024 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) , pages 5590–5594. IEEE, 2024. [81] Yuhao Zhou, Jindi Lv, Yuxin Tian, Dan Si, Qing Ye, and Jiancheng Lv. Deploying models to non-participating clients in federated learning without fine-tuning: A hypernetwork-based approach. arXiv preprint arXiv:2508.12673 , 2025. [82] Yuhao Zhou, Yuxin Tian, Mingjia Shi, Yuanxi Li, Yanan Sun, Qing Ye, and Jiancheng Lv. E-3sfc: Communication-efficient federated learning with double-way features synthesizing. IEEE Transactions on Neural Networks and Learning Systems , 2025. [83] Ligeng Zhu, Zhijian Liu, and Song Han. Deep leakage from gradients. Advances in Neural Information Processing Systems , 2019. [84] Zhuangdi Zhu, Junyuan Hong, and Jiayu Zhou. Data-free knowledge distillation for heterogeneous federated learning. In International Conference on Machine Learning (ICML) , 2021. [85] Brianna Zitkovich, Tianhe Yu, Sichun Xu, Peng Xu, Ted Xiao, Fei Xia, Jialin Wu, Paul Wohlhart, Stefan Welker, Ayzaan Wahid, et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. In Conference on Robot Learning , pages 2165–2183. PMLR, 2023. 
+
+14 Table of Contents 
+
+A Additional Related Work . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.1 Vision Language Action Models and Data Scaling . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.2 Federated Learning for Robot Policies and VLA . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.3 Representation Alignment in Federated Training . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 B Algorithm of ForgeVLA . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 C Complexity Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 D Notation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 E Convergence Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 F Empirical Convergence . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23 G Additional Implementation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23 H Additional Evaluation Results. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .24 I Privacy Implication . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 J Limitations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 K Experiments Compute Resources . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25 L Border Impacts . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25 M Declaration of LLM Usage . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26 
+
+# A Additional Related Work 
+
+A.1 Vision Language Action Models and Data Scaling 
+
+Vision Language Action models treat robot control as a single prediction problem over images, instructions, and actions. RT-2 [ 85 ] showed that large vision language backbones can be adapted to robotic trajectories, while OpenVLA [ 31 ] and OpenVLA-OFT [ 32 ] made this line easier to study at scale and improved practical efficiency. Recent systems push the frontier in different ways. π0 [ 7], CogACT [ 39 ], SpatialVLA [ 51 ], InternVLA-M1 [ 12 ], and DexVLA [ 70 ] improve dexterous control, spatial reasoning, and action modeling. Octo [ 49 ], CrossFormer [ 15 ], and HPT [ 69 ] study transfer across embodiments and datasets. A common pattern is that these methods still depend on carefully annotated demonstrations. That dependence is hard to scale in robotics. Prior work has tried to ease the bottleneck with data augmentation, simulation, and generated trajectories [ 35 , 34 , 45 , 24 , 47 , 63 , 17 , 6, 33 , 74 ]. These approaches are useful, but they still rely on curated seed data or they struggle to produce reliable action supervision in the real world. Another practical line focuses on parameter efficient adaptation. LoRA [ 21 ] is especially relevant because it makes large VLA backbones easier to tune and reduces the communication burden in distributed training [ 32 , 12 ]. ForgeVLA is complementary to all of these efforts. Instead of synthesizing more trajectories, it turns existing vision action logs into usable VLA training data. 
+
+A.2 Federated Learning for Robot Policies and VLA 
+
+Federated learning lets multiple clients train a shared model without uploading raw data [ 46 , 9 , 25 ]. Its main difficulty is heterogeneity across clients. When local data distributions differ, client updates drift apart and the global model becomes harder to optimize [ 75 , 40 , 27 , 68 , 3, 54 ]. This issue is especially sharp in robot learning because tasks, embodiments, and operating environments vary widely from one client to another. Several studies bring federated training closer to robotics. FLAME [ 10 ] provides a benchmark for federated manipulation and makes the performance gap under task heterogeneity easy to measure. 15 FedVLA [ 13 ] adapts federated training to VLA models with instruction guided scene parsing, expert routing, and expert aware aggregation. Related work on cloud robotics, federated imitation learning, vision and language navigation, and offline reinforcement learning also shows that privacy preserving collaboration is feasible for distributed robot systems [ 28 , 43 , 77 , 55 ]. Still, most prior work assumes either fully annotated multimodal data or simpler policy classes. ForgeVLA studies a more practical setting in which each client only stores vision action logs and must recover the missing language signal locally. 
+
+A.3 Representation Alignment in Federated Training 
+
+Another relevant thread studies representation alignment as a way to handle non-i.i.d. federated training. MOON [ 38 ] uses contrastive objectives to keep local representations close to the global model, and FedProto [ 62 ] exchanges prototypes so that clients can align features around shared anchors. Beyond these two foundational methods, subsequent work has expanded the toolkit consid-erably. FedNTD [ 36 ] draws an analogy to continual learning and preserves global dark knowledge on non-ground-truth classes via self-distillation during local training. FedGen [ 84 ] trains a lightweight server-side generator to ensemble client knowledge without any proxy data and broadcasts it to regu-larize local updates. FedDecorr [ 59 ] identifies that data heterogeneity causes dimensional collapse, where learned features reside in a lower-dimensional subspace, and applies a decorrelation regularizer to encourage full-rank representations. Seo et al. [ 57 ] show that supervised contrastive learning in FL can itself trigger representation collapse and propose a relaxed contrastive loss that penalizes excessively similar within-class pairs. Complementary directions include optimal-transport-based prompt cooperation for aligning global and local representations [ 37 ], matryoshka-style nested repre-sentations that handle model heterogeneity across clients [ 72 ], and personalized priors that reactivate information overlooked during standard aggregation [ 58 ]. Collectively, these methods show that feature level regularization can be more effective than only constraining parameter updates. Multimodal federated settings introduce additional challenges. CreamFL [ 73 ] tackles heterogeneous modalities and model architectures by combining inter-modal and intra-modal contrastive losses with a global-local representation ensemble, demonstrating that cross-modal alignment is critical when clients observe different data modalities. Federated VLA makes this problem even harder because the model must preserve agreement between visual content, language instructions, and action predictions in one shared latent space. In our setting, weak alignment leads to vision language feature collapse, where task representations lose separation across clients. Generic contrastive FL methods do not fully address this multimodal failure mode. ForgeVLA therefore uses a contrastive planning loss with a shared task representation bank so that inter task structure remains stable throughout training. 
+
+# B Algorithm of ForgeVLA 
+
+The complete pseudocode of ForgeVLA is presented in Algorithm 1. 
+
+# C Complexity Analysis 
+
+In each communication round, each participating client uses the pretrained embodied instruction classifier to convert raw vision–action logs into a VLA training corpus, and then performs local optimization by jointly minimizing the VLA task loss and the contrastive planning loss. The server aggregates the uploaded client updates via adaptive aggregation and updates the global task representation bank. Throughout, it never accesses raw client data. Therefore, ForgeVLA incurs no additional asymptotic time complexity beyond vanilla FedAvg, and its runtime remains O(N EP ),where E is the number of communication rounds and P is the number of local optimization iterations per round. In space, the instruction classifier introduces only constant extra storage, and the global task representation bank scales linearly with the number of tasks M while remaining lightweight in practice. Consequently, ForgeVLA matches FedAvg’s O(N ) space complexity. 
+
+# D Notation 
+
+The main notations in this paper are shown in Table 6. 16 Table 6: The glossary of notations. Notation Implication 
+
+N Total number of clients 
+
+i Index of a client 
+
+k Sample index within the local dataset Di
+
+e Communication-round index 
+
+j Local optimization-iteration index within round eSe Participating client set at communication round eξei Participation indicator of client i at round eξe,j i Mini-batch sampled on client i at local iteration j of round ewi Normalized analysis weight of the i-th client, e.g. , wi = |Di|/ PNj=1 |Dj |,satisfying PNi=1 wi = 1 ˜wei Unbiased sampled server weight for client i at round eE Number of communication rounds 
+
+P Number of local optimization iterations per round 
+
+ηi Local learning rate for client iDi Local dataset of client iKi Number of samples in the local dataset Di
+
+(vki , a ki ) The k-th vision–action pair in Di
+
+lm The m-th instruction in the instruction space L
+
+ˆlki Predicted instruction from the embodied instruction classifier 
+
+tki Instruction index satisfying ˆlki = ltki
+
+s Number of tasks assigned per client 
+
+p Fraction of annotated data reserved for classifier fine-tuning 
+
+V Vision observation space 
+
+A Action space 
+
+L = {lm}Mm=1 Instruction space 
+
+Z Joint latent embedding space 
+
+M Total number of distinct language instructions 
+
+θ = ( θenc , θ dec ) Global VLA model parameters (encoder and decoder) 
+
+θe Global VLA model at the start of round eθe,j i Local VLA model of client i after j local iterations in round efθ (v, l ) Full VLA model mapping from vision-language input to action 
+
+fθenc : V × L → Z Vision-language encoder 
+
+fθdec : Z → A Action decoder 
+
+zki Joint latent representation of sample (vki , a ki )ˆzki ℓ2-normalized latent representation of sample (vki , a ki )
+
+r LoRA rank applied to the VLM encoder 
+
+cϕ : V × A → L Embodied instruction classifier 
+
+ϕ ∈ Φ Parameters of the instruction classifier 
+
+Φ Hypothesis space of the classifier parameters 
+
+ℓ(·, ·) Task-specific loss function 
+
+Li(θ; Di, ϕ ) Local empirical VLA loss on client i
+
+Le 
+
+> CP ,i
+
+Contrastive planning loss on client i at round eαCP Scaling hyperparameter for the contrastive planning loss 
+
+τ Fixed temperature hyperparameter in the contrastive planning loss 
+
+U e =
+
+{ˆue
+
+> 1
+
+, ˆue
+
+> 2
+
+, . . . , ˆueM }
+
+Normalized global task representation bank broadcast at round euei,m Local task representation of instruction m on client i at round egei Local update of client i at round e, i.e. , θe,P i − θe
+
+αAG Hyperparameter balancing projection alignment and regularization 
+
+εAG Numerical stabilizer in adaptive aggregation Pass @K Probability that a task succeeds at least once within K attempts 
+
+λ Proximal regularization intensity in FedProx 17 Algorithm 1 ForgeVLA 
+
+Input : initial global model parameters θ0 and ϕ, local dataset Di = {(vki , a ki )}Ki
+
+> k=1
+
+, local learning rate ηi
+
+Parameter : number of communication rounds E, number of local optimization iterations P , number of clients N , participation rule {pei }
+
+Output : global model parameters θE
+
+Server:  
+
+> 1:
+
+fine-tune ϕ on public VLA pairs  
+
+> 2:
+
+initialize the normalized global task bank U 0 = {ˆu01, ˆu02, . . . , ˆu0 
+
+> M
+
+} 
+
+> 3:
+
+for each communication round e from 0 to E − 1 do  
+
+> 4:
+
+sample a participating set Se ⊆ [N ] according to {pei }Ni=1  
+
+> 5:
+
+distribute θe, ϕ, and U e to the clients in Se 
+
+> 6:
+
+each client in Se executes the routine below in parallel  
+
+> 7:
+
+receive θe,P i and {uei, 1, u ei, 2, . . . , u ei,M } from each client i ∈ Se 
+
+> 8:
+
+update U e+1 using weighted aggregation over the uploaded prototypes; if a task receives no valid aggregate, keep its previous bank entry, and renormalize each updated entry  
+
+> 9:
+
+update θe+1 using Equation 6 on the uploaded client set Se 
+
+> 10:
+
+end for  
+
+> 11:
+
+return θE
+
+Client Routine (executed on participating client i ∈ Se at round 
+
+e):  
+
+> 1:
+
+initialize θe, 0 
+
+> i
+
+= θe 
+
+> 2:
+
+for each local iteration j from 1 to P do  
+
+> 3:
+
+sample a mini-batch ξe,j i from Di 
+
+> 4:
+
+form an unbiased stochastic gradient he,j i of Li + Le 
+
+> CP ,i
+
+at (θe,j −1 
+
+> i
+
+, ξ e,j i ) 
+
+> 5:
+
+θe,j i = θe,j −1 
+
+> i
+
+− ηihe,j i 
+
+> 6:
+
+end for  
+
+> 7:
+
+update {uei, 1, u ei, 2, . . . , u ei,M } using θe,P i 
+
+> 8:
+
+return θe,P i and {uei, 1, u ei, 2, . . . , u ei,M }
+
+# E Convergence Analysis 
+
+We analyze ForgeVLA as local SGD on the round-frozen objectives {F ei } induced by the current bank U e [ 60 , 29 , 27 , 54 ]. The purpose of this analysis is to provide a stability-style guarantee : under bounded algorithm-induced perturbations, adaptive aggregation and the evolving task bank preserve the FedAvg/local-SGD stationarity order. The theorem does not claim that these components explain the empirical advantage of ForgeVLA over baselines. The analysis is stated as one theorem in which stochastic noise, client heterogeneity, partial participation, adaptive aggregation, and bank drift appear in a single bound. Let ni ≜ |Di| and define the normalized client weights wi ≜ ni/ PNk=1 nk, so wi ≥ 0 and 
+
+PNi=1 wi = 1 . We assume a common local step size η > 0 and P ∈ N+ local steps per round. The two extra ForgeVLA hyperparameters are coupled to the local-SGD scale as 
+
+αCP = λCP η, αAG = λAG 
+
+ηP , λCP ≥ 0, λAG > 0. (7) The first scaling keeps the bank term at the same order as the usual stochastic floor, and the second serves as a convenient asymptotic parametrization of the server anchor strength as the local-update scale shrinks. The theorem itself relies on Assumption 6 to quantify the objective-level perturbation induced by adaptive aggregation, rather than on this heuristic alone. As in the rest of the paper, the bank entries are row-wise normalized; for analysis we replace the raw normalization ˆz = z/ ∥z∥2 by the smooth map 
+
+ˆz ≜ norm εn (z) ≜ z
+
+p∥z∥22 + ε2n
+
+, εn > 0, (8) 18 so that ∥ˆz∥2 ≤ 1 deterministically. This εn-smoothed map is used only as an analytical surrogate for the proof: the implemented algorithm uses standard row-wise normalization, while the smoothed version removes the singularity at z = 0 and approximates the raw normalization arbitrarily well once ∥z∥2 ≫ εn. At communication round e, the server broadcasts a bank U e = [ ue
+
+> 1
+
+; . . . ; ueM ] with 
+
+∥uem∥2 ≤ 1 for every m, and this bank is held fixed throughout the subsequent P local updates. For one sample with target task t, and with the round-e bank U e, define 
+
+ℓCP (ˆ z; U e, t ) ≜ −αCP 
+
+ˆz⊤uet
+
+τ − log 
+
+> M
+
+X
+
+> m=1
+
+exp 
+
+ ˆz⊤uem
+
+τ
+
+!
+
+, τ > 0. (9) Since log PMm=1 exp( am) ≥ at, we have ℓCP (ˆ z; U e, t ) ≥ 0 for every (ˆ z, U e, t ). Throughout this subsection, Li(θ) denotes the empirical-average VLA loss on Di, and Le
+
+> CP ,i
+
+(θ) denotes the empirical average of ℓCP (ˆ z; U e, t ) over the samples in Di. For brevity, write Li(θ) ≡ L i(θ; Di, ϕ ) and 
+
+Le
+
+> CP ,i
+
+(θ) ≡ L e
+
+> CP ,i
+
+(θ; Di, ϕ, U e), and define the round-frozen local and global objectives as 
+
+F ei (θ) ≜ Li(θ) + Le
+
+> CP ,i
+
+(θ), F e(θ) ≜
+
+> N
+
+X
+
+> i=1
+
+wiF ei (θ). (10) Let Fe denote the sigma-field generated by all randomness up to the start of round e, and let Fe,j 
+
+denote the sigma-field generated by all randomness up to and including the j-th local update on every client in the coupled full-participation round-e recursion, with Fe, 0 = Fe. Then θe and U e are 
+
+Fe-measurable, and conditioned on Fe the inner loop is standard local SGD on {F ei }Ni=1 .Conditioned on the round-start sigma-field Fe, each client starts from θe, 0 
+
+> i
+
+= θe and performs P
+
+local SGD steps on F ei :
+
+θe,j i = θe,j −1 
+
+> i
+
+− ηh e,j i , j = 1 , . . . , P, (11) where he,j i is a stochastic gradient estimator of F ei at θe,j −1 
+
+> i
+
+. After the local stage, define 
+
+¯θe+1 ≜
+
+> N
+
+X
+
+> i=1
+
+wiθe,P i , gei ≜ θe,P i − θe, ¯ge ≜ ¯θe+1 − θe. (12) To model partial participation, let ξei ∈ { 0, 1} denote the round-e participation indicator of client 
+
+i, let pei ≜ P(ξei = 1 | F e) ∈ (0 , 1] , and define the unbiased sampled server weights and sampled FedAvg anchor by 
+
+˜wei ≜ wiξei
+
+pei
+
+, ˜θe+1 ≜ θe +
+
+> N
+
+X
+
+> i=1
+
+˜wei gei . (13) Equivalently, all sums below may be restricted to the uploaded client set because ˜wei = 0 for non-participating clients. The server then applies the adaptive-aggregation update 
+
+θe+1 ≜ arg min 
+
+> θN
+
+X
+
+> i=1
+
+˜wei
+
+ (θ − θe)⊤gei
+
+∥gei ∥22 + εAG 
+
+− 1
+
+2
+
++ αAG θ − ˜θe+1 22
+
+, (14) where εAG > 0. Because the objective in Eq. (14) is strongly convex, θe+1 is uniquely defined. To analyze the bank update, let Ri(θ) = [ ri, 1(θ); . . . ; ri,M (θ)] denote the task-prototype matrix uploaded by client i when its local model is θ. Let Mact ⊆ [M ] denote this active row set, and write 
+
+Mact ≜ |M act |. For each active task m ∈ M act , the server computes 
+
+˜ue+1  
+
+> m
+
+≜
+
+> N
+
+X
+
+> i=1
+
+ρei,m ri,m (θe,P i ), ue+1  
+
+> m
+
+≜ norm εn (˜ ue+1  
+
+> m
+
+), (15) where ρei,m ≥ 0, PNi=1 ρei,m = 1 , and ρei,m = 0 whenever client i does not upload task m in round e.For m / ∈ M act , the server keeps ue+1  
+
+> m
+
+= uem.
+
+Assumption 1 (Round-Wise Smoothness) . For every round e and client i, the objective F ei is 
+
+L-smooth, i.e., for all θ, θ ′,
+
+∥∇ F ei (θ) − ∇ F ei (θ′)∥2 ≤ L∥θ − θ′∥2. (16) 19 The smoothed normalization keeps the contrastive term well defined, and the assumption above is the standard round-wise smoothness condition used in nonconvex local-SGD and federated optimization analyses [60, 29, 27, 54]. 
+
+Assumption 2 (Uniform Lower Bound on the Round-Wise Objectives) . There exists a deterministic constant Flb > −∞ such that 
+
+F e(θ) ≥ Flb for all rounds e and all θ. (17) Uniform lower boundedness is the usual stationarity-analysis condition for smooth nonconvex optimization and local SGD [60, 54]. Because only the contrastive term depends on the bank, the inter-round objective drift is controlled directly by the bank movement. For the sample loss ℓCP (ˆ z; U, t ),
+
+∇um ℓCP = αCP 
+
+τ (pm − 1{m = t}) ˆ z, (18) where pm is the corresponding softmax probability. Hence 
+
+∥∇ U ℓCP ∥2 
+
+> F
+
+= α2
+
+> CP
+
+τ 2 ∥ˆz∥22
+
+> M
+
+X
+
+> m=1
+
+(pm − 1{m = t})2 ≤ 2α2
+
+> CP
+
+τ 2 , (19) because ∥ˆz∥2 ≤ 1 and ∥p − et∥2 ≤ √2. Therefore ℓCP is (√2αCP /τ )-Lipschitz in U , and taking empirical averages and the client-weighted sum preserves this constant: 
+
+|F e+1 (θ) − F e(θ)| ≤ √2αCP 
+
+τ ∥U e+1 − U e∥F for all rounds e and all θ. (20) 
+
+Lemma 1 (Bank Variation Implies Objective Drift) . Suppose there exists CU ≥ 0 such that, for every round e,
+
+E∥U e+1 − U e∥F Fe
+
+ ≤ CU ηP. (21) 
+
+Then, under αCP = λCP η,
+
+EF e+1 (θe+1 ) − F e(θe+1 ) Fe
+
+ ≤√2λCP CU
+
+τ η2P. (22) 
+
+Proof. Eq. (20) holds pointwise for any θ, including the random iterate θe+1 . Taking conditional expectation and applying Eq. (21) gives Eq. (22). Eq. (21) is a bank path-length condition, not an optimal-bank convergence claim. It is mild for prototype banks because U e is an averaged representation statistic rather than an adversarial objective sequence, matching the prototype-sharing view used in federated representation learning [ 62 ]. If the joint model-bank dynamics approach a stable representation fixed point, then ∥U e+1 − U e∥F → 0;the rate theorem assumes the quantitative per-round control needed for an O(E−1/2) stationarity bound. Bounded variation/path-length controls are standard in non-stationary and time-varying optimization [ 5 , 41 ]; related surrogate analyses also control changes between successive optimization surrogates [44, 53]. 
+
+Assumption 3 (Conditionally Unbiased Stochastic Gradients with Bounded Noise) . For every round 
+
+e, client i, and local step j,
+
+E
+
+h
+
+he,j i | F e,j −1
+
+i
+
+= ∇F ei (θe,j −1 
+
+> i
+
+), E
+
+
+
+he,j i − ∇ F ei (θe,j −1 
+
+> i
+
+) 22
+
+Fe,j −1
+
+
+
+≤ σ2. (23) This conditional unbiasedness and bounded-noise model is the standard stochastic-gradient oracle used in local-SGD/FedAvg convergence analyses [60, 29, 54]. 
+
+Assumption 4 (Round-Wise Gradient Dissimilarity) . There exists ζ ≥ 0 such that for every round e
+
+and every θ,
+
+Ξe(θ) ≜
+
+> N
+
+X
+
+> i=1
+
+wi ∥∇ F ei (θ) − ∇ F e(θ)∥22 ≤ ζ2. (24) 20 This is the standard bounded gradient-dissimilarity condition used to quantify non-i.i.d. client drift in federated optimization [ 40 , 29 , 27 , 54 ]. Here it is imposed on the round-frozen ForgeVLA objectives 
+
+F ei , so ζ2 is algorithm-dependent and captures any reduction in cross-client disagreement induced by the shared bank. 
+
+Assumption 5 (Unbiased Partial Participation) . Conditioned on Fe, the participation indicators 
+
+{ξei }Ni=1 introduced above are mutually independent and are also independent of the local mini-batch noise used to generate the coupled full-participation local updates {gei }Ni=1 . Consequently, the sampled server weights in Eq. (13) satisfy 
+
+E[ ˜ wei | F e] = wi. (25) 
+
+Define the participation inflation factor 
+
+Γπ ≜ max  
+
+> 0≤e≤E−1
+
+max  
+
+> 1≤i≤N
+
+wi
+
+1 − pei
+
+pei
+
+. (26) Unbiased client sampling with bounded participation inflation is the partial-participation analogue of the client-sampling assumptions used in federated optimization analyses [27, 54]. 
+
+Lemma 2 (Anchored Adaptive-Aggregation Perturbation) . Let Ae(θ) denote the first quadratic term in Eq. (14) . Suppose that for some GAG ≥ 0,
+
+E
+
+h
+
+∥∇ Ae(˜θe+1 )∥22 Fe
+
+i
+
+≤ G2AG η2P 2. (27) 
+
+Then the solution of Eq. (14) , with αAG = λAG /(ηP ), satisfies 
+
+E
+
+h
+
+∥θe+1 − ˜θe+1 ∥22 Fe
+
+i
+
+≤ G2AG 
+
+4λ2AG 
+
+η4P 4. (28) 
+
+Consequently, by L-smoothness, Young’s inequality, and the local-SGD moment bound in Eq. (39) ,Eq. (29) holds for constants ρAG and CAG independent of E.Proof. The function Ae is convex quadratic in θ. With δe = θe+1 − ˜θe+1 , first-order optimality gives ∇Ae(θe+1 ) + 2 αAG δe = 0 . Monotonicity of ∇Ae implies 2αAG ∥δe∥2 ≤ ∥∇ Ae(˜θe+1 )∥2,which gives Eq. (28) after conditioning. Applying smoothness to F e(θe+1 ) − F e(˜θe+1 ), replacing 
+
+∇F e(˜θe+1 ) by ∇F e(θe) plus an L∥˜θe+1 − θe∥2 term, and using Eq. (39) yields Eq. (29). 
+
+Assumption 6 (ForgeVLA Objective-Level Perturbation Control) . Let ˜θe+1 denote the sampled FedAvg reference point defined in Eq. (13) . There exist deterministic constants ρAG , C AG , C B ≥ 0,with ρAG a sufficiently small universal constant, such that, for every round e,
+
+E
+
+h
+
+F e(θe+1 ) − F e(˜θe+1 ) Fe
+
+i
+
+≤ ρAG ηP ∥∇ F e(θe)∥22 + CAG η3P 3, (29) 
+
+EF e+1 (θe+1 ) − F e(θe+1 ) Fe
+
+ ≤ CB η2P. (30) This assumption isolates the two ForgeVLA-specific deviations from vanilla FedAvg at the objec-tive level: adaptive aggregation contributes the perturbation term CAG η3P 3, and bank evolution contributes the drift term CB η2P . Lemma 2 gives a sufficient anchored-aggregation condition for Eq. (29) . Lemma 1 shows that Eq. (30) follows from the bank-variation bound in Eq. (21) , with 
+
+CB = √2λCP CU /τ . The theorem only requires the objective-level bounds. 
+
+Interpretation. The role of Assumption 6 is to capture, in a single unified statement, the two algorithm-specific perturbations that ForgeVLA introduces beyond standard local SGD. The first term (Eq. (29) ) bounds how much the adaptive-aggregation step can worsen the current-round objective relative to the sampled FedAvg baseline ˜θe+1 . Because the adaptive-aggregation objective (Eq. (14) )is anchored to ˜θe+1 , Lemma 2 reduces this requirement to a moment bound on the projection-gradient at the anchor. The second term (Eq. (30) ) bounds the inter-round objective change due to bank evolution; Lemma 1 reduces it to bounded bank path length. Thus, ForgeVLA preserves the FedAvg/local-SGD convergence order under standard stochastic optimization assumptions plus bounded adaptive-aggregation and bank-variation perturbations. 21 For the optional comparison to a fixed bank, define 
+
+FU (θ) ≜
+
+> N
+
+X
+
+> i=1
+
+wi (Li(θ) + LCP ,i (θ; U )) , (31) and, when needed, assume the bank-to-gradient continuity condition 
+
+∥∇ FU (θ) − ∇ FU ′ (θ)∥2 ≤ LU ∥U − U ′∥F for all θ and all banks U, U ′, (32) for some deterministic constant LU ≥ 0.
+
+Theorem 1 (FedAvg-Order Stationarity of ForgeVLA) . Assume Assumptions 1, 2, 3, 4, 5, and 6, together with E[F 0(θ0)] < ∞, the standard local-SGD small-step condition LηP ≤ 1, and the participation-stability condition LηP Γπ ≤ c0 for a sufficiently small universal constant c0 > 0.Then there exist universal constants cσ , c het , c π > 0 such that, with 
+
+RE ≜ 8  E[F 0(θ0)] − Flb 
+
+
+
+ηP E + cσ Lησ 2 + chet L2η2P (P − 1) ζ2
+
++ cπ LηP Γπ (σ2 + ζ2) + 8 CAG η2P 2 + 8 CB η, 
+
+(33) 
+
+the following main bound holds: 
+
+1
+
+E
+
+> E−1
+
+X
+
+> e=0
+
+E∥∇ F e(θe)∥22 ≤ R E , (34) 
+
+If, in addition, Eq. (32) holds, then for any reference bank U ⋆,
+
+1
+
+E
+
+> E−1
+
+X
+
+> e=0
+
+E∥∇ FU ⋆ (θe)∥22 ≤ 2RE + 2L2
+
+> U
+
+E
+
+> E−1
+
+X
+
+> e=0
+
+E∥U e − U ⋆∥2 
+
+> F
+
+. (35) 
+
+Consequently, if the bank sequence stabilizes in the Cesàro sense around some U ⋆, then this ad-ditional continuity condition transfers the round-wise stationarity guarantee directly to the fixed objective FU ⋆ . Moreover, under the stated bounded-perturbation conditions, fixed P , bounded 
+
+Γπ , and E-independent CAG , C B , choosing η = Θ( E−1/2) gives RE = O(E−1/2), matching the standard nonconvex local-SGD/FedAvg order. If Eq. (32) also holds with E-independent LU
+
+and 1
+
+> E
+
+PE−1 
+
+> e=0
+
+E∥U e − U ⋆∥2 
+
+> F
+
+= O(E−1/2), then the same order transfers to FU ⋆ . When adaptive aggregation and bank evolution are absent, i.e., CAG = CB = 0 and F ei (θ) ≡ L i(θ), Eq. (34) 
+
+reduces to the usual heterogeneity- and participation-aware FedAvg/local-SGD guarantee up to universal constants. Proof. Conditioned on Fe, couple the sampled round with the hypothetical full-participation local-SGD recursion driven by the same mini-batch draws. The standard nonconvex local-SGD descent estimate under bounded conditional noise and bounded gradient dissimilarity yields [ 40 , 29 , 27 , 54 ]
+
+EF e(¯θe+1 ) | F e
+
+ ≤ F e(θe) − ηP 
+
+4 ∥∇ F e(θe)∥22 + c′ 
+
+> σ
+
+Lη 2P σ 2 + c′
+
+> het
+
+L2η3P 2(P − 1)Ξ e(θe), (36) for universal constants c′ 
+
+> σ
+
+, c ′ 
+
+> het
+
+> 0.Write the sampled displacement as ˜ge = PNi=1 ˜wei gei = ¯ ge + εeπ , where ¯ge = PNi=1 wigei . Define 
+
+εeπ = PNi=1 wi
+
+ ξei
+
+> pei
+
+− 1
+
+
+
+gei . By Assumption 5, conditioned on Fe and {gei }Ni=1 , the coefficients 
+
+wi(ξei /p ei − 1) are mean-zero and mutually independent, hence the cross terms vanish and E[εeπ |Fe] = 0 and 
+
+E∥εeπ ∥22 Fe, {gei }Ni=1 
+
+ =
+
+> N
+
+X
+
+> i=1
+
+w2
+
+> i
+
+1 − pei
+
+pei
+
+∥gei ∥22. (37) Using w2
+
+> i
+> 1−pei
+> pei
+
+≤ Γπ wi for every i, e and then averaging over the local mini-batch noise yields 
+
+E∥εeπ ∥22 | F e
+
+ ≤ ΓπNX
+
+> i=1
+
+wiE∥gei ∥22 | F e
+
+ . (38) 22 The same recursion also gives 
+
+> N
+
+X
+
+> i=1
+
+wiE∥gei ∥22 | F e
+
+ ≤ cg η2P 2  ∥∇ F e(θe)∥22 + σ2 + ζ2 (39) for a universal constant cg > 0. Applying L-smoothness to F e(˜θe+1 ) and using Eqs. (36) – (39) yields 
+
+E
+
+h
+
+F e(˜θe+1 ) | F e
+
+i
+
+≤ F e(θe) − ηP 
+
+4 ∥∇ F e(θe)∥22 + c′ 
+
+> σ
+
+Lη 2P σ 2
+
++ c′
+
+> het
+
+L2η3P 2(P − 1)Ξ e(θe) + c′ 
+
+> π
+
+Lη 2P 2Γπ
+
+ ∥∇ F e(θe)∥22 + σ2 + ζ2 ,
+
+(40) for a universal constant c′ 
+
+> π
+
+> 0.Assumption 6 gives 
+
+EF e(θe+1 ) | F e
+
+ ≤ E
+
+h
+
+F e(˜θe+1 ) | F e
+
+i
+
++ ρAG ηP ∥∇ F e(θe)∥22 + CAG η3P 3, (41) while Eq. (30) gives 
+
+EF e+1 (θe+1 ) | F e
+
+ ≤ EF e(θe+1 ) | F e
+
+ + CB η2P. (42) Combining Eqs. (40) – (42) , using Ξe(θe) ≤ ζ2, and absorbing the gradient-dependent perturbations under the sufficiently small universal constants ρAG and LηP Γπ ≤ c0 yields 
+
+EF e+1 (θe+1 ) | F e
+
+ ≤ F e(θe) − ηP 
+
+8 ∥∇ F e(θe)∥22 + c′′  
+
+> σ
+
+Lη 2P σ 2
+
++ c′′ 
+
+> het
+
+L2η3P 2(P − 1) ζ2 + c′′  
+
+> π
+
+Lη 2P 2Γπ (σ2 + ζ2)+ CAG η3P 3 + CB η2P, 
+
+(43) for universal constants c′′  
+
+> σ
+
+, c ′′ 
+
+> het
+
+, c ′′  
+
+> π
+
+> 0. Summing over e = 0 , . . . , E − 1, telescoping, using Assumption 2, and dividing by ηP E/ 8 gives Eq. (34) after absorbing constants into cσ , c het , c π and Eq. (33). For the fixed-objective part, use F e(θ) = FU e (θ) and Eq. (32): 
+
+∥∇ FU ⋆ (θe)∥2 ≤ ∥∇ F e(θe)∥2 + ∥∇ FU ⋆ (θe) − ∇ FU e (θe)∥2 ≤ ∥∇ F e(θe)∥2 + LU ∥U e − U ⋆∥F .
+
+Squaring, averaging over e, and using Eq. (34) gives Eq. (35) . This transfer from round-wise stationarity to a fixed objective is standard for optimization with evolving surrogates or time-varying losses [44, 53, 41]. 
+
+# F Empirical Convergence 
+
+Figure 6 shows the training loss curves of ForgeVLA and FedAvg on the LIBERO-Goal benchmark under different training configurations. ForgeVLA achieves comparable training loss to FedAvg across all configurations, empirically validating the convergence stability of our method and complementing the theoretical analysis in Section E. 
+
+# G Additional Implementation Details 
+
+We use InternVLA-M1 [ 12 ] as the backbone VLA, adapting the VLM encoder with LoRA [ 21 ] ( r=32 ,all linear layers; 128.10M/3882.72M trainable parameters) and fully fine-tuning the action decoder. The embodied instruction classifier shares the same VLM backbone with an attention-pooling head and is fine-tuned with LoRA. We simulate N =10 clients with full participation, s=3 tasks per client (non-i.i.d. task-level partitioning), E=20 communication rounds, and P =5 local epochs per round at batch size 32. We use AdamW (zero weight decay) with learning rates 10 −5 (encoder) and 10 −4
+
+(decoder), both with linear warmup. ForgeVLA hyperparameters: αCP =0 .2, τ =0 .07 , αAG =0 .1. We evaluate with 50 rollouts per task across 10 tasks per LIBERO suite and report success rate and Pass @50 . All experiments use CUDA 12.8, Python 3.10.19, and PyTorch 2.6.0; baselines follow their original hyperparameters. 23 0 20 40 60 80 100  
+
+> Communication Round
+> 10 1
+> Total Training Loss
+> Training Loss Convergence
+> ForgeVLA (E=1)
+> ForgeVLA (E=5)
+> ForgeVLA (E=10)
+> FedAvg (E=1)
+> FedAvg (E=5)
+> FedAvg (E=10)
+
+Figure 6: The training loss curves of ForgeVLA and FedAvg. 
+
+# H Additional Evaluation Results 
+
+We present additional evaluation results to analyze the training efficiency and robustness of ForgeVLA under different local optimization budgets P in Table 7. When trained with P = 10 local optimization iterations per communication round (implemented as local epochs), ForgeVLA achieves performance that surpasses FedAvg with P = 5 on LIBERO-Goal and is comparable to FedAvg with P = 1 
+
+across all benchmarks. In contrast, vanilla FedAvg suffers from significant performance degradation as the number of local optimization iterations increases, primarily due to exacerbated client drift and vision-language feature collapse. By leveraging the proposed contrastive planning loss and adaptive aggregation strategy, ForgeVLA effectively alleviates representation collapse and conflicting local updates, maintaining stable and high-performance learning even with intensive local optimization. Notably, in the E=100 , P =1 configuration, ForgeVLA achieves 81.2% on LIBERO-Goal, which slightly exceeds the centralized upper bound (75.8%). We attribute this to the contrastive planning loss, which explicitly encourages inter-task discriminability in the embedding space, a regularization effect absent from the standard centralized training objective. We emphasize that this result is based on a single seed and that reporting mean and standard deviation over multiple runs would provide a more reliable comparison; we leave such variance analysis for future work. 
+
+# I Privacy Implication 
+
+ForgeVLA follows the standard FL data-retention principle: raw data never leaves client devices, and clients exchange only model updates with the server, matching the vanilla FedAvg workflow. We consider the standard honest-but-curious server threat model commonly adopted in federated learning [ 25 ]: the server faithfully executes the protocol but may attempt to infer client information from received updates. Under this model, ForgeVLA exposes essentially the same information as FedAvg, with two additional transmissions: (i) a one-time server-to-client broadcast of the embodied instruction classifier trained on public data (which contains no client-private information) and (ii) per-task mean representations. These per-task prototypes are aggregated statistics that have been argued to carry lower reconstruction risk than full gradient updates [ 62 ], though we note they are not formally private. Consequently, existing privacy-enhancing techniques for FL, such as secure aggregation [ 8] and differential privacy [ 1], can be applied on top of ForgeVLA without modifying the core algorithm to provide stronger formal guarantees if required. 
+
+# J Limitations 
+
+While ForgeVLA demonstrates strong performance across all benchmarks and validates real-world transferability, we acknowledge several limitations. First, the embodied instruction classifier maps 24 vision–action pairs to a fixed set of M predefined language instructions. This closed-set design works well for structured industrial and service robotics scenarios but cannot handle open-ended task descriptions. Second, ForgeVLA follows the standard honest-but-curious threat model and lacks formal privacy mechanisms. While transmitted prototypes have lower reconstruction risk than full gradients, they are not formally private and remain vulnerable to stronger gradient inversion attacks. Thus, extending to open-vocabulary instruction generation and integrating formal privacy guarantees with rigorous privacy-utility trade-off analysis are important directions for future work. Table 7: The performance comparisons between different methods. bold marks the best-performing results. Methods Datasets # Params (M) # Trainable Params (M) Success Rate (%) Pass @50 (%) 
+
+E = 100 ; P = 1 
+
+Centralized LIBERO-Goal 3882.724 128.101 75.8 100 FedAvg LIBERO-Goal 3882.724 128.101 57.6 90 ForgeVLA LIBERO-Goal 3882.724 128.101 81.2 ↑23.6% 100 Centralized LIBERO-Object 3882.724 128.101 98.8 100 FedAvg LIBERO-Object 3882.724 128.101 98.2 100 ForgeVLA LIBERO-Object 3882.724 128.101 99.4 ↑1.2% 100 Centralized LIBERO-Spatial 3882.724 128.101 85.8 100 FedAvg LIBERO-Spatial 3882.724 128.101 80.6 100 ForgeVLA LIBERO-Spatial 3882.724 128.101 85.4 ↑4.8% 100 Centralized LIBERO-10 3882.724 128.101 79 100 FedAvg LIBERO-10 3882.724 128.101 71.8 100 ForgeVLA LIBERO-10 3882.724 128.101 78.8 ↑7.0% 100 
+
+E = 10 ; P = 10 
+
+Centralized LIBERO-Goal 3882.724 128.101 75.8 100 FedAvg LIBERO-Goal 3882.724 128.101 17.6 60 ForgeVLA LIBERO-Goal 3882.724 128.101 41.6 ↑24.0% 100 Centralized LIBERO-Object 3882.724 128.101 98.8 100 FedAvg LIBERO-Object 3882.724 128.101 94 100 ForgeVLA LIBERO-Object 3882.724 128.101 95.6 ↑1.6% 100 Centralized LIBERO-Spatial 3882.724 128.101 85.8 100 FedAvg LIBERO-Spatial 3882.724 128.101 50.8 90 ForgeVLA LIBERO-Spatial 3882.724 128.101 68.2 ↑17.4% 90 Centralized LIBERO-10 3882.724 128.101 79 100 FedAvg LIBERO-10 3882.724 128.101 23.4 80 ForgeVLA LIBERO-10 3882.724 128.101 36.4 ↑13.0% 90 
+
+# K Experiments Compute Resources 
+
+All experiments are conducted on NVIDIA H800 GPUs. Each H800 is equipped with 128 GB CPU memory and a 16-core CPU. For each ForgeVLA experiment, the training budget amounts to two H800 GPUs running for 48 hours in total. 
+
+# L Border Impacts 
+
+Our work enables broader utilization of diverse vision-language data in federated VLA learning, and can facilitate the development of generalizable embodied and robotic VLA models. It brings positive impacts to downstream research including multimodal understanding, robotic manipulation, and privacy-preserving distributed learning. We do not identify any foreseeable negative societal or ethical impacts arising from this work. 25 M Declaration of LLM Usage 
+
+LLMs were used solely for linguistic polishing and sentence refinement in this manuscript. All LLM-generated content has been fully reviewed and revised by the authors, who retain full responsibility for all technical claims and conclusions. 26
