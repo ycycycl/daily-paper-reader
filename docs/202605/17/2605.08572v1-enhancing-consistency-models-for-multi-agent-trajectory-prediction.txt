@@ -1,0 +1,645 @@
+Title: Enhancing Consistency Models for Multi-Agent Trajectory Prediction
+
+URL Source: https://arxiv.org/pdf/2605.08572v1
+
+Published Time: Tue, 12 May 2026 00:31:58 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+# Enhancing Consistency Models for Multi-Agent Trajectory Prediction 
+
+Alen Mrdovic 1, Qingze (Tony) Liu 1, Danrui Li 1, Mathew Schwartz 1,2, Kaidong Hu 1, Sejong Yoon 3, Mubbasir Kapadia 1, and Vladimir Pavlovic 1 
+
+> 1
+
+Rutgers University - New Brunswick  
+
+> 2
+
+New Jersey Institute of Technology  
+
+> 3
+
+The College of New Jersey 
+
+Abstract. Diffusion models for multi-agent trajectory prediction are limited by iterative denoising, which causes inference latency that hinders their use in time-critical settings like autonomous driving. Fast-sampling variants using DDIM and informed initial noise distributions partially alleviate this issue, but they either fail to achieve true single-step gen-eration or are constrained by the chosen noise distribution. Consistency Models (CMs) offer high-quality one-step generation by mapping noise directly to data, but are difficult to train from scratch. We propose EC-Traj , an enhanced CM pipeline with improved training and conditional generation for trajectory prediction. Our framework extends the student-teacher consistency training scheme: the student produces standard out-puts, while the teacher explicitly fuses its predictions with parts of the ground truth to give stronger supervision. We also exploit CMs’ direct denoising for top-K multi-shot generation during training. Combining conditional generation with this enhanced consistency objective yields faster inference and improved prediction accuracy, establishing compet-itive new benchmarks on the large-scale Argoverse 2 dataset. 
+
+Keywords: Trajectory prediction · Consistency models 
+
+## 1 Introduction 
+
+Trajectory prediction forecasts the short-term future motion of surrounding traf-fic participants from their observed history, environmental layout, and social interactions. It is vital for safety-critical applications such as robotic motion planning [15, 21, 23] and autonomous driving [16, 18], where predicted motions are required to be physically plausible, socially acceptable, and reflect multiple potential outcomes of participants’ intents. Recent work using diffusion models for trajectory prediction [6,8,17,31] has shown strong performance in the multi-modal setting and the flexibility to impose various sampling techniques to meet additional output constraints. However, high computational complexity hinders the application of diffusion models, where real-time inference is crucial during deployment in systems such as autonomous vehicles. During inference, diffusion models gradually denoise a standard Gaussian sample toward the desired data point by following dynamics specified by a  
+
+> arXiv:2605.08572v1 [cs.CV] 9 May 2026 2A. Mrdovic et al.
+
+stochastic differential equation (SDE), a process that typically demands hun-dreds of optimization steps. More efficient variants, such as DDIM [24], speed up sampling and cut down the number of required steps; however, they still need more than 10 denoising iterations. Beyond accelerated diffusion formula-tions, previous work [17, 31] also tried to replace the standard Gaussian with an informed initial distribution. These methods denoise from a lower-variance noise distribution whose means come from trajectory predictions of pre-trained or standalone modules. This warm start reduces the required diffusion steps and promotes a better exploration of multi-modal futures using additional prior knowledge [12]. However, such explicit usage makes the model heavily dependent on the pre-trained predictor, as denoising from an inaccurate prior hinders the model from learning the correct denoising path. Consistency Models (CMs) [27] enable single-step sampling at inference with-out relying on prior-informed sampling. Typically, CMs are either distilled from pre-trained diffusion models or trained from scratch, where the first approach achieves strong results in image generation. However, distillation requires robust pre-trained diffusion models, which are found scarce in trajectory prediction do-main (shown later in this paper). The latter train-from-scratch method, on the other hand, requires carefully-tailored training guidance to ensure the quality. We propose ECTraj , a conditional CM-based trajectory prediction frame-work. In line with a train-from-scratch paradigm, ECTraj is conditioned on both historical observations and a pre-trained prior, while performing denoising from a standard Gaussian distribution—thereby maximizing multi-modal exploration without being restricted by an informed initial distribution—and incorporates an improved consistency training pipeline. Our main contributions can be sum-marized as follows: 1. Instead of direct distillation or prior-informed sampling, we guide the train-ing process by first using pretrained model components to encode the input into latent space, and then enhancing the student–teacher training with a ground-truth fusion to the teacher’s output. 2. Tailoring for the multi-modal nature of the trajectory predictions, we ex-ploit one-step denoising to sample multiple modes for student and teacher, compute a best-of-K loss for each network; this optimization is new for CMs and not directly applicable to noise-predicting diffusion models. 3. ECTraj outperforms the diffusion baseline OptTrajDiff on all standard tra-jectory benchmark metrics in the large-scale Argoverse 2 dataset, while using only 1/10 of the inference steps. 
+
+## 2 Related Work 
+
+2.1 Diffusion Models for Trajectory Prediction 
+
+Diffusion models [7, 28] have achieved impressive results in image generation. More recently, they have been shown to be a promising framework for trajec-tory prediction. MID [6] captures the uncertainty of agent’s future movements Enhancing Consistency Models for Multi-Agent Trajectory Prediction 3
+
+by modeling the process as conditional diffusion, where the encoded historical context serves as a condition to generate future trajectories. LED [17] speeds up the sampling process by using DDIM formulation and introducing a more informed prior different from standard Gaussian noise. This in turn reduces the number of sampling steps needed to generate high-quality trajectories. TrajDif-fuse [13] transforms the prediction task as planning-based trajectory inpainting and introduces map-based guidance module to ensure environmental compli-ance in model output. MotionDiffuser [8] applies diffusion models to the task of multi-agent trajectory prediction for autonomous driving, where they incorpo-rate a permutation-invariant denoiser to enhance multi-agent prediction. Opt-TrajDiff [31] is a multi-agent prediction method that, similarly to LED, forms an informed prior as a via pretrained QCNet [35] and proposed estimated clean manifold guidance to boost the performance in controllable generation. However, all existing approaches still require more than 10 denoising steps, which limits the practicality of deploying the model in time-sensitive applications. 
+
+2.2 Consistency Models 
+
+To alleviate the computational overhead of iterative inference, various fast-sampling diffusion techniques have been developed [9, 20, 24, 27]. Prominent among these are Consistency Models (CMs) [27], which achieve single-step gen-eration from noise via a student-teacher training paradigm. CMs are typically optimized using one of two strategies: Consistency Distillation (CD) or Consis-tency Training (CT). While CD initializes the model from a pretrained diffu-sion model, CT trains the model entirely from scratch. Although CD initially outperformed CT by a wide margin, recent advancements [26] have systemat-ically refined the design choices for CT, effectively bridging this performance gap. However, due to the lack of standardized pre-trained diffusion baselines for CD training, CMs have yet to be successfully adapted for the trajectory predic-tion domain. Inspired by recent extensions to the CM framework [2, 4, 5, 10], we propose ECTraj, a novel conditional CM-based trajectory prediction pipeline. ECTraj achieves state-of-the-art performance, while requiring only a tenth of the computational time compared to its diffusion counterparts. 
+
+## 3 Method 
+
+The overall architecture of our proposed model and its training scheme are de-picted in Figure 1. We describe each component in detail below. 
+
+3.1 Consistency Models Preliminaries 
+
+Consistency models (CMs) are built on the Probability Flow ODE (PF-ODE) in continuous-time diffusion models [29], which defines a smooth bijective trajectory that transforms the data distribution  p0(x0) into a tractable noise distribution 4 A. Mrdovic et al. GT future                                
+
+> states 𝑌
+> Teacher Model Student Model
+> 𝜀 𝑘 ~𝒩 (0,𝐼 )
+> 𝑓 𝜃 (𝑥 0+𝜎 𝑡 𝜀 𝑘 ,𝜎 𝑡 ,𝐶 )𝑓 𝜃 −(𝑥 0+𝜎 𝑟 𝜀 𝑘 ,𝜎 𝑟 ,𝐶 )
+> ො𝑥 𝜃 𝑘
+> arg min 𝑘 𝐴𝐷𝐸 𝑥 0,ො𝑥 𝜃 𝑘
+> ො𝑥 𝜃 𝑘
+> −
+> arg min 𝑘 𝐴𝐷𝐸 𝑥 0,ො𝑥 𝜃 𝑘
+> −
+> ො𝑥 0,𝜃 ො𝑥 0,𝜃 −
+> ෡𝑥 ′0,𝜃 −L2 loss in latent space
+> Iterate over K
+> scenarios
+> Map to
+> physical space
+> Substitute
+> timesteps with
+> GT data using
+> mask 𝑀
+> Map to latent
+> space
+> Consistency Training Consistency
+> Enhancement
+> Best predictions in
+> latent space
+> Historical agent
+> states (𝑋 ,ℳ)
+> QCNet
+> Scene Context
+> Consistency
+> Model
+> C=[c,mm ,p]
+> Predicted latent
+> ො𝑥 0,𝜃
+> Map to
+> physical space
+> Future
+> Predictions
+> Map to
+> latent space
+> Model Architecture
+> GT future and Scene context (𝑥 0,𝐶 )
+> GT future latent
+> 𝑥 0
+> Enhanced latent
+
+Fig. 1. Model Architecture and training scheme . (Left) The given historical trajectories and map information are encoded into a context latent vector. Then, the latent is processed by a consistency model and decoded to predicted future trajectories. (Middle) In the teacher-student training scheme of the consistency model, ECTraj sam-ples K different Gaussian noises to produce K different future trajectories. Then the student model is updated using the distance between the best student latent prediction and the best teacher latent prediction. (Right) To enable better teacher guidance, the predicted teacher latent is enhanced by replacing some time steps with GT data in physical space. 
+
+pσT (xσT ) ∼ N (0 , ϵ ). CMs impose a self-consistency constraint so that points  xσt
+
+and  xσr on the same trajectory map to the same initial data point  x0:
+
+f (xσt , σ t) = f (xσr , σ r ) = x0,
+
+enabling high-quality single-step generation from any intermediate state. For training, the PF-ODE is discretized into time steps  t1 < t 2 < · · · < t N = T .The associated variances  σ1 < σ 2 < · · · < σ N = T are obtained as a function of the time step, which is described in more detail in Section 3.3. CM then minimizes the distance between the denoised outputs of two adjacent steps: 
+
+arg min 
+
+θ Ew(σt) d fθ (xσt , σ t), f θ− (xσr , σ r ) ,
+
+where  t1 ≤ r < t ≤ T . Here  d(·, ·) is a distance metric,  fθ is the neural network estimating the consistency function, and  fθ− is its exponential moving average (EMA). Enhancing Consistency Models for Multi-Agent Trajectory Prediction 5
+
+3.2 Conditional CM for Multi-modal Trajectory Prediction 
+
+We propose a conditional CM framework for multi-agent trajectory prediction. A scene ( X, M) consists of agent states X ∈ RNa×Th×2, where Na is the number of agents, Th the number of historical frames, and the last dimension the ( x, y )coordinates, and a map M ∈ RNm×Dp×Dm , where Nm is the number of poly-lines, Dp the number of points per polyline, and Dm the number of attributes (e.g., position, orientation, magnitude). Given the encoded scene context C, we learn a conditional consistency function fθ (xσt , σ t, C) that directly maps a noisy prior to the future trajectory space to future predictions for Y ∈ RNa×Tf ×2. To construct the conditional consistency function fθ , we first encode the histori-cal observations of the surrounding environment and social interactions into a context vector 
+
+c = Φ(X, M). (1) To account for the inherently multimodal nature of human motion, prior work typically introduces auxiliary modeling mechanisms that construct priors—either as deterministic anchor trajectories or as learned prior distributions—to facil-itate exploration over multiple plausible futures. However, owing to the char-acteristics of consistency models (CM), which perform denoising directly from Gaussian white noise, it is nontrivial to decode trajectories directly from such priors. Consequently, we instead supply the consistency function with marginal future predictions and their associated scores, obtained from a pre-trained model, as prior anchor trajectory contexts, denoted by mm and p during training time to direct the model with more efficient learning. 
+
+mm, p = Θ(c) (2) After forming the combined context representation C = [ c, mm, p ], we apply three layers of composite attention blocks to the intermediate noisy input xσ .Within each layer, we first perform cross-attention between xσ and the historical encodings of the target agent. We then apply cross-attention between xσ and the map encodings (e.g., polygonal representations), followed by cross-attention with the context encodings of the neighboring agents. Subsequently, we conduct self-attention among the future encodings of different agents to capture their joint interactions. Finally, we introduce an additional cross-attention operation between the marginal priors and the noisy input, thereby integrating prior in-formation into the denoising process and obtained the denoising output. 
+
+ˆx0 = fθ (xσ , σ, C) (3) 
+
+Input compression In the trajectory space, the flattened input has dimension 
+
+Nh × 2 (120 for Argoverse 2). Following [8] and [31], we accelerate the decoding by linearly compressing the trajectories into 10-dimensional latent vectors. The trajectory-level input X is mapped to latent input x via 
+
+x = XU,  (4) 6 A. Mrdovic et al. 
+
+and mapped back by 
+
+X = V x.  (5) The matrices U and V are learnable; details are given in the Appendix. 
+
+3.3 ECTraj - Enhanced Consistency training Consistency formulation During training, we first sample the student index t
+
+from {1, . . . , N }, where N is the number of ODE trajectory discretization steps and determines the noise added to the clean input. Following [26], N is chosen adaptively. In ECTraj, we start with N = 10 and, over E training epochs, double 
+
+N every E 
+
+> 3
+
+epochs, so training ends with N = 40. The index t is sampled from a discrete log-normal distribution over indices, as in [26]; further details are in the Appendix. Given t, we then obtain the teacher index r as follows: 
+
+r = ⌊t(1 − n(t′)
+
+q⌈ ed ⌉ )⌋. (6) This parameterization is applied in line with ECT [5]. In Equation (6), t′ = 
+
+> tN
+
+, scaling t to t′ ∈ [0 , 1], and n(t′) = 1 + k 
+
+> 1+ ebt ′
+
+; where k = 8 and b = 1. Additionally, e denotes the current epoch and d denotes a threshold epoch that is aligned with the discretization curriculum. More precisely, d = E// 3 (where // 
+
+denotes integer division). In cases where n(t′) > q ⌊ ed ⌋, r is clamped to 0 to avoid negative indexing. The choice of q varies between domains and q = 4 was the best choice for our use case. This parameterization leads to a hybrid diffusion-consistency training procedure. In the beginning, the model essentially optimizes for reconstruction, since r = 0 in the initial stages of training due to clamping. As training progresses, r approaches t, transitioning the training process to standard consistency training [27] as training nears its end. Equation (6) describes the index retrieval. The noise to be added to the input is a function of the sampled index. For some index t, the variance is calculated in line with [9]: 
+
+σt = ( σ 1 
+
+> ρ
+> min
+
++ t − 1
+
+N − 1 (σ 1 
+
+> ρ
+> max
+
+− σ 1
+
+> ρ
+> min
+
+)) ρ, (7) where σmin = 0 .002, σmax = 1 .04 and ρ = 7. For the purposes of discrete log-normal sampling, we also left-pad σ0 = 0 .0. The explanation for prepending this value is deferred to the Appendix. The student and teacher samples are obtained as: 
+
+xσt = x0 + σtϵ,  (8) 
+
+xσr = x0 + σr ϵ,  (9) where ϵ ∼ N (0 , I), with I being the identity matrix. We point out that x0 are compressed trajectory vectors and that optimization is done in the latent space.    
+
+> 4This is different from the standard training for image generation where σmax = 80. This value proved to be too large for our use case.
+
+Enhancing Consistency Models for Multi-Agent Trajectory Prediction 7
+
+Multi-shot generation at training time. Our model produces high-quality trajectories in a single forward pass, which allows us to define a top-K consis-tency loss. This type of loss is not practical for diffusion-based methods such as OptTrajDiff [31], which operate in the noise space, making it non-trivial to iden-tify the best trajectory. We demonstrate this empirically in Section 4.3. Specifi-cally, we sample K random noise vectors and add them to both the student and the teacher: 
+
+xσt,k = x0 + σtϵk, (10) 
+
+xσr ,k = x0 + σr ϵk, (11) for all k ∈ { 1, 2, ..., K }. ϵk ∼ N (0 , I ) represents K different random noise vectors. Next, we separately denoise the trajectories from each group ( K student and 
+
+K teacher modes). After denoising, we choose the best trajectories from both groups based on ADE :
+
+kθ = arg min 
+
+> k
+
+ADE( fθ (xσt,k , σ t, C), x 0), (12) 
+
+kθ− = arg min 
+
+> k
+
+ADE( fθ− (xσr ,k , σ r , C), x 0). (13) 
+
+θ− is obtained using the exponential moving average (EMA) of θ. In line with [9], the denoiser fθ is parameterized as follows: 
+
+fθ (x, σ, C) = cskip (σ)x + cout (σ)Fθ (x, σ, C), (14) where Fθ denotes the trainable part of the denoiser (usually a neural network). The teacher parameterization is done similarly. cskip (·) and cout (·) denote dif-ferentiable functions for which cskip (σmin ) = 1 and cout (σmin ) = 0. The exact choices of these functions will be provided in the Appendix. For brevity, we will use the following notations: 
+
+ˆx0,θ = fθ (xσt,k θ , σ t, Ct), (15) 
+
+ˆx0,θ − = fθ (xσr ,k θ− , σ r , Cr ). (16) 
+
+Enhanced consistency objective Standard CM directly compares ˆ x0,θ and ˆx0,θ − from the student and teacher outputs. In ECTraj, we enhance the teacher output xσr by fusing it with parts of the ground truth to provide stronger su-pervision for the student. Let Xf be the ground-truth future in trajectory space, and ˆX0,θ − the predicted trajectory-space output derived from ˆ x0,θ − as described in Section 3.2. The modified teacher output is then defined as: 
+
+ˆX′ 
+
+> 0,θ −
+
+= (1 − M ) ⊙ ˆX0,θ − + M ⊙ Xf . (17) Here, M denotes a binary mask that determines which parts of the ground truth are replacing the original output, and ⊙ the Hadamard product. ˆX0,θ − is then 8 A. Mrdovic et al. 
+
+mapped back into the latent space representation ˆ x′ 
+
+> 0,θ −
+
+, also as explained in Sec-tion 3.2. We note the similarity between Equation (17) and the future mixup in TimeDiff [22], which can also be viewed as a variant of teacher forcing [32]. The key difference lies in the masking: TimeDiff uses random masking, while we deterministically replace two waypoints with ground truth—the midpoint and endpoint. Mixing these GT waypoints into the teacher output exposes the student network to higher quality supervision, as this simple modification refines the teacher output and provides the student with several ground truth anchors, thereby aiding learning. The ECTraj objective is: 
+
+LECT raj = w(σt)d(ˆ x0,θ , sg (ˆ x′ 
+
+> 0,θ −
+
+)) , (18) where w(σt) = 1 
+
+> σt−σr
+
+, d is a distance metric (in our case, the L2 norm), and sg 
+
+is the stop-gradient operator applied to the teacher weights. Algorithm 1 shows the ECTraj training algorithm. 
+
+3.4 Inference 
+
+We design our inference procedure based on the recommended configuration from [26]. For multistep sampling, the intermediate time indices are defined as 
+
+τn = nN τN , (19) where n ∈ { 1, 2, ..., N }. Here, τN is the largest index and corresponds to the maximum variance. ECTraj performs single-step denoising starting from stan-dard Gaussian noise. In contrast to earlier diffusion-based methods [17, 31], EC-Traj does not rely on an informed or specialized initial distribution. Although multistep inference is feasible, we empirically observed that single-step sampling yields the best performance (multi-step result in supplementary). We hypoth-esize that this is because multi-step inference excessively corrupts the samples through repeated noise injection, in line with the observations reported in [27]. Algorithm 2 shows the inference algorithm. 
+
+## 4 Experiments 
+
+Dataset and metrics. We conduct our experiments on the Argoverse 2 Mo-tion Forecasting Dataset [33], a widely used large-scale benchmark for trajectory prediction. Each scenario provides 50 past time steps (5 seconds) and 60 future time steps (6 seconds). We adopt the standard metrics from the Argoverse 2 evaluation. Specifically, we use the accuracy metrics ADE K and F DE K with 
+
+K = 1 and K = 6 to assess the upper bound of model prediction performance. We further report Brier-F DE 6 (abbreviated as b-F DE 6), which augments the Enhancing Consistency Models for Multi-Agent Trajectory Prediction 9
+
+Algorithm 1 ECTraj Training 
+
+1: Input: Historical data ( Xh, M), ground-truth future data Xf , linear mapping U
+
+and its inverse V , QCNet encoder/decoder ( Φ, Θ ), max epochs E, discrete lognor-mal params ( μ, Σ ), modes K, EMA parameter α, binary mask M
+
+2: Init: Randomly initialize θ and θ−
+
+3: for e = 1 , . . . , E do 
+
+4: for  (xh, m ), x f
+
+ in  (Xh, M), X f
+
+ do 
+
+5: c = Φ(xh, m )6: (mm , p) = Θ(c)7: N = 10 · 2⌈ e 
+
+> 3E
+
+⌉
+
+8: t ∼ DiscreteLogNormal( μ, Σ, N )9: r = ⌊t(1 − n(t′)   
+
+> q⌈ed⌉
+
+⌋
+
+10: x0 = xf U
+
+11: for k = 1 , . . . , K do 
+
+12: εk ∼ N (0 , I )13: xσt,k = x0 + σt εk
+
+14: xσr ,k = x0 + σr εk
+
+15: end for 
+
+16: C = ( c, mm , p)17: kθ = arg min 
+
+> k
+
+ADE  fθ (xσt,k , σ t, C), x 0
+
+
+
+18: k− 
+
+> θ
+
+= arg min 
+
+> k
+
+ADE  f − 
+
+> θ
+
+(xσr ,k , σ r , C), x 0
+
+
+
+19: ˆx0,θ = fθ (xσt,k θ , σ t, C)20: ˆx0,θ − = fθ− (xσr ,k θ− , σ r , C)21: ˆX0,θ − = V x 0,θ −
+
+22: ˆX′ 
+
+> 0,θ −
+
+= (1 − M ) ⊙ ˆX0,θ − + M ⊙ Xf
+
+23: ˆx′ 
+
+> 0,θ −
+
+= ˆX′ 
+
+> 0,θ −
+
+U
+
+24: LECT raj = w(σt)d(ˆ x0,θ , ˆx′ 
+
+> 0,θ −
+
+)25: θ− = sg ((1 − α) θ + α θ −) ▷ EMA update for teacher; sg = stop-gradient 26: end for 
+
+27: end for 
+
+28: return Lms 
+
+FDE with a confidence penalty term of (1 − p2), where p is the predicted proba-bility of the best-of-K trajectory. In addition, we measure the miss rate ( M R K ), defined as the fraction of scenarios in which none of the K predicted trajectories has an F DE within 2.0m , and the collision rate ( CR K ), defined as the frac-tion of scenarios in which at least two agents collide, using a collision distance threshold of 1.0m .
+
+Baselines. We compared our method with several recent state-of-the-art base-lines whose results on Argoverse 2 are publicly available. Specifically we compare ECTraj to OptTrajDiff [31] as closest counterpart, which is the only diffusion-based model directly evaluating on Argoverse 2. We list the benchmark results in Table 1. 10 A. Mrdovic et al. 
+
+Algorithm 2 Inference 
+
+Input: Historical data ( Xh, M), noisy prior xN , QCNet encoder/decoder Φ/Θ,learned consistency model θ, number of inference steps N , intermediate sampling timestep indices τ0 < τ 1 < τ 2 < ... < τ N −1, such that στ0 = 0, στ1 = σmin ,
+
+στN −1 = σmax :
+
+for (xh, m ) in ( Xh, M ) do 
+
+xnext = xN
+
+c = Φ(xh, m )(mm , p) = Θ(c)
+
+ϵ ∼ N (0 , I )
+
+C = ( c, mm , p)
+
+for i in N-1..1 do 
+
+x0,τ i = fθ (xnext , σ τi , C)
+
+xnext = x0,τ i + στi−1 ϵ
+
+end for end for return xnext 
+
+Training details. Our model was trained for 60 epochs, using four RTX A6000 GPUs. During training, we used the batch size of 16, and AdamW [14] optimizer with the initial learning rate of 0.002 and the weight decay of 0.0001. For multi-shot trajectory generation, we generated K = 6 future joint trajectories for each scene in the training set, since metric evaluation is commonly done using this number of modes. 
+
+4.1 Quantitative Result: Argoverse 2 
+
+Our main experiment consists of comparing ECTraj with several state-of-the-art baselines. The results are shown in Table 1. ECTraj achieves state-of-the-art result for F DE 6, and is on par with QCNeXt for all metrics. ECTraj achieves better performance than OptTrajDiff on all metrics, showcasing the effectiveness of our CM formulation. Although ECTraj is only the third in terms of F DE 1,the runner-up method in terms of this metric (FutureNet-LOF) achieves notice-ably weaker accuracy metrics and miss rate for K = 6. We also demonstrate additional examples of ECTraj exhibiting better diversity in Section 4.2. 
+
+Inference speed One major motivation for replacing the diffusion denoiser with a consistency one lies in its inference speed. We compare our method with OptTrajDiff [31] in this aspect and show that our method achieves up to 10 times faster inference compared to OptTrajDiff in Table 2. OptTrajDiff uses 10 inference steps, while ECTraj uses only one, which we report under the NFE (Number of Function Evaluations) column. As a more objective measure of inference speed compared to raw GPU time, we also report Giga-floating point operations (GFLOPs). Combined with the superior prediction performance, EC-Traj demonstrates the strong potential using CM as alternative backbone for trajectory prediction task. Enhancing Consistency Models for Multi-Agent Trajectory Prediction 11                                                                                    
+
+> Table 1. Standard Argoverse2 metric evaluation Method ADE 6F DE 6ADE 1F DE 1b-F DE 6M R 6CR 6
+> FJMP [19] 0.81 1.89 1.52 4.00 2.59 0.19 0.01
+> GNet [3] 0.69 1.46 1.23 3.05 2.12 0.19 0.01
+> QCNeXt [36] 0.50 1.02 0.94 2.29 1.65 0.13 0.01
+> Forecast-MAE [1] 0.69 1.55 1.30 3.33 2.24 0.19 0.01
+> OptTrajDiff [31] 0.60 1.31 1.08 2.71 1.95 0.17 0.01
+> DeMo [34] 0.58 1.24 1.12 2.78 1.93 0.16 0.01
+> RealMotion [25] 0.62 1.32 1.14 2.87 2.01 0.18 0.01
+> FutureNet-LOF [30] 0.58 1.25 0.96 2.34 1.68 0.18 0.02 DONUT [11] 0.55 1.13 1.07 2.62 1.79 0.15 0.01 ECTraj (ours) 0.50 0.96 0.94 2.37 1.68 0.13 0.01 Table 2. Inference speed of ECTraj Method NFE GFLOPs OptTrajDiff 10 ∼1311 ECTraj 1∼132
+
+4.2 Qualitative examples 
+
+In Figure 2, we present visual results across the following four methods: QC-NeXt [36], OptTrajDiff [31], ECTraj (one-shot loss) and ECTraj (six-shot loss) .In these scenarios, ECTraj excels at various aspects of trajectory prediction: 
+
+– Scenario 1 - diversity and environmental compliance ; although all three models are able to model diverse movements, only ECTraj is able to predict an alternate mode that goes straight ahead without violating environmental constraints. Additionally, six-shot ECTraj is able to generate trajectories that better align with the ground truth compared to the one-shot variant. 
+
+– Scenario 2 - accuracy ; although all three methods overshoot the ground truth goal point, ECTraj does so to the smallest extent. In this scenario, accuracy-wise, there is no significant difference between one-shot and six-shot ECTraj. This may be due to the simple setting of this scenario, which does not allow for many socially compliant types of intent (i.e. the only feasible intents are going straight ahead or stopping) 
+
+– Scenario 3 - complex movements ; although all three methods recognize the intent of a sharp left turn, both QCNeXt and OptTrajDiff predict some modes which pass a non-traversable area, which does not happen in ECTraj. This is even more apparent in the six-shot setting. In summary, the qualitative comparisons clearly establish the proposed EC-Traj along with the multi-shot loss as the superior approach. While training with one-shot loss provides a competent baseline for simpler scenarios, it is the six-shot training formulation that unlocks the full robust capability of our method. 12 A. Mrdovic et al. QCNeXt  OptTrajDiff 
+
+> ECTraj
+> (six-shot)
+> Scenario 1:
+> Scenario 2:
+> Scenario 3:
+> ECTraj
+> (one-shot)
+
+Fig. 2. Qualitative examples. Historical trajectories are denoted in orange , and ground truth future is denoted in black . Each of the 6 predicted modes is coded in different colors for easier interpretability. Regions of interest in each scenarios are encircled in 
+
+red , also for easier interpretability. 
+
+By improving alignment with ground-truth trajectories and better adherence to environmental constraints during complex maneuvers, ECTraj demonstrate enhanced generative quality with reduced computation latency. 
+
+4.3 Ablation study 
+
+In this section, we analyze the impact of enhanced consistency traing designs, top-K training in Diffusion formulation, and CM scheduling choices. 
+
+Enhanced consistency objective With results shown in Table 3, all our training components contribute to the model’s performance. As indicated in row 1 of Table 3, one-shot training shows reduced performance, which aligns with the observation from qualitative analysis. We also ablate the teacher output enhancement in two ways: 
+
+– Standard CM objective with no fusion of ground truth with teacher out-puts. 
+
+– Reconstruction objective: We replace every single teacher output point with the ground truth, which reduces the method to the standard direct denoising objective in some variants of diffusion models [9]. Enhancing Consistency Models for Multi-Agent Trajectory Prediction 13                                         
+
+> Table 3. Ablation study on the individual components of ECTraj. The ablated compo-nents denote the following: (1) one-shot training - replacing six-shot mode generation at training with one-shot, (2) standard CM objective - removing fusion of ground truth with teacher, (3) reconstruction objective - changing teacher output with ground truth (full ground truth fusion). Ablated component ADE 6F DE 6ADE 1F DE 1b-F DE 6M R 6CR 6
+> One-shot training 0.53 1.03 0.98 2.39 1.76 0.14 0.007 Standard CM objective 0.52 0.99 0.96 2.38 1.70 0.14 0.007 Reconstruction objective 0.57 1.10 1.08 2.53 1.87 0.17 0.009
+> ECTraj 0.50 0.96 0.94 2.37 1.68 0.13 0.006
+
+Both ablations yield suboptimal performance on all metrics. This is intuitive for the following reasons: with the standard CM objective , although this objective is the easiest for the student model to learn, it can be unreliable because the teacher model itself may produce inaccurate outputs. With the reconstruction objective , the teacher’s output is, in principle, as accurate as possible, but it becomes difficult for the student to learn from—especially when trained with a small number of steps, as in ECTraj. In this case, the student model would require many more iterations to converge. Consequently, the ECTraj training pipeline strikes a careful balance between the quality of supervision and the ease of optimization. 
+
+One-shot vs. multi-shot generation at training time As demonstrated in the ablation study above, introducing multiple diverse modes facilitates faster learning, as the model can learn dedicated denoising trajectories for distinct types of motion. In diffusion-based methods such as OptTrajDiff, the best-of-K strategy is not directly applicable: because diffusion models are trained to predict noise, it is not evident how to define or select the “best” noisy mode. Consequently, we investigate two alternative formulations to analyze the impact of multi-shot loss training on the denoising process. 
+
+– Variant 1: the best noisy mode is selected as the mode that is the closest to the ground truth data – Variant 2: the best noisy mode is selected as the mode that is the closest to the ground truth noise 
+
+We studied the performance of these two variants in Table 4. Although Variant 1 does outperform OptTrajDiff in terms of metrics F DE 6 and is on par with it in terms of M R 6, both variants result in substantially worse metric values compared to ECTraj. 
+
+Consistency scheduling type In ECTraj, we use timestep scheduling in line with ECT [5]. In image generation, this method was shown to surpass previous baselines such as [27] and [26]. This is also the case in trajectory prediction, 14 A. Mrdovic et al.                                                        
+
+> Table 4. Best-of-K approach used in ECTraj tested on OptTrajDiff Variant ADE 6F DE 6ADE 1F DE 1b-F DE 6M R 6CR 6
+> Variant 1 0.64 1.17 1.44 3.46 2.02 0.17 0.01
+> Variant 2 0.99 1.42 2.38 5.10 2.30 0.21 0.03 OptTrajDiff (one-shot) 0.60 1.31 1.08 2.71 1.95 0.17 0.01
+> ECTraj 0.50 0.96 0.94 2.37 1.68 0.13 0.01 Table 5. ICT vs ECT scheduling Scheduling Type ADE 6F DE 6ADE 1F DE 1b-F DE 6M R 6CR 6
+> ICT 0.52 1.02 0.95 2.38 1.77 0.15 0.006
+> ECT ( ECTraj )0.50 0.96 0.94 2.37 1.68 0.13 0.006
+
+as we found our ECT scheduling gains a small improvement compared to prior practice (ICT scheduling) [26] in Table 5. 
+
+## 5 Conclusion 
+
+In this paper, we presented ECTraj , a multi-agent trajectory prediction model which utilizes consistency models. We depart from the standard notion of con-sistency models, and allow fuse parts of the teacher output with the ground truth, where we use the midpoint and the endpoint of the ground truth future to promote accuracy. On top of that, we incorporate a best-of-K training pro-cess, which is not feasible in diffusion-based baseline which optimize for noise prediction (such as OptTrajDiff). Both of these components help ECTraj achieve state-of-the-art results on almost every Argoverse 2 metric, which is particularly noticeable with F DE 6.
+
+5.1 Limitations and future work 
+
+One limitation of ECTraj along with previous diffusion counterparts is its re-liance on marginal QCNet priors. In the future work, we will consider an end-to-end approach that either doesn’t depend on these priors or uses self-obtained priors. Enhancing Consistency Models for Multi-Agent Trajectory Prediction 15 
+
+## References 
+
+1. Cheng, J., Mei, X., Liu, M.: Forecast-mae: Self-supervised pre-training for motion forecasting with masked autoencoders. In: Proceedings of the IEEE/CVF Interna-tional Conference on Computer Vision (ICCV). pp. 8679–8689 (2023) 2. Frans, K., Hafner, D., Levine, S., Abbeel, P.: One step diffusion via shortcut models. In: The Thirteenth International Conference on Learning Representations (ICLR) (2025) 3. Gao, X., Jia, X., Li, Y., Xiong, H.: Dynamic scenario representation learning for motion forecasting with heterogeneous graph convolutional recurrent networks. IEEE Robotics and Automation Letters 8(5), 2946–2953 (2023) 4. Geng, Z., Deng, M., Bai, X., Kolter, J.Z., He, K.: Mean flows for one-step gen-erative modeling. In: The Thirty-ninth Annual Conference on Neural Information Processing Systems (NeurIPS) (2025) 5. Geng, Z., Pokle, A., Luo, W., Lin, J., Kolter, J.Z.: Consistency models made easy. In: The Thirteenth International Conference on Learning Representations (ICLR) (2025) 6. Gu, T., Chen, G., Li, J., Lin, C., Rao, Y., Zhou, J., Lu, J.: Stochastic trajectory prediction via motion indeterminacy diffusion. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 17113– 17122 (2022) 7. Ho, J., Jain, A., Abbeel, P.: Denoising diffusion probabilistic models. Advances in Neural Information Processing Systems (NeurIPS) 33 , 6840–6851 (2020) 8. Jiang, C., Cornman, A., Park, C., Sapp, B., Zhou, Y., Anguelov, D., et al.: Motion-Diffuser: Controllable multi-agent motion prediction using diffusion. In: Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 9644–9653 (2023) 9. Karras, T., Aittala, M., Aila, T., Laine, S.: Elucidating the design space of diffusion-based generative models. Advances in Neural Information Processing Systems (NeurIPS) 35 , 26565–26577 (2022) 10. Kim, D., Lai, C.H., Liao, W.H., Murata, N., Takida, Y., Uesaka, T., He, Y., Mit-sufuji, Y., Ermon, S.: Consistency trajectory models: Learning probability flow ode trajectory of diffusion. In: The Twelfth International Conference on Learning Representations (ICLR) (2024) 11. Knoche, M., de Geus, D., Leibe, B.: Donut: A decoder-only model for trajectory prediction. In: Proceedings of the IEEE/CVF International Conference on Com-puter Vision (ICCV). pp. 28903–28912 (2025) 12. Li, C., Zhang, R., Huang, S., Zhong, X., Jiang, H.: Agma: Adaptive gaussian mixture anchors for prior-guided multimodal human trajectory forecasting. arXiv preprint arXiv:2602.04204 (2026) 13. Liu, Q.T., Li, D., Sohn, S.S., Yoon, S., Kapadia, M., Pavlovic, V.: TrajDiffuse: A conditional diffusion model for environment-aware trajectory prediction. In: Inter-national Conference on Pattern Recognition (ICPR). pp. 382–397. Springer (2024) 14. Loshchilov, I., Hutter, F.: Decoupled weight decay regularization. In: International Conference on Learning Representations (ICLR) (2018) 15. Luo, J., Zhang, C., Si, W., Jiang, Y., Yang, C., Zeng, C.: A physical human–robot interaction framework for trajectory adaptation based on human motion prediction and adaptive impedance control. IEEE Transactions on Automation Science and Engineering 22 , 5072–5083 (2024) 16 A. Mrdovic et al. 16. Madjid, N.A., Ahmad, A., Mebrahtu, M., Babaa, Y., Nasser, A., Malik, S., Hassan, B., Werghi, N., Dias, J., Khonji, M.: Trajectory prediction for autonomous driving: Progress, limitations, and future directions. Information Fusion p. 103588 (2025) 17. Mao, W., Xu, C., Zhu, Q., Chen, S., Wang, Y.: Leapfrog diffusion model for stochas-tic trajectory prediction. In: Proceedings of the IEEE/CVF Conference on Com-puter Vision and Pattern Recognition (CVPR). pp. 5517–5526 (2023) 18. Raina, S., Challagundla, J., Singh, M.: Trajectory prediction in autonomous driv-ing: A comprehensive review of deep learning models and future direction. In: 2025 IEEE 15th Annual Computing and Communication Workshop and Confer-ence (CCWC). pp. 00753–00759. IEEE (2025) 19. Rowe, L., Ethier, M., Dykhne, E.H., Czarnecki, K.: FJMP: Factorized joint multi-agent motion prediction over learned directed acyclic interaction graphs. In: Pro-ceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recogni-tion (CVPR). pp. 13745–13755 (2023) 20. Salimans, T., Ho, J.: Progressive distillation for fast sampling of diffusion models. In: International Conference on Learning Representations (ICLR) (2022) 21. Samavi, S., Lem, A., Sato, F., Chen, S., Gu, Q., Yano, K., Schoellig, A.P., Shkurti, F.: Sicnav-diffusion: Safe and interactive crowd navigation with diffusion trajectory predictions. IEEE Robotics and Automation Letters (2025) 22. Shen, L., Kwok, J.: Non-autoregressive conditional diffusion models for time series prediction. In: International Conference on Machine Learning (ICML). pp. 31016– 31029. PMLR (2023) 23. Singha, A., Nanwani, L., Jain, S., Singamaneni, P.T., Singh, A.K., Krishna, K.M., et al.: Crowd-fm: Learned optimal selection of conditional flow matching-generated trajectories for crowd navigation. arXiv preprint arXiv:2602.06698 (2026) 24. Song, J., Meng, C., Ermon, S.: Denoising diffusion implicit models. In: International Conference on Learning Representations (ICLR) (2021) 25. Song, N., Zhang, B., Zhu, X., Zhang, L.: Motion forecasting in continuous driving. Advances in Neural Information Processing Systems (NeurIPS) 37 , 78147–78168 (2024) 26. Song, Y., Dhariwal, P.: Improved techniques for training consistency models. In: The Twelfth International Conference on Learning Representations (ICLR) (2024) 27. Song, Y., Dhariwal, P., Chen, M., Sutskever, I.: Consistency models. In: Proceed-ings of the 40th International Conference on Machine Learning (ICML). pp. 32211– 32252 (2023) 28. Song, Y., Ermon, S.: Generative modeling by estimating gradients of the data distribution. Advances in Neural Information Processing Systems (NeurIPS) 32 
+
+(2019) 29. Song, Y., Sohl-Dickstein, J., Kingma, D.P., Kumar, A., Ermon, S., Poole, B.: Score-based generative modeling through stochastic differential equations. In: Interna-tional Conference on Learning Representations (ICLR) (2021) 30. Wang, M., Ren, X., Jin, R., Li, M., Zhang, X., Yu, C., Wang, M., Yang, W.: FutureNet-LOF: Joint trajectory prediction and lane occupancy field prediction with future context encoding. In: 2025 IEEE International Conference on Robotics and Automation (ICRA). pp. 8841–8848. IEEE (2025) 31. Wang, Y., Tang, C., Sun, L., Rossi, S., Xie, Y., Peng, C., Hannagan, T., Sabatini, S., Poerio, N., Tomizuka, M., et al.: Optimizing diffusion models for joint trajec-tory prediction and controllable generation. In: European Conference on Computer Vision (ECCV). pp. 324–341. Springer (2024) 32. Williams, R.J., Zipser, D.: A learning algorithm for continually running fully re-current neural networks. Neural Computation 1(2), 270–280 (1989) Enhancing Consistency Models for Multi-Agent Trajectory Prediction 17 33. Wilson, B., Qi, W., Agarwal, T., Lambert, J., Singh, J., Khandelwal, S., Pan, B., Kumar, R., Hartnett, A., Pontes, J.K., et al.: Argoverse 2: Next generation datasets for self-driving perception and forecasting. In: Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2) (2021) 34. Zhang, B., Song, N., Zhang, L.: Decoupling motion forecasting into directional intentions and dynamic states. Advances in Neural Information Processing Systems (NeurIPS) 37 , 106582–106606 (2024) 35. Zhou, Z., Wang, J., Li, Y.H., Huang, Y.K.: Query-centric trajectory prediction. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 17863–17873 (2023) 36. Zhou, Z., Wen, Z., Wang, J., Li, Y.H., Huang, Y.K.: QCNeXt: A next-generation framework for joint multi-agent trajectory prediction. arXiv preprint arXiv:2306.10508 (2023) ECTraj: Enhanced Consistency Training for Multi-Agent Trajectory Prediction - Appendix 
+
+Alen Mrdovic 1, Qingze (Tony) Liu 1, Danrui Li 1, Mathew Schwartz 1,2, Kaidong Hu 1, Sejong Yoon 3, Mubbasir Kapadia 1, and Vladimir Pavlovic 1   
+
+> 1Rutgers University - New Brunswick
+> 2New Jersey Institute of Technology
+> 3The College of New Jersey
+
+## 1 Additional ablation studies 
+
+In this section, we will describe some additional experiments that could not fit in the main submission, which are useful for a more complete assessment of ECTraj. 
+
+1.1 Consistency training hyperparameters 
+
+In our work, we use the time step scheduling in line with [1]. The scheduling itself depends on several hyperparameters. We sample the student index t from the discrete lognormal distribution, which is explained in more detail in Section 2.2 of this Appendix. Then, we sample the teacher index r as follows: 
+
+r = ⌊t(1 − n(t′)
+
+q⌊ ed ⌋ )⌋. (1) We define 
+
+n(t′) = k
+
+1 + ebt ′ , t′ = tN , t′ ∈ [0 , 1] .
+
+Following [1], we fix  k = 8  and  b = 1  for all experiments, making  n(t′) indepen-dent of the dataset. We set  d = ⌊E/ 3⌋, where  E is the maximum number of training epochs. This choice is aligned with our discretization curriculum: the number of discretization steps  N doubles every  ⌊E/ 3⌋ epochs. To keep the schedule consistent, we increase 
+
+d in step with  N .The parameter  q, in contrast, is dataset-dependent according to [1]. Since they evaluate on high-dimensional image data, whereas we work with 10-dimensional latent trajectory vectors, we must tune  q for our setting. We therefore test 
+
+q ∈ { 2, 4, 6, 8}.Table 1 reports the range of the teacher–student index ratio 
+
+α = rt ,
+
+for different  q and numbers of discretization steps  N (shown as columns). When 
+
+α < 0, we clamp it to 0 to avoid negative teacher time-step indices. 2 A. Mrdovic et al. 
+
+Table 1: Range of teacher-to-student time step ratio α = rt , for each q and each number of discretization steps N                                                    
+
+> qN= 10 N= 20 N= 40 2α= 0 α∈[0 ,0.21] α∈[0 .38 ,0.60] 4α∈[0 ,0.21] α∈[0 .69 ,0.80] α∈[0 .92 ,0.96] 6α∈[0 .17 ,0.48] α∈[0 .86 ,0.91] α∈[0 .98 ,0.99] 8α∈[0 .38 ,0.60] α∈[0 .92 ,0.96] α∈[0 .98 ,0.99]
+
+Table 2: Ablation on the q time step scheduling hyperparameter                                    
+
+> qADE 6F DE 6ADE 1F DE 1b-F DE 6M R 6CR 6
+> 20.51 0.96 1.01 2.44 1.68 0.14 0.007 40.50 0.96 0.94 2.37 1.68 0.13 0.006
+> 60.52 1.04 0.99 2.50 1.77 0.14 0.007 80.54 1.09 1.01 2.47 1.82 0.15 0.007
+
+Table 2 presents an ablation study over the four  q values. While  q = 2 
+
+performs reasonably well (especially on  FDE 6 and  b-FDE 6),  q = 4  consistently yields the best overall results. For larger  q, performance degrades across metrics. Consequently, we adopt  q = 4  in all main experiments. 
+
+1.2 Ground truth fusion 
+
+In the main paper, we tested our final choice of ground truth fusion (midpoint + endpoint) against two other methods. Here, we will provide a more detailed overview of two more variants of fusion we tested our model with. We will provide an overview of each type of fusion here, followed by a corresponding abbreviation used in Table 3 for readability: 1. No fusion (NF): Fusion is not applied to the teacher output. 2. Full fusion (FF): The teacher output is fully replaced with ground truth - effectively yielding a direct denoising reconstruction objective similar to [3]. 3. Random 2 (R2): Random two ground truth points are selected to be fused with the teacher output. This is done in the spirit of TimeDiff [4], where a random binary mask is also used. 4. Progressive (Prog): We start by fusing more evenly spaced points at the beginning of training, after which we gradually decrease the number of points (which are still evenly spaced) to fuse as the training progresses. In our case, we start by replacing 10 points, and decrease the number of points by 2 for every 10 epochs. 5. Midpoint + Endpoint (M+E) (ECTraj): We only fuse the midpoint and the endpoint over the entire duration of training. Table 3 gives an overview of each of these methods. Although some methods are very close to our final version of ECTraj, we see that the M+E fusion still Title Suppressed Due to Excessive Length 3
+
+Table 3: Ablation on different types of ground truth fusion                                           
+
+> Method ADE 6F DE 6ADE 1F DE 1b-F DE 6M R 6CR 6
+> NF 0.52 0.99 0.96 2.38 1.70 0.14 0.007 FF 0.57 1.10 1.08 2.53 1.87 0.17 0.007 R2 0.50 1.00 0.98 2.47 1.70 0.14 0.007 Prog 0.51 1.05 0.96 2.39 1.73 0.15 0.006
+> M+E (ECTraj) 0.50 0.96 0.94 2.37 1.68 0.13 0.006
+
+Table 4: Ablation on the number of sampling steps. NFE denotes the number of sampling steps                            
+
+> NFE ADE 6F DE 6ADE 1F DE 1b-F DE 6M R 6CR 6
+> 10.50 0.96 0.94 2.37 1.68 0.13 0.006
+> 20.52 1.01 0.96 2.41 1.74 0.13 0.007 40.54 1.03 0.96 2.42 1.77 0.14 0.007
+
+gives the best results across all metrics. This may be due to this method’s best interpolation between the two extremes: 1. Full fusion : Although in this case the “output” the loss is measured against is the ground truth, which is the most accurate output, learning this objective can be hard, since it requires huge traversals through the PF ODE [6], which can be difficult at the initial stages of training. 2. No fusion : Although this objective is the easiest to learn due to the prox-imity of the outputs, it may be inaccurate, since it depends on the teacher model which in itself may be inaccurate, especially at the early stages of training [5, 6]. 
+
+1.3 Multi-step sampling 
+
+In the main paper, we use single-step sampling for all reported ECTraj results. Here, we tested ECTraj with multiple sampling steps, which can sometimes im-prove metrics in the image domain [5, 6]. However, in our case, the best results are achieved with a single sampling step. In our lower dimensional setting, com-pared to the image domain, successive noise addition may overly corrupt the samples and in turn compromise their quality, which may be even more evident in low-dimensional data. We report this experiment in Table 4. 
+
+1.4 QCNet marginals as priors 
+
+ECTraj, similarly to OptTrajDiff [7], uses QCNet marginals as priors to facilitate the conditioning process. Here, we ablate the QCNet marginals to observe how well the model performs without them. The QCNet encoder is still used to 4 A. Mrdovic et al. 
+
+Table 5: Ablation on QCNet marginals as priors                                  
+
+> Method ADE 6F DE 6ADE 1F DE 1b-F DE 6M R 6CR 6
+> OptTrajDiff 0.68 1.36 1.37 3.60 1.99 0.20 0.02 OptTrajDiff + priors 0.60 1.31 1.08 2.71 1.95 0.17 0.01
+> ECTraj 0.64 1.34 1.52 4.14 2.03 0.19 0.02 ECTraj + priors 0.50 0.96 0.94 2.37 1.68 0.13 0.01
+
+retrieve the scene encoding. Table 5 shows the ablation study on using marginal QCNet predictions as priors. For both OptTrajDiff and ECTraj, marginals are useful to refine predictions. This is especially noticeable with ECTraj, where the improvement in metrics is relatively higher when marginals are applied. One possible reason for this is the single-step sampling nature of ECTraj - more precisely, priors are more informative when we sample for fewer steps (such as one) compared to more steps (such as 10, like in OptTrajDiff). Figure 1 shows some scenarios where introducing the QCNet marginals into conditioning significantly improves predictions. 
+
+## 2 Consistency training details 
+
+In this section, we will discuss some technical details of consistency training. 
+
+2.1 Linear mapping 
+
+For faster training convergence, 120-dimensional (flattened) trajectories are com-pressed into 10-dimensional latent vectors in line with [2] and [7]. This is done using linear mapping, where the trajectory vectors x are mapped into latents z
+
+as: 
+
+z = G(x) = xU.  (2) The latents are mapped back to the trajectory space as: 
+
+x = F(z) = zV.  (3) Both U and V are learnable matrices, whose values are obtained by optimizing a composite loss function: 1. Reconstruction loss - which minimizes the distance between the ground truth trajectory and its reconstruction: 
+
+Lrec = ||F (G(X)) − x|| 22 (4) 2. Regularization - which aims to make the mappings distance-preserving; in other words, smaller latent-space distances should translate to smaller trajectory-space distances and vice versa. This is done as follows: 
+
+Lreg = ( xT x − G (x)T G(x)) 2 (5) Title Suppressed Due to Excessive Length 5OptTrajDiff  
+
+> ECTraj
+> w/o priors w/ priors
+
+(a) Scenario 1 OptTrajDiff  
+
+> ECTraj
+> w/o priors w/ priors
+
+(b) Scenario 2 
+
+Fig. 1: Scenarios which benefit from incorporating the QCNet marginals prior. Regions of interest are marked in red. In both scenarios, not incorporating the prior leads to some modes violating environmental constraints (i.e., driving in the non-driveable area) and, also, decreased accuracy. With the prior introduced, ECTraj gives a more accurate prediction compared to OptTrajDiff, particularly in Scenario 1 (a). 6 A. Mrdovic et al. 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 
+
+> i
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> 0.05
+> 0.06
+> 0.07
+> p(i)
+
+Fig. 2: Discrete lognormal time step distribution for N = 20 3. Variance minimization - which aims to reduce training instability due to extreme variances in some dimensions: 
+
+Lvar = || std (G(x)) − v|| 22, (6) where v is a vector whose elements are all η, which is a learnable parameter. 
+
+2.2 Lognormal time step distribution 
+
+During training, the student index t is sampled from the discrete lognormal time step distribution in the main paper. This distribution is formed in line with [5], and we will provide some additional details here. First, we recall that each time step index i is associated with a noise vari-ance σi. Taking this into consideration, the discrete lognormal distribution the variance is sampled from can be formulated as: 
+
+ln (σi) ∼ N (μ, Σ, N ), (7) where μ and Σ are the mean and variance of the distribution. In our case μ =
+
+−1.1 and Σ = 2 .0. N denotes the number of PF ODE discretization steps, which is described in the main paper. Based on Equation (7), the distribution of variances σi (and with that, time steps i) is defined as: 
+
+p(i) = p(σi) = erf ln (σi) − μ
+
+√2Σ − erf ln (σi−1) − μ
+
+√2Σ , (8) where erf denotes the Gauss error function and i ∈ 0, 1, ..., N . We note that ob-taining p(σ1) would require us to additionally define σ0, which is simply assigned Title Suppressed Due to Excessive Length 7
+
+the value 0 (that is, σ0 = 0). σ1 = σmin = 0 .002 and σN = σmax = 1 .0. All the other values t ∈ [2 , N − 1] are obtained in line with [3]: 
+
+σt = ( σ 1 
+
+> ρ
+> min
+
++ t − 1
+
+N − 1 (σ 1 
+
+> ρ
+> max
+
+− σ 1
+
+> ρ
+> min
+
+)) ρ, (9) Since we discretize the PF ODE trajectory during training, we need to sample time steps as integers. We visualize the discrete lognormal distribution for N =20 (second stage of training: epochs 21-40) in Figure 2. 
+
+2.3 Consistency parameterization 
+
+As is mentioned in the main paper, the denoiser fθ is parameterized as follows: 
+
+fθ (x, σ, C) = cskip (σ)x + cout (σ)Fθ (x, σ, C), (10) where x denotes the input, σ denotes the noise level (variance), and C is the condition which consists of the scene context c, marginal QCNet predictions 
+
+mm , and their scores p. Fθ denotes the learnable part of our denoiser. This parameterization needs to satisfy the boundary condition: 
+
+fθ (x, σ min , C) = x. (11) To accomplish this, in line with [6], cskip (·) and cout (·) are designed as differen-tiable functions for which cskip (σmin ) = 1 and cout (σmin ) = 0. We opted for the following choices, similarly to [6]: 
+
+cskip = 0.25 (σ − σmin )2 + 0 .25 , (12) 
+
+cout = 0.5( σ − σmin )
+
+√0.25 + σ2 , (13) where σmin = 0 .002. 8 A. Mrdovic et al. 
+
+## References 
+
+1. Geng, Z., Pokle, A., Luo, W., Lin, J., Kolter, J.Z.: Consistency models made easy. In: The Thirteenth International Conference on Learning Representations (ICLR) (2025) 2. Jiang, C., Cornman, A., Park, C., Sapp, B., Zhou, Y., Anguelov, D., et al.: Motion-Diffuser: Controllable multi-agent motion prediction using diffusion. In: Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR). pp. 9644–9653 (2023) 3. Karras, T., Aittala, M., Aila, T., Laine, S.: Elucidating the design space of diffusion-based generative models. Advances in Neural Information Processing Systems (NeurIPS) 35 , 26565–26577 (2022) 4. Shen, L., Kwok, J.: Non-autoregressive conditional diffusion models for time series prediction. In: International Conference on Machine Learning (ICML). pp. 31016– 31029. PMLR (2023) 5. Song, Y., Dhariwal, P.: Improved techniques for training consistency models. In: The Twelfth International Conference on Learning Representations (ICLR) (2024) 6. Song, Y., Dhariwal, P., Chen, M., Sutskever, I.: Consistency models. In: Proceedings of the 40th International Conference on Machine Learning (ICML). pp. 32211–32252 (2023) 7. Wang, Y., Tang, C., Sun, L., Rossi, S., Xie, Y., Peng, C., Hannagan, T., Sabatini, S., Poerio, N., Tomizuka, M., et al.: Optimizing diffusion models for joint trajec-tory prediction and controllable generation. In: European Conference on Computer Vision (ECCV). pp. 324–341. Springer (2024)

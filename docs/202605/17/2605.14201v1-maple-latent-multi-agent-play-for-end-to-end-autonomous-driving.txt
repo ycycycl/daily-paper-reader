@@ -1,0 +1,612 @@
+Title: MAPLE: Latent Multi-Agent Play for End-to-End Autonomous Driving
+
+URL Source: https://arxiv.org/pdf/2605.14201v1
+
+Published Time: Fri, 15 May 2026 00:28:44 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# MAPLE: Latent Multi-Agent Play for End-to-End Autonomous Driving 
+
+Rajeev Yasarla †B Deepti Hegde †⋆ Hsin-Pai Cheng †⋆ Shizhong Han †⋆ Yunxiao Shi †
+
+Meysam Sadeghigooghari ‡ Hanno Ackermann † Litian Liu † Pranav Desai ‡
+
+Fatih Porikli † Mohammad Ghavamzadeh † Hong Cai †B
+
+†Qualcomm AI Research ∗ ‡Qualcomm Technologies, Inc 
+
+B{ryasarla,hongcai}@qti.qualcomm.com 
+
+> ⋆
+
+Equal Contribution 
+
+## Abstract 
+
+Vision-language-action (VLA) models are effective as end-to-end motion planners, but can be brittle when evaluated in closed-loop settings due to being trained under traditional imitation learning framework. Existing closed-loop supervision approaches lack scalability and fail to completely model a reactive environment. We propose MAPLE, a novel framework for reactive, multi-agent rollout of a dynamic driving scenario in the latent space of the VLA model. The ego vehicle and nearby traffic agents are independently controlled over multi-step horizons, while being reactive to other agents in the scene, enabling closed-loop training. MAPLE consists of two training stages: (1) supervised fine -tuning on the latent rollouts based on ground-truth trajectories, followed by (2) reinforcement learning with global and agent -specific rewards that encourage safety, progress, and interaction realism. We further propose diversity rewards that encourage the model to generate planning behaviors that may not be present in logged driving data. Notably, our closed-loop training framework is scalable and does not require external simulators, which can be computationally expensive to run and have limited visual fidelity to the real-world. MAPLE achieves state-of-the-art driving performance on Bench2Drive and demonstrates scalable, closed-loop multi-agent play for robust E2E autonomous driving systems. 
+
+## 1 Introduction 
+
+End-to-end (E2E) autonomous driving has emerged as a promising paradigm that unifies perception, prediction, and planning into a single learned model. Recent E2E planners, such as UniAD [ 13 ] and VAD [ 21 ], demonstrate strong performance under supervised learning, but often struggle to generalize to long-tail and interactive driving scenarios. Vision-language-action (VLA) models further advance this line of work by grounding driving behavior in language and leveraging the reasoning capabilities of large multimodal models. Approaches such as GPT-Driver [ 31 ], EMMA [ 15 ], DriveVLM [ 40 ], and Senna [ 22 ] show improved robustness in complex driving situations, while ORION [ 9] and SimLingo [33] strengthen alignment between language and motion planning. A central limitation of existing VLA planners is that training is primarily performed in an open-loop manner using supervised fine-tuning on large-scale logged driving data [ 9 , 50 , 33 ]. As a result, these models do not explicitly model closed-loop interactions between the ego vehicle and other traffic participants, and typically treat surrounding agents as non-reactive during training. This gap becomes critical at deployment time, where driving is inherently closed-loop and multi-agent, 
+
+> ∗Qualcomm AI Research is an initiative of Qualcomm Technologies, Inc. Preprint.
+> arXiv:2605.14201v1 [cs.RO] 13 May 2026
+
+requiring continuous adaptation to the evolving behavior of the other agents. Consequently, these models suffer from covariate shift, where small deviations from demonstrated trajectories compound over time and lead to planning failures [ 6, 24 ]. Additionally, ground-truth trajectory labels extracted from driving logs are very sparse, i.e ., they only capture a very small number of possible trajectories in the action space, which makes it challenging to learn a robust policy from them alone [ 24 ]. These limitations highlight the need for training mechanisms that explicitly support closed-loop, multi-agent interaction, ideally without relying on simulation pipelines that are costly and challenging to scale. Reinforcement learning (RL) offers a natural way to perform closed-loop training by optimizing policies through interaction. Prior work has shown that large-scale RL can yield highly robust motion planners when trained with self-play and reactive agents in simulation [ 5 , 16 ]. However, these approaches rely on external simulators that operate on symbolic representations, such as maps, bounding boxes, and vehicle states [ 11 , 10 , 38 , 4, 5 ]. While these symbolic simulators enable scalable RL, they are not directly applicable to end-to-end VLA models that operate on raw sensory inputs. Extending RL to E2E planners requires simulating reactive agents and future observations at the pixel level, which is computationally expensive and difficult to scale using graphics engines, splatting methods, or diffusion-based image generation [ 7, 14 ]. Moreover, pixel-level simulators often exhibit limited visual fidelity and distribution mismatch with real-world data, further hindering transfer. These challenges motivate our approach of enabling RL directly in the latent space of a VLA, avoiding pixel-level simulation while still supporting closed-loop, multi-agent interaction learning. Our goal is to enable this form of scalable closed-loop training for end-to-end motion planners. Towards this, we propose MAPLE, a framework that simulates the behavior of the ego-vehicle and multiple reactive agents in the latent space of a VLA model. This addresses the challenge of simulating sensory data while also training an E2E planner in a closed-loop environment in the presence of reactive agents. Diversity rewards encourage out-of-distribution behavior of surrounding agents at training time, providing richer feedback signals. Our contributions are as follows. • Multi-agent scenario rollout in latent space across SFT and RL. We introduce a simulator-free multi-agent rollout mechanism that jointly evolves the ego vehicle and surrounding reactive agents through autoregressive rollouts in the latent space of a VLA model. This enables closed-loop, multi-step agent interactions during training entirely in the latent space, significantly reducing computational cost compared to pixel-level training, while remaining removable at inference time without additional overhead. • Diversity-aware RL for multi-agent play. To encourage heterogeneous and realistic interactions beyond logged driving data, we introduce a diversity-aware reward in the RL stage that explicitly promotes distinct agent behaviors. This leads to richer multi-agent interactions and more robust closed-loop driving policies. • State-of-the-art performance on closed-loop autonomous driving benchmarks. Ex-tensive experiments and ablation studies on the Bench2Drive benchmark show that the proposed multi-agent rollout mechanism and diversity-aware RL significantly improve driving performance, boosting the driving score by 25+%, setting the new state-of-the-art, and enhancing robustness across complex multi-ability driving scenarios. 
+
+## 2 Related Work 
+
+End-to-end and VLA models for autonomous driving. Early E2E planners such as UniAD [13 ] and VAD [ 21 ] unify perception, prediction, and planning in a single pipeline but struggle with long-tail generalization. VLA models address this by grounding motion in language. GPT-Driver [ 31 ]casts planning as text generation with chain-of-thought reasoning [ 42 ]. EMMA [ 15 ] scales this to large multi-modal corpora. DriveVLM [ 40 ] and Senna [ 22 ] pair a VLM with a conventional planner or meta-action head. ORION [ 9] and SimLingo [ 33 ] further tighten the language-trajectory alignment. ReCogDrive [ 27 ] and DiffRefiner [ 46 ] improve closed-loop robustness through recognition-driven planning and diffusion-based refinement, yet still rely on static logged trajectories for training. Despite these advancements, all these methods treat surrounding agents as non-reactive, leaving closed-loop multi-agent dynamics underexplored. MAPLE closes this gap by enabling reactive co-planning of ego vehicle and nearby agents entirely within a latent token space. 2Figure 1: MAPLE pretraining and future state prediction. Left: Pretraining the VLA backbone with auxiliary supervision (e.g., map learning, detection, and motion prediction). Right: State-transition pretraining that predicts next-step ego/agent states over a horizon T to stabilize the token space. 
+
+Multi-agent simulation and self-play. Trajectory forecasting methods [ 12 , 35 , 49 ] model joint agent futures from fixed observations but do not support interactive planning. Self-play has produced strong policies in games [ 36 , 41 ] and manipulation [ 1]. Recently, self-play has been applied to autonomous driving to obtain robust policies [ 5]. However, this is limited to planning in the symbolic space with bounding boxes, maps, and vehicle states. Adversarial scenario generation [ 32 , 47 ]synthesizes safety-critical behaviors but still relies on symbolic planners, not learned VLA policies. Extending self-play to E2E planners requires simulating future observations at the pixel level. Graphics engines [ 7], Gaussian splatting, and diffusion-based generators [ 14 ] can produce such inputs but suffer from high computational cost, limited visual fidelity, and poor scalability for interactive multi-agent rollouts. MAPLE provides a novel framework that enables multi-agent interactive play directly in the latent space of a VLA model, requiring no external simulator or image rendering/generation. 
+
+Diverse action generation and RL-based policy optimization. Diffusion-based planners, includ-ing DiffusionDrive [ 28 ], DiffusionPlanner [ 48 ], and GoalFlow [ 44 ], capture multimodal trajectory distributions through stochastic sampling but do not explicitly encourage behavioral diversity during training, leaving them prone to mode collapse under RL fine-tuning [ 25 ]. GRPO [ 34 ] has been adapted for driving in AlphaDrive [ 23 ], R2SE [ 29 ], and TrajHF [ 26 ], improving policy stability via rule-based rewards, though each assigns a single planner per agent. GenDrive [ 14 ] adds reward modeling to a diffusion policy but still relies on a simulator. MAPLE addresses both gaps: it assigns multiple discrete planners per agent and penalizes behavioral overlap with diversity-aware GRPO rewards, preventing collapse and generating rich, safety-critical long-tail scenarios without any external simulator. 
+
+## 3 Proposed Approach 
+
+We present MAPLE, a novel framework for end-to-end motion planning that performs closed-loop multi-agent rollout in the latent space of a vision-language-action (VLA) model. The ego vehicle and neighboring agents are represented as compact latent tokens encoding velocity, acceleration, location, map labels, and traffic status. Given a latent ego vehicle token, latent agent tokens, and a high-level scenario description, MAPLE rolls out future scenarios by predicting future tokens in an autoregressive manner. This allows us to model the interaction of agents in the scene. Action planning and motion prediction heads are supervised with a series of rewards to encourage safe and diverse driving behavior. An overview of the multi-agent rollout mechanism in our proposed MAPLE framework can be seen in Figures 2 and 3. 
+
+3.1 Problem Setup 
+
+Given multi-view camera images up to time t, our goal is to predict a safe ego-vehicle trajectory 
+
+τ et:t+T , where T is the planning horizon, while accounting for the future evolution of surrounding traffic participants. Unlike ego-only planners that model neighboring agent behavior with ground-truth trajectory playback, we perform decision-making with reactive agents, where the ego vehicle’s plan is conditioned on the anticipated behavior of agents controlled by learned policies. 3Figure 2: MAPLE supervised fine-tuning (SFT) stage. Left: Single-step supervision and inference. The VLA backbone encodes multi-view images (and map features) into ego and agent tokens, which are decoded by an ego planner, reactive-agent planners, and a motion head. Right: The same model unrolled for T steps during imitation-learning-based scenario rollouts. Predicted tokens/trajectories are fed back autoregressively to supervise ego and reactive-agent planning over the horizon while forecasting background-agent motion. 
+
+We divide the agents into (i) a set of reactive agents (Zreact  
+
+> t
+
+) that are likely to interact with the ego vehicle, and (ii) background agents (Zbg  
+
+> t
+
+) whose behaviors are less likely to influence the ego vehicle. The future states of the ego and reactive agents are rolled out in an autoregressive manner, while the future trajectories of background agents are directly predicted through regression. 
+
+3.2 MAPLE Architecture 
+
+MAPLE is a closed-loop training framework for VLA models. The framework consists of a vision encoder, a map encoder, a large language model (LLM), and several task-specific heads related to object detection, map segmentation, motion prediction, and action planning. The action planning head is a variational auto-encoder that decodes ego and reactive agent tokens into their respective trajectory waypoints [ 9]. The motion prediction head is a multi-layer perceptron that regresses future trajectories from background agent tokens. An overview of the architecture can be seen in Figure 2. 
+
+3.3 Pretraining 
+
+In order to learn a stable tokenization of ego and agent dynamics for consistent autoregressive scenario generation, the VLA model is first pretrained to perform the auxiliary tasks of 3D object detection, map segmentation, agent motion prediction, and traffic light segmentation. Detailed definitions of all auxiliary pretraining losses and their weighting are provided in Appendix Section F.1. These tasks encourage the shared backbone to encode geometry, semantics, and traffic context into latent agent tokens that can be reliably decoded over time. The model is also trained to predict the future states of the ego vehicle and the surrounding agents. An overview of the MAPLE future state prediction is shown in Figure 1. 
+
+Future state prediction. The state of a traffic participant at time t is represented by four ordered tokens: St =
+
+D
+
+<DYN> , <TYPE> , <MS> , <TS> 
+
+E
+
+> t
+
+, where <DYN> encodes agent dy-namics (e.g., position, heading, velocity, acceleration), <TYPE> is a categorical token in 
+
+{car , truck , pedestrian , cyclist }, <MS> is the index of the map segment where the agent re-sides, and <TS> encodes traffic light or traffic status information related to the agent and associated to the selected map context. Given the current state St (and the corresponding ego/agent token from VLA encoder), the model predicts the next state ˆSt+1 .We define the future state prediction loss Lstate as a weighted combination of (i) cross-entropy losses for the discrete state labels <MS> and <TS> , and (ii) an ℓ1 regression loss for the continuous dynamics token <DYN> :
+
+Lstate = λdyn \<DYN> − <DYN> 1 + λms CE   [<MS> , <MS>  + λts CE   [<TS> , <TS> , (1) where b· and CE( ·, ·) denote model predictions and cross-entropy loss, and λdyn , λms , and λts are the weights for the loss terms. The overall pretraining objective consists of minimizing the sum of the respective losses on 3D object detection, map segmentation, motion prediction, and future state prediction. 43.4 MAPLE Rollout and Training Framework 
+
+The closed-loop framework enables language-conditioned scenario rollouts for the ego vehicle and a subset of reactive agents. The objective is to learn a compact token space in which the VLA backbone can roll out future traffic states in an autoregressive manner and support behavior-aware action planning over a horizon T . Compared to ego-only planners, MAPLE explicitly models multi-step interactions by (i) jointly rolling out ego and reactive-agent states, and (ii) encouraging diverse driving behaviors via safety and diversity rewards. 
+
+3.4.1 Multi-Agent Rollout and Supervised Fine-Tuning 
+
+Given a set of historical and current multi-view images at time t and a high-level scenario description, MAPLE encodes the scene into a latent ego token zet , a set of latent reactive agent tokens Zreact 
+
+> t
+
+indexed by aj , and a set of latent background agent tokens Zbg  
+
+> t
+
+indexed by ak (see Figure 2). Autoregressive rollout is performed for a rollout of T steps. At each rollout step ∆ = {0, . . . , T − 1},the VLA model predicts the next-step tokens ˜zt+∆+1 conditioned on the current tokens ˜zt+∆ and the scenario description. Here ˜zt denotes latent tokens generated by auto-regressive rollout, distinguished from ground-truth tokens zt obtained from logged data. The predicted tokens are decoded into trajectories and fed back as input for the next rollout step, yielding a rollout from t to t + T .The planning heads produce waypoint trajectories for the ego vehicle and reactive agents: the ego planner P e decodes ˜zet+∆+1 into trajectory ˜τ et+∆+1 , and agent planners 
+
+{P (aj )}aj ∈Zreact  
+
+> t
+
+decode reactive-agent tokens into trajectories {˜τ (aj )
+
+> t+∆+1
+
+}. Let P = {P e} ∪ { P j }NR
+
+> j=1
+
+denote the set of action planners, where NR denotes the number of reactive-agent planners. At the start of each rollout, we use P e as the ego action planner, and for each reactive agent we select an action planner based on the agent’s behavior. The motion head predicts future trajectories for background agents indexed by ak. Background agents participate in the latent rollout, however, they are not controlled by planning heads. Instead, their trajectories {˜τ (ak )
+
+> t+∆+1
+
+} are generated by a motion prediction head conditioned on the current scene tokens. This design models passive scene dynamics while reserving explicit decision-making for the ego vehicle and reactive agents. 
+
+Supervised Fine-Tuning (SFT). In the SFT stage, we perform imitation-learning-based scenario rollouts for T steps, supervising the ego vehicle and a set of reactive agents, while predicting motion for background agents. We supervise each step using ground-truth trajectories, providing accurate targets for the rollout horizon. The SFT objective loss is defined as the sum of per-step planning and motion prediction losses over the rollout horizon. 
+
+LSFT =
+
+> T
+
+X
+
+> ∆=1
+
+"
+
+Lplan 
+
+ ˜τ et+∆ , τ et+∆ 
+
+ + X 
+
+> aj∈Zreact
+> t
+
+Lplan 
+
+ ˜τ (aj )
+
+> t+∆
+
+, τ (aj )
+
+> t+∆
+
+ + X 
+
+> ak∈Zbg
+> t
+
+Lmot 
+
+ ˜τ (ak ) 
+
+> t+∆
+
+, τ (ak )
+
+> t+∆
+
+#
+
+. (2) Here we denote by Lplan (·, ·) the planning loss used for supervising ego and reactive-agent trajectories, and by Lmot (·, ·) the motion prediction loss applied to background agents. The detailed formulation of the planning loss is provided in Appendix Section F.2. 
+
+3.4.2 Post-Training Reinforcement Learning 
+
+The main objective of MAPLE is to learn diverse and robust driving behaviors while performing multi-step scenario rollouts that induce a wide range of environmental dynamics and ego–agent interactions. In such settings, expert demonstrations are often multi-modal (e.g., brake vs. yield vs. merge), and pure imitation learning can be sub-optimal or even conflictual under distribution shift. Thus, relying solely on SFT (Eq. 2) is insufficient to handle long-tail events and novel reactive interactions. To mitigate these issues and encourage safe, high-fidelity, and behaviorally diverse rollouts, we introduce an on-policy RL fine-tuning stage using Group Relative Policy Optimization (GRPO) [34] with a structured reward design. 
+
+Reward structure. At each rollout step t + ∆ , we compute three types of rewards: (i) a global reward that captures scene-level safety and stability, (ii) an vehicle-specific reward that encourages 5Figure 3: MAPLE RL fine-tuning stage. Starting from the SFT model, we optimize multi-step rollouts over T
+
+steps using RL with safety-aware and interaction-aware rewards (e.g., collision avoidance and TTC). 
+
+progress and safe driving for each controlled agent, and (iii) a diversity reward that promotes distinct behaviors across different planners/policies. At a time t, we define the total rollout reward as 
+
+Rt = Gt + Dt + ret + X 
+
+> aj∈Zreact
+
+raj 
+
+> t
+
+, (3) where Gt and Dt are global and diversity rewards, ret is the vehicle-specific reward for the ego vehicle, and raj 
+
+> t
+
+is the vehicle-specific reward for each reactive agent. 
+
+Global reward. The global reward encourages long collision-free rollouts and penalizes infractions at the scene level. Let l be the number of rollout steps completed without collision (early termination yields smaller l). We define global reward Gt at time t as, 
+
+Gt = lT −
+
+> T
+
+X
+
+> ∆=1
+
+Col  ˜τ et+∆ 
+
+ − X 
+
+> aj∈Zreact
+> T
+
+X
+
+> ∆=1
+
+Col  ˜τ aj
+
+> t+∆
+
+ , (4) where Col( ·) is the collision penalty calculated from the predicted trajectory ˜τt+∆ .
+
+Vehicle-specific reward. Vehicle-specific rewards promote route completion/progress while dis-couraging unsafe behaviors, such as low time-to-collision (TTC). We use a step-wise reward and sum it over the horizon: 
+
+rt =
+
+> T
+
+X
+
+> ∆=1
+
+h
+
+RC t+∆ 
+
+| {z }
+
+> route completion
+
++ ϕ(TTC t+∆ )
+
+| {z }
+
+> TTC penalty
+
+− L prog (˜ τt+∆ )
+
+| {z }
+
+> progress loss
+
+i
+
+. (5) Here RC t+∆ measures incremental progress along the reference route, Lprog penalizes lack of forward progress or deviation from a desired trajectory, and ϕ(TTC) is a monotone penalty function that is activated when TTC falls below a safety threshold, e.g., ϕ(TTC) = max(0 , TTC max − TTC) .
+
+Diversity reward. To encourage diverse driving behaviors (e.g., conservative versus assertive merges) and prevent policy collapse, we introduce a diversity reward over trajectories induced by different action planners during rollout. We summarize each planner-induced trajectory using a compact behavior descriptor Γ( ·) that captures salient properties, such as mean acceleration, jerk, minimum time-to-collision (TTC), lane centering error, and lane-change timing. At the start of each rollout, the ego vehicle is controlled by a fixed planner P e. Let π(aj ) ∈{1, . . . , N R} denote the planner index selected for a reactive agent. For each reactive agent aj ∈ Zreact  
+
+> t
+
+,we select a planner P π(aj ) conditioned on the agent’s behavior category and generate a corresponding trajectory over a horizon T . The resulting behavior descriptors are then used to optimize reactive-agent policies to increase behavioral diversity across planner-induced rollouts. 6Let P = P e ∪ P π(aj ). We define the diversity reward as the average pairwise ℓ1 distance between behavior descriptors across different behavior metrics: 
+
+Dt = 1
+
+NR(NR − 1) 
+
+X  
+
+> pi̸=pi′∈P
+
+Γ ˜τ pi
+
+> t:t+T
+
+ − Γ ˜τ pi′
+
+> t:t+T
+
+
+
+> 1
+
+, (6) which assigns higher rewards when different planner selections induce measurably distinct (yet safe) behaviors. Additional details on the descriptor Γ( ·), behavior category, and the diversity reward are provided in Appendix Section B. 
+
+GRPO objective. Given a group of Q rollouts at time t {R(q) 
+
+> t
+
+}Qq=1 , we compute a group-relative baseline bt = 1
+
+> Q
+
+PQk=1 R(q) 
+
+> t
+
+and advantages A(q) 
+
+> t
+
+= R(q) 
+
+> t
+
+− bt. We then optimize the policy using the GRPO loss: 
+
+LRL = −E
+
+"
+
+1
+
+Q
+
+> Q
+
+X
+
+> q=1
+
+A(q)
+
+> tT
+
+X
+
+> ∆=1
+
+log πθ
+
+
+
+x(q) 
+
+> t+∆
+
+| ˜z(q)
+
+> t+∆
+
+, s t
+
+#
+
+, (7) where st is the scenario description at time t, x(q) 
+
+> t+∆
+
+denotes the sampled action of reactive agent or ego vehicle (e.g., discrete planner choice or action token) at step t + ∆ of the qth rollout. 
+
+## 4 Experimental Setup 
+
+Datasets. We conduct both training and evaluation of MAPLE using the Bench2Drive bench-mark [ 19 ], a closed-loop end-to-end autonomous driving suite built on the CARLA simulator [ 7]. Following the official benchmark setup, the dataset consists of 1,000 driving clips, among which 950 are used for training and 50 are reserved for open-loop validation. Each clip spans roughly 150 meters and captures a wide range of traffic conditions and interaction patterns. Closed-loop performance is assessed using the standard Bench2Drive protocol, which evaluates agents over 220 routes covering 44 diverse interactive scenarios. 
+
+Evaluation Metrics. On Bench2Drive, we adopt the official closed-loop evaluation criteria, includ-ing Driving Score (DS), Success Rate (SR), Efficiency, Comfort, and Multi -Ability [ 19 ]. Driving Score reflects overall route completion while accounting for traffic violations. Success Rate reports the percentage of routes finished without failure. Efficiency and Comfort quantify the agent’s driving speed and smoothness, respectively. The Multi -Ability metric further measures performance across five complex urban driving behaviors. 
+
+Model Architecture. We instantiate MAPLE on the multimodal LLM backbone Qwen2.5-1.5B-VL [ 2 ] for end-to-end multi-agent planning. The Qwen2.5 text encoder and LLM generate scenario-level text tokens and ego/agent-specific latent tokens. For visual inputs, MAPLE employs an EVA-pretrained vision transformer (ViT) [ 8] with a Q-Former module [ 9 ] to extract image tokens from multi-view observations. The detection and motion prediction heads each consist of a multi-head attention module followed by three MLP layers. The future state prediction head adopts the same architecture. Each action-planning head in the planner set P is implemented as a variational autoencoder (VAE), following existing VLA planning heads [ 9 ]. Unless stated otherwise, MAPLE predicts trajectories conditioned only on Navigation Command (NC), without explicit lane-center targets, such as Target Point (TP). MAPLE adopts an anchor-free design and predicts six trajectory modes aligned with Bench2Drive. Scenario rollouts are used only during training and are disabled at inference time. 
+
+Training. All experiments are conducted on 8 NVIDIA H100 GPUs. MAPLE is trained in three stages. (1) Pretraining: 12 epochs with auxiliary supervision, including detection, map segmentation, motion prediction, and future state prediction, to learn robust latent token representations. (2) Supervised Fine-Tuning (SFT): 24 epochs of scenario rollouts with imitation learning. Autoregressive rollouts take T steps, supervising ego-vehicle and reactive-agent planning and background-agent motion prediction. (3) Post-Training Reinforcement Learning: 12 epochs using the proposed reward mechanism (Section 3.4.2), with T -step autoregressive rollouts optimizing ego and reactive-agent planning via agent-specific, global, and diversity rewards. We use 4 input frames, set NR = 8 for reactive-agent planners, and use a rollout horizon of T = 8 . To increase temporal coverage, we sample rollouts with multiple temporal strides corresponding to effective rates of 0.5Hz, 1Hz, 1.5Hz, 2Hz, 5Hz, and 10Hz, covering up to 12 seconds into the future. All Qwen2.5 - 1.5B parameters are 7Table 1: Comparison of closed-loop planning and multi-ability performance on the Bench2Drive base set. Avg. L2 denotes the average trajectory error over 2 seconds at 2 Hz. Here Cond. is the applied condition of NC = Navigation Command or TP = Target Point. † indicates models trained with geometric path waypoint supervision and evaluated using the PID controller from SimLingo.                                                                                                                                                                                                 
+
+> Method Cond. Closed-Loop Metrics Multi-Ability Test (%) ↑
+> DS ↑SR (%) ↑Efficiency ↑Comfort ↑Merging Overtaking E-Brake Give Way T.Sign Mean TCP-traj [43] TP 59.9 30.0 76.5 18.1 28.8 24.3 51.7 40.0 46.3 34.2 ThinkTwice [18] TP 62.4 31.2 69.3 16.2 27.4 18.4 35.8 50.0 54.2 37.2 DriveAdapter [17] TP 64.2 33.1 70.2 16.0 28.4 28.4 47.5 50.0 56.4 42.1 SimLingo †[33] TP 85.1 67.3 259.2 33.7 54.0 57.0 88.3 53.3 82.5 67.0 UniAD-Base [13] NC 45.8 16.4 129.2 43.6 8.9 9.3 20.0 20.0 14.2 14.5 VAD [21] NC 42.4 15.0 157.9 46.0 11.4 11.4 18.6 20.0 19.2 18.1 MomAD [37] NC 44.5 16.7 170.2 48.6 ------DriveTransformer-L [20] NC 63.5 35.0 100.6 20.8 17.6 35.0 48.4 40.0 52.1 38.6 HiP-AD [39] †NC 86.8 69.1 203.1 19.4 50.0 84.4 83.3 40.0 50.5 65.9 Qwen2.5 [3] NC 63.9 31.6 119.3 10.1 14.3 28.9 30.1 30.0 24.7 25.6 ORION [9] NC 77.7 54.6 151.5 17.4 25.0 71.1 78.3 30.0 69.2 54.7 ReCogDrive [27] NC 71.4 45.5 138.2 17.5 29.7 20.0 69.1 20.0 71.3 42.0 DiffRefiner [46] NC 87.1 71.4 --63.8 60.0 85.0 50.0 86.3 69.0 GeRo [45] NC 81.9 60.1 176.5 40.2 40.1 78.2 87.3 50.0 76.8 66.5 MAPLE (ours) NC 85.2 67.1 184.3 37.9 46.3 80.7 88.1 60.0 78.1 70.6 MAPLE †(ours) NC 88.3 70.5 210.3 39.0 49.4 86.2 90.0 60.0 80.4 73.2
+
+updated across stages. Optimization uses AdamW with cosine annealing, a learning rate of 2 × 10 −4,and weight decay 0.01. 
+
+## 5 Results 
+
+We perform closed-loop evaluation and multi-ability test of MAPLE on Bench2Drive, and compare with recent state-of-the-art methods. We further conduct ablation studies on different aspects of our proposed approach. More results can be found in the appendix, including inference computation analysis (Section C), open-loop evaluation (Section D), and additional qualitative visualization results and comparison (Section E). 
+
+5.1 Closed-Loop Evaluation Quantitative Results. Table 1 summarizes quantitative comparisons with state-of-the-art methods on Bench2Drive, including closed-loop evaluation over 220 test routes and multi-ability assessments across five challenging urban driving behaviors: merging, overtaking, emergency braking, giving way, and traffic sign handling. Our method outperforms all existing approaches and achieves state-of-the-art performance across key metrics. Notably, the diverse multi-agent driving behaviors enabled by MAPLE lead to consistent improvements on most multi-ability metrics, highlighting its robustness and effectiveness in complex interactive driving scenarios. we also report open-loop evaluation results in Appendix Section D. 
+
+Qualitative Results. Figure 4 illustrates the closed-loop performance of the proposed MAPLE across diverse environments and interaction scenarios. In adverse weather conditions with reduced visibility (top row), the policy demonstrates cautious and stable behavior by smoothly reducing speed and applying mild braking when encountering pedestrians and roadside obstacles. In clear suburban settings with dynamic agents such as vehicles, pedestrians, and cyclists (bottom row), MAPLE adapts its planned trajectory to safely yield, overtake, and negotiate interactions through gradual steering and acceleration adjustments. Across all scenarios, the planned ego trajectories remain smooth and consistent, indicating coherent action selection and stable closed-loop control under varying environmental conditions. Additional qualitative results can be found in Appendix Section E. 
+
+5.2 Ablation Study Ego-Agent Rollout Setting. We perform an ablation study on Bench2Drive closed-loop evaluation to analyze the impact of ego-agent rollout at different training stages as shown in Table 2. The baseline model does not incorporate future state estimation or rollout. Introducing single-step future state estimation during pretraining improves Driving Score (DS) by 2.3 points over the baseline. Enabling multi-step ego-agent rollout yields further gains, outperforming single-step estimation by 4.2 points in DS. Incorporating rollout during supervised fine-tuning (SFT) leads to additional improvements, and the best performance is achieved when rollout is applied consistently across pretraining, SFT, and reinforcement learning (RL) stages. Compared to the baseline, this full rollout strategy improves DS by 12.3 points and increases the success rate by 7.9 8Figure 4: Qualitative examples of closed-loop driving on Bench2Drive using MAPLE. We show repre-sentative trajectories in diverse scenarios, including adverse-weather scenes with limited visibility and sudden pedestrian crossings (top row), and clear suburban traffic with dynamic agents such as cyclists and surrounding vehicles (bottom row). Blue curves denote the planned ego-vehicle trajectory, highlighting smooth and adaptive behavior during interactive maneuvers. 
+
+Table 2: Closed-loop ablation study of ego-only roll-out at different training stages on Bench2Drive. Roll 
+
+indicates whether ego-agent future rollout is enabled during training. SFT and RL denote supervised fine-tuning and reinforcement learning.                            
+
+> Method Ego Areact Roll DS ↑SR (%) ↑
+> Baseline ✓✗✗68.1 51.9
+> + state estimation pretraining ✓✗✗70.4 54.3
+> + rollout SFT ✓✗✓77.5 57.4
+> + rollout RL for ego-only ✓✗✓80.4 59.8
+
+Table 3: Closed-loop ablation study of rollout-based action planning strategies on Bench2Drive. Single: all agents share one planner. Multi: agents are assigned distinct planners.                                    
+
+> Rollout Type Planner Diversity Reg. Reactive Agents DS ↑SR (%) ↑
+> Ego Only Single ✗✗80.4 59.8 Multi ✗✗81.8 61.5 Multi ✓✗82.6 62.7 Self-Play Single ✗✓82.1 62.0 Single ✓✓84.1 63.9 Multi-Agent Play Multi ✗✓83.4 66.9 Multi ✓✓85.2 67.5
+
+Single- vs. Multi-Planner As shown in Table 3, we ablate on single - planner, multi -planner, and multi - planner with diverse action modeling under different rollout settings. Under the ego - only setting, rollout is applied only to the ego agent, while performance is further improved by adopting a multi - planner strategy. During inference, the final planner is selected based on the reward likelihood learned during the reinforcement learning stage. The self-play setting applies rollout to both the ego and reactive agents using a single shared planner P e. Multi-agent play extends this design by assigning different planners to different reactive agents, drawing from a pool {Pk}NR
+
+> k=1
+
+. The results consistently show that multi - planner approaches achieve higher Driving Scores than single -planner baselines. Moreover, multi-planner configurations with diverse action modeling outperform those that share a single planner across agents, and enabling reactive-agent rollout further improves performance compared to ego-only training. Most importantly, the multi-planner setup with diverse action modeling achieves the best overall results, improving Driving Score by an additional 4.8 points and Success Rate by 7.7 points. 
+
+Additional Results. We have conducted more ablation studies to analyze the impact of several design choices, including the number of reactive agents, reward components, and supervised loss terms in SFT. which can be found in Appendix Section A. 
+
+## 6 Conclusion 
+
+We introduced MAPLE, a simulator -free multi - agent training framework that enables closed - loop, interactive planning through latent -space rollouts in vision–language–action models. By extending rollouts to reactive agents and incorporating diversity - aware reinforcement learning, MAPLE gen-erates richer interactions and improves robustness in data -scarce settings. Extensive experiments on Bench2Drive demonstrate state -of -the - art closed-loop performance, highlighting MAPLE as a scalable and effective approach for advancing end-to-end autonomous driving. 
+
+Limitations. Despite its strong performance, MAPLE has a few limitations. First, multi - agent interactions are modeled through latent rollouts rather than physical simulation. This enables fast and scalable training but can potentially have limited fidelity in scenarios that requires very high - precision dynamics. Second, our experiments were primarily conducted on Bench2Drive. As part of future work, we will extend our experiments to real-world data when robust, accurate real-data-based closed-loop simulators become available. 
+
+Broader Impact. MAPLE provides a simulator-free, multi-agent closed-loop training framework that improves the robustness of end-to-end autonomous driving models. Our work can facilitate the development of autonomous driving systems that have improved safety, adaptability, and performance in complex driving scenarios, particularly in data-scarce or long-tail situations. 9References 
+
+[1] Marcin Andrychowicz, Bowen Baker, Maciek Chociej, Rafal Józefowicz, Bob McGrew, Jakub Pachocki, Arthur Petron, Matthias Plappert, Glenn Powell, Alex Ray, et al. Learning dexterous in-hand manipulation. 
+
+The International Journal of Robotics Research , 39(1):3–20, 2020. [2] Jinze Bai, Shuai Bai, Shusheng Yang, Shijie Wang, Sinan Tan, Peng Wang, Junyang Lin, Chang Zhou, and Jingren Zhou. Qwen-vl: A versatile vision-language model for understanding, localization, text reading, and beyond. arXiv preprint arXiv:2308.12966 , 2023. [3] Shuai Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, Sibo Song, Kai Dang, Peng Wang, Shijie Wang, Jun Tang, Humen Zhong, Yuanzhi Zhu, Mingkun Yang, Zhaohai Li, Jianqiang Wan, Pengfei Wang, Wei Ding, Zheren Fu, Yiheng Xu, Jiabo Ye, Xi Zhang, Tianbao Xie, Zesen Cheng, Hang Zhang, Zhibo Yang, Haiyang Xu, and Junyang Lin. Qwen2.5-vl technical report. arXiv preprint arXiv:2502.13923 , 2025. [4] Luca Bergamini, Yawei Ye, Oliver Scheel, Long Chen, Chih-Yuan Hu, Luca Delévaux, Niels Muller, and Peter Ondruska. SimNet: Learning reactive self-driving simulations from real-world observations. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2021. [5] Marco Cusumano-Towner, David Hafner, Alexander Hertzberg, Brody Huval, Aleksei Petrenko, Eugene Vinitsky, Erik Wijmans, Taylor W. Killian, Stuart Bowers, Ozan Sener, Philipp Kraehenbuehl, and Vladlen Koltun. Robust autonomy emerges from self-play. In Proceedings of the 42nd International Conference on Machine Learning (ICML) , 2025. [6] Daniel Dauner, Marcel Hallgarten, Andreas Geiger, and Kashyap Chitta. Parting with misconceptions about learning-based vehicle motion planning. In Conference on Robot Learning , pages 1268–1281. PMLR, 2023. [7] Alexey Dosovitskiy, German Ros, Felipe Codevilla, Antonio Lopez, and Vladlen Koltun. Carla: An open urban driving simulator. In Conference on robot learning , pages 1–16. PMLR, 2017. [8] Yuxin Fang, Wen Wang, Binhui Xie, Quan Sun, Ledell Wu, Xinggang Wang, Tiejun Huang, Xinlong Wang, and Yue Cao. Eva: Exploring the limits of masked visual representation learning at scale. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 19358–19369, 2023. [9] Haoyu Fu, Diankun Zhang, Zongchuang Zhao, Jianfeng Cui, Dingkang Liang, Chong Zhang, Dingyuan Zhang, Hongwei Xie, Bing Wang, and Xiang Bai. Orion: A holistic end-to-end autonomous driving framework by vision-language instructed action generation. arXiv preprint arXiv:2503.19755 , 2025. [10] Cole Gulino, Justin Fu, Wenjie Luo, George Tucker, Eli Bronstein, Yiren Lu, Jean Harb, Xinlei Pan, Yan Wang, Xiangyu Chen, John D. Co-Reyes, Rishabh Agarwal, Rebecca Roelofs, Yao Lu, Nico Montali, Paul Mougin, Zoey Yang, Brandyn White, Aleksandra Faust, Rowan McAllister, Dragomir Anguelov, and Benjamin Sapp. Waymax: An accelerated, data-driven simulator for large-scale autonomous driving research. In Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track , 2023. [11] K. Tan et al. H. Caesar, J. Kabzan. Nuplan: A closed-loop ml-based planning benchmark for autonomous vehicles. In CVPR ADP3 workshop , 2021. [12] Dirk Helbing and Péter Molnár. Social force model for pedestrian dynamics. Physical Review E , 51(5): 4282–4286, 1995. [13] Yihan Hu, Jiazhi Yang, Li Chen, Keyu Li, Chonghao Sima, Xizhou Zhu, Siqi Chai, Senyao Du, Tianwei Lin, Wenhai Wang, et al. Planning-oriented autonomous driving. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 17853–17862, 2023. [14] Zhiyu Huang, Xinshuo Weng, Maximilian Igl, Yuxiao Chen, Yulong Cao, Boris Ivanovic, Marco Pavone, and Chen Lv. Gen-drive: Enhancing diffusion generative driving policies with reward modeling and reinforcement learning fine-tuning. In 2025 IEEE International Conference on Robotics and Automation (ICRA) , pages 3445–3451. IEEE, 2025. [15] Jyh-Jing Hwang, Runsheng Xu, Hubert Lin, Wei-Chih Hung, Jingwei Ji, Kristy Choi, Di Huang, Tong He, Paul Covington, Benjamin Sapp, Yin Zhou, James Guo, Dragomir Anguelov, and Mingxing Tan. Emma: End-to-end multimodal model for autonomous driving. arXiv preprint arXiv:2410.23262 , 2024. [16] Bernhard Jaeger, Daniel Dauner, Jens Beißwenger, Simon Gerstenecker, Kashyap Chitta, and Andreas Geiger. Carl: Learning scalable planning policies with simple rewards. arXiv preprint arXiv:2504.17838 ,2025. 
+
+10 [17] Xiaosong Jia, Yulu Gao, Li Chen, Junchi Yan, Patrick Langechuan Liu, and Hongyang Li. Driveadapter: Breaking the coupling barrier of perception and planning in end-to-end autonomous driving. In ICCV ,2023. [18] Xiaosong Jia, Penghao Wu, Li Chen, Jiangwei Xie, Conghui He, Junchi Yan, and Hongyang Li. Think twice before driving: Towards scalable decoders for end-to-end autonomous driving. In CVPR , 2023. [19] Xiaosong Jia, Zhenjie Yang, Qifeng Li, Zhiyuan Zhang, and Junchi Yan. Bench2drive: Towards multi-ability benchmarking of closed-loop end-to-end autonomous driving. In NeurIPS 2024 Datasets and Benchmarks Track , 2024. [20] Xiaosong Jia, Junqi You, Zhiyuan Zhang, and Junchi Yan. Drivetransformer: Unified transformer for scalable end-to-end autonomous driving. In The Thirteenth International Conference on Learning Representations , 2025. [21] Bo Jiang, Shaoyu Chen, Qing Xu, Bencheng Liao, Jiajie Chen, Helong Zhou, Qian Zhang, Wenyu Liu, Chang Huang, and Xinggang Wang. Vad: Vectorized scene representation for efficient autonomous driving. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 8340–8350, 2023. [22] Bo Jiang, Shaoyu Chen, Bencheng Liao, Xingyu Zhang, Wei Yin, Qian Zhang, Chang Huang, Wenyu Liu, and Xinggang Wang. Senna: Bridging large vision-language models and end-to-end autonomous driving. 
+
+arXiv preprint arXiv:2410.22313 , 2024. [23] Bo Jiang, Shaoyu Chen, Qian Zhang, Wenyu Liu, and Xinggang Wang. Alphadrive: Unleashing the power of vlms in autonomous driving via reinforcement learning and reasoning. arXiv preprint arXiv:2503.07608 ,2025. [24] Peter Karkus, Maximilian Igl, Yuxiao Chen, Kashyap Chitta, Boris Ivanovic, and Marco Pavone. Beyond behavior cloning in autonomous driving: a survey of closed-loop training techniques. Technical report, NVIDIA Research, 2025. [25] Roberta Kirk, Amy Zhang, Edward Grefenstette, and Tim Rocktäschel. A survey of generalisation in deep reinforcement learning. arXiv preprint arXiv:2111.09794 , 2023. [26] Derun Li, Jianwei Ren, Yue Wang, Xin Wen, Pengxiang Li, Leimeng Xu, Kun Zhan, Zhongpu Xia, Peng Jia, Xianpeng Lang, et al. Finetuning generative trajectory model with reinforcement learning from human feedback. arXiv preprint arXiv:2503.10434 , 2025. [27] Yongkang Li, Kaixin Xiong, Xiangyu Guo, Fang Li, Sixu Yan, Gangwei Xu, Lijun Zhou, Long Chen, Haiyang Sun, Bing Wang, et al. Recogdrive: A reinforced cognitive framework for end-to-end autonomous driving. In International Conference on Learning Representations (ICLR) , 2026. [28] Bencheng Liao, Shaoyu Chen, Haoran Yin, Bo Jiang, Cheng Wang, Sixu Yan, Xinbang Zhang, Xiangyu Li, Ying Zhang, Qian Zhang, et al. Diffusiondrive: Truncated diffusion model for end-to-end autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 12037–12047, 2025. [29] Haochen Liu, Tianyu Li, Haohan Yang, Li Chen, Caojun Wang, Ke Guo, Haochen Tian, Hongchen Li, Hongyang Li, and Chen Lv. Reinforced refinement with self-aware expansion for end-to-end autonomous driving. arXiv preprint arXiv:2506.09800 , 2025. [30] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations , 2019. [31] Jiageng Mao, Yuxi Qian, Junjie Ye, Hang Zhao, and Yue Wang. Gpt-driver: Learning to drive with gpt. 
+
+arXiv preprint arXiv:2310.01415 , 2023. [32] Davis Rempe, Jonah Philion, Leonidas J Guibas, Sanja Fidler, and Or Litany. Generating useful accident-prone driving scenarios via a learned traffic prior. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2022. [33] Katrin Renz, Long Chen, Elahe Arani, and Oleg Sinavski. Simlingo: Vision-only closed-loop autonomous driving with language-action alignment. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 11993–12003, 2025. [34] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. 
+
+11 [35] Shaoshuai Shi, Li Jiang, Dengxin Dai, and Bernt Schiele. Motion transformer with global intention localization and local movement refinement. arXiv preprint arXiv:2209.13508 , 2022. [36] David Silver, Julian Schrittwieser, Karen Simonyan, Ioannis Antonoglou, Aja Huang, Arthur Guez, Thomas Hubert, Lucas Baker, Matthew Lai, Adrian Bolton, et al. Mastering the game of Go without human knowledge. Nature , 550:354–359, 2017. [37] Ziying Song, Caiyan Jia, Lin Liu, Hongyu Pan, Yongchang Zhang, Junming Wang, Xingyu Zhang, Shaoqing Xu, Lei Yang, and Yadan Luo. Don’t shake the wheel: Momentum-aware planning in end-to-end autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 22432–22441, 2025. [38] Simon Suo, Sebastian Regalado, Sergio Casas, and Raquel Urtasun. TrafficSim: Learning to simulate realistic multi-agent behaviors. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 10400–10409, 2021. [39] Yingqi Tang, Zhuoran Xu, Zhaotie Meng, and Erkang Cheng. Hip-ad: Hierarchical and multi-granularity planning with deformable attention for autonomous driving in a single decoder. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 25605–25615, 2025. [40] Xiaoyu Tian, Junru Gu, Bailin Li, Yicheng Liu, Chenxu Hu, Yang Wang, Kun Zhan, Peng Jia, Xianpeng Lang, and Hang Zhao. Drivevlm: The convergence of autonomous driving and large vision-language models. arXiv preprint arXiv:2402.12289 , 2024. [41] Oriol Vinyals, Igor Babuschkin, Wojciech M Czarnecki, Michaël Mathieu, Andrew Dudzik, Junyoung Chung, David H Choi, Richard Powell, Timo Ewalds, et al. Grandmaster level in StarCraft II using multi-agent reinforcement learning. Nature , 575:350–354, 2019. [42] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems , 35:24824–24837, 2022. [43] Penghao Wu, Xiaosong Jia, Li Chen, Junchi Yan, Hongyang Li, and Yu Qiao. Trajectory-guided con-trol prediction for end-to-end autonomous driving: A simple yet strong baseline. Advances in Neural Information Processing Systems , 35:6119–6132, 2022. [44] Zebin Xing, Xingyu Zhang, Yang Hu, Bo Jiang, Tong He, Qian Zhang, Xiaoxiao Long, and Wei Yin. Goalflow: Goal-driven flow matching for multimodal trajectories generation in end-to-end autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 1602–1611, 2025. [45] Rajeev Yasarla, Deepti Hegde, Shizhong Han, Hsin-Pai Cheng, Yunxiao Shi, Meysam Sadeghigooghari, Shweta Mahajan, Apratim Bhattacharyya, Litian Liu, Risheek Garrepalli, et al. Generative scenario rollouts for end-to-end autonomous driving. arXiv preprint arXiv:2601.11475 , 2026. [46] Liuhan Yin, Runkun Ju, Guodong Guo, and Erkang Cheng. Diffrefiner: Coarse to fine trajectory planning via diffusion refinement with semantic interaction for end to end autonomous driving. In Proceedings of the AAAI Conference on Artificial Intelligence , pages 12009–12017, 2026. [47] Linrui Zhang, Zhenghao Peng, Quanyi Li, and Bolei Zhou. CAT: Closed-loop adversarial training for safe end-to-end driving. In Conference on Robot Learning , 2023. [48] Yinan Zheng, Ruiming Liang, Kexin Zheng, Jinliang Zheng, Liyuan Mao, Jianxiong Li, Weihao Gu, Rui Ai, Shengbo Eben Li, Xianyuan Zhan, et al. Diffusion-based planning for autonomous driving with flexible guidance. arXiv preprint arXiv:2501.15564 , 2025. [49] Zikang Zhou, Jianping Wang, Yung-Hui Li, and Yu-Kai Huang. Query-centric trajectory prediction. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 17863– 17873, 2023. [50] Zewei Zhou, Tianhui Cai, Seth Z Zhao, Yun Zhang, Zhiyu Huang, Bolei Zhou, and Jiaqi Ma. Au-tovla: A vision-language-action model for end-to-end autonomous driving with adaptive reasoning and reinforcement fine-tuning. arXiv preprint arXiv:2506.13757 , 2025. 
+
+12 A Ablation Study 
+
+A.1 Number of Reactive Agents Agent Distribution in Bench2Drive. To contextualize our choice of reactive agent count, we analyze the distribution of traffic agents in the Bench2Drive validation set across 12,806 frames. As reported in Table 4, each frame contains on average 11.91 vehicles (std: 9.59, median: 8, max: 41), 0.06 pedestrians, and 0.03 cyclists. Vehicles account for over 99% of all annotated agents. The high variance and gap between mean and median indicate that scene density varies significantly across routes, with some frames containing up to 41 vehicles. These statistics motivate our investigation into the number of reactive agents and confirm that 8 reactive agents provides sufficient coverage for the large majority of evaluation scenarios. Table 4: Per-frame agent statistics in the Bench2Drive validation set (12,806 frames).                          
+
+> Category Mean Std Min Max Median
+> Vehicles 11.91 9.59 041 8.0 Pedestrians 0.06 0.33 030.0 Cyclists 0.03 0.18 010.0 Total agents 12.00 9.57 041 8.0
+
+Ablation on the Number of Reactive Agents. Reactive agents are selected as those most relevant to the current driving scenario. We study the effect of the number of reactive agents by varying this number among 1, 2, 4, and 8, with agents selected using a KNN-based strategy. As shown in Table 5, the baseline uses no reactive agents with multi-planner and diversity regularization. Increasing the number of reactive agents consistently improves both Driving Score and Success Rate, yielding gains of up to +2.6 DS and +4.8 SR when using 8 reactive agents. Since 8 reactive agents already capture most influential interactions even in dense driving scenarios, further increasing this number is likely to introduce additional computational overhead with limited benefit; therefore, we select 8 reactive agents in all experiments. Table 5: Ablation study on the number of reactive agents under closed-loop evaluation on Bench2Drive (B2D). All results are obtained using multi-planner with diversity regularization. All ∆ values denote improvement w.r.t. the setting with 0 reactive agents .                          
+
+> # Reactive Agents DS ↑∆DS SR (%) ↑∆SR
+> 082.6 –62.7 –182.8 +0.2 63.4 +0.7 283.9 +1.3 65.4 +2.7 484.5 +1.9 66.6 +3.9 885.2 +2.6 67.5 +4.8
+
+A.2 Losses in SFT 
+
+Table 6 analyzes the effect of applying supervised losses to different entities during SFT. Starting from the setting without explicit SFT supervision (ID 1), adding the ego planning loss (ID 2) provides a clear gain in both Driving Score and Success Rate, indicating improved ego control under closed-loop evaluation. Supervising background-agent motion prediction in addition to ego (ID 3) further improves performance, suggesting that more accurate scene evolution during rollouts benefits ego planning. Finally, adding supervision for reactive-agent planning (ID 4) yields the best results, demonstrating that explicitly training interactive agents alongside the ego leads to stronger closed-loop robustness. 
+
+A.3 Rewards in RL 
+
+Table 7 presents the performance improvements of each reward term in our RL fine-tuning objective. Starting from the base setting SFT model ( i.e ., without additional rewards), adding the global 13 Table 6: Ablation of supervised losses used during SFT. “Ego” denotes applying the planning loss to the ego trajectory, Zreact denotes supervising reactive-agent planning, and Zbg denotes supervising background-agent motion prediction.                            
+
+> ID Ego Zreact Zbg DS ↑SR (%) ↑
+> (1) ✗✗✗70.4 54.3 (2) ✓✗✗75.2 56.1 (3) ✓✗✓77.5 57.4 (4) ✓✓✓79.6 59.1
+
+reward Gt improves both Driving Score (DS) and Success Rate (SR), indicating that scene-level safety feedback provides useful training signal. Incorporating the agent-specific reward rit yields a larger gain, improving DS to 83.4 and SR to 66.9, reflecting better progress and interaction-aware behavior at the agent level. Finally, enabling the diversity reward Dt further boosts performance to the best overall results (DS 85.2, SR 67.5), suggesting that diversity regularization complements safety/progress rewards by mitigating mode collapse and encouraging distinct yet effective behaviors during rollout-based training. Table 7: Ablation on reward components. Gt denotes the global reward, rit the agent-specific reward, and Dt the diversity reward.                            
+
+> ID GtritDtDS ↑SR (%) ↑
+> (5) ✗✗✗79.6 59.1 (6) ✓✗✗81.1 62.2 (7) ✓✓✗83.4 66.9 (8) ✓✓✓85.2 67.5
+
+## B Diversity Reward 
+
+To encourage heterogeneous driving styles (e.g., conservative vs. assertive merges) and to mitigate mode collapse during RL fine-tuning, we introduce a diversity reward that promotes behavioral separation among a group of sampled rollouts. Concretely, we maintain a pool of reactive-agent planners P = {P e} ∪ { P aj }NR
+
+> j=1
+
+, where P e is the ego planner and {P aj } are behavior-specialized planners used to generate trajectories for NR reactive agents. In all experiments, we set NR = 8 .
+
+Behavior Descriptor. We summarize each rolled-out agent trajectory using a compact behavior descriptor Γ( ·) computed from the predicted trajectory segment ˜τt:t+T . The descriptor concatenates normalized scalar metrics capturing safety, rule compliance, and comfort, including: (i) mean longitudinal acceleration, (ii) mean jerk, (iii) minimum time-to-collision (TTC) along the horizon, (iv) lane-centering error, (v) lane-change timing (if applicable), (vi) drivable-area compliance, (vii) driving-direction compliance, and (viii) traffic-light compliance. Each component is normalized (e.g., by a fixed range or running statistics) so that no single metric dominates the ℓ1 distance. 
+
+Planner Assignment and Rollout Sampling. For each reactive agent aj ∈ Zreact  
+
+> t
+
+, we assign a behavior category (e.g., aggressive , cautious , rule-compliant , high-comfort ) and select the corre-sponding planner P π(aj ) ∈ P . For example, if agent a7 is categorized as aggressive and agent a2
+
+as safe/comfortable, we may choose P π(a7) = p2 and P π(a2) = p6 to generate their respective predicted trajectories. This yields predicted trajectories for all reactive agents in the rollout. 
+
+Diversity Reward. We define the diversity reward as the average pairwise ℓ1 distance between behavior descriptors across the different behavior metrics: 
+
+Dt = 1
+
+NR(NR − 1) 
+
+X  
+
+> pi̸=pi′∈P
+
+Γ ˜τ pi
+
+> t:t+T
+
+ − Γ ˜τ pi′
+
+> t:t+T
+
+
+
+> 1
+
+, (8) 14 This reward assigns higher values when different planner selections induce measurably distinct (yet safe and rule-compliant) behaviors, thereby encouraging the policy to maintain a diverse set of plausible interaction patterns during training. 
+
+## C Inference Computation Analysis 
+
+Table 8 reports the per-frame inference latency of MAPLE measured on a single NVIDIA H100 (80GB) GPU with batch size 1, using 10 warmup batches followed by 50 timed batches with 
+
+torch.cuda.synchronize() for accurate GPU timing. Each timed forward pass encompasses the full inference pipeline: (1) a multi-camera image backbone and neck that extract per-frame visual features from surrounding cameras; (2) a BEV encoder that lifts and fuses perspective features into a bird’s-eye-view representation; (3) a Qwen2.5-1.5B language model head that encodes scene context and generates agent-conditioned queries; (4) a map head for local map prediction; and (5) per-agent decoders (comprising present/future distribution encoders, GRU-based trajectory predictors, and ego future decoders) instantiated independently for each of the 8 reactive planners. Rollout is disabled at inference, so no environment simulation or autoregressive steps are performed. With 8 reactive-agent planners, MAPLE requires 12,988 GFLOPs per inference and achieves a mean latency of 487.7 ms (2.05 FPS), with a P90 of 529.1 ms. The compute cost is dominated by the Qwen2.5-1.5B language model, which accounts for over 99% of total FLOPs, while the image backbone contributes only 15 GFLOPs. Table 8: Computational cost and per-frame inference latency of MAPLE on a single NVIDIA H100 GPU (batch size 1). Rollout is disabled at inference. 
+
+Method #Planners GFLOPs Mean (ms) P50 (ms) P90 (ms) Inferences Per Second 
+
+MAPLE 8 12,988 487.7 491.6 529.1 2.05 
+
+## D Open-Loop Evaluation on Bench2Drive 
+
+In Table 9, we present open-loop assessment on Bench2Drive, we additionally report the average L2 error between predicted and ground-truth trajectories over a 2-second horizon at 2Hz. Table 9: Unified comparison of closed-loop, open-loop, and multi-ability performance on the Bench2Drive base set. Avg. L2 denotes the average trajectory error over 2 seconds at 2 Hz. NC = Navigation Command, TP = Target Point. † indicates models trained with geometric path waypoint supervision and evaluated using the PID controller from SimLingo. Method Condition Closed-loop Metric Open-loop Multi-Ability Test(%) ↑                                                                                                                                                                                                                      
+
+> DS ↑SR(%) ↑Efficiency ↑Comfort ↑Avg. L2 ↓Merging Overtaking E-Brake Give Way T.Sign Mean TCP-traj [43] TP 59.9 30.0 76.5 18.1 1.70 28.8 24.3 51.7 40.0 46.3 34.2 TCP-traj w/o distillation [43] TP 49.3 20.5 78.8 22.9 1.96 28.7 28.7 48.3 40.0 28.7 34.1 ThinkTwice [18] TP 62.4 31.2 69.3 16.2 0.95 27.4 18.4 35.8 50.0 54.2 37.2 DriveAdapter [17] TP 64.2 33.1 70.2 16.0 1.01 28.4 28.4 47.5 50.0 56.4 42.1 SimLingo [33] †TP 85.1 67.3 259.2 33.7 -54.0 57.0 88.3 53.3 82.5 67.0 UniAD-Base [13] NC 45.8 16.4 129.2 43.6 0.73 8.9 9.3 20.0 20.0 14.2 14.5 VAD [21] NC 42.4 15.0 157.9 46.0 0.91 11.4 11.4 18.6 20.0 19.2 18.1 MomAD [37] NC 44.5 16.7 170.2 48.6 0.87 ------DriveTransformer-Large [20] NC 63.5 35.0 100.6 20.8 0.62 17.6 35.0 48.4 40.0 52.1 38.6 HiP-AD [39] †NC 86.8 69.1 203.1 19.4 0.69 50.0 84.4 83.3 40.0 50.5 65.9 Qwen2.5 [3] NC 63.9 31.6 119.3 10.1 0.87 14.3 28.9 30.1 30.0 24.7 25.6 ORION [9] NC 77.7 54.6 151.5 17.4 0.68 25.0 71.1 78.3 30.0 69.2 54.7 ReCogDrive [27] NC 71.4 45.5 138.2 17.5 -29.7 20.0 69.1 20.0 71.3 42.0 DiffRefiner [46] NC 87.1 71.4 ---63.8 60.0 85.0 50.0 86.3 69.00 GeRo [45] NC 81.9 60.1 176.5 40.2 0.57 40.1 78.2 87.3 50.0 76.8 66.5 MAPLE (ours) NC 85.2 67.1 184.3 37.9 0.54 46.3 80.7 88.1 60.0 78.1 70.6 MAPLE (ours) †NC 88.3 70.5 210.3 39.0 0.53 49.4 86.2 90.0 60.0 80.4 73.2
+
+## E Qualitative Results 
+
+E.1 Qualitative Comparison with ReCogDrive 
+
+Figures 5 and 6 qualitatively compare MAPLE with ReCogDrive [ 27 ], which is a very recent work that leverages ego-only, single-step RL to train E2E VLA planners, under closed-loop evaluation on Bench2Drive for the same route. Both methods make progress through an interactive scene 15 Figure 5: BEV qualitative comparison on Bench2Drive (closed-loop). Bird’s-eye-view visualiza-tion for the same route/scenario ( RouteScenario_25951_rep0 , HazardAtSideLaneTwoWays_1 ,
+
+weather_id =7). Left: ReCogDrive [ 27 ]. Right: MAPLE (ours). The planned ego trajectory is overlaid, illustrating different interaction outcomes in the same context. 
+
+Figure 6: Closed-loop rollout comparison on Bench2Drive. Multi-frame qualitative roll-outs for the same route/scenario ( RouteScenario_25951_rep0 , HazardAtSideLaneTwoWays_1 ,
+
+weather_id =7). Top row: ReCogDrive. Bottom row: MAPLE. Colored curves denote the planned ego trajectory across time, highlighting differences in closed-loop interaction behavior. containing dynamic agents (e.g., two cyclists traveling along the road) and nearby traffic; however, their interaction outcomes differ. ReCogDrive exhibits a failure case around the 5th column of Figure 6: the planned trajectory deviates abruptly and results in a collision/infraction event, which is also reflected in the BEV visualization in Figure 5. This substantially reduces the composed score (score_penalty = 0 .4225 , score_composed = 42 .25 ), despite the route being marked as completed. In contrast, MAPLE completes the same route without collision infractions (Figures 5 and 6) and achieves a perfect composed score (score_penalty = 1 .0, score_composed = 100 ). Visually, MAPLE produces smoother and more consistent planned ego trajectories (blue/cyan) with gradual curvature changes while maintaining safe separation from the cyclists and surrounding vehicles, whereas ReCogDrive shows sharper trajectory changes preceding the infraction. Overall, this example highlights that MAPLE yields more robust closed-loop behavior in interactive scenarios, avoiding safety-critical failures that can occur even when route completion is achieved. 
+
+E.2 Additional Qualitative Results 
+
+Figures 7 and 8 provide additional qualitative closed-loop driving results on the Bench2Drive benchmark using MAPLE, covering a broader range of weather, lighting, and interaction patterns. For each example, we show multiple time steps from the ego view with the planned ego trajectory overlaid (blue/cyan). Figure 7 highlights particularly challenging perception and interaction regimes: (i) low-light/night driving on wet roads, where the ego plan remains centered and stable even when a pedestrian suddenly enters near the roadway and nearby vehicles occupy adjacent lanes; (ii) dense fog on a multi-lane road, which substantially reduces visibility and shortens the effective planning horizon, where MAPLE maintains a smooth, lane-consistent trajectory; and (iii) adverse-weather urban driving at intersections with complex lane markings and cross traffic, where MAPLE executes a left turn with 16 Figure 7: Additional qualitative closed-loop driving examples on Bench2Drive using MAPLE. 
+
+These examples includes challenging conditions, like low-light/night driving with sudden pedestrian appearances and wet-road reflections, dense fog/highway driving with reduced visibility, and urban scenes with adverse weather. Blue/cyan curves denote the planned ego trajectory. 
+
+Figure 8: Additional qualitative closed-loop driving examples on Bench2Drive using MAPLE. 
+
+More examples covering suburban/rural traffic with oncoming vehicles and lane curvature, as well as nighttime intersection scenarios with wet-road conditions and surrounding traffic. Blue/cyan curves denote the planned ego trajectory. gradual curvature and without abrupt corrections. Figure 8 further includes suburban/rural scenes with oncoming traffic, vehicles moving at varying speeds, and gentle-to-moderate road curvature, as well as nighttime intersection scenarios under wet-road illumination. Across these diverse settings, MAPLE consistently produces temporally coherent plans with smooth curvature changes and stable lane positioning, while adapting the trajectory to dynamic agents and roadway structure. 
+
+E.3 Failure Case 
+
+Figure 9 shows a failure case where MAPLE becomes overly cautious during a unprotected left turn and steers toward the road boundary to avoid a potential collision. Resulting in a brief deviation outside the route lanes forabout 1.0 meters (1.29% of the completed route). 
+
+## F Losses 
+
+This section details the loss functions used in the pretraining and supervised fine-tuning (SFT) stages of MAPLE. We first pretrain the VLA backbone with auxiliary perception tasks to obtain stable scene representations, and then optimize planning and prediction objectives with rollout-based SFT. 
+
+F.1 Pretraining 
+
+During pretraining, the VLA model is trained with auxiliary tasks including 3D object detection, map segmentation, agent motion prediction, traffic-light/traffic-state prediction, and future state prediction. These losses encourage the backbone to encode geometry, semantics, and traffic context into latent tokens, stabilizing subsequent rollout training. 17 Figure 9: Failure case: over-cautious avoidance leading to lane departure (Bench2Drive, closed-loop). In this scenario, MAPLE performs an overly conservative unprotected left turn to avoid a potential collision, resulting in a brief deviation outside the route lanes for about 1.0 meters (1.29% 
+
+of the full route). The car quickly moves back to the lane after this brief deviation. Blue/cyan curves denote the planned ego trajectory over time. 
+
+3D Object Detection. For detection (via the proposed query-based detector), we use a standard classification + regression objective: 
+
+Ldet = Lcls + Lreg , (9) where Lcls is a focal loss and Lreg is an ℓ1 regression loss. 
+
+Traffic-State Prediction. For traffic-state (e.g., traffic light / traffic status) prediction, we apply a focal loss: 
+
+Ltra = Lfocal . (10) 
+
+Agent Motion Prediction. For multi-agent motion prediction, we use a classification + regression loss: 
+
+Lmot = Lmcls + Lmreg , (11) where Lmcls is a focal loss over motion modes and Lmreg is an ℓ1 regression loss on the predicted trajectories. 
+
+Map Segmentation / Vectorized Map Learning. For map learning, we use a classification loss (focal loss) and a regression loss based on Manhattan ( ℓ1) distance between predicted map points and ground-truth map points: 
+
+Lmap = Lmap-cls + λmap Lmap-reg , Lmap-reg = ∥ ˆm − m∥1. (12) This follows the practice for vectorized map prediction used in VAD [21]. 
+
+Future State Prediction. We additionally supervise future state prediction using the loss in Eq. 1, denoted as Lstate .
+
+Overall Pretraining Objective. The full pretraining loss is the weighted sum of all components: 
+
+Lpre = λdet Ldet + λtra Ltra + λmot Lmot + λstate Lstate + λmap Lmap . (13) We use the same loss-weight coefficients as VAD [ 21 ] for the auxiliary-task objectives, i.e., λdet , λmot ,and λmap follow the weighting scheme in [21]. We set λtra , and λstate as 1.0. 
+
+F.2 Planning Loss (SFT / Action Planner) 
+
+The action planner in MAPLE is trained with a generative objective and trajectory-level supervision. In particular, the planner uses a VAE-style latent alignment loss and trajectory regression, together with safety/feasibility regularizers. 
+
+VAE Latent Regularization. We use a Kullback–Leibler divergence term to align the latent “reasoning” space with the action/trajectory distribution: 
+
+Lvae = DKL (q(z | · ) ∥ p(z)) . (14) 
+
+Trajectory Regression. We supervise the predicted waypoints with an MSE (or ℓ1) regression loss: 
+
+Lmse = 1
+
+T
+
+> T
+
+X
+
+> ∆=1
+
+∥ˆτt+∆ − τt+∆ ∥22 . (15) 18 Safety/Feasibility Regularizers. Following VAD [ 21 ], vectorized constraint-based training com-monly used in end-to-end driving, we include collision and boundary regularizers to discourage unsafe trajectories: 
+
+Lcol (collision avoidance) , Lbd (boundary / drivable-area constraint) . (16) These terms penalize trajectories that come too close to other agents or violate road boundaries, consistent with constraint-based planning losses in prior work. 
+
+Overall Planning Loss. The final planning objective is: 
+
+Lplan = λvae Lvae + λmse Lmse + λcol Lcol + λbd Lbd . (17) We use the same loss-weight coefficients as VAD [ 21 ] and ORION [ 9 ] for the weights λvae , λmse , and 
+
+λcol , and λbd .
+
+## G Training Details 
+
+Optimizer and Schedule. All stages of MAPLE are trained with AdamW [ 30 ] ( β1=0 .9, β2=0 .999 ,weight decay 10 −5) using a cosine-annealing schedule with 500 linear warm-up iterations and a minimum learning rate ratio of 10 −3. The base learning rate is 10 −5 with a layer-wise decay factor of 0.9 applied in a ViT-wise manner. All experiments use a batch size of 1 per GPU across 8 NVIDIA A100 GPUs (effective batch size 8), trained for 3 epochs. 
+
+Reactive Agent Selection. Reactive agents are the traffic participants whose future trajectories are jointly predicted with the ego during self-play rollout. At each rollout step, agents are ranked by their distance to the ego vehicle and the NR nearest neighbors are designated as reactive; the remaining agents are treated as background and follow their ground-truth trajectories. 
+
+Rollout Configuration. Rollout is performed over Nstep =8 steps at 2 Hz (a 4-second horizon). At each step, the ego trajectory and reactive-agent trajectories are predicted by the model and used to advance the scene state; the resulting state is fed back as input for the next step. During inference, rollout is disabled and a single forward pass is executed per frame. 
+
+Multi-Planner Setup. We instantiate NR behavior-specialized planners drawn from a shared pool 
+
+P = {P e} ∪ { P aj }NR
+
+> j=1
+
+. In all reported experiments we use NR=8 reactive-agent planners (see Appendix A for ablations). During RL fine-tuning, the best-performing planner for the ego is selected based on the reward likelihood learned in the GRPO stage. 19
