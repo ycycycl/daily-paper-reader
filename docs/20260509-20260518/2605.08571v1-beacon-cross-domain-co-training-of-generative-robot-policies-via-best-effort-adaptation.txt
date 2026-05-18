@@ -1,0 +1,659 @@
+Title: BEACON: Cross-Domain Co-Training of Generative Robot Policies via Best-Effort Adaptation
+
+URL Source: https://arxiv.org/pdf/2605.08571v1
+
+Published Time: Tue, 12 May 2026 00:26:12 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# BEACON: Cross-Domain Co-Training of Generative Robot Policies via Best-Effort Adaptation 
+
+Antong Zhang 
+
+Department of Computer Science Brown University 
+
+antong_zhang@brown.edu 
+
+Han Qi 
+
+John A. Paulson School of Engineering and Applied Sciences Harvard University 
+
+hqi@g.harvard.edu 
+
+Heng Yang 
+
+John A. Paulson School of Engineering and Applied Sciences Harvard University 
+
+hankyang@seas.harvard.edu 
+
+# Abstract 
+
+We introduce BEACON—Best-Effort Adaptation for Cross-Domain Co-Training— a theory-driven framework for training generative robot policies with abundant source demonstrations and limited target demonstrations. BEACON casts cross-domain co-training as a discrepancy-aware importance-reweighting problem, jointly learning a diffusion-based visuomotor policy and per-sample source weights that minimize an objective informed by target-domain generalization guarantees. To make best-effort adaptation practical for high-dimensional sequence policies, we de-velop scalable instance-level discrepancy estimators, stochastic alternating updates for policy and weights, and a multi-source extension that balances heterogeneous source domains. Across sim-to-sim, sim-to-real, and multi-source manipulation settings, BEACON improves robustness and data efficiency over target-only, fixed-ratio co-training, and feature-alignment baselines. Importantly, even without an explicit alignment objective, BEACON achieves feature alignment as an implicit result of discrepancy-aware cross-domain co-training. Code and data are available at https://computationalrobotics.seas.harvard.edu/BEACON/ .
+
+# 1 Introduction 
+
+Behavior cloning (BC) has become a prominent route to learning generalizable robot manipulation policies because it reduces policy training to supervised imitation from expert demonstrations [ 1 –4]. Recent sequence models, especially diffusion-based policies, further strengthen this paradigm by modeling temporally extended and multimodal action distributions [ 5, 6 ]. Despite this progress, policies trained in one domain often degrade in another even when task semantics are unchanged. These gaps are not only visual (e.g., texture, illumination, camera pose, and sensor statistics), but also physical: simulation and real-world domains can differ in contact behavior, friction, actuation delays, and other dynamics properties [ 7 – 9]; meanwhile, recent efforts that leverage human manipulation videos for robot policy learning face an additional embodiment gap [ 10 – 12 ]. As a result, directly reusing source demonstrations can be unreliable, while collecting large target-domain datasets remains expensive and difficult to scale [ 13 – 15 ]. This raises a central question: how can we leverage abundant but mismatched source demonstrations while minimizing labeled target data? 
+
+> Preprint.
+> arXiv:2605.08571v1 [cs.RO] 9 May 2026
+
+Figure 1: Cross-domain policy co-training via best-effort adaptation (BEACON). Given a large amount of (multi-)source demonstrations and a small amount of target demonstrations, BEACON jointly learns a diffusion-based visuomotor policy and a set of per-sample weights that directly minimizes a theoretically grounded discrepancy-based generalization bound on the target domain. Given this challenge, prior work can be viewed along a spectrum. Classical methods use domain randomization to increase source diversity [ 8, 9 , 16 ], while domain adaptation methods explicitly align source and target representations to promote invariance to domain shifts [ 17 – 20 ]. More recent approaches show that co-training on source and target demonstrations can be effective in low-target-data regimes [ 21 , 22 ]. However, most existing methods still optimize empirical objectives through fixed mixing rules or auxiliary alignment losses. Although effective in some regimes, these approaches do not directly optimize the core objective: target-domain generalization guarantees .This gap motivates a key question: can we design algorithms grounded in principled generalization guarantees rather than heuristically constructed training objectives? 
+
+Contribution. We take a theory-driven perspective and revisit the classical literature in domain adaptation that first derives target-domain generalization bounds, then learns by directly minimizing a bound-informed objective rather than standard empirical risk alone. In particular, we build on the recent Best-Effort Adaptation (BEA) framework [ 23 ] (detailed in Section 3), and adapt this principle to cross-domain diffusion-policy training for robotic manipulation. Concretely, we cast cross-domain co-training as an importance-reweighting problem with abundant labeled source data and limited labeled target data. The core idea is to reweight source samples to reduce the discrepancy between source and target distributions, measured through the worst-case error over a hypothesis class. This yields a joint optimization over policy parameters and source weights 
+
+that directly minimizes a discrepancy-based bound on target-domain generalization. Applying this BEA-inspired formulation to modern manipulation tasks, however, requires practical adaptations for high-dimensional diffusion policies. To this end, we introduce several implementation enhancements, including scalable discrepancy estimators and stable optimization strategies tailored to sequence prediction [ 18 , 24 – 26 ]. We also extend the method to multi-source settings motivated by realistic data pipelines, where demonstrations may come from different simulators, real-world setups, or embodiments. In this formulation, each source domain is weighted by its estimated relevance to the target, mitigating harmful transfer when sources differ substantially [ 27 –30 ]. We call the resulting method BEACON (Best-Effort Adaptation for Cross-Domain Co-Training, Figure 1) and evaluate it across sim-to-sim, sim-to-real, and multi-source settings, where it consistently improves robustness and data efficiency over strong co-training baselines. Moreover, we show that even though BEACON does not impose an explicit feature-alignment loss, source-target feature alignment naturally emerges as an implicit consequence of discrepancy-aware cross-domain co-training. 
+
+Outline. The rest of the paper is organized as follows. Section 2 reviews related work. Section 3 introduces the theoretical foundations of best-effort adaptation. Section 4 describes our BEACON method. Section 5 presents the experiments and analysis. Section 6 concludes the paper. 22 Related work 
+
+Behavior cloning for robotic manipulation. Behavior cloning reduces policy learning to supervised prediction from demonstration data [ 1, 2, 31 ]. Recent progress has come from both scaling real-robot datasets and improving sequence models for visuomotor control. Large multi-task and multi-domain robot datasets such as BridgeData and RT-1 show that diversity and scale materially improve generalization [ 13 , 14 ]. Simulation benchmarks and datasets such as LIBERO and RoboCasa further expand the space of procedurally generated tasks and environments [ 32 , 33 ]. In parallel, expressive action-sequence models such as ACT and Diffusion Policy show that modeling temporally extended, multimodal actions can improve long-horizon and precision manipulation [ 5, 6]. At the same time, these successes accentuate the data bottleneck: collecting high-quality real demonstrations remains slow and expensive [ 21 ]. Systems such as MimicGen partially alleviate this problem by synthesizing large simulation datasets from a small set of human demonstrations [ 15 ]. We build on this foundation of diffusion-based BC, focusing specifically on how to effectively leverage large-scale cross-domain source demonstrations (e.g., from simulation) alongside a limited dataset of target domain examples. 
+
+Sim-to-Real adaptation and Sim-and-Real co-training. Existing work addresses sim-to-real trans-fer primarily by reducing mismatch between simulated and real environments. Classical approaches such as domain randomization improve robustness by exposing policies to broader variation in simulation [ 8 , 9 , 16 ], while domain adaptation methods explicitly align the two domains at the pixel or feature level [ 17 – 20 , 34 , 35 ]. Recent sim-and-real co-training methods further show that jointly training a single policy on mixed simulated and real demonstrations can be highly effective. The most closely related recent line augments co-training with feature-space alignment objectives, using Unbalanced Optimal Transport (UOT) with temporally aligned sampling to learn a shared, domain-invariant latent space [ 22 ]. Although these methods improve over naive data mixing, they remain centered on visual representation matching. This focus introduces three limitations: (i) it may miss non-visual domain shifts, (ii) it is unclear which features and layers should be aligned, and (iii) it is unclear how to perform feature alignment in the presence of multiple source domains. Our approach offers a complementary paradigm. Rather than focusing solely on latent-space align-ment, we ask which source trajectories should influence target learning. We address this question through importance reweighting, which is agnostic to the type of domain shift, avoids selecting a specific feature layer for alignment, and extends naturally to multi-source settings. 
+
+Sample reweighting and multi-source domain adaptation. Classical theory introduced discrepancy-style measures to characterize domain mismatch and motivate learning algorithms that account for differences between source and target distributions [ 36 , 37 ]. Subsequent work developed task-aware discrepancy notions that depend on the loss and hypothesis class, yielding bounds and algorithms for regression, sample-bias correction, and generalized discrepancy minimization [ 24 , 27 , 38 ]. In parallel, importance-weighting methods estimate source weights from distribution mismatch; these methods are typically two-stage, where weights are determined first, and the predictor is trained afterward [ 39 –41 ]. Multi-source domain adaptation studies the setting where labeled data are available from multiple source distributions [ 27 , 30 ]. Prior work shows that naively combining sources can underperform the best individual source because domain shift exists not only between each source and the target, but also among sources [ 28 – 30 ]. Existing approaches use methods like source-specific alignment, domain aggregation, and learned source weighting to control negative transfer [28, 29, 42]. BEACON follows this discrepancy-based source-weighting direction, particularly the recent Best-Effort Adaptation (BEA) framework [ 23 ], which explicitly assumes limited labeled target-domain data rather than none. Our key contribution is to adapt BEA to modern diffusion-based robot policy learning with practical enhancements for high-dimensional sequence prediction. 
+
+# 3 Problem setting and theoretical foundations 
+
+We study supervised learning over an input–output space X × Y with a source distribution Q and a target distribution P . We observe a labeled source dataset Dsrc = {(xi, y i)}mi=1 ∼ Qm and a labeled target dataset Dtgt = {(xj , y j )}m+nj=m+1 ∼ P n, with typically m ≫ n. Let S = {1, . . . , m } and 
+
+T = {m + 1 , . . . , m + n} denote the source and target index sets. The goal is to learn a hypothesis 
+
+h ∈ H that minimizes the target population loss (i.e., target-domain generalization) 
+
+L(P, h ) = E(x,y )∼P
+
+ℓ(h(x), y ), (1) 3for a bounded loss ℓ : Y × Y → [0 , 1] . Best-Effort Adaptation (BEA) [ 23 ] asks how to use abundant but potentially mismatched source data to improve performance on P , rather than naively mixing all demonstrations with equal weight. 
+
+Source reweighting. The key idea is to assign a nonnegative weight to each training example and learn both the predictor and the weights jointly. Concretely, we introduce a weight vector 
+
+q = ( q1, . . . , q m+n) ∈ Rm+n 
+
+> +
+
+, where each qi ≥ 0 controls the contribution of sample (xi, y i).Intuitively, source examples that are more relevant to the target domain should receive larger weight, while mismatched source examples should be down-weighted. 
+
+Discrepancy measure. To formalize when source data is helpful, BEA uses a discrepancy measure that quantifies domain mismatch in a way that is aligned with both the loss and the hypothesis class. For two labeled distributions P and Q, the one-sided labeled discrepancy is 
+
+dis( P, Q ) := sup 
+
+> h∈H
+
+ E(x,y )∼P [ℓ(h(x), y )] − E(x,y )∼Q[ℓ(h(x), y )]  . (2) Unlike a generic divergence between distributions, this quantity only measures differences that matter for predictors in H under the loss ℓ. At the sample level, BEA also introduces a discrepancy between the learned weighting q and a reference weighting p0. A natural choice for p0 is the target-only empirical distribution, (p0)i = 1 
+
+> n
+
+for i ∈ T and (p0)i = 0 for i ∈ S. This choice reflects the idealized baseline in which, absent any trustworthy source information, one would train only on the target sample. Given this reference, the weighted sample discrepancy is 
+
+dis( q, p0) := sup 
+
+> h∈H
+> m+n
+
+X
+
+> i=1
+
+ qi − (p0)i
+
+ ℓ(h(xi), y i). (3) Intuitively, dis( q, p0) measures how far the q-weighted empirical training objective deviates from the target empirical objective. If this term is small, then optimizing the weighted loss induced by q is a good proxy for optimizing target performance. 
+
+Generalization bound. These quantities enter a discrepancy-based generalization bound due to [23 , Corollary 4], which makes precise the trade-off between fitting the weighted training data and keeping the effective source contribution close to the target domain. 
+
+Theorem 1 (Discrepancy-based generalization bound [ 23 ]) . For any δ > 0, with probability at least 1 − δ over the choice of a source sample Dsrc = {(xi, y i)}mi=1 ∼ Qm and a target sample 
+
+Dtgt = {(xj , y j )}m+nj=m+1 ∼ P n, the following holds simultaneously for all h ∈ H and all weight vectors q ∈ [0 , 1] m+n satisfying ∥q − p0∥1 < 1:
+
+L(P, h ) ≤
+
+> m+n
+
+X
+
+> i=1
+
+qi ℓ(h(xi), y i) + qsrc dis( P, Q ) + dis( q, p0) + 2 Rq(ℓ ◦ H ) + 6 ∥q − p0∥1
+
++
+
+
+
+∥q∥2 + 2 ∥q − p0∥1
+
+ "s 
+
+log log 2
+
+21 − ∥ q − p0∥1
+
++
+
+r log(2 /δ )2
+
+#
+
+, (4) 
+
+where qsrc := P 
+
+> i∈S
+
+qi, dis( P, Q ) is the labeled discrepancy (2) between the source and target distributions, dis( q, p0) is the weighted sample discrepancy (3) between q and the reference weights 
+
+p0, and Rq(ℓ ◦ H ) is the q-weighted Rademacher complexity. 
+
+Theorem 1 makes the role of reweighting transparent. The first term is the weighted empirical loss, so it encourages selecting examples that improve prediction. The second term shows that source data is only useful to the extent that it remains compatible with the target domain: large source mass is penalized when dis( P, Q ) is large. The third term penalizes choices of q whose induced empirical objective deviates too far from the target-only reference p0. Finally, the remaining terms control complexity and suppress degenerate solutions that place too much mass on only a few examples. 
+
+Learning for generalization. Assuming the complexity term Rq(ℓ ◦ H ) can be upper bounded by a norm penalty on h, defining di := dis( P, Q ) 1[i ∈ S], and further upper bounding dis( q, p0) by 
+
+∥q − p0∥1,1 we can transform the right-hand side of (4) into an optimization problem that directly  
+
+> 1BEA [ 23 ] also presents a variant that retains the weighted sample discrepancy term explicitly, yielding a more complex optimization problem. In this paper, we adopt the simplified variant for computational tractability and ease of optimization.
+
+4encourages target-domain generalization 
+
+min  
+
+> h∈H ,q∈[0 ,1] m+n
+> m+n
+
+X
+
+> i=1
+
+qi
+
+ ℓ(h(xi), y i) + di
+
+ + λ∞∥q∥∞∥h∥2 + λ1∥q − p0∥1 + λ2∥q∥22, (5) where λ∞, λ 1, λ 2 ≥ 0 are hyperparameters. In words, the BEA objective (5) jointly learns a predictor and a sample reweighting that: (i) fits the weighted data well, (ii) limits the influence of source data when source and target are discrepant, and (iii) remains anchored to the target empirical distribution. 
+
+# 4 Best-Effort Adaptation for cross-domain policy co-training 
+
+We now instantiate the BEA framework for learning visuomotor robot manipulation policies. We consider behavior cloning from demonstration trajectories collected in a source domain and a target domain. At each decision time t, the policy receives a window of observations xt := ot−H:t, where 
+
+ot−H:t denotes the history of visual observations (and, when available, proprioceptive features) over a horizon of length H. The desired output is a future action chunk yt := at:t+N , where at:t+N denotes an action sequence of horizon N . We learn a policy πθ with the architecture of a Diffusion Policy [ 6], trained by behavior cloning. Accordingly, the hypothesis h ∈ H is replaced by πθ , and the generic loss ℓ(h(xi), y i) is instantiated as the per-example diffusion behavior cloning loss ℓBC (θ; xi, y i).
+
+Consequently, the BEA objective (5) is instantiated as the following policy-learning problem: 
+
+min  
+
+> θ, q∈[0 ,q max ]m+n
+> m+n
+
+X
+
+> i=1
+
+qi
+
+ ℓBC (θ; xi, y i) + λddi
+
+ + γ∥q∥∞R(θ) + λ1∥q − p0∥1 + λ2∥q∥22, (6) where R(θ) is a surrogate complexity penalty for the policy, qmax ≥ 1 relaxes the [0 , 1] box of (5) for optimization stability, and di ≥ 0 is a source-target discrepancy term that penalizes source samples whose contribution is likely to hurt target-domain generalization. For target samples we set di = 0 
+
+for i ∈ T , while for source samples di measures how mismatched sample i is relative to the target domain. We add a scalar λd ≥ 0 to di to allow for tuning. 
+
+Challenges in applying BEA to visuomotor policy learning. Although (6) is a direct instantiation of the BEA objective from Section 3, carrying the original BEA framework over to visuomotor policy learning is far from straightforward. First, the original BEA analysis is developed for bounded supervised losses and hypothesis classes whose complexity can be controlled by relatively simple norm-based quantities. Diffusion Policies, by contrast, are high-capacity sequence models trained with denoising-style objectives, and their optimization and generalization behavior are not well captured by the linear or kernelized regimes for which the original BEA procedures were designed. Second, the original BEA framework solves (5) through full-batch alternating minimization over h
+
+and q. In image-conditioned robot policy learning, however, even a single loss evaluation requires a forward pass through a large diffusion model on high-dimensional observation histories. At the scales relevant to our setting, both policy updates and weight updates must therefore be carried out stochastically over minibatches rather than through full-batch optimization. Third, the estimation of discrepancy term di in BEA relies on optimization over relatively simple hypothesis classes with full access to labeled data. In our setting, the inputs are RGB observation windows, the outputs are action chunks, and the predictor is a deep generative policy. Solving the original discrepancy estimation problem directly in this space would be computationally prohibitive and, more importantly, would not align well with the learned representation geometry of modern visuomotor policies. These mismatches motivate BEACON: a practical adaptation of BEA for high-dimensional robot policy learning that preserves the structure of the bound-informed objective while replacing the parts of the original framework that do not scale to diffusion-based visuomotor control. 
+
+4.1 Practical adaptation of BEA: the BEACON algorithm Complexity regularization via optimizer-compatible weight decay. In the original BEA objective (5) , the capacity control term has the form λ∞∥q∥∞∥h∥2. For diffusion policies, we replace this by 
+
+γ∥q∥∞R(θ) with R(θ) := 12 ∥θ∥22, where γ is the AdamW weight-decay coefficient. This yields a practical surrogate that can be implemented directly in standard policy optimization while preserving the interpretation that larger maximal sample weights should incur stronger regularization. 5Instance-level discrepancy instead of domain-level discrepancy. A direct instantiation of BEA would assign the same discrepancy penalty di = dis( P, Q )1[i ∈ S] to every source sample. In robot manipulation, however, source demonstrations are highly heterogeneous: even within one simulator, some trajectories are visually and behaviorally close to the target domain, while others are clear outliers. We therefore replace the domain-level penalty by an instance-level discrepancy score di.Our default estimator computes di in the policy’s vision-encoder embedding space using k-nearest neighbors. Specifically, for each source sample xi, we measure the average Euclidean distance from its embedding to its k nearest target embeddings, normalized by the mean within-target k-NN distance. Thus, di ≈ 1 indicates that a source window lies within the typical spread of the target data, while di ≫ 1 indicates a mismatched or outlying source sample. Because these embeddings depend on the current policy encoder, the discrepancy scores are recomputed periodically during training, allowing the weighting to co-adapt with the learned representation. We also consider two alternatives as ablations. The first is a localized labeled discrepancy estimator closer in spirit to BEA, which maximizes empirical discrepancy over a local policy class around a target-trained reference model. The second is a domain-classifier-based estimator that fits a binary discriminator on the encoder features and uses its per-source posterior as an instance-level mismatch signal. Implementation details are provided in the appendix. These variants help understand the role of discrepancy estimation, but our default k-NN estimator is the most scalable and stable in practice. 
+
+Stochastic alternating optimization over policy and weights. We optimize (6) by alternating stochastic updates of θ and q. For a minibatch B ⊆ { 1, . . . , m + n}, we first compute the per-example loss ℓi(θ) := ℓBC (θ; xi, y i) and then update the weights through projected subgradient: 
+
+gi = ℓi(θ) + λddi + γR (θ) 1[qi = ∥q∥∞]
+
+| arg max j qj | + λ1 sign  qi − (p0)i
+
+ + 2 λ2qi, i ∈ B, (7) where the third term is the (uniform-over-arg max ) subgradient of ∥q∥∞. We update each weight via 
+
+qi ← clip [0 ,q max ](qi − ηq gi), followed by a target-weight floor and a global sum-budget projection. The policy is then updated with an AdamW step on the weighted minibatch loss 1
+
+> |B|
+
+P 
+
+> i∈B
+
+qi ℓi(θ).This stochastic alternation is the practical analogue of BEA’s joint optimization. As an ablation, we also implement a more BEA-faithful convex inner update for q that solves the weight subproblem at fixed θ and auxiliary variable ∥q∥∞. We found that the projected-subgradient update is simpler and better suited to large-scale training. More details are provided in the appendix. 
+
+Extension to multi-source co-training. In many realistic pipelines, the source data does not come from a single homogeneous domain, but from multiple simulators, scene configurations, embodiments, or prior datasets. Pooling them into one source distribution can amplify negative transfer because mismatch exists both between each source and the target and among the source domains themselves. To address this, we factor the source weight into two levels: a domain-level weight w ∈ ∆K−1
+
+over K source domains, and a within-domain nonnegative weight eq. If sample i ∈ S comes from source domain s(i), we define qi = ws(i) eqi, i ∈ S, and qj = eqj , j ∈ T . This yields a multi-source BEACON objective in which w controls which source domains are useful globally, while eq suppresses mismatched trajectories within each source. Optimization alternates among a simplex-projected update for w, a nonnegative update for eq, and a policy update for θ.
+
+# 5 Experiments 
+
+The experiments are designed to substantiate five claims about BEACON. (i) By optimizing a theoretically grounded discrepancy-based generalization bound, BEACON yields stronger cross-domain policies than fixed-mixture co-training and feature-alignment baselines, in both sim-to-sim and sim-to-real settings. (ii) BEACON learns policies that generalize to out-of-distribution task instances. (iii) Multi-source BEACON effectively combines heterogeneous source domains. (iv) 
+
+Feature alignment, although not explicitly encouraged by BEACON, naturally emerges as a byproduct of the discrepancy-based learning objective. (v) Increasing the number of target demonstrations amplifies, rather than replaces, the benefit of source reweighting. 6Figure 2: Experimental setup. The source domain is simulated with the default setting in robosuite; Target-T: changes the texture of the table; Target-T+V: changes the texture and the camera viewpoint. The real domain has both visual and physical gaps compared to the simulation domain. 
+
+5.1 Experimental setup 
+
+We study image-based visuomotor manipulation on a Franka Emika Panda robot arm across three tasks of increasing precision requirements: block stacking , mug cleanup , and threading (Figure 2). Tasks are evaluated in two cross-domain regimes: a controlled sim-to-sim setting, in which the source and target are both simulated but differ in their visual observation distributions, and a sim-to-real 
+
+setting, in which the target is collected on the physical robot with both visual and physical gaps. 
+
+Visual gaps. The policy receives RGB observations resized to 96 × 96 together with end-effector proprioception, and the visual stream is encoded by a ResNet-18 backbone shared across domains. In simulation we instantiate two visual gaps between source and target: a texture gap, in which scene and object textures differ while the camera pose is held fixed, and a texture + viewpoint gap, which additionally perturbs the camera extrinsics. The sim-to-real gap is the natural mismatch between rendered simulation imagery and real RGB frames captured by a fixed camera observing the physical workspace, which subsumes background and texture differences. 
+
+Learning domains. All simulated demonstrations are generated in robosuite [ 43 ] via MimicGen [ 15 ], which expands a small set of human seed demonstrations into a large source dataset. For every task we use a source set of size m = 500 . The target set has size n = 20 in the sim-to-sim and n = 40 in the sim-to-real tasks. The environment with texture gap is used as the second source domain in the multi-source setting, where each source constitutes 50% of the total source data. 
+
+Tasks. For block stacking , both cubes are independently randomized over a square region of the workspace. For mug cleanup , the mug’s position and orientation are randomized over a rectangular region. For threading , the thread’s position and orientation are randomized over a rectangular region. To probe extrapolation, we additionally run an out-of-distribution (OOD) evaluation on block stacking 
+
+and mug cleanup : target demonstrations are collected with objects randomized over designated regions, while evaluation initial states are sampled exclusively from areas different from the target demonstrations. More details on task objectives and evaluation criteria are provided in the appendix. 
+
+Baselines. We compare BEACON against four baselines that share the same Diffusion Policy [ 6]backbone, observation encoder, and target dataset, and differ only in how source data is incorporated. 
+
+Target-Only trains on Dtgt alone. Co-Training performs joint training on Dsrc ∪ D tgt with a fixed source–target mixing ratio [ 21 ]. MMD [19 ] augments co-training with a maximum mean discrep-ancy feature-alignment loss between source and target encoder activations. UOT [22 ] replaces the alignment loss with unbalanced optimal transport with temporally aligned sampling. 7Table 1: Sim-to-sim results. T represents texture gap, and T+V represents texture + viewpoint gap. For block stacking , there are two evaluation criteria, R: success if cube is stacked at any frame, S: success if cube is stacked for at least 5 frames or at the last frame. Average accounts for the R criteria.                                                                          
+
+> Block Stacking Mug Cleanup Threading Average
+> Method T (R) T (S) T+V (R) T+V (S) TT+V TT+V TT+V Source-Only 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 Target-Only 0.16 0.10 0.23 0.20 0.16 0.12 0.15 0.16 0.16 0.13 Co-Training 0.33 0.25 0.26 0.16 0.29 0.15 0.33 0.14 0.32 0.18 MMD 0.87 0.72 0.67 0.54 0.47 0.29 0.47 0.28 0.60 0.41 UOT 0.68 0.48 0.52 0.38 0.46 0.23 0.41 0.22 0.52 0.32
+> BEACON 0.89 0.77 0.73 0.60 0.51 0.29 0.53 0.33 0.64 0.45
+
+Table 2: Sim-to-real results. P is used to represent the physical and visual gaps of the real domain. T represents the texture gap. T-OOD represents the out-of-distribution evaluation results.                                                                   
+
+> Block Stacking Mug Cleanup Average
+> Method P (R) P (S) P-OOD (R) P-OOD (S) PP-OOD PP-OOD Source-Only 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 Target-Only 0.05 0.00 0.00 0.00 0.15 0.00 0.10 0.00 Co-Training 0.40 0.25 0.15 0.15 0.58 0.18 0.49 0.17 MMD 0.55 0.40 0.15 0.05 0.68 0.20 0.62 0.18 UOT 0.45 0.30 0.25 0.20 0.70 0.33 0.58 0.29
+> BEACON 0.75 0.55 0.45 0.35 0.78 0.53 0.77 0.49
+> MS-BEACON 0.85 0.55 0.45 0.45 0.80 0.60 0.83 0.53
+
+5.2 Generalization results BEACON improves sim-to-sim transfer. Table 1 shows that BEACON consistently outperforms the baselines. Our method achieves the highest average success rate of 0.64 in the texture gap and 0.45 in the texture + viewpoint gap over tasks that involve different motion patterns. Notably, in 
+
+block stacking , BEACON shows more robust performance when switched to the stricter S criterion; average performance only dropped by 15.6%, compared to 18.3% and 28.2% in MMD and UOT ,respectively. This pattern is important because feature-alignment baselines already perform well in this controlled setting; BEACON still improves over them through selecting source demonstrations that better shape the target policy instead of forcing all source and target features to match uniformly. 
+
+BEACON delivers the strongest sim-to-real transfer. Table 2 shows that Target-Only policies nearly fail, and hence the limited real demonstrations are insufficient by themselves. MMD and 
+
+UOT baselines show limited improvements, and the success rates drop sharply in OOD scenarios. BEACON closes much more of this gap, reaching the strongest single-source sim-to-real performance across all tasks. These results support the central mechanism of the method, that is, when the gap includes both visual mismatch and unmodeled physical differences, target performance depends less on using more source data indiscriminately and more on selectively retaining the source trajectories that are compatible with the real target distribution. 
+
+BEACON generalizes beyond the target states seen during training. BEACON remains robust when evaluation states move outside the region covered by the target demonstrations. UOT also shows reasonable OOD behavior, suggesting that transport-based matching can help preserve some useful cross-domain structure under distribution shift. In contrast, MMD experiences the largest degradation and even falls below Co-Training . This failure mode is consistent with the limitation of coarse feature alignment, which can collapse source and target representations without preserving the task-relevant geometry needed for precise manipulation. 
+
+MS-BEACON further strengthens transfer when source data are heterogeneous. The multi-source results in Table 2 show that adding visually diverse source domains is most useful when the learner can control how each source contributes. Compared with single-source, MS-BEACON improves sim-to-real stacking performance and maintains stronger OOD performance, indicating that heterogeneous simulation data can make the learned policy both more accurate and more robust. This 8Figure 3: UMAP visualization of latent features ( block stacking ). We visualize latent features of the image alone as well as all observations (visual + proprioception) after the encoder trunk. Feature alignment naturally emerges in BEACON as a byproduct of the discrepancy-based learning objective. supports the interpretation that diverse visual gaps expose the policy to a broader set of variations, while the domain and trajectory-level weights prevent this diversity from causing negative transfer. 
+
+BEACON learns target-aligned representations without an explicit alignment loss. Fig-ure 3 shows that BEACON brings source and target demonstrations close in latent space even though its objective contains no direct feature-matching term. This alignment emerges from the reweighting dynamics, in which source samples close to the target in the policy embed-ding space receive larger influence on the behavior-cloning update, while mismatched samples are suppressed, so the encoder is trained on source-target neighborhoods that are both visu-ally compatible and useful for the task. The result is different from imposing a global align-ment penalty. Rather than forcing the entire source distribution to overlap with the target, 
+
+Figure 4: Target data scaling. The target per-formance shows improvement with additional target demonstrations in the sim-to-sim block stacking setting. BEACON selectively preserves the source samples that support target behavior, which helps explain why it can obtain aligned features while avoiding the performance degradation seen when coarse align-ment disrupts task-relevant structure. In addition, this shows that even when feature alignment is not the pri-mary objective for learning, it can arise as an implicit result of optimizing a discrepancy-based objective. 
+
+Increasing target demonstrations amplifies, rather than replaces, the benefit of source reweighting. 
+
+We test the effect of scaling up the number of target demonstrations on BEACON’s performance by us-ing 20, 40, 60, and 80 target demonstrations in the sim-to-sim block stacking setting. Figure 4 shows that the performance improves with additional target demonstrations, indicating that source reweighting amplifies the benefit of more target demonstrations. 
+
+# 6 Conclusion and limitations 
+
+We presented BEACON, a theory-driven framework that recasts cross-domain co-training of generative robot policies as a discrepancy-aware importance-reweighting problem, jointly learning a diffusion policy and per-sample source weights that directly minimize a target-domain generalization bound. We introduced an instance-level discrepancy es-timator computed in the policy’s own embedding space, a stochastic alternating optimization over policy parameters and weights, and a two-level extension that arbitrates among heterogeneous source domains. Across sim-to-sim, sim-to-real, and multi-source experiments, BEACON consistently outperforms target-only, fixed-ratio co-training, and feature-alignment baselines, and it does so while 9inducing source–target feature alignment as an implicit result of the bound-informed objective rather than an externally imposed loss. The key limitation of our work is that we only consider quasi-static interactions in our experiments. Dynamic interactions can impose larger visual and action gaps between domains. Also, our work builds on the assumption that real data is scarce; while in reality, there might be heterogeneous but considerably larger real data available (e.g. data collected with different real-world setups, lighting conditions), which can be used as a source domain in MS-BEACON. Nevertheless, our results suggest that importance reweighting is a more fundamental design lever for cross-domain robot learning than the choice of where in the network to align representations, and that grounding this lever in generalization theory yields concrete gains in robustness and data efficiency. 10 References 
+
+[1] Dean A. Pomerleau. ALVINN: An autonomous land vehicle in a neural network. In Advances in Neural Information Processing Systems , volume 1, pages 305–313, 1989. [2] Aude Billard, Sylvain Calinon, Rüdiger Dillmann, and Stefan Schaal. Robot programming by demonstration. In Springer Handbook of Robotics , pages 1371–1394. Springer, 2008. [3] Han Qi, Changhe Chen, and Heng Yang. Compose by focus: Scene graph-based atomic skills. In IEEE International Conference on Robotics and Automation (ICRA) , 2026. [4] Han Qi, Haocheng Yin, Aris Zhu, Yilun Du, and Heng Yang. Inference-time enhancement of generative robot policies via predictive world modeling. In IEEE Robotics and Automation Letters (RAL) , 2026. [5] Tony Z. Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained bimanual manipulation with low-cost hardware. In Robotics: Science and Systems , 2023. [6] Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. In Robotics: Science and Systems , 2023. doi: 10.15607/RSS.2023.XIX.026. [7] Andrei A. Rusu, Mel Vecerik, Thomas Rothörl, Nicolas Heess, Razvan Pascanu, and Raia Hadsell. Sim-to-real robot learning from pixels with progressive nets. In Conference on Robot Learning , pages 262–270. PMLR, 2017. [8] Josh Tobin, Rachel Fong, Alex Ray, Jonas Schneider, Wojciech Zaremba, and Pieter Abbeel. Domain randomization for transferring deep neural networks from simulation to the real world. In IEEE/RSJ International Conference on Intelligent Robots and Systems , pages 23–30, 2017. [9] Xue Bin Peng, Marcin Andrychowicz, Wojciech Zaremba, and Pieter Abbeel. Sim-to-real transfer of robotic control with dynamics randomization. In IEEE International Conference on Robotics and Automation , pages 1–8, 2018. [10] Shikhar Bahl, Abhinav Gupta, and Deepak Pathak. Human-to-robot imitation in the wild. arXiv preprint arXiv:2207.09450 , 2022. [11] Simar Kareer, Dhruv Patel, Ryan Punamiya, Pranay Mathur, Shuo Cheng, Chen Wang, Judy Hoffman, and Danfei Xu. Egomimic: Scaling imitation learning via egocentric video. In 2025 IEEE International Conference on Robotics and Automation (ICRA) , pages 13226–13233. IEEE, 2025. [12] Ruijie Zheng, Dantong Niu, Yuqi Xie, Jing Wang, Mengda Xu, Yunfan Jiang, Fernando Castañeda, Fengyuan Hu, You Liang Tan, Letian Fu, et al. Egoscale: Scaling dexterous manipulation with diverse egocentric human data. arXiv preprint arXiv:2602.16710 , 2026. [13] Frederik Ebert, Yanlai Yang, Karl Schmeckpeper, Bernadette Bucher, Georgios Georgakis, Kostas Daniilidis, Chelsea Finn, and Sergey Levine. Bridge data: Boosting generalization of robotic skills with cross-domain datasets. arXiv preprint arXiv:2109.13396 , 2021. [14] Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Joseph Dabis, Chelsea Finn, Keerthana Gopalakrishnan, Karol Hausman, Alex Herzog, Jasmine Hsu, Julian Ibarz, Brian Ichter, Alex Irpan, Tomas Jackson, Sally Jesmonth, Nikhil J. Joshi, Ryan Julian, Dmitry Kalashnikov, Yuheng Kuang, Isabel Leal, Kuang-Huei Lee, Sergey Levine, Yao Lu, Utsav Malla, Deeksha Manjunath, Igor Mordatch, Ofir Nachum, Carolina Parada, Jodilyn Peralta, Emily Perez, Karl Pertsch, Jornell Quiambao, Kanishka Rao, Michael Ryoo, Grecia Salazar, Pannag Sanketi, Kevin Sayed, Jaspiar Singh, Sumedh Sontakke, Austin Stone, Clayton Tan, Huong Tran, Vincent Vanhoucke, Steve Vega, Quan Vuong, Fei Xia, Peng Xu, Sichun Xu, Tianhe Yu, and Brianna Zitkovich. RT-1: Robotics transformer for real-world control at scale. In Robotics: Science and Systems , 2023. [15] Ajay Mandlekar, Soroush Nasiriany, Bowen Wen, Iretiayo Akinola, Yashraj Narang, Linxi Fan, Yuke Zhu, and Dieter Fox. MimicGen: A data generation system for scalable robot learning using human demonstrations. In Conference on Robot Learning , volume 229 of Proceedings of Machine Learning Research , pages 1820–1864. PMLR, 2023. 11 [16] Fereshteh Sadeghi and Sergey Levine. CAD2RL: Real single-image flight without a single real image. In Robotics: Science and Systems , 2017. [17] Konstantinos Bousmalis, Nathan Silberman, David Dohan, Dumitru Erhan, and Dilip Krishnan. Unsupervised pixel-level domain adaptation with generative adversarial networks. In IEEE Conference on Computer Vision and Pattern Recognition , pages 3722–3731, 2017. [18] Yaroslav Ganin, Evgeniya Ustinova, Hana Ajakan, Pascal Germain, Hugo Larochelle, François Laviolette, Mario Marchand, and Victor Lempitsky. Domain-adversarial training of neural networks. Journal of Machine Learning Research , 17(59):1–35, 2016. [19] Mingsheng Long, Yue Cao, Jianmin Wang, and Michael I. Jordan. Learning transferable features with deep adaptation networks. In International Conference on Machine Learning ,pages 97–105. PMLR, 2015. [20] Nicolas Courty, Rémi Flamary, Devis Tuia, and Alain Rakotomamonjy. Optimal transport for domain adaptation. IEEE Transactions on Pattern Analysis and Machine Intelligence , 39(9): 1853–1865, 2017. [21] Abhiram Maddukuri, Zhenyu Jiang, Lawrence Yunliang Chen, Soroush Nasiriany, Yuqi Xie, Yu Fang, Wenqi Huang, Zu Wang, Zhenjia Xu, Nikita Chernyadev, Scott Reed, Ken Goldberg, Ajay Mandlekar, Linxi Fan, and Yuke Zhu. Sim-and-real co-training: A simple recipe for vision-based robotic manipulation. Robotics: Science and Systems , 2025. [22] Shuo Cheng, Liqian Ma, Zhenyang Chen, Ajay Mandlekar, Caelan Garrett, and Danfei Xu. Generalizable domain adaptation for sim-and-real policy co-training. In Advances in Neural Information Processing Systems , 2025. [23] Pranjal Awasthi, Corinna Cortes, and Mehryar Mohri. Best-effort adaptation. arXiv preprint arXiv:2305.05816 , 2023. [24] Corinna Cortes, Mehryar Mohri, and Andrés Muñoz Medina. Adaptation based on generalized discrepancy. Journal of Machine Learning Research , 20(1):1–30, 2019. [25] Yuchen Zhang, Mingsheng Long, Jianmin Wang, and Michael I. Jordan. On localized discrep-ancy for domain adaptation. arXiv preprint arXiv:2008.06242 , 2020. [26] Thomas M. Cover and Peter E. Hart. Nearest neighbor pattern classification. IEEE Transactions on Information Theory , 13(1):21–27, 1967. [27] Yishay Mansour, Mehryar Mohri, and Afshin Rostamizadeh. Domain adaptation with multiple sources. In Advances in Neural Information Processing Systems , volume 21, 2009. [28] Han Zhao, Shanghang Zhang, Guanhang Wu, José M. F. Moura, João P. Costeira, and Geoffrey J. Gordon. Adversarial multiple source domain adaptation. In Advances in Neural Information Processing Systems , volume 31, 2018. [29] Junfeng Wen, Russell Greiner, and Dale Schuurmans. Domain aggregation networks for multi-source domain adaptation. In International Conference on Machine Learning , pages 10214–10224. PMLR, 2020. [30] Sicheng Zhao, Hui Chen, Hu Huang, Pengfei Xu, and Guiguang Ding. More is better: Deep domain adaptation with multiple sources. In International Joint Conference on Artificial Intelligence , pages 8359–8367, 2024. [31] Han Qi, Haocheng Yin, and Heng Yang. Control-oriented clustering of visual latent representa-tion. In International Conference on Learning Representations (ICLR) , 2025. [32] Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qiang Liu, Yuke Zhu, and Peter Stone. LIBERO: Benchmarking knowledge transfer for lifelong robot learning. arXiv preprint arXiv:2306.03310 , 2023. [33] Soroush Nasiriany, Abhiram Maddukuri, Lance Zhang, Adeet Parikh, Aaron Lo, Abhishek Joshi, Ajay Mandlekar, and Yuke Zhu. RoboCasa: Large-scale simulation of everyday tasks for generalist robots. In Robotics: Science and Systems , 2024. 12 [34] Judy Hoffman, Eric Tzeng, Taesung Park, Jun-Yan Zhu, Phillip Isola, Kate Saenko, Alexei A. Efros, and Trevor Darrell. CyCADA: Cycle-consistent adversarial domain adaptation. In 
+
+International Conference on Machine Learning , pages 1989–1998. PMLR, 2018. [35] Rachel Luo, Heng Yang, Michael Watson, Apoorva Sharma, Sushant Veer, Edward Schmerling, and Marco Pavone. Sim2val: Leveraging correlation across test platforms for variance-reduced metric estimation. In Conference on Robot Learning (CoRL) , 2025. [36] Daniel Kifer, Shai Ben-David, and Johannes Gehrke. Detecting change in data streams. In 
+
+International Conference on Very Large Data Bases , pages 180–191, 2004. [37] Shai Ben-David, John Blitzer, Koby Crammer, Alex Kulesza, Fernando Pereira, and Jen-nifer Wortman Vaughan. A theory of learning from different domains. Machine Learning , 79 (1–2):151–175, 2010. [38] Corinna Cortes and Mehryar Mohri. Domain adaptation and sample bias correction theory and algorithm for regression. Theoretical Computer Science , 519:103–126, 2014. [39] Jiayuan Huang, Arthur Gretton, Karsten M. Borgwardt, Bernhard Schölkopf, and Alex J. Smola. Correcting sample selection bias by unlabeled data. In Advances in Neural Information Processing Systems , volume 19, 2007. [40] Masashi Sugiyama, Shinichi Nakajima, Hisashi Kashima, Paul von Bünau, and Motoaki Kawanabe. Direct importance estimation with model selection and its application to covariate shift adaptation. In Advances in Neural Information Processing Systems , volume 20, 2007. [41] Corinna Cortes, Yishay Mansour, and Mehryar Mohri. Learning bounds for importance weighting. In Advances in Neural Information Processing Systems , volume 23, 2010. [42] Xingchao Peng, Qinxun Bai, Xide Xia, Zijun Huang, Kate Saenko, and Bo Wang. Moment matching for multi-source domain adaptation. In IEEE/CVF International Conference on Computer Vision , pages 1406–1415, 2019. [43] Yuke Zhu, Josiah Wong, Ajay Mandlekar, Roberto Martín-Martín, Abhishek Joshi, Kevin Lin, Soroush Nasiriany, and Yifeng Zhu. robosuite: A modular simulation framework and benchmark for robot learning. arXiv preprint arXiv:2009.12293 , 2020. 13 Figure A1: Object placement range for OOD evaluation. The green region shows the placement range for source demonstrations; the blue region shows the placement range for target demonstrations, and the red regions are the OOD evaluation regions. 
+
+# A Task setups 
+
+We conduct comprehensive sim-to-sim, sim-to-real, and multi-source experiments on a carefully selected set of tasks that involve different motion patterns. The trained sim-to-sim and sim-to-real policies are evaluated with 100 and 20 randomly sampled initial states, respectively. The initial state for different methods on the same task is kept consistent to ensure fair comparison. Here is the description of each task’s objective, and success criteria. 
+
+Block stacking: grasp the smaller cube (A) and stack it on the larger one (B). Both cubes’ (x, y )
+
+positions are independently randomized over a square region; OOD evaluation uses a disjoint region shown in Figure A1. The task is considered successful when cube A is stacked on cube B; under the strict success criteria, the task is considered successful if cube A is stacked on cube B for at least 5 frames or at the last frame. 
+
+Mug cleanup: drag and open the drawer, pick up a mug and place it upright inside the drawer, and then close the drawer. The mug’s (x, y ) positions are randomized over a rectangular region; OOD evaluation uses a spatially disjoint region. The task is considered successful when the mug is inside the drawer, upright, and the drawer is closed. If the mug is not upright, or the drawer is not completely 
+
+closed, the task is considered partially successful, hence counting as half a point toward the success rate. 
+
+Threading: grasp a thin rod/thread and insert it through a small receptacle, requiring sub-centimeter alignment. The rod’s (x, y ) and yaw are randomized over a rectangular region. The task is considered successful when the rod/thread is inserted through the receptacle. 
+
+# B Algorithm and training details 
+
+This section describes how BEACON is implemented and trained in practice. We start with the single-source training loop (Section B.1), then detail the k-nearest-neighbor discrepancy estimator that supplies the per-sample di values (Section B.2), and finally describe the multi-source extension MS-BEACON (Section B.3). Implementation-level choices and default hyperparameters appear in Section B.4. 
+
+B.1 Single-source training loop 
+
+The objective in (6) is jointly nonconvex in (θ, q): it is convex in q for fixed θ but nonconvex in θ for fixed q because ℓBC is the diffusion behavior-cloning loss of a deep policy. We therefore optimize 14 it by alternating two phases per outer epoch (Algorithm A1). The q-phase fixes θ and takes one sweep of projected subgradient steps over q, followed by a single global projection that enforces the box and sum constraints on the weights. The h-phase fixes q and takes a configurable number of minibatch steps on the q-weighted policy loss. Decoupled weight decay is rescaled to γ ∥q∥∞
+
+during the h-phase, which exactly realizes the capacity term γ ∥q∥∞ R(θ) in (6) as built-in optimizer regularization without an explicit gradient through R(θ).
+
+Algorithm A1 BEACON: single-source training loop 
+
+Require: Combined dataset D with source/target indices S, T ; policy πθ ; coefficients 
+
+(λd, λ 1, λ 2, γ, α ); step sizes (ηq , η θ ); bounds [qi, q max ]; q-refresh period Kq ; h-steps per epoch 
+
+Sh; epochs E. 
+
+> 1:
+
+Initialize θ and qi ← p0,i for all i ∈ S ∪ T . 
+
+> 2:
+
+for e = 1 , . . . , E do  
+
+> 3:
+
+if e mod Kq = 0 then  
+
+> 4:
+
+Refresh {di}i∈S via Algorithm A2.  
+
+> 5:
+
+for each minibatch B ⊂ D in a sequential sweep do  
+
+> 6:
+
+Evaluate {ℓi(θ)}i∈B (no backprop).  
+
+> 7:
+
+for i ∈ B do  
+
+> 8:
+
+gi ← ℓi + λddi + γR (θ) 1[qi = ∥q∥∞]
+
+arg max j qj
+
++ λ1 sign( qi − p0,i ) + 2 λ2qi ▷ cf. (7)  
+
+> 9:
+
+qi ← clip [qi, q max ]
+
+ qi − ηq gi
+
+ 
+
+> 10:
+
+end for  
+
+> 11:
+
+end for  
+
+> 12:
+
+Project q onto {qi ∈ [qi, q max ], P 
+
+> i
+
+qi = n + αm } by bisection.  
+
+> 13:
+
+end if  
+
+> 14:
+
+for s = 1 , . . . , S h do  
+
+> 15:
+
+Sample shuffled minibatch B; θ ← AdamW  θ, ∇θ 1
+
+> |B|
+
+P 
+
+> i∈B
+
+qi ℓi(θ); ηθ
+
+. 
+
+> 16:
+
+end for  
+
+> 17:
+
+end for  
+
+> 18:
+
+return θ.
+
+B.2 Per-sample k-NN discrepancy estimator 
+
+We instantiate the source–target discrepancy di used in (6) as a per-sample k-nearest-neighbor distance in the embedding space of the policy’s vision encoder ϕθ , with self-normalization by the within-target spread (Algorithm A2). The normalization makes the scale of di approximately invariant to the absolute geometry of the embedding space. Because ϕθ co-evolves with the policy, we recompute 
+
+{di}i∈S at the beginning of every q-update phase (line 4 of Algorithm A1); when the target sample is small ( n < k ), the effective neighborhood size collapses to keff = min( k, n ).
+
+Algorithm A2 Per-sample k-NN discrepancy in policy embedding space 
+
+Require: Inputs {xi}i∈S∪T ; encoder ϕθ ; neighbors k (with keff =min( k, n )).  
+
+> 1:
+
+zi ← ϕθ (xi) for all i ∈ S ∪ T ▷ single forward pass through ϕθ 
+
+> 2:
+
+Z ← mean keff -NN distance among target embeddings {zj }j∈T . 
+
+> 3:
+
+for i ∈ S do  
+
+> 4:
+
+di ←  mean distance from zi to its keff nearest target embeddings  / Z . 
+
+> 5:
+
+end for  
+
+> 6:
+
+return {di}i∈S .
+
+B.3 Multi-source training loop 
+
+For multi-source training we factor the per-sample weight as qi = ws(i) eqi for i ∈ S and qj = eqj for 
+
+j ∈ T , where w ∈ ∆K−1 is the simplex-constrained vector of source-domain weights and eq is the nonnegative within-source/target weight vector. The multi-source objective augments (6) with an 15 additional L1/L 2 regularizer on w around a reference w0:
+
+min   
+
+> θ, w∈∆K−1,eq≥0
+
+Fsingle 
+
+ θ, q(w, eq) + ρ1∥w − w0∥1 + ρ2∥w∥22, (8) where Fsingle is the single-source BEACON objective (6) evaluated on the composite weights 
+
+q(w, eq). This induces three blocks of variables that we update in a fixed order per epoch (Algo-rithm A3): a w-step that uses a single full-dataset gradient followed by Euclidean projection onto 
+
+∆K−1; a eq-step that takes one minibatch sweep of projected subgradient on the within-source weights and a separate update on the target weights; and a final joint projection of the composite vector 
+
+q onto the box-and-sum constraint set, which is then split back into eq via the change of variables above. The h-step is identical to the single-source case but uses the composite weights qi = ws(i) eqi
+
+when forming the weighted minibatch loss. The capacity term γ ∥q∥∞ R(θ) enters only through the 
+
+h-step’s optimizer-level weight decay, mirroring Algorithm A1; the eq- and w-steps therefore omit the 
+
+arg max indicator term and rely on their respective regularizers (λ1, λ 2) and (ρ1, ρ 2).
+
+Algorithm A3 MS-BEACON: multi-source training loop 
+
+Require: K source datasets {D src ,k } with assignment s : S → { 1, . . . , K }; target Dtgt ; reference 
+
+w0 = (1 /K )1; domain regularizers (ρ1, ρ 2); step sizes (ηw, η T ); remaining hyperparameters as in Algorithm A1.  
+
+> 1:
+
+Initialize θ, wk ← 1/K , and eq from p0; let qi = ws(i) eqi for i ∈ S and qj = eqj for j ∈ T . 
+
+> 2:
+
+for e = 1 , . . . , E do  
+
+> 3:
+
+if e mod Kq = 0 then  
+
+> 4:
+
+Refresh {di}i∈S via Algorithm A2; collect {ℓi(θ)}i∈S∪T in one sequential sweep of D. 
+
+> 5:
+
+w-step: w ← Π∆K−1
+
+ w − ηw ∇wF, where ∇wF is the closed-form gradient of (8) in 
+
+w (with the arg max capacity term excluded; cf. Algorithm A1).  
+
+> 6:
+
+eq-step: for each minibatch B in a second sequential sweep of D, take a projected-subgradient step on eqi (i ∈ B ∩ S, step size ηq ) and eqj (j ∈ B ∩ T , step size ηT ) using the per-sample subgradients of (8) under the change of variables q = weq. 
+
+> 7:
+
+Joint projection: form q and project onto the box-and-sum set (Algorithm A1), then read back eqi = qi/w s(i) for i ∈ S and eqj = qj for j ∈ T . 
+
+> 8:
+
+end if  
+
+> 9:
+
+h-step: run the h-update of Algorithm A1 with composite weights qi = ws(i) eqi (i ∈ S) and 
+
+qj = eqj (j ∈ T ).  
+
+> 10:
+
+end for  
+
+> 11:
+
+return θ.
+
+B.4 Implementation notes and essential hyperparameters 
+
+The policy backbone, optimizer, and learning-rate schedule follow the public Diffusion Policy im-plementation [ 6 ] and are kept identical across all baselines and BEACON variants. The BEA-CON-specific knobs that matter most in practice are the loss-coefficient triple (λ1, λ 2, λ d) ≈
+
+(10 −2, 10 −2, 10 −1), the per-sample upper bound qmax ≈ 5 together with the target floor qmin  
+
+> T
+
+∈{0.05 , 0.10 } that prevents target weights from collapsing, the sum budget α ∈ [0 .4, 0.5] in P 
+
+> i
+
+qi = n + αm , the k-NN neighborhood k ∈ { 4, 5, 6}, and the q-step size ηq = 10 −2. We use Kq = 1 (refresh q every epoch) throughout. For MS-BEACON the additional knobs are the source-level regularizers (ρ1, ρ 2) ≈ (10 −2, 10 −2) and the w-step size ηw ∈ [10 −2, 10 −1]. Sensitivity around these defaults is reported in Section D. 
+
+# C Alternative q-update and discrepancy estimators 
+
+The default BEACON loop in Algorithm A1 couples a minibatch projected subgradient on q with a 
+
+k-NN discrepancy estimator. We retain one alternative for q and two alternatives for the discrepancy term, all of which we ablate against the defaults. 
+
+Full-convex inner solve for q. A solver closer to Awasthi et al. [23] ’s alternating minimization solves the q subproblem in closed form for fixed θ. Treating t = ∥q∥∞ as auxiliary, the inner problem at fixed (θ, t ) becomes separable across coordinates and admits the closed-form solution 
+
+q⋆i (t) = clip [0 ,t ]
+
+
+
+p0,i + Sλ1/(2 λ2)
+
+ zi(θ) − p0,i 
+
+
+
+, zi(θ) := − ℓi(θ) + λd di
+
+2λ2
+
+, (9) 16 Table 3: Average target success rate of the implementation variants of BEACON obtained by combining the two q-update strategies (rows) with the three discrepancy estimators (columns) discussed in this appendix. The bolded entry corresponds to the default BEACON configuration used in the main experiments of Section 5. Task used is block stacking with texture + viewpoint gap .           
+
+> Localized labeled k-NN Classifier
+> q-update discrepancy discrepancy discrepancy
+> Full-convex inner solver 0.58 0.52 0.54 Stochastic update (default) 0.58 0.60 0.58
+
+where Sτ (u) = sign( u) max( |u| − τ, 0) is the soft-threshold operator. The convex outer problem 
+
+min t≥0 [ inner( t) + γ R (θ) t ] is one-dimensional and convex, and we solve it by ternary search to floating-point precision. The per-sample sum constraint P 
+
+> i
+
+qi = n + αm is incorporated via a second bisection on the Lagrange multiplier of the constraint, exactly as in line 12 of Algorithm A1. 
+
+Localized labeled discrepancy. The first BEA-style alternative is the most faithful to the original derivation of dis( P, Q ) in Awasthi et al. [23] , with the local-class refinement of Cortes et al. [24] ,Zhang et al. [25] . As a one-time pre-processing step before the main BEACON loop, we train a target-only reference policy πθref on Dtgt , partition its parameters into the (frozen) vision encoder 
+
+θenc and the (free) noise-prediction parameters θfree , and define a parameter-space ball over the free part, 
+
+Hloc = πθ′ : θ′ 
+
+> enc
+
+= θenc ,ref , ∥θ′ 
+
+> free
+
+− θfree ,ref ∥2 ≤ r ,
+
+with radius r chosen as in Awasthi et al. [23 , App. B.3 ] . We then run projected gradient ascent on 
+
+θ′ ∈ H loc to maximize the empirical labeled discrepancy 
+
+cdis( P, Q ; θ′) = 1
+
+n
+
+X
+
+> j∈T
+
+ℓBC (θ′; xj , y j ) − 1
+
+m
+
+X
+
+> i∈S
+
+ℓBC (θ′; xi, y i), (10) augmented with a soft proximity penalty β ∥θ′ 
+
+> free
+
+− θfree ,ref ∥22 (β > 0) that prevents gradient steps from concentrating mass on the boundary of the ball; the hard ball constraint is enforced by Euclidean projection of θ′ 
+
+> free
+
+after each step. Every few steps we evaluate cdis( P, Q ; θ′) on the full labeled data, averaging over a small number of independent diffusion-noise/timestep draws to reduce the upward bias of taking a maximum over noisy estimates, and track the running maximum. We set ˆd to this maximum, fix di = ˆd 1[i ∈ S] and λd = 1 , and freeze them for the entire BEACON run, so line 4 of Algorithm A1 becomes a no-op. 
+
+Domain-classifier discrepancy. The second alternative replaces the per-trajectory loss difference (10) with a per-source instance-level mismatch score derived from a binary domain classifier on the policy’s vision-encoder features, an instance-level analogue of the dA-style discriminator estimators of Ganin et al. [18] , Ben-David et al. [37] . At each refresh we (i) extract the current embeddings 
+
+{ϕθ (xi)}i∈S∪T in a single forward pass through ϕθ , (ii) draw a class-balanced training set by random source undersampling so that source and target contribute equally (since typically m ≫ n), (iii) fit a logistic-regression discriminator gψ : ϕθ (x) 7 → [0 , 1] with target labeled 1 and source labeled 0, and (iv) apply gψ to all m source embeddings (not just the balanced subset) to obtain 
+
+di = 1 − gψ
+
+ ϕθ (xi) = cPr  source | xi
+
+, i ∈ S, dj = 0 for j ∈ T, (11) so that source samples that look target-like ( gψ → 1) get di → 0 and clearly-source samples ( gψ → 0)get di → 1. We additionally log AUC( gψ ) on the full pooled S ∪ T as a global indicator of domain separability, recovering the AUC form of the dA-distance estimate of Ben-David et al. [37] but using only the per-instance di from (11) inside the BEACON objective. Unlike the localized estimator, both gψ and {di}i∈S here are recomputed in place of line 4 of Algorithm A1 so that the score tracks the encoder ϕθ as it evolves. 
+
+Empirical comparison. Pairing the two q-update rules with the three discrepancy estimators yields six implementation variants of BEACON. Table 3 reports the average target success rate of each variant on the sim-to-sim block stacking benchmark with texture + viewpoint gap , evaluated on the S criterion. The default stochastic q-update with the k-NN estimator achieves the highest score, and the stochastic update is robust to the change of estimator. 17 Figure A2: UMAP visualization of latent features ( mug cleanup ). 
+
+# D Hyperparameter sensitivity analysis 
+
+We conduct a sensitivity analysis over the essential hyperparameters, including the L1 deviation coefficient λ1, the L2 shrinkage λ2, the discrepancy weight λd, and the sum budget α. We sweep one hyperparameter at a time, retain the value that gives the highest target success rate under a full evaluation, and then move on to the next. We use this greedy coordinate-wise schedule rather than a full grid search because the four knobs have largely separable roles in the objective: λ1 and 
+
+λ2 regularize q around the reference p0, λd scales the discrepancy penalty inside the per-sample subgradient, and α sets the total source mass through the projection in line 12 of Algorithm A1. In sim-to-sim, λ1 = 0 .01 , λ2 ∈ { 0.01 , 0.001 }, λd ∈ { 0.1, 0.05 }, and α ∈ [0 .3, 0.5] yield the most stable and best-performing results. For sim-to-real the best operating point shifts toward smaller λd
+
+and smaller α, because the larger underlying gap inflates the per-sample discrepancies di; therefore keeping the sim-to-sim λd would drive more source weights to zero in the projection and reduce BEACON to nearly target-only training, and a smaller α caps the admitted source mass to reflect the lower trustworthiness of source data under a larger gap. 
+
+# E Feature alignment 
+
+BEACON naturally merges the source and target demonstrations in latent space as an implicit result of the discrepancy-based objective. We present an additional visualization of latent features for the 
+
+mug cleanup task in Figure A2. This shows that a BEACON policy trained with the suitable set of hyperparameters brings the latent features of source and target demonstrations close. 
+
+# F Source weight evolution during training 
+
+The q-evolution during training and weight distributions for block stacking task are shown in Figure A3. The target mean weight rises steeply during training from ∼ 0.5 to ∼ 1.9 over 600 epochs, while the source mean weight drifts from 0.51 to 0.46 . The end-of-training distribution shows that target weights are tightly concentrated near the per-sample upper bound qmax (mean 1.93 , std 0.07 ), so nearly every real demonstration is amplified to the maximum admissible weight. Source weights are instead bimodal, with a sharp spike at q ≈ 0 on top of a broad bell centered around 0.5 (mean 
+
+0.46 , std 0.30 ). The spike at zero corresponds to source samples that the discrepancy term and the per-sample loss flag as harmful, which the projection drives all the way to zero, while the bell collects the remaining source demonstrations that are kept at moderate weight. 18 Figure A3: a) q-evolution during training. The average q values for source demonstrations (blue) decrease over time, while the average q values for target demonstrations (red) increase at a steeper rate. b) q-distribution at the end of training. Density is normalized to the total number of samples in each domain so the two very different sample counts are comparable. Both plots are for the block stacking task. 
+
+# G Compute resources 
+
+Experiments in this paper are performed on a single NVIDIA L40S Tensor Core GPU (48 GB VRAM) per run, though we expect any reasonably modern GPU with sufficient memory to suffice for reproducing our results. A typical sim-to-sim or sim-to-real BEACON training run in our setup uses a single GPU and completes within 24 hours of wall-clock time. 19
