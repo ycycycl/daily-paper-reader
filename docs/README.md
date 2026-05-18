@@ -6,64 +6,67 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-09 ~ 2026-05-18
-- 运行时间：2026-05-18 12:59:12 UTC
+- 最新运行日期：2026-05-18
+- 运行时间：2026-05-18 21:01:53 UTC
 - 运行状态：成功
-- 本次总论文数：14
-- 精读区：3
+- 本次总论文数：15
+- 精读区：4
 - 速读区：11
 
 ### 今日简报（AI）
-1) 2026-05-09 至 05-18 日报共筛选 14 篇具身智能与自动驾驶相关论文，重点精读了高分交叉口自治管理与世界行动模型方向。
-2) 最值得关注的是《LISA》提出的无信号自主交叉口认知仲裁，以及“World Action Models”代表的具身 AI 下一阶段：用世界模型支撑更强的行动决策。
-3) 普通读者建议先读《LISA》和《World Action Models》，再快速浏览 VLA 训练、内存优化与时序先验相关论文，建立从系统落地到模型能力演进的整体脉络。
-- 详情：[/20260509-20260518/README](/20260509-20260518/README)
+今日完成 15 篇论文推荐筛选，其中 4 篇精读、11 篇速读，重点集中在自动驾驶规划、世界模型与多智能体路径规划方向。
+最值得关注的是规划导向强化学习与闭环价值评估排序，两篇精读《Driving Intents Amplify Planning-Oriented Reinforcement Learning》和《CLOVER》均获 9.5/10。
+建议普通读者优先阅读这两篇高分精读，再快速浏览 3D 世界建模、扩散策略引导和拥挤多智能体寻路相关论文，把握具身智能与自动驾驶规划的交叉趋势。
+- 详情：[/202605/18/README](/202605/18/README)
 
 ### 精读区论文标签
-1. [LISA: Cognitive Arbitration for Signal-Free Autonomous Intersection Management](/20260509-20260518/2605.12321v1-lisa-cognitive-arbitration-for-signal-free-autonomous-intersection-management)  
-   标签：评分：9.0/10、query:q2
-   evidence：自动驾驶路口协同决策管理
-2. [World Action Models: The Next Frontier in Embodied AI](/20260509-20260518/2605.12090v1-world-action-models-the-next-frontier-in-embodied-ai)  
-   标签：评分：8.0/10、query:profile-1
-   evidence：VLA结合世界模型生成动作
-3. [Real-time Gaussian Process based Approximate Model Predictive Trajectory Tracking Control for Autonomous Vehicles](/20260509-20260518/2605.13220v1-real-time-gaussian-process-based-approximate-model-predictive-trajectory-tracking-control-for-autonomous-vehicles)  
+1. [Driving Intents Amplify Planning-Oriented Reinforcement Learning](/202605/18/2605.12625v2-driving-intents-amplify-planning-oriented-reinforcement-learning)  
+   标签：评分：9.5/10、query:q4
+   evidence：驾驶策略的流匹配动作头
+2. [CLOVER: Closed-Loop Value Estimation and Ranking for End-to-End Autonomous Driving Planning](/202605/18/2605.15120v2-clover-closed-loop-value-estimation-and-ranking-for-end-to-end-autonomous-driving-planning)  
+   标签：评分：9.5/10、query:q5
+   evidence：端到端自动驾驶规划
+3. [HorizonDrive: Self-Corrective Autoregressive World Model for Long-horizon Driving Simulation](/202605/18/2605.11596v1-horizondrive-self-corrective-autoregressive-world-model-for-long-horizon-driving-simulation)  
+   标签：评分：8.2/10、query:q6
+   evidence：自动驾驶闭环仿真世界模型
+4. [GuardAD: Safeguarding Autonomous Driving MLLMs via Markovian Safety Logic](/202605/18/2605.10386v1-guardad-safeguarding-autonomous-driving-mllms-via-markovian-safety-logic)  
    标签：评分：8.0/10、query:q2
-   evidence：自动驾驶车辆轨迹跟踪控制
+   evidence：自动驾驶交通交互安全推理
 
 ### 速读区论文标签
-1. [OOM-Free Alpamayo via CPU-GPU Memory Swapping for Vision-Language-Action Models](/20260509-20260518/2605.11678v1-oom-free-alpamayo-via-cpu-gpu-memory-swapping-for-vision-language-action-models)  
-   标签：评分：7.5/10、query:profile-1
-   evidence：自动驾驶VLA感知推理控制
-2. [Reinforcing VLAs in Task-Agnostic World Models](/20260509-20260518/2605.12334v1-reinforcing-vlas-in-task-agnostic-world-models)  
-   标签：评分：7.5/10、query:profile-1
-   evidence：VLA在学习世界模型中用想象轨迹强化
-3. [WarmPrior: Straightening Flow-Matching Policies with Temporal Priors](/20260509-20260518/2605.13959v1-warmprior-straightening-flow-matching-policies-with-temporal-priors)  
+1. [3D-Belief: Embodied Belief Inference via Generative 3D World Modeling](/202605/18/2605.11367v1-3d-belief-embodied-belief-inference-via-generative-3d-world-modeling)  
+   标签：评分：7.5/10、query:q6
+   evidence：面向具身信念的生成式3D世界模型
+2. [Discrete Diffusion for Complex and Congested Multi-Agent Path Finding with Sparse Social Attention](/202605/18/2605.13296v1-discrete-diffusion-for-complex-and-congested-multi-agent-path-finding-with-sparse-social-attention)  
+   标签：评分：7.5/10、query:q7
+   evidence：扩散模型生成无碰多智能体轨迹
+3. [Feedback World Model Enables Precise Guidance of Diffusion Policy](/202605/18/2605.15705v1-feedback-world-model-enables-precise-guidance-of-diffusion-policy)  
+   标签：评分：7.5/10、query:q6
+   evidence：世界模型指导扩散策略
+4. [FocalPolicy: Frequency-Optimized Chunking and Locally Anchored Flow Matching for Coherent Visuomotor Policy](/202605/18/2605.15944v1-focalpolicy-frequency-optimized-chunking-and-locally-anchored-flow-matching-for-coherent-visuomotor-policy)  
    标签：评分：7.5/10、query:q8
-   evidence：用于控制的流匹配生成策略
-4. [Preserving Foundational Capabilities in Flow-Matching VLAs through Conservative SFT](/20260509-20260518/2605.08879v1-preserving-foundational-capabilities-in-flow-matching-vlas-through-conservative-sft)  
-   标签：评分：7.0/10、query:profile-1
-   evidence：流匹配VLA模型适配
-5. [Network-Efficient World Model Token Streaming](/20260509-20260518/2605.09886v1-network-efficient-world-model-token-streaming)  
-   标签：评分：7.0/10、query:q6
-   evidence：生成式驾驶世界模型状态
-6. [Neural Distance-Guided Path Integral Control for Tractor-Trailer Navigation](/20260509-20260518/2605.09939v1-neural-distance-guided-path-integral-control-for-tractor-trailer-navigation)  
-   标签：评分：7.0/10、query:q2
-   evidence：类车辆自主导航与避障
-7. [Towards Long-horizon Embodied Agents with Tool-Aligned Vision-Language-Action Models](/20260509-20260518/2605.13119v1-towards-long-horizon-embodied-agents-with-tool-aligned-vision-language-action-models)  
-   标签：评分：6.8/10、query:profile-1
-   evidence：VLA智能体的长程规划与工具执行
-8. [ACWM-Phys: Investigating Generalized Physical Interaction in Action-Conditioned Video World Models](/20260509-20260518/2605.08567v1-acwm-phys-investigating-generalized-physical-interaction-in-action-conditioned-video-world-models)  
-   标签：评分：6.5/10、query:q6
-   evidence：用于决策的动作条件视频世界模型
-9. [BEACON: Cross-Domain Co-Training of Generative Robot Policies via Best-Effort Adaptation](/20260509-20260518/2605.08571v1-beacon-cross-domain-co-training-of-generative-robot-policies-via-best-effort-adaptation)  
-   标签：评分：6.5/10、query:q9
-   evidence：扩散生成式机器人策略
-10. [BEACON: Cross-Domain Co-Training of Generative Robot Policies via Best-Effort Adaptation](/20260509-20260518/2605.08571v2-beacon-cross-domain-co-training-of-generative-robot-policies-via-best-effort-adaptation)  
-   标签：评分：6.5/10、query:q9
-   evidence：扩散式生成机器人策略
-11. [Drift is a Sampling Error: SNR-Aware Power Distributions for Long-Horizon Robotic Planning](/20260509-20260518/2605.09537v1-drift-is-a-sampling-error-snr-aware-power-distributions-for-long-horizon-robotic-planning)  
+   evidence：流匹配生成连贯动作轨迹
+5. [WorldVLN: Autoregressive World Action Model for Aerial Vision-Language Navigation](/202605/18/2605.15964v1-worldvln-autoregressive-world-action-model-for-aerial-vision-language-navigation)  
+   标签：评分：7.5/10、query:q6
+   evidence：世界模型预测状态转移和航点动作
+6. [Ada-Diffuser: Latent-Aware Adaptive Diffusion for Decision-Making](/202605/18/2605.16054v1-ada-diffuser-latent-aware-adaptive-diffusion-for-decision-making)  
+   标签：评分：7.5/10、query:q3
+   evidence：扩散生成式决策序列建模
+7. [ALAM: Algebraically Consistent Latent Transitions for Vision-Language-Action Models](/202605/18/2605.10819v1-alam-algebraically-consistent-latent-transitions-for-vision-language-action-models)  
    标签：评分：6.5/10、query:profile-1
-   evidence：VLA长程生成式轨迹规划
+   evidence：面向策略生成的VLA潜动作模型
+8. [HarmoWAM: Harmonizing Generalizable and Precise Manipulation via Adaptive World Action Models](/202605/18/2605.10942v1-harmowam-harmonizing-generalizable-and-precise-manipulation-via-adaptive-world-action-models)  
+   标签：评分：6.5/10、query:q6
+   evidence：用于机器人控制的世界动作模型
+9. [Expected Batch Optimal Transport Plans and Consequences for Flow Matching](/202605/18/2605.12174v1-expected-batch-optimal-transport-plans-and-consequences-for-flow-matching)  
+   标签：评分：6.5/10、query:q8
+   evidence：流匹配生成建模理论
+10. [GuidedVLA: Specifying Task-Relevant Factors via Plug-and-Play Action Attention Specialization](/202605/18/2605.12369v1-guidedvla-specifying-task-relevant-factors-via-plug-and-play-action-attention-specialization)  
+   标签：评分：6.5/10、query:profile-1
+   evidence：VLA动作生成与端到端策略引导
+11. [Aligning Flow Map Policies with Optimal Q-Guidance](/202605/18/2605.12416v1-aligning-flow-map-policies-with-optimal-q-guidance)  
+   标签：评分：6.5/10、query:q8
+   evidence：用于控制的流匹配生成策略
 
 
 <div class="dpr-home-promo-card">
