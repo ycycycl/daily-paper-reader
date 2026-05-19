@@ -1,0 +1,1988 @@
+Title: Reinforce Adjoint Matching: Scaling RL Post-Training of Diffusion and Flow-Matching Models
+
+URL Source: https://arxiv.org/pdf/2605.10759v1
+
+Published Time: Tue, 12 May 2026 03:16:24 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# Reinforce Adjoint Matching 
+
+## Scaling RL Post-Training of Diffusion and Flow-Matching Models 
+
+Andreas Bergmeister 1, Stefanie Jegelka 1,2, Nikolas Nüsken 3
+
+Carles Domingo-Enrich 4,†, Jakiw Pidstrigach 5,†
+
+1TU Munich, MCML, 2MIT CSAIL, 3King’s College London, 4Microsoft Research New England, 
+
+5University of Oxford †Joint last authors 
+
+Diffusion and flow-matching models scale because pretraining is supervised regression: a clean sample is noised analytically, and a model regresses against a closed-form target. RL post-training aligns the model with a reward. In image generation, this makes samples compose objects correctly, render text legibly, and match human preferences. Existing methods rely on costly SDE rollouts, reward gradients, or surrogate losses, sacrificing pretraining’s regression structure. We show that the structure extends to RL post-training. Under KL-regularized reward maximization, the optimal generative process tilts the clean-endpoint distribution towards samples with higher reward and leaves the noising law unchanged. Combining this with the adjoint-matching optimality condition and a REINFORCE identity, we derive Reinforce Adjoint Matching (RAM): a consistency loss that corrects the pretraining target with the reward. At each step, we draw a clean endpoint from the current model, evaluate its reward, noise it as in pretraining, and regress. No SDE rollouts, backward adjoint sweeps, or reward gradients are required. Like the pretraining objective, RAM is simple and scales. On Stable Diffusion 3.5M, RAM achieves the highest reward on composability, text rendering, and human preference, reaching Flow-GRPO’s peak reward in up to 50 × fewer training steps. 
+
+Code: https://github.com/AndreasBergmeister/ram 
+
+Compositional Image Generation 0 1k 2k 3k 4k 5k  
+
+> Training Steps
+> 0.70.80.9
+> GenEval Accuracy 50 ×fewer steps
+> RAM Flow-GRPO
+> SD3.5M
+
+SD3.5M RAM 
+
+truck left of refrigerator 
+
+red zebra 
+
+Visual Text Rendering 0 200 400 600 800 1k 1.2k  
+
+> Training Steps
+> 0.60.70.80.9
+> OCR Accuracy 48 ×fewer steps
+> RAM Flow-GRPO
+> SD3.5M
+
+SD3.5M RAM 
+
+zoo sign: “Lion Habitat Zone” 
+
+medieval shield: “Defender Of The Realm” 
+
+Human Preference Alignment 0 500 1k 1.5k 2k 2.5k 3k  
+
+> Training Steps
+> 22 .022 .523 .023 .5
+> PickScore 34 ×fewer steps
+> RAM Flow-GRPO
+> SD3.5M
+
+SD3.5M RAM 
+
+wooden Ferrari 
+
+cyberpunk Casablanca 
+
+Figure 1 Top: RAM reaches Flow-GRPO’s peak training reward in up to 50 × fewer training steps (with even slightly lower per-step compute). Bottom: RAM improves SD3.5M generations on composability, text rendering, and human preference. 
+
+1
+
+> arXiv:2605.10759v1 [cs.LG] 11 May 2026
+
+# 1 Introduction 
+
+Diffusion and flow-matching models dominate high-fidelity generation in continuous domains (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song et al., 2021; Lipman et al., 2023; Liu et al., 2023). They scale because pretraining is supervised regression. A clean sample from the dataset is corrupted by Gaussian noise, and a model regresses against a closed-form target. That is the entire training procedure. We often want to optimize generation towards a reward function, rather than just matching the data distribution. In image generation, this is what makes a model follow complex prompts (Ghosh et al., 2023), render text legibly, or align with human preferences (Xu et al., 2023). In language modeling, reinforcement learning (RL) post-training is what produces today’s reasoning systems. Given a pretrained model and a reward function, the canonical post-training objective is to maximize expected reward while staying close to the pretrained model in a KL sense. For models with tractable likelihoods, such as language models, policy gradients optimize this objective using the log-likelihood of sampled outputs. In diffusion and flow-matching models, sample likelihoods are intractable, so post-training is more challenging. Existing methods pay a different price to work around this. Policy-gradient methods make the denoising process stochastic and use Gaussian transition densities to optimize a variational lower bound (Black et al., 2024; Fan et al., 2023; Liu et al., 2025a). Stochastic optimal control methods target the KL-regularized objective exactly, but current estimators require reward gradients backpropagated through the sampling process via an adjoint ODE (Uehara et al., 2024; Domingo-Enrich et al., 2025). Both approaches sample by SDE rollout, which requires many steps, and for flow-matching models the noise schedule diverges near the noisy end. To sidestep this, recent methods rely on surrogate objectives: Xue et al. (2025) replace the intractable likelihood with a flow-matching ELBO, and Zheng et al. (2026) distill an improvement direction by contrasting positive and negative endpoints. We show that the regression structure of pretraining extends to RL post-training. Casting post-training as a stochastic optimal-control problem gives a fixed-point condition for the optimal control (Domingo-Enrich et al., 2025). From this condition and a REINFORCE identity, we derive a reward-corrected regression target for the model. To scale this target, we use a key structural property of the optimum: it changes which clean samples are likely, but not how a fixed clean sample is noised. The rule that generated training pairs at pretraining is the same at the optimum. This lets us sample an endpoint from the current model using any off-the-shelf sampler, evaluate its reward, and noise it analytically as in pretraining. We reuse each endpoint for multiple noisy samples, amortizing the cost of sampling and reward evaluation. Our method, Reinforce Adjoint Matching (RAM), uses no SDE rollouts, no backward adjoint sweeps, and no reward gradients. We post-train Stable Diffusion 3.5M on compositional generation (GenEval), visual text rendering (OCR), and human-preference alignment (PickScore). RAM achieves the highest reward on each task without reward hacking or visible quality degradation. It matches Flow-GRPO’s peak reward in 50 ×, 48 ×, and 34 × fewer training steps, at slightly lower per-step compute cost. The simple regression that scales pretraining now scales post-training too. 
+
+# 2 Diffusion and Flow-Matching Models 
+
+Diffusion and flow-matching models share a common structure: a forward process that corrupts data to noise from time t=0 to t= 1, and a backward process that reverses it. Diffusion models construct both processes explicitly. Flow-matching models specify only the noising kernel and generate by integrating the velocity field (the probability-flow ODE). The associated forward and backward SDEs are nonetheless well-defined. 
+
+Forward noising. We linearly interpolate between a data distribution p0 on Rd at t=0 and the Gaussian prior N (0 , I ) at t= 1 (Liu et al., 2023; Lipman et al., 2023; Esser et al., 2024). Non-linear interpolations recover other classical schedules such as DDPM (Ho et al., 2020; Sohl-Dickstein et al., 2015; Song et al., 2021), and all results in this paper generalize. The interpolation defines a noising kernel that sends a clean sample X0 ∼ p0 to a noisy version at time t,
+
+Xt | X0 ∼ N ((1 − t) X0, t 2I). (1) 2The kernel is realized by the linear forward SDE 
+
+dXt = κt Xt dt + σt dBt, X0 ∼ p0, (2) with κt = −1/(1 − t), σ2 
+
+> t
+
+= 2 t/ (1 − t), and Bt a standard Brownian motion on Rd. We write pt for the marginal density of Xt.
+
+Velocity matching. The standard choice in large-scale generative modeling (Liu et al., 2023; Esser et al., 2024) is to learn a model vθ of the velocity field 
+
+vt(x) = E[ϵ − X0 | Xt = x] , X0 ∼ p0, ϵ ∼ N (0 , I ). (3) By the tower property, regressing vθt against the random target inside (3) recovers the conditional expectation. Because Xt is an affine function of X0 and ϵ, each training pair is cheap to construct from a data sample and independent noise. The flow-matching loss is 
+
+LFM (θ) = Et
+
+[∥∥vθt (Xt) − (ϵ − X0)∥∥2]
+
+,
+
+where X0 ∼ p0, ϵ ∼ N (0 , I ), Xt = (1 − t) X0 + tϵ. 
+
+(4) Alternative parametrizations that predict the clean data or the noise instead are equivalent: given Xt, any two of the velocity, clean data, and noise determine the third. 
+
+Backward generation. The time reversal of the forward SDE (2) (Anderson, 1982) is 
+
+dXt = (κtXt − σ2 
+
+> t
+
+∇xlog pt(Xt))dt + σt dBt, X1 ∼ N (0 , I ), (5) which we integrate from t=1 to t=0 to sample from p0. The score is related to the velocity by 
+
+∇xlog pt(x) = 2
+
+σ2
+
+> t
+
+(κtx − vt(x)), (6) so a learned velocity model vθ suffices to sample. More generally, replacing the noise coefficient in (5) by any other schedule ˜σt ≥ 0 (with correspondingly adjusted drift) preserves the marginals pt (Albergo et al., 2025; Song et al., 2021). The null choice ˜σ≡0 recovers the probability-flow ODE dXt = vt(Xt) d t, which is the default sampler for flow-matching models. 
+
+# 3 RL Post-Training as Optimal Control 
+
+Given a pretrained generative model with endpoint distribution pref 0 and a scalar reward function r : Rd → R,the canonical KL-regularized target is the tilted distribution 
+
+p∗ 
+
+> 0
+
+= arg max 
+
+> p
+
+{Ex∼p[r(x)] − DKL 
+
+(p∥pref 0
+
+)} ∝ pref 0 (x) exp (r(x)). (7) The KL term keeps the post-trained model close to the pretrained reference and within its support. The reward shifts mass toward desirable samples. The regularization strength is controlled by scaling the reward, which we leave implicit for notational simplicity. 
+
+Stochastic optimal control. Sampling directly from p∗ 
+
+> 0
+
+is intractable. We instead steer the pretrained backward SDE toward it with a drift correction ut,
+
+dXut = (bref  
+
+> t
+
+(Xut ) + σtut(Xut ))dt + σt dBt, Xu 
+
+> 1
+
+∼ N (0 , I ), (8) where bref  
+
+> t
+
+(x) = κtx − σ2 
+
+> t
+
+∇xlog pref  
+
+> t
+
+(x) is the drift of the reference backward process (5). We choose u to maximize the terminal reward minus a quadratic control cost, 
+
+max  
+
+> u
+
+E
+
+[
+
+r(Xu 
+
+> 0
+
+) − 12
+
+∫ 10
+
+∥uτ (Xuτ )∥2 dτ
+
+]
+
+. (9) By Girsanov’s theorem, this stochastic optimal control problem is equivalent to KL-regularized reward maximization in path space (Section A.1). 3Structure of the optimal process. The next theorem is a standard consequence of stochastic optimal control theory (Pham, 2009): optimality is equivalent to tilting the clean-endpoint distribution to p∗ 
+
+> 0
+
+while leaving the conditional law of noisy states given that clean endpoint unchanged. This recovers the memoryless-schedule result of Domingo-Enrich et al. (2025) as the marginal-time statement of a full path-space characterization. 
+
+Theorem 3.1 (Optimal controlled process) . Under standard regularity assumptions (Section A.3), a controlled process Xu solves (9) if and only if 
+
+Xu 
+
+> 0
+
+∼ p∗ 
+
+> 0
+
+and Law ((Xut )t∈[0 ,1] 
+
+∣∣ Xu 
+
+> 0
+
+= x0
+
+) = Law ((Xt)t∈[0 ,1] 
+
+∣∣ X0 = x0
+
+) (10) 
+
+for p∗
+
+> 0
+
+-almost every x0. Equivalently, the optimal controlled process is the time reversal of the forward noising (2) started from p∗
+
+> 0
+
+.
+
+The theorem is the precise sense in which RL post-training changes which clean samples are preferred, but not the noising rule that connects a fixed clean sample to its noisy versions. The reward tilt acts only on X0,and the conditional trajectory law given X0 depends only on the interpolation schedule, not on the data distribution. Two consequences follow. First, the conditional law of a noisy state given the clean endpoint is the same analytic Gaussian kernel as in pretraining (1). Only the endpoint distribution changes, from p0 to p∗
+
+> 0
+
+. Second, the optimal marginal p∗ 
+
+> t
+
+, velocity v∗ 
+
+> t
+
+, and score ∇xlog p∗ 
+
+> t
+
+take the same functional forms as (3) and (6), with 
+
+p∗ 
+
+> 0
+
+in place of p0.
+
+Adjoint matching. To reach this fixed point in practice, we introduce the Bellman value function 
+
+V ut (x) = E
+
+[
+
+r(Xu 
+
+> 0
+
+) − 12
+
+∫ t
+
+> 0
+
+∥uτ (Xuτ )∥2 dτ
+
+∣∣∣∣ Xut = x
+
+]
+
+, (11) and its spatial gradient Aut (x) := ∇xV ut (x), which we call the adjoint . The following verification result turns optimal control into a self-consistency condition on u.
+
+Theorem 3.2 (Adjoint matching) . Under standard regularity assumptions (Section A.5), a control u is optimal if and only if 
+
+ut(x) = −σtAut (x) for all (t, x ) ∈ [0 , 1] × Rd. (12) Following Domingo-Enrich et al. (2025), we turn this fixed-point condition into on-policy training: estimate the adjoint Aut under the current control, and regress ut against the resulting target. In practice we parametrize the velocity field rather than u directly, so we derive a regression target for vθt via the control–velocity relation (16). 
+
+# 4 Reinforce Adjoint Matching 
+
+Reinforce Adjoint Matching (RAM) is an on-policy consistency loss for the velocity field that requires no reward gradients. By linearity of expectation, the value function (11) splits into an endpoint-reward term and an integrated running-cost term. Differentiating the endpoint term in x naively produces a reward gradient ∇r, which we avoid since r may be non-differentiable. Applying the log-derivative (REINFORCE) identity replaces this gradient with the backward bridge score weighted by the reward, yielding the exact decomposition 
+
+Aut (x) = E
+
+[
+
+r(Xu 
+
+> 0
+
+)∇xlog pu
+
+> 0|t
+
+(Xu 
+
+> 0
+
+| x)
+
+∣∣∣ Xut = x
+
+]︸ ︷︷ ︸
+
+> reward term
+
+− 12 E
+
+[
+
+∇x
+
+∫ t
+
+> 0
+
+∥uτ (Xuτ )∥2 dτ
+
+∣∣∣∣ Xut = x
+
+]︸ ︷︷ ︸
+
+> path-cost correction
+
+. (13) The reward term admits a closed-form Monte Carlo estimator, which we develop below. For the path-cost correction, Section 5 presents several estimators trading off exactness, variance, and computational cost. At 4SDE ODE Figure 2 RAM training. We draw a clean endpoint with an ODE sampler, evaluate its reward, and noise it as in pretraining to obtain training states. This avoids SDE rollouts, and reusing each endpoint across many noise draws amortizes the cost of sampling and reward evaluation. 
+
+image scale, either variance is too high or the estimator requires a backward adjoint sweep along a stored SDE rollout, bringing numerical instability and substantial per-step compute. We therefore use the approximation 
+
+Aut (x) ≈ E
+
+[
+
+r(Xu 
+
+> 0
+
+)∇xlog pu
+
+> 0|t
+
+(Xu 
+
+> 0
+
+| x)
+
+∣∣∣ Xut = x
+
+]
+
+. (14) This approximation coincides with the full adjoint at initialization, where u≡0 makes the path cost vanish, and exactly for a Gaussian reference under a linear reward (Section B.4). Section 4.1 relates the resulting RAM fixed point to the KL-regularized optimum more generally. The pretrained reference remains an explicit anchor in the regression target (17), penalizing deviation from vref throughout training. In practice, this prevents reward hacking despite RAM achieving the highest task reward among all baselines (Section 6). 
+
+Endpoint sampling and analytic noising. Equation (14) requires joint samples (Xu 
+
+> 0
+
+, X ut ). In principle these come from simulating the controlled SDE (8), which requires many steps and is numerically unstable for flow-matching models. Theorem 3.1 opens up a much cheaper route: at the optimum, the bridge from clean endpoint to noisy state is the pretraining kernel (1). We therefore draw an on-policy endpoint X0 with any off-the-shelf ODE sampler and noise it: Xt = (1 − t)X0 + tϵ .This recovers the controlled-SDE joint (Xu 
+
+> 0
+
+, X ut ) exactly at initialization and at the optimum. Since the training objective is a fixed-point condition, exactness is formally needed only at the optimum. In practice, endpoint sampling works well throughout training. Each endpoint then yields K independent training states at the cost of one model sample and one reward query (Figure 2 and Algorithm 1). Where existing SDE-based methods produce correlated states from a single rollout, RAM’s K states are conditionally independent given the endpoint. This translates into more gradient signal per step (Section 6). 
+
+Bayes bridge score. The reward term in (14) requires the backward bridge score. By Bayes’ rule, and noting that p0(x0) is constant in xt, ∇xt log p0|t(x0 | xt) = ∇xt log pt|0(xt | x0) − ∇ xt log pt(xt). The forward-bridge score is analytic from (1) and the marginal score follows from (6), giving a closed-form expression in vt.
+
+Proposition 4.1 (Bayes bridge score) . For the noising kernel (1), velocity field (3), 0 < t ≤ 1, and 
+
+ϵ := ( xt − (1 − t)x0)/t ,
+
+∇xt log p0|t(x0 | xt) = 1 − tt
+
+(vt(xt) − (ϵ − x0)). (15) 5Algorithm 1 RAM 
+
+Inputs: parameters θ initialized from the pretrained reference field vref , reward r, targets per endpoint K 
+
+> 1:
+
+while not converged do  
+
+> 2:
+
+sample x0 from pθ 
+
+> 0
+
+▷ any sampler  
+
+> 3:
+
+r0 ← r(x0) 
+
+> 4:
+
+for k = 1 , . . . , K do in parallel  
+
+> 5:
+
+sample time tk and noise ϵk ∼ N (0 , I ) 
+
+> 6:
+
+xk ← (1 − tk)x0 + tkϵk 
+
+> 7:
+
+ˆvk ← vref  
+
+> tk
+
+(xk) + r0
+
+((ϵk − x0) − vθtk (xk)) 
+
+> 8:
+
+end for  
+
+> 9:
+
+update θ with ∇θ 1
+
+> K
+
+∑Kk=1 ∥vθtk (xk) − sg(ˆ vk) ∥2 ▷ sg stops gradients  
+
+> 10:
+
+end while 
+
+The full algebra is given in Section B.1. The identity is exact for the uncontrolled reference process at initialization, and by Theorem 3.1 it also holds for the optimal process. Away from those points we substitute 
+
+vθt for vt as a plug-in approximation. 
+
+RAM objective. We train the velocity field vθ rather than parametrizing ut directly, initializing vθ = vref .The two are related by 
+
+σtut = 2 (vθt − vref 
+
+> t
+
+), (16) matching the true control–velocity relation at the optimum (Section A.4). Substituting (14) and (15) into the adjoint-matching condition (12) gives a Monte Carlo target for the velocity field. The time-dependent prefactors cancel (algebra in Section B.2), yielding the RAM loss 
+
+LRAM (θ) = Et
+
+[∥∥vθt (Xt) − sg (vref  
+
+> t
+
+(Xt) + r(X0)((ϵ − X0) − vθt (Xt)))∥ ∥2]
+
+,
+
+where X0 ∼ pθ
+
+> 0
+
+, ϵ ∼ N (0 , I ), Xt = (1 − t)X0 + tϵ. 
+
+(17) Here sg (·) is the stop-gradient operator, and we also treat the endpoint sampling as constant, so gradients are taken only with respect to the leading vθt (Xt) term. A natural alternative is to form the regression loss in control space and convert via (16). This introduces a factor 4/σ 2 
+
+> t
+
+that downweights the early timesteps that shape the trajectory. Avoiding this scaling was necessary for stable training (Section B.2). 
+
+## 4.1 Relating the RAM fixed point to the KL optimum 
+
+The training objective (17) implies the fixed-point equation 
+
+vθt (x) − vref  
+
+> t
+
+(x) = E[r(X0)((ϵ − X0) − vθt (x)) ∣ ∣ Xt = x] , X0 ∼ pθ
+
+> 0
+
+, (18) where pθ 
+
+> 0
+
+is the endpoint distribution generated by integrating the ODE under vθt . To relate this self-consistency condition to the KL-regularized optimum, we connect the reference and the optimum through a path of exponentially tilted endpoints. 
+
+Lemma 4.2 (Path-integral characterization of the optimum) . For λ ∈ [0 , 1] , let pλ 
+
+> 0
+
+(x0) ∝ pref 0 (x0) eλr (x0)
+
+interpolate between p00 = pref 0 and p10 = p∗
+
+> 0
+
+, and let vλt denote the velocity field for endpoint distribution 
+
+pλ 
+
+> 0
+
+. Then 
+
+∂λvλt (x) = E[r(X0)((ϵ − X0) − vλt (x)) ∣ ∣ Xt = x] , X0 ∼ pλ 
+
+> 0
+
+, (19) 
+
+and integrating over λ ∈ [0 , 1] yields 
+
+v∗ 
+
+> t
+
+(x) − vref  
+
+> t
+
+(x) = 
+
+∫ 10
+
+E[r(X0)((ϵ − X0) − vλt (x)) ∣ ∣ Xt = x] dλ, X0 ∼ pλ 
+
+> 0
+
+. (20) 6The proof is given in Section B.3. Equation (18) has the same form as the integrand of (20) evaluated at the right endpoint λ= 1, with the on-policy distribution pθ 
+
+> 0
+
+in place of p∗ 
+
+> 0
+
+and vθt in place of v∗ 
+
+> t
+
+. The integrand itself is the conditional reward-velocity covariance Cov (r(X0), ϵ − X0
+
+∣∣ Xt = x) with X0 ∼ pλ 
+
+> 0
+
+. RAM thus replaces the average of this covariance over the path by a single evaluation at λ= 1. The rule is exact when vλt depends linearly on λ along the path, in particular for a Gaussian reference under a linear reward (Section B.4). More generally, RAM and the KL optimum agree to first order in the reward: scaling r 7 → ηr and expanding around 
+
+η=0 , both (18) and (20) reduce at leading order to η Cov (r(X0), ϵ − X0
+
+∣∣ Xt = x) with X0 ∼ pref 0 .
+
+# 5 Retaining the Path-Cost Correction 
+
+RAM drops the path-cost correction in the adjoint decomposition (13). To show that this is the right choice for scaling to image generation, we examine the challenges of retaining it. First, we can preserve RAM’s endpoint sampling and analytic noising and estimate the path cost at one random intermediate time. The price is high variance. Alternatively, we can simulate the controlled SDE (8), store the trajectory, and differentiate the running cost pathwise. The length of pathwise differentiation trades variance against compute. Table 1 summarizes the landscape.                      
+
+> Estimator Samples from Exactness Trade-off RAM (Section 4) endpoint + analytic noising biased drops path cost Random jump endpoint + analytic noising exact at init./optimum high variance Full-horizon w/ Bayes SDE rollout exact at init./optimum pathwise VJPs Full-horizon w/ Malliavin SDE rollout exact pathwise + score VJPs Local SDE rollout exact high variance
+> Table 1 Estimators for the value-function gradient Aut.
+
+Endpoint sampling with a random jump. We insert a uniformly random intermediate time s ∈ [0 , t ) into the analytic noising trajectory. Then t 
+
+> 2
+
+∥us(Xs)∥2 is an unbiased estimate of the integrated path cost. Combined with the Bayes bridge score from intermediate to training state, this yields the jump estimator ̂
+
+Ajump  
+
+> t
+
+= (r(X0) − t 
+
+> 2
+
+∥us(Xs)∥2)∇xt log ps|t(Xs | xt)∣∣xt=Xt
+
+, s ∼ U [0 , t ). (21) The estimator is cheap and exact at initialization and at the optimum (Section C.1). The price is variance: the entire gradient signal flows through that one scalar prefactor. 
+
+Pathwise differentiation along an SDE rollout. We simulate the controlled SDE (8) and recover the path-cost gradient by integrating an adjoint ODE backward along the stored trajectory. This is functionally equivalent to differentiating through the SDE solver in autograd, but more memory efficient. Adjoint integration over the full horizon is expensive and numerically delicate. Dynamic programming lets us replace some of the pathwise integration with a REINFORCE term: at any intermediate time s, the adjoint splits into a REINFORCE term over the prefix [0 , s ] and a pathwise gradient over the suffix [s, t ].
+
+Theorem 5.1 (Generalized adjoint) . For every 0 ≤ s < t ≤ 1 and admissible control u,
+
+∇xV ut (x) = E
+
+[
+
+V us (Xus ) ∇xlog pus|t(Xus | x)
+
+∣∣∣ Xut = x
+
+]︸ ︷︷ ︸
+
+> REINFORCE on prefix
+
+− 12 E
+
+[
+
+∇x
+
+∫ ts
+
+∥uτ (Xuτ )∥2 dτ
+
+∣∣∣∣ Xut = x
+
+]︸ ︷︷ ︸
+
+> pathwise suffix
+
+. (22) The proof differentiates the recursion in x and applies the log-derivative identity to the prefix term (Section C.2). A single-trajectory estimator of the right-hand side combines three pieces: a running prefix value (the reward minus the integrated path cost over [0 , s ]), a bridge score, and the suffix path-cost gradient. For the bridge score we can use the Bayes estimator (15), which generalizes in closed form to all s ∈ [0 , t ) (Section B.1). 7Alternatively, the Malliavin score of Pidstrigach et al. (2025) is exact even away from the optimum, at the cost of additional VJPs through the score. Two values of s are computationally practical. Full-horizon (s = 0 ) computes targets for every t in a single backward sweep. Local (s = t − δ) avoids the sweep, collapsing the suffix to a single discretization step. Intermediate values would require a separate sweep per target time. 
+
+## 5.1 Estimator variance on a 2D example RAM Random jump Full-horizon w/ Bayes Full-horizon w/ Malliavin Local   
+
+> 0.09 0.21 0.12 0.15 0.93
+> Densities after post-training Target variance
+> Figure 3 Path-cost-corrected estimators on a 2D toy. Left: post-trained densities match the tilted target for every estimator. Right: regression loss at convergence, equal to the variance of the control-space target.
+
+We compare the estimators on a 2D rectified flow with uniform endpoint on [−1, 1] 2 under a reward that is positive inside three circles of varying radius. All recover the correct tilted distribution, confirming the shared fixed point. At convergence the regression loss collapses to the variance of the control-space target σt(̂ Aus,t −Aut ),so the right panel reads off estimator variance directly. Among the path-cost-corrected estimators, full-horizon has substantially lower variance than local or random-jump, and the Bayes bridge score beats Malliavin within full-horizon. RAM attains the lowest variance overall: dropping the path-cost gradient eliminates a dominant source of noise. These trade-offs amplify at image scale: variance grows with dimension, and adjoint sweeps over long horizons become prohibitive. RAM is the only estimator that scales to text-to-image post-training. 
+
+# 6 Text-to-Image Experiments 
+
+We post-train Stable Diffusion 3.5 Medium (SD3.5M) (Esser et al., 2024), a 2.5B-parameter rectified-flow transformer, on three text-to-image reward objectives, and compare RAM against the strongest recent baselines: Flow-GRPO (Liu et al., 2025a), DiffusionNFT (Zheng et al., 2026), and AWM (Xue et al., 2025). We largely follow the evaluation setup of Liu et al. (2025a): for each reward we train a separate model on its benchmark prompts, report the training reward on held-out prompts from the same benchmark, and check for reward hacking on an independent prompt set. Flow-GRPO numbers come from the original paper, except for HPSv2, which we recompute from the authors’ released checkpoints. We retrain DiffusionNFT and AWM. We train each model until the reward plateaus or starts to decrease. Qualitative samples from the pretrained model and from the models post-trained with RAM are shown in Figure 1. 
+
+Training rewards. Each benchmark comes with its own training and test prompt sets. During training we sample images for the training prompts and score each prompt-image pair under the reward function associated with that benchmark. GenEval (Ghosh et al., 2023) measures compositional correctness: for prompts such as “a truck to the left of a refrigerator” , pretrained vision models verify whether the required objects, attributes, and spatial relations all appear in the generated image. OCR evaluates visual text rendering via an edit-distance reward that checks whether text specified in the prompt appears legibly in the image, following Liu et al. (2025a). PickScore (Kirstain et al., 2023) is a learned human-preference model trained on large-scale pairwise image comparisons. 
+
+Image-quality evaluation. Optimizing a single reward can degrade generic image quality, a failure mode known as reward hacking. To detect this, we score each post-trained model on DrawBench (Saharia et al., 8Compositional Image Generation 0 200 400 600 800 1k    
+
+> Training Steps
+> 0.40.60.8
+> GenEval Accuracy
+> SD3.5M no CFG SD3.5M CFG
+> DiffusionNFT AWM RAM
+
+Visual Text Rendering 0 50 100 150 200    
+
+> Training Steps
+> 0.20.40.60.8
+> OCR Accuracy
+> SD3.5M no CFG SD3.5M CFG
+> DiffusionNFT AWM RAM
+
+Human Preference Alignment 0 300 600 900 1.2k 1.4k   
+
+> Training Steps
+> 20 21 22 23
+> PickScore
+> SD3.5M no CFG SD3.5M CFG
+> DiffusionNFT AWM RAM
+
+Figure 4 Training-reward curves comparing RAM with DiffusionNFT and AWM, two methods designed for training efficiency. The lighter companion curves show DiffusionNFT and AWM re-evaluated with CFG, which lowers their task reward. RAM, by contrast, remains compatible with CFG after post-training and is plotted with CFG. 
+
+2022) prompts disjoint from training and test under five off-the-shelf metrics: Aesthetic (Schuhmann and Beaumont, 2022) and DeQA (You et al., 2025) rate perceptual quality; ImageReward (Xu et al., 2023), HPSv2 (Wu et al., 2023), and PickScore (Kirstain et al., 2023) are learned human-preference models. 
+
+Reward normalization. Following common practice, we normalize raw rewards using group-relative advantage estimation. For each training prompt we sample a group of G = 24 images, evaluate their rewards, and subtract the group mean. We divide by the standard deviation pooled over all samples in the current training step, rather than per group. This stabilizes the scale across training and avoids the instability of per-group normalization when a group happens to draw nearly identical rewards. 
+
+Results. RAM achieves the highest training reward on all three tasks (Table 2). For compositional generation and preference alignment, this improvement comes with comparable or better image-quality metrics. For visual text rendering, RAM avoids the severe quality collapse of DiffusionNFT and AWM while matching or exceeding their OCR reward. Flow-GRPO scores higher than RAM on image-quality metrics for this task, but at a substantially lower OCR reward. The OCR reward signal pushes models to sacrifice aesthetic quality for legibility. Stopping RAM earlier or using a smaller reward coefficient yields higher image-quality numbers at a lower OCR reward. Qualitative samples in Figure 1 show that RAM corrects compositional errors ( GenEval ), renders specified text legibly ( OCR ), and produces more preferred images ( PickScore ) while preserving the style and fidelity of the pretrained model. Notably, RAM remains compatible with classifier-free guidance (CFG) after post-training, whereas CFG lowers the task reward of DiffusionNFT and AWM (lighter curves in Figure 4). We therefore evaluate RAM with CFG and the two baselines without. 
+
+Training efficiency. Figure 1 (top) plots training reward against training steps for RAM and Flow-GRPO on all three tasks. RAM matches Flow-GRPO’s peak reward in roughly 50 × fewer steps on GenEval ( 0.95 ), 
+
+48 × fewer on OCR ( 0.92 ), and 34 × fewer on PickScore ( 23 .31 ). On GenEval, RAM reaches a reward of 
+
+0.90 in 75 × fewer steps than Flow-GRPO. Per-step compute cost is comparable between the two (e.g. 0.66 
+
+GPU-hours for RAM vs. 0.70 for Flow-GRPO on GenEval), so step ratios translate directly to wall-clock training time (Section D). All methods use the same number of prompts and samples per step, so differences in step efficiency reflect how each sample is used for learning. Flow-GRPO performs one SDE rollout per sample and forms its loss from the strongly correlated noisy states along that trajectory. RAM instead draws a clean endpoint and noises it K = 8 times with independent noise vectors. The resulting training states are conditionally independent given the endpoint, providing more gradient signal per step. Figure 4 extends the comparison to DiffusionNFT and AWM, two methods also designed for training efficiency. These baselines amortize endpoints across multiple noise draws as well, so RAM’s edge over them comes from its regression target: a closed-form adjoint-matching condition, whereas DiffusionNFT relies on a positive/negative-guidance surrogate and AWM on a flow-matching ELBO. The AWM numbers we report are lower than in the original publication, which uses 72 prompts per training step. We use 48 uniformly across all methods for a fair comparison. 9Table 2 Stable Diffusion 3.5 Medium (SD3.5M) post-training results. We report training rewards on held-out test prompts and image-quality metrics on DrawBench prompts. Higher is better for all metrics. Within each task, the best results are shown in bold and second-best results are underlined . † denotes results obtained by retraining the corresponding baseline.                                                                                                         
+
+> Model # Steps Training Reward Image Quality Metrics GenEval OCR PickScore Aesthetic DeQA ImgRwd HPSv2 PickScore
+> SD3.5M 0.64 0.56 21.79 5.41 4.08 0.82 0.28 22.40
+> Compositional Image Generation
+> Flow-GRPO >5k0.95 5.25 4.01 1.03 0.27 22.37 AWM †300 0.83 5.14 3.75 0.67 0.24 22.04 DiffusionNFT †900 0.95 4.98 4.10 0.30 0.24 21.59 RAM 270 0.97 5.38 4.09 1.19 0.29 22.52
+> Visual Text Rendering
+> Flow-GRPO 1.2k0.92 5.32 4.06 0.95 0.28 22.44
+> AWM †200 0.97 5.01 2.83 -0.85 0.18 20.56 DiffusionNFT †100 0.96 4.87 3.01 -0.97 0.18 20.26 RAM 60 0.97 5.23 3.90 0.44 0.26 21.83
+> Human Preference Alignment
+> Flow-GRPO >3k23.31 5.92 4.22 1.28 0.32 23.53 AWM †1k23.39 6.31 4.10 1.27 0.31 23.76 DiffusionNFT †1.4k23.29 6.16 4.13 1.23 0.31 23.65 RAM 300 23.67 6.11 4.17 1.36 0.32 23.95
+
+# 7 Related Work 
+
+Diffusion and flow-matching pretraining. Diffusion models (Sohl-Dickstein et al., 2015; Ho et al., 2020) and the score-based SDE formulation (Song et al., 2021) established regression against analytically noised data as the standard pretraining recipe. Stochastic interpolants and flow matching unify deterministic flows and stochastic diffusions under the same velocity regression template (Albergo et al., 2025; Lipman et al., 2023), and rectified flow (Liu et al., 2023; Esser et al., 2024) has become the default parametrization for large-scale image and video models. RAM reuses this regression structure, now with a target built from the current model and a scalar reward. 
+
+Policy-gradient RL post-training. Trajectory-level policy gradients were first applied to diffusion RL post-training by Black et al. (2024), with KL-regularized variants in DPOK (Fan et al., 2023). Subsequent work scales this view to large text-to-image models and to flow matching, including Flow-GRPO (Liu et al., 2025a) and continuous-time score-as-control formulations (Zhao et al., 2025), with further refinements through dense credit assignment or exploration (Deng et al., 2024; Chae et al., 2025; Yang et al., 2024b; Liu et al., 2025b). Preference-supervised variants replace scalar rewards with pairwise comparisons (Wallace et al., 2024; Yang et al., 2024a; Kim et al., 2024). All of these treat denoising as a generic Markov decision process and learn from stochastic rollouts, with noise schedules tuned empirically or hybridized with ODE solvers (Deng et al., 2026). None exploit the analytic noising structure that makes pretraining cheap. RAM stays in the black-box reward setting, but replaces the policy-gradient rollout with a pretraining-like regression against a closed-form target. 
+
+Stochastic optimal control and adjoint methods. KL-regularized reward maximization in continuous time is naturally an entropy-regularized stochastic optimal control problem (Todorov, 2006). ELEGANT (Uehara et al., 2024) develops this perspective for diffusion post-training, with an emphasis on avoiding reward collapse. Adjoint Matching (Domingo-Enrich et al., 2025) introduces the memoryless noise schedule that turns the Bellman fixed point into an on-policy regression of the adjoint. Adjoint Sampling (Havens et al., 2025) 10 extends this perspective beyond RL post-training to sampling from unnormalized densities; like RAM, it avoids SDE rollouts during training by sampling an endpoint and noising it analytically. These methods target the KL-regularized objective directly, but their estimators require reward gradients and an adjoint ODE integrated backward along a stored SDE trajectory. RAM sits most directly in the Adjoint Matching line and sharpens its path-space picture: the optimum tilts only the clean-endpoint distribution while preserving the conditional noising law given that endpoint. This justifies endpoint sampling with analytic noising, and yields a closed-form Bayes bridge target in place of a pathwise adjoint sweep. This is what makes RAM substantially more efficient than Adjoint Matching: training avoids both the SDE rollout and the backward adjoint sweep. 
+
+Pretraining-like regression objectives. A recent line aligns RL post-training with the supervised structure of pretraining. DiffusionNFT (Zheng et al., 2026) defines an improvement direction by contrasting positive and negative endpoint distributions, then distills the resulting guidance into a single model with tunable strength. AWM (Xue et al., 2025) starts from a GRPO objective over clean endpoints, replaces the intractable sequence likelihood by a score/flow-matching ELBO, and adds a velocity-space KL penalty. Choi et al. (2026) further argue empirically that the likelihood estimator matters more than the particular outer loss. RAM instead starts from the KL-regularized control problem, giving the update a direct control interpretation rather than a guidance-distillation or likelihood-surrogate interpretation. The principled derivation also yields a simpler objective in practice. 
+
+Differentiable-reward methods. When rewards are differentiable, end-to-end backpropagation through the sampler provides a direct training signal. ImageReward introduces a learned human-preference scorer and the ReFL algorithm (Xu et al., 2023). AlignProp (Prabhudesai et al., 2023), DRaFT (Clark et al., 2024), and DRTune (Wu et al., 2024) explore full- or partial-chain reward backpropagation and the resulting memory/stability trade-offs. These methods rely on reward gradients backpropagated through the sampling chain or a truncated segment of it; RAM instead targets black-box rewards and keeps the KL-regularized control derivation. 
+
+Bridge estimators for controlled processes. Recent work estimates bridge scores under general controlled processes using Malliavin calculus or control self-consistency (Pidstrigach et al., 2025; Howard et al., 2025), building on classical Malliavin representations of scores and sensitivities (Lehec, 2013; Baudoin, 2002). The path-cost-corrected estimators we introduce in Section 5 connect to this literature, while the main RAM objective specializes to a cheaper Bayes bridge approximation tailored to large-scale RL post-training. 
+
+# Acknowledgments 
+
+We acknowledge support from the Alexander von Humboldt Foundation. We thank the Leibniz Supercomputing Centre (LRZ) for providing computational resources, and Lennart Redl for feedback on the writing. 
+
+# References      
+
+> Michael S Albergo, Nicholas M Boffi, and Eric Vanden-Eijnden. Stochastic interpolants: A unifying framework for flows and diffusions. Journal of Machine Learning Research , 26(209):1–80, 2025. Brian D. O. Anderson. Reverse-time diffusion equation models. Stochastic Processes and their Applications , 12(3): 313–326, 1982. Fabrice Baudoin. Conditioned stochastic differential equations: theory, examples and application to finance. Stochastic Processes and their Applications , 100(1-2):109–145, 2002. Kevin Black, Michael Janner, Yilun Du, Ilya Kostrikov, and Sergey Levine. Training diffusion models with reinforcement learning. In The Twelfth International Conference on Learning Representations , 2024. Daewon Chae, June Suk Choi, Jinkyu Kim, and Kimin Lee. Diffexp: Efficient exploration in reward fine-tuning for text-to-image diffusion models. Proceedings of the AAAI Conference on Artificial Intelligence , 39(15):15696–15703, 2025.
+
+11 Jaemoo Choi, Yuchen Zhu, Wei Guo, Petr Molodyk, Bo Yuan, Jinbin Bai, Yi Xin, Molei Tao, and Yongxin Chen. Rethinking the design space of reinforcement learning for diffusion models: On the importance of likelihood estimation beyond loss design. arXiv preprint arXiv:2602.04663 , 2026. Kevin Clark, Paul Vicol, Kevin Swersky, and David J. Fleet. Directly fine-tuning diffusion models on differentiable rewards. In The Twelfth International Conference on Learning Representations , 2024. Fei Deng, Qifei Wang, Wei Wei, Tingbo Hou, and Matthias Grundmann. PRDP: Proximal reward difference prediction for large-scale reward finetuning of diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 7423–7433, 2024. Haoyou Deng, Keyu Yan, Chaojie Mao, Xiang Wang, Yu Liu, Changxin Gao, and Nong Sang. DenseGRPO: From sparse to dense reward for flow matching model alignment. In The Fourteenth International Conference on Learning Representations , 2026. Carles Domingo-Enrich, Michal Drozdzal, Brian Karrer, and Ricky TQ Chen. Adjoint matching: Fine-tuning flow and diffusion generative models with memoryless stochastic optimal control. In The Thirteenth International Conference on Learning Representations , 2025. Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim Entezari, Jonas Müller, Harry Saini, Yam Levi, Dominik Lorenz, Axel Sauer, Frederic Boesel, Dustin Podell, Tim Dockhorn, Zion English, and Robin Rombach. Scaling rectified flow transformers for high-resolution image synthesis. In Proceedings of the 41st International Conference on Machine Learning , volume 235 of Proceedings of Machine Learning Research , pages 12606–12633. PMLR, 2024. Ying Fan, Olivia Watkins, Yuqing Du, Hao Liu, Moonkyung Ryu, Craig Boutilier, Pieter Abbeel, Mohammad Ghavamzadeh, Kangwook Lee, and Kimin Lee. DPOK: Reinforcement learning for fine-tuning text-to-image diffusion models. In Advances in Neural Information Processing Systems , volume 36, pages 79858–79885, 2023. Dhruba Ghosh, Hanna Hajishirzi, and Ludwig Schmidt. Geneval: An object-focused framework for evaluating text-to-image alignment. In Advances in Neural Information Processing Systems , volume 36, 2023. Aaron Havens, Benjamin Kurt Miller, Bing Yan, Carles Domingo-Enrich, Anuroop Sriram, Brandon Wood, Daniel Levine, Bin Hu, Brandon Amos, Brian Karrer, Xiang Fu, Guan-Horng Liu, and Ricky T. Q. Chen. Adjoint sampling: Highly scalable diffusion samplers via adjoint matching. In Proceedings of the 42nd International Conference on Machine Learning , volume 267 of Proceedings of Machine Learning Research , pages 22204–22237. PMLR, 2025. Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In Advances in Neural Information Processing Systems , volume 33, 2020. Samuel Howard, Nikolas Nüsken, and Jakiw Pidstrigach. Control consistency losses for diffusion bridges. arXiv preprint arXiv:2512.05070 , 2025. Minu Kim, Yongsik Lee, Sehyeok Kang, Jihwan Oh, Song Chong, and Se-Young Yun. Preference alignment with flow matching. In Advances in Neural Information Processing Systems , volume 37, 2024. Yuval Kirstain, Adam Polyak, Uriel Singer, Shahbuland Matiana, Joe Penna, and Omer Levy. Pick-a-pic: An open dataset of user preferences for text-to-image generation. In Advances in Neural Information Processing Systems ,volume 36, 2023. Joseph Lehec. Representation formula for the entropy and functional inequalities. Annales de l’IHP Probabilités et statistiques , 49(3):885–899, 2013. Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative modeling. In The Eleventh International Conference on Learning Representations , 2023. Jie Liu, Gongye Liu, Jiajun Liang, Yangguang Li, Jiaheng Liu, Xintao Wang, Pengfei Wan, Di Zhang, and Wanli Ouyang. Flow-grpo: Training flow matching models via online rl. In Advances in Neural Information Processing Systems , volume 38, 2025a. Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In The Eleventh International Conference on Learning Representations , 2023. Zhen Liu, Tim Z. Xiao, Weiyang Liu, Yoshua Bengio, and Dinghuai Zhang. Efficient diversity-preserving diffusion alignment via gradient-informed GFlowNets. In The Thirteenth International Conference on Learning Representations ,2025b. Huyên Pham. Continuous-time stochastic control and optimization with financial applications , volume 61. Springer Science & Business Media, 2009. 
+
+12 Jakiw Pidstrigach, Elizabeth Louise Baker, Carles Domingo-Enrich, George Deligiannidis, and Nikolas Nüsken. Conditioning diffusions using malliavin calculus. In Proceedings of the 42nd International Conference on Machine Learning , volume 267 of Proceedings of Machine Learning Research , pages 49292–49315. PMLR, 2025. Mihir Prabhudesai, Anirudh Goyal, Deepak Pathak, and Katerina Fragkiadaki. Aligning text-to-image diffusion models with reward backpropagation. arXiv preprint arXiv:2310.03739 , 2023. Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay Whang, Emily L Denton, Kamyar Ghasemipour, Raphael Gontijo Lopes, Burcu Karagol Ayan, Tim Salimans, et al. Photorealistic text-to-image diffusion models with deep language understanding. In Advances in Neural Information Processing Systems , volume 35, pages 36479–36494, 2022. Christoph Schuhmann and Romain Beaumont. Laion-aesthetics. laion.ai, 2022. Jascha Sohl-Dickstein, Eric A. Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using nonequilibrium thermodynamics. In Proceedings of the 32nd International Conference on Machine Learning ,volume 37 of Proceedings of Machine Learning Research , pages 2256–2265. PMLR, 2015. Yang Song, Jascha Sohl-Dickstein, Diederik P. Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. In The Ninth International Conference on Learning Representations , 2021. Emanuel Todorov. Linearly-solvable markov decision problems. Advances in Neural Information Processing Systems ,19, 2006. Masatoshi Uehara, Yulai Zhao, Kevin Black, Ehsan Hajiramezanali, Gabriele Scalia, Nathaniel Lee Diamant, Alex M Tseng, Tommaso Biancalani, and Sergey Levine. Fine-tuning of continuous-time diffusion models as entropy-regularized control. arXiv preprint arXiv:2402.15194 , 2024. Bram Wallace, Meihua Dang, Rafael Rafailov, Linqi Zhou, Aaron Lou, Senthil Purushwalkam, Stefano Ermon, Caiming Xiong, Shafiq Joty, and Nikhil Naik. Diffusion model alignment using direct preference optimization. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 8228–8238, 2024. Xiaoshi Wu, Yiming Hao, Keqiang Sun, Yixiong Chen, Feng Zhu, Rui Zhao, and Hongsheng Li. Human preference score v2: A solid benchmark for evaluating human preferences of text-to-image synthesis. arXiv preprint arXiv:2306.09341 ,2023. Xiaoshi Wu, Yiming Hao, Manyuan Zhang, Keqiang Sun, Zhaoyang Huang, Guanglu Song, Yu Liu, and Hongsheng Li. Deep reward supervisions for tuning text-to-image diffusion models. In Computer Vision – ECCV 2024 . Springer, 2024. Jiazheng Xu, Xiao Liu, Yuchen Wu, Yuxuan Tong, Qinkai Li, Ming Ding, Jie Tang, and Yuxiao Dong. Imagereward: Learning and evaluating human preferences for text-to-image generation. In Advances in Neural Information Processing Systems , volume 36, 2023. Shuchen Xue, Chongjian Ge, Shilong Zhang, Yichen Li, and Zhi-Ming Ma. Advantage weighted matching: Aligning rl with pretraining in diffusion models. arXiv preprint arXiv:2509.25050 , 2025. Kai Yang, Jian Tao, Jiafei Lyu, Chunjiang Ge, Jiaxin Chen, Qimai Li, Weihan Shen, Xiaolong Zhu, and Xiu Li. Using human feedback to fine-tune diffusion models without any reward model. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 8941–8951, 2024a. Shentao Yang, Tianqi Chen, and Mingyuan Zhou. A dense reward view on aligning text-to-image diffusion with preference. In Proceedings of the 41st International Conference on Machine Learning , volume 235 of Proceedings of Machine Learning Research , pages 55998–56032. PMLR, 2024b. Zhiyuan You, Xin Cai, Jinjin Gu, Tianfan Xue, and Chao Dong. Teaching large language models to regress accurate image quality scores using score distribution. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 14483–14494, 2025. Hanyang Zhao, Haoxian Chen, Ji Zhang, David D. Yao, and Wenpin Tang. Score as action: Fine-tuning diffusion generative models by continuous-time reinforcement learning. In Proceedings of the 42nd International Conference on Machine Learning , volume 267 of Proceedings of Machine Learning Research , pages 77371–77389. PMLR, 2025. Kaiwen Zheng, Huayu Chen, Haotian Ye, Haoxiang Wang, Qinsheng Zhang, Kai Jiang, Hang Su, Stefano Ermon, Jun Zhu, and Ming-Yu Liu. Diffusionnft: Online diffusion reinforcement with forward process. In The Fourteenth International Conference on Learning Representations , 2026. 
+
+13 A Optimal-Control Foundations 
+
+## A.1 Optimal control as path-space KL regularization 
+
+Let P denote the path law of the reference backward process (5) and Pu the path law of the controlled process (8). We assume Novikov’s condition, a moment bound on u ensuring that the change of measure below is well defined, and EP[ exp (r(X0))] < ∞. Girsanov’s theorem relates the path laws of two diffusions that share the same noise coefficient but differ in drift; applied here it gives 
+
+DKL (Pu∥P) = 12 EPu
+
+[∫ 10
+
+∥ut(Xut )∥2 dt
+
+]
+
+. (23) The stochastic optimal control problem (9) is therefore equivalent to the Gibbs variational problem 
+
+sup 
+
+> Q≪P
+
+{EQ[r(X0)] − DKL (Q∥P)}, (24) where Q ≪ P denotes absolute continuity, so every trajectory possible under Q must also have positive probability under P. The closed-form solution is the tilted path law with density ratio 
+
+dQ∗
+
+dP = exp( r(X0)) 
+
+EP[exp( r(X0))] . (25) 
+
+## A.2 Path-law factorization 
+
+Lemma A.1 (Path-law factorization) . Let Π( · | x0) denote the conditional law of the reference backward trajectory (Xt)t∈[0 ,1] given X0 = x0. Then 
+
+P =
+
+∫
+
+Π( · | x0)pref 0 (x0) d x0, (26) 
+
+and Π( · | x0) does not depend on the data distribution. 
+
+Proof. Let Πfwd (· | x0) be the conditional law of the forward process (2) given X0 = x0. Because the coefficients of (2) are deterministic, Πfwd (· | x0) does not depend on the data distribution, and the forward path law factors as ∫ Πfwd (· | x0)pref 0 (x0) d x0. The backward process (5) is the exact time reversal of the forward process (Anderson, 1982), so reversing trajectories yields a kernel Π( · | x0), obtained from Πfwd by time reversal, for which (26) holds. Time reversal preserves the data-independence. This is the path-space factorization underlying what Domingo-Enrich et al. (2025) call the memoryless property: the conditional trajectory law given X0 carries no information about which data distribution was used. At t=1, the noising kernel (1) reduces to N (0 , I ) regardless of X0, so the source marginal is also data-independent. 
+
+## A.3 Optimal controlled process 
+
+We prove Theorem 3.1. 
+
+Proof. We prove the two directions of (10) separately. 
+
+Optimality ⇒ form. Let Q∗ denote the optimal path law. By (25), Q∗ tilts P by exp (r(X0)) /Z with 
+
+Z = EP[exp( r(X0))] . Substituting the factorization of Lemma A.1, 
+
+Q∗ =
+
+∫
+
+Π( · | x0) exp( r(x0)) 
+
+Z pref 0 (x0) d x0 =
+
+∫
+
+Π( · | x0)p∗
+
+> 0
+
+(x0) d x0,
+
+with p∗
+
+> 0
+
+(x) ∝ pref 0 (x) exp (r(x)) . Since the tilt depends only on x0, it changes only the endpoint marginal to p∗
+
+> 0
+
+while leaving the conditional path law Π( · | x0) unchanged, which is (10). Equivalently, the optimal process 14 is the time reversal of the forward process started from p∗
+
+> 0
+
+, so applying the noising kernel gives the optimal time-t marginal 
+
+p∗ 
+
+> t
+
+= Law ((1 − t) X0 + tϵ ), X0 ∼ p∗
+
+> 0
+
+, ϵ ∼ N (0 , I ).
+
+Form ⇒ optimality. Conversely, suppose Xu is a controlled process satisfying (10). Integrating the matching conditional law against p∗ 
+
+> 0
+
+and applying Lemma A.1, 
+
+Pu =
+
+∫
+
+Π( · | x0)p∗
+
+> 0
+
+(x0) d x0.
+
+The reference factorization P = ∫ Π( · | x0)pref 0 (x0) d x0 shares the same conditional kernel, so the Radon– Nikodym derivative depends only on the endpoint, 
+
+dPu
+
+dP (ω) = p∗
+
+> 0
+
+(X0(ω)) 
+
+pref 0 (X0(ω)) = exp( r(X0(ω))) 
+
+Z ,
+
+which is exactly the Gibbs-optimal density ratio (25), so Pu = Q∗. The Gibbs problem (24) has a strictly concave objective and hence a unique maximizer, so u solves (9). 
+
+## A.4 Optimal velocity and score identities 
+
+We verify the velocity and score identities stated after Theorem 3.1, and derive the control–velocity relation (16). 
+
+Proof. By Theorem 3.1, the optimal time-t marginal equals that of the forward process started from p∗
+
+> 0
+
+, so 
+
+v∗ 
+
+> t
+
+(x) = E[ϵ − X0 | Xt = x] , X0 ∼ p∗
+
+> 0
+
+,
+
+which has the same functional form as (3) with p∗ 
+
+> 0
+
+in place of p0. The velocity–score relation (6) carries over with p∗ 
+
+> t
+
+in place of pt by the same derivation. For the control–velocity relation, compare the drift decompositions of the reference and optimal processes, 
+
+bref  
+
+> t
+
+(x) = vref  
+
+> t
+
+(x) − σ2
+
+> t
+
+2 ∇xlog pref  
+
+> t
+
+(x),bref  
+
+> t
+
+(x) + σtu∗ 
+
+> t
+
+(x) = v∗ 
+
+> t
+
+(x) − σ2
+
+> t
+
+2 ∇xlog p∗ 
+
+> t
+
+(x).
+
+Subtracting gives 
+
+σtu∗ 
+
+> t
+
+= (v∗ 
+
+> t
+
+− vref 
+
+> t
+
+) − σ2
+
+> t
+
+2
+
+(∇xlog p∗ 
+
+> t
+
+− ∇ xlog pref 
+
+> t
+
+).
+
+Substituting ∇xlog pt = 2( κtx − vt)/σ 2 
+
+> t
+
+for both marginals, the κtx terms cancel and the score difference is 
+
+−2( v∗ 
+
+> t
+
+− vref  
+
+> t
+
+)/σ 2 
+
+> t
+
+, so σtu∗ 
+
+> t
+
+= 2( v∗ 
+
+> t
+
+− vref  
+
+> t
+
+).
+
+## A.5 Verification and self-consistency 
+
+We prove that the self-consistency condition ut = −σtAut (12) is both necessary and sufficient for optimality. One can thereby certify a candidate control by checking a single PDE rather than comparing against all alternatives. The result is standard HJB / adjoint-matching theory. We include the proof to keep the paper self-contained. 
+
+Theorem A.2 (Verification) . Assume the Hamilton–Jacobi–Bellman (HJB) equation associated with (9) admits a unique C1,2 solution (once continuously differentiable in t, twice in x) and that the optimal control is a Markov feedback, depending on the current state x only, not on the trajectory history. Let u
+
+be an admissible control with finite expected cost whose value function V ut is C1,2 in (t, x ). Then 
+
+u is optimal ⇐⇒ ut(x) = −σt∇xV ut (x) for all (t, x ), (27) 
+
+and in that case Xu 
+
+> 0
+
+∼ p∗
+
+> 0
+
+.
+
+15 Proof. The proof rests on two PDEs the value function can satisfy: a linear one that holds for any control, and a nonlinear one (the HJB equation) that singles out the optimum. The self-consistency condition is exactly what turns the first into the second. 
+
+Value-function PDE. For any admissible control u, the value function V ut satisfies the linear PDE 
+
+0 = −∂tV ut (x) + But V ut (x) − 12 ∥ut(x)∥2, V u 
+
+> 0
+
+(x) = r(x), (28) where But is the backward transition generator of the controlled diffusion (8), encoding how the reverse-time drift and noise act on a test function f ,
+
+But f (x) = −(bref  
+
+> t
+
+(x) + σtut(x))⊤∇xf (x) + σ2
+
+> t
+
+2 ∆xf (x).
+
+The first term captures transport by the drift, the second captures diffusion. Equation (28) is linear in V ut
+
+because u is fixed; it describes how the expected future value evolves along the controlled process. 
+
+Self-consistency ⇒ optimality. Suppose ut = −σt∇xV ut . Substituting this into the generator, the controlled-drift term expands as σ2 
+
+> t
+
+∥∇ xV ut ∥2, while the running cost is 12 ∥ut∥2 = σ2 
+
+> t
+> 2
+
+∥∇ xV ut ∥2. Substituting both into (28) cancels half of the quadratic terms and leaves 
+
+0 = −∂tV ut − (bref  
+
+> t
+
+)⊤∇xV ut + σ2
+
+> t
+
+2 ∆xV ut + σ2
+
+> t
+
+2 ∥∇ xV ut ∥2, (29) which is the HJB equation for (9). Since the HJB equation has a unique solution, V u must equal the optimal value function, so u is optimal. 
+
+Optimality ⇒ self-consistency. Let u∗ be an optimal Markov control with value function V = V u∗
+
+. The HJB equation can be written as 
+
+0 = −∂tV − (bref  
+
+> t
+
+)⊤∇xV + σ2
+
+> t
+
+2 ∆xV + sup 
+
+> a∈Rd
+
+{−σta⊤∇xV − 12 ∥a∥2}, V0 = r. 
+
+The supremum is a concave quadratic with unique maximizer a∗ = −σt∇xV . Since u∗ attains the supremum, 
+
+u∗ 
+
+> t
+
+(x) = −σt∇xV u∗ 
+
+> t
+
+(x). The endpoint law follows from Theorem 3.1. 
+
+# B Derivations for RAM 
+
+This appendix collects the derivations behind Section 4. 
+
+## B.1 Bayes bridge score derivation 
+
+We derive (15) in the general form covering any 0 ≤ s < t ≤ 1. The forward SDE (2) is linear, so its transition kernel from s to t is Gaussian: 
+
+pt|s(xt | xs) = N(at,s xs, β 2
+
+> t,s
+
+I), at,s = 1 − t
+
+1 − s , β2 
+
+> t,s
+
+= t2 − (1 − t)2s2
+
+(1 − s)2 . (30) Bayes’ rule gives 
+
+∇xt log ps|t(xs | xt) = ∇xt log pt|s(xt | xs) − ∇ xt log pt(xt).
+
+The Gaussian term is ∇xt log pt|s(xt | xs) = −(xt − at,s xs)/β 2
+
+> t,s
+
+, and the marginal score follows from (6) as 
+
+∇xlog pt(x) = −(x + (1 − t)vt(x)) /t . Combining the two, 
+
+∇xt log ps|t(xs | xt) = − xt − at,s xs
+
+β2
+
+> t,s
+
++ xt + (1 − t)vt(xt)
+
+t . (31) This is the Bayes bridge score used by both the jump estimator (21) and the pathwise family of Section 5. Setting s=0 gives at, 0 = 1 − t and βt, 0 = t. With ϵ := ( xt − (1 − t)x0)/t , equation (31) simplifies to the prefactor form 1−tt
+
+(vt(xt) − (ϵ − x0)) used in (15). 16 B.2 Control-space form of RAM and time-dependent weighting 
+
+The Bayes bridge score (15) has prefactor (1 − t)/t , which combines with σ2 
+
+> t
+
+= 2 t/ (1 − t) via the identity 
+
+σt(1 − t)/t = 2 /σ t.Substituting the reward proxy (14) and the bridge score (15) into the self-consistency condition ut = −σtAut
+
+gives the control-space target 
+
+ut = sg 
+
+( 2
+
+σt
+
+r(X0)((ϵ − X0) − vθt (Xt)))
+
+.
+
+Regressing uθt = (2 /σ t)( vθt − vref  
+
+> t
+
+) against this target, the common 2/σ t factor pulls out as 4/σ 2 
+
+> t
+
+on the velocity-space squared residual: 
+
+Lu(θ) = E
+
+[ 4
+
+σ2
+
+> t
+
+∥∥vθt (Xt) − sg (vref  
+
+> t
+
+(Xt) + r(X0)((ϵ − X0) − vθt (Xt)))∥ ∥2
+
+]
+
+. (32) The prefactor 4/σ 2 
+
+> t
+
+= 2(1 − t)/t downweights timesteps near the source. Dropping it yields the uniformly weighted velocity loss used in the main text. 
+
+## B.3 Path-integral characterization of the optimum 
+
+We prove Lemma 4.2. Throughout, ϵ ∼ N (0 , I ) is independent of X0 and Xt = (1 −t)X0 +tϵ . The distribution of X0 is stated alongside each expectation. 
+
+The ODE. We show that 
+
+∂λvλt (x) = E[r(X0)((ϵ − X0) − vλt (x)) ∣ ∣ Xt = x] , X0 ∼ pλ 
+
+> 0
+
+,
+
+which is (19). Starting from vλt (x) = E[ϵ − X0 | Xt = x] with X0 ∼ pλ 
+
+> 0
+
+, we differentiate in λ. The score in λ
+
+of the conditional density is 
+
+∂λ log pλ 
+
+> 0
+
+(x0 | Xt = x) = r(x0) − E[r(X0) | Xt = x]X0∼pλ
+
+> 0
+
+,
+
+so for λ-independent f ,
+
+∂λE[f | Xt = x]X0∼pλ
+
+> 0
+
+= E[r(X0)f | Xt = x]X0∼pλ
+
+> 0
+
+− E[f | Xt = x]X0∼pλ
+
+> 0
+
+E[r(X0) | Xt = x]X0∼pλ
+
+> 0
+
+.
+
+Applying with f = ϵ − X0 and using E[ϵ − X0 | Xt = x] = vλt (x) under pλ 
+
+> 0
+
+yields the claim. 
+
+The integral form. Integrating the ODE from λ = 0 to λ = 1 and using v0 
+
+> t
+
+= vref  
+
+> t
+
+, v1 
+
+> t
+
+= v∗ 
+
+> t
+
+gives 
+
+v∗ 
+
+> t
+
+(x) − vref  
+
+> t
+
+(x) = 
+
+∫ 10
+
+E[r(X0)((ϵ − X0) − vλt (x)) ∣ ∣ Xt = x] dλ, X0 ∼ pλ 
+
+> 0
+
+,
+
+which is (20). 
+
+## B.4 Exact case: Gaussian reference under a linear reward 
+
+We show that for pref 0 Gaussian and r linear, the velocity-field family {vλt }λ∈[0 ,1] from Lemma 4.2 is affine in λ. The integrand of (20) is then constant in λ, the right-endpoint rule is exact, and the RAM target (14) matches the optimal adjoint at every x.Let pref 0 = N (μ, Σ) with positive-definite Σ and r(x) = b⊤x + c. Completing the square in the log-density of 
+
+pλ 
+
+> 0
+
+∝ pref 0 eλr gives 
+
+pλ 
+
+> 0
+
+= N (μλ, Σ) , μλ := μ + λΣb, (33) a Gaussian whose mean shifts linearly in λ and whose covariance does not depend on λ. Under the analytic noising kernel (1), the joint (X0, X t) is Gaussian, and the conditional law of X0 given Xt = x is 
+
+X0 | Xt = x ∼ N (mλt (x), S t
+
+), (34) 17 with mean 
+
+mλt (x) = μλ + Jt(x − (1 − t)μλ), Jt := (1 − t) Σ ((1 − t)2Σ + t2I)−1,
+
+and covariance St = t2((1 − t)2Σ + t2I)−1Σ that does not depend on λ. The conditional mean mλt (x) is affine in λ.Using ϵ = ( Xt − (1 − t)X0)/t , the velocity field (3) for endpoint pλ 
+
+> 0
+
+evaluates as 
+
+vλt (x) = −E[X0 | Xt = x] + 1
+
+t
+
+(x − (1 − t) E[X0 | Xt = x]) = x − mλt (x)
+
+t ,
+
+which is affine in mλt (x) and therefore affine in λ. Substituting into (19) and applying Lemma 4.2 gives the claim. A concrete consequence is that vλt (x) − vref  
+
+> t
+
+(x) = − 1
+
+> t
+
+(I − (1 − t)Jt
+
+) λΣb is independent of x. Through the control–velocity relation (16), the optimal control u∗ 
+
+> t
+
+is therefore independent of position, recovering the path-cost-vanishing instance referenced at (14). 
+
+# C Derivations for Retaining the Path-Cost Correction 
+
+This appendix collects the derivations behind Section 5. We begin with the endpoint-sampling jump estimator, then turn to the pathwise family. 
+
+## C.1 Random-jump identity and the jump estimator 
+
+The jump estimator (21) combines a single-point control-cost evaluation with a Bayes bridge score. Both pieces are justified by the following lemma. 
+
+Lemma C.1 (Unbiased single-point cost estimate) . Let s ∼ U [0 , t ) be independent of the trajectory. Then 
+
+E
+
+[ t
+
+2 ∥us(Xus )∥2
+
+∣∣∣∣ Xut = x
+
+]
+
+= 12 E
+
+[∫ t
+
+> 0
+
+∥uτ (Xuτ )∥2 dτ
+
+∣∣∣∣ Xut = x
+
+]
+
+, (35) 
+
+and consequently 
+
+E
+
+[
+
+r(Xu 
+
+> 0
+
+) − t
+
+2 ∥us(Xus )∥2
+
+∣∣∣∣ Xut = x
+
+]
+
+= V ut (x). (36) 
+
+Proof. Conditioning on Xut = x and applying Fubini’s theorem, 
+
+E
+
+[ t
+
+2 ∥us(Xus )∥2
+
+∣∣∣∣ Xut = x
+
+]
+
+= 12
+
+∫ t
+
+> 0
+
+E[∥uτ (Xuτ )∥2 ∣∣ Xut = x] dτ, 
+
+which is (35). Subtracting from the reward term in the value function (11) gives (36). We now derive the jump estimator. Under Theorem 3.1, at initialization ( vθ = vref ) and at the optimum, the marginals of the controlled process coincide with those of the forward process from the appropriate endpoint distribution. The Markov property of the noising kernel then guarantees that the triple (X0, X s, X t) obtained by sampling Xs ∼ ps|0(· | X0) and then Xt ∼ pt|s(· | Xs) has the same joint law as (Xu 
+
+> 0
+
+, X us , X ut ) along the controlled process at those two points. Conditional on (X0, X s, X t), the state Xt enters the joint density only through the bridge pus|t. Combining this with (36) and the reasoning behind (13), differentiating the value function in x produces 
+
+Aut (x) = E
+
+[(
+
+r(Xu 
+
+> 0
+
+) − t
+
+2 ∥us(Xus )∥2)
+
+∇xt log pus|t(Xus | xt)∣∣xt=x
+
+∣∣∣∣ Xut = x
+
+]
+
+,
+
+with the expectation over s ∼ U [0 , t ) and the trajectory. Replacing the controlled-process sample by the two-step construction above and substituting the Bayes bridge score (31) yields (21). 18 C.2 Generalized adjoint identity 
+
+We prove Theorem 5.1. 
+
+Proof. Fix an admissible control u and 0 ≤ s < t ≤ 1; assume the regularity required to interchange differentiation and conditional expectation. The value function satisfies the recursion 
+
+V ut (x) = E
+
+[
+
+V us (Xus ) − 12
+
+∫ ts
+
+∥uτ (Xuτ )∥2 dτ
+
+∣∣∣∣ Xut = x
+
+]
+
+. (37) We differentiate both sides in x. For the prefix, the conditional law of Xus given Xut = x has density pus|t(· | x),so the score-function identity gives 
+
+∇xE[V us (Xus ) | Xut = x] = E
+
+[
+
+V us (Xus )∇xlog pus|t(Xus | x)
+
+∣∣∣ Xut = x
+
+]
+
+.
+
+For the suffix, we differentiate pathwise through the rollout. Subtracting gives the right-hand side of (22), equal to ∇xV ut (x) by the left-hand side. From a single SDE rollout we estimate the right-hand side as ̂
+
+Aus,t =̂ Vŝ Ss,t − 12̂ Gs,
+
+where ̂ Vs = r(Xu 
+
+> 0
+
+) − 12
+
+∫ s 
+
+> 0
+
+∥uτ (Xuτ )∥2 dτ is the prefix value accumulated along the rollout, ̂ Ss,t estimates the bridge score ∇xt log pus|t(Xus | xt), and ̂ Gs is the suffix path-cost gradient. The next subsections develop estimators for ̂ Ss,t and the discrete-time machinery that produces ̂ Gs.
+
+## C.3 Malliavin bridge-score estimator 
+
+We derive the Malliavin estimator ̂ Ss,t .
+
+Proposition C.2 (Malliavin score estimator) . Let (Xuτ )τ ∈[s,t ] be a segment of the controlled process (8), and let Juτ |s denote the Jacobian flow 
+
+dJuτ |s = ∇x
+
+(bref  
+
+> τ
+
++ στ uτ
+
+)(Xuτ )Juτ |s dτ, Jus|s = I. (38) 
+
+Define ̂
+
+Ss,t := 
+
+(∫ ts
+
+σ2 
+
+> τ
+
+dτ
+
+)−1 ∫ ts
+
+(Juτ |s)⊤στ dBτ . (39) 
+
+Then E[̂ Ss,t 
+
+∣∣ Xus , X ut
+
+] = ∇xt log pus|t(Xus | xt)|xt=Xut .
+
+Proof. We apply Pidstrigach et al. (2025, Proposition 2.4): for a diffusion dXτ = fτ (Xτ ) d τ + στ dBτ and any non-decreasing absolutely continuous α on [s, t ], the bridge score satisfies 
+
+∇xt log ps|t(xs | xt) = 1
+
+αt − αs
+
+E
+
+[∫ ts
+
+α′ 
+
+> τ
+
+σ−1 
+
+> τ
+
+J⊤  
+
+> τ|s
+
+dBτ
+
+∣∣∣∣ Xs = xs, X t = xt
+
+]
+
+. (40) Applied to the controlled process with στ as in (8), the choice α′ 
+
+> τ
+
+= σ2 
+
+> τ
+
+makes αt − αs = ∫ ts σ2 
+
+> τ
+
+dτ and gives the estimator (39). The weighting α′ 
+
+> τ
+
+= σ2 
+
+> τ
+
+is convenient because the integrand becomes (Juτ |s)⊤στ dBτ ; in a discretized rollout this is exactly the realized solver noise. In practice, rather than accumulating (39) forward in τ , we use the equivalent reverse-mode adjoint SDE indexed by a running time τ and a fixed endpoint t,
+
+dS(t) 
+
+> τ
+
+= −∇ x
+
+(bref  
+
+> τ
+
++ στ uτ
+
+)(Xuτ )⊤S(t) 
+
+> τ
+
+dτ − στ dBτ , S(t) 
+
+> t
+
+= 0 , (41) 19 with ̂ Ss,t = ( ∫ ts σ2 
+
+> τ
+
+dτ )−1S(t) 
+
+> s
+
+. Only vector–Jacobian products through the drift are required, never explicit Jacobians. The same dual-indexed form applies to the suffix running-cost gradient, 
+
+dG(t) 
+
+> τ
+
+= −∇ x
+
+(bref  
+
+> τ
+
++ στ uτ
+
+)(Xuτ )⊤G(t) 
+
+> τ
+
+dτ − ∇ x∥uτ (Xuτ )∥2 dτ, G(t) 
+
+> t
+
+= 0 , (42) with ̂ Gs := G(t) 
+
+> s
+
+. The full-horizon specialization in Section C.6 produces all endpoint-indexed accumulators 
+
+S(ti)0 , G (ti)0 in a single backward sweep. 
+
+## C.4 Local one-step Gaussian score 
+
+Let s = t−δ and write but := bref  
+
+> t
+
++ σtut. A single Euler–Maruyama step of the controlled SDE (8) from t
+
+to t−δ gives 
+
+Xut−δ = Xut − but (Xut )δ + ∆ Wt, ∆Wt ∼ N (0, σ 2 
+
+> t
+
+δI ).
+
+Conditional on Xut = x, this defines the Gaussian one-step transition pu,δ t−δ|t(· | x) = N (x − but (x)δ, σ 2 
+
+> t
+
+δI ),with log-density −∥ Xut−δ − μ(x)∥2/(2 σ2 
+
+> t
+
+δ) up to a constant, where μ(x) = x − but (x)δ. Differentiating in x,
+
+∇xlog pu,δ t−δ|t(Xut−δ | x) = 
+
+(I − δ∇xbut (x))⊤∆Wt
+
+σ2 
+
+> t
+
+δ , (43) which, evaluated at x = Xut , is the one-step bridge score for the local estimator. Its difference from the exact continuous-time bridge score is the O(δ) error already incurred by Euler–Maruyama. 
+
+## C.5 Cancellation of ∇xut terms in the local estimator 
+
+We show that the ∇xut contributions from the score and the path-cost gradient cancel to first order in δ,yielding the local target (45). We work at the fixed point ut = −σt∇xV ut .Let s = t−δ. From (43) with ∆Wt = σt∆Bt,
+
+∇xt log pu,δ s|t (Xus | xt)∣∣xt=Xut
+
+=
+
+(I − δ∇xbut (Xut ))⊤∆Wt
+
+σ2 
+
+> t
+
+δ . (44) Writing ∇xbut = ∇xbref  
+
+> t
+
++ σt∇xut, the part of the REINFORCE term involving ∇xut is 
+
+−V us (Xus )( ∇xut(Xut )) ⊤∆Bt.
+
+The path-cost term on a single step is 
+
+− 12 ∇x
+
+∫ ts
+
+∥uτ (Xuτ )∥2 dτ = −δ(∇xut(Xut )) ⊤ut(Xut ) + O(δ2).
+
+To compare the two, expand the value function backward from t to s. At the fixed point, Itô’s formula combined with ut = −σt∇xV ut gives 
+
+V us (Xus ) = V ut (Xut ) − ut(Xut )⊤∆Bt + O(δ).
+
+Substituting this into the ∇xut contribution of the score and taking conditional expectation given Xut , the first expansion term vanishes by martingale property while the second yields δ(∇xut)⊤ut, using E[∆ Bt∆B⊤ 
+
+> t
+
+|
+
+Xut ] = δI . This cancels the path-cost term to first order in δ.What remains is the reference-drift piece, ̂
+
+Alocal  
+
+> t
+
+≈ E
+
+[ V ut−δ (Xut−δ )
+
+σ2 
+
+> t
+
+δ
+
+(I − δ∇xbref  
+
+> t
+
+(Xut ))⊤∆Wt
+
+∣∣∣∣ Xut
+
+]
+
+.
+
+Replacing the conditional value by the prefix estimate ̂ Vt−δ and simplifying yields the continuous-time local target ̂
+
+Alocal  
+
+> t
+
+≈̂ Vt−δ
+
+∫ tt−δ σ2 
+
+> τ
+
+dτ
+
+(I − δ∇xbref  
+
+> t
+
+(Xut ))⊤∆Wt, ∆Wt = σt
+
+√δ ξ t, ξt ∼ N (0, I ). (45) Since ∇xbref  
+
+> t
+
+= 2 ∇xvref  
+
+> t
+
+− κtI, the local target requires only a VJP through the frozen reference model. 20 C.6 Discrete-time full-horizon training procedure 
+
+We turn the full-horizon ( s=0) instance of the estimator ̂ Aus,t into a concrete training procedure. Each iteration rolls out the controlled SDE once and then computes targets for all interior grid points in a single discrete reverse-mode sweep, the discrete analogue of solving the continuous adjoint equations backward from every endpoint ti to 0. Throughout this subsection, we write Xi := Xti and buθ 
+
+> i
+
+:= buθ 
+
+> ti
+
+for pointwise values at grid points. Expressions of the form ∇x(f (Xi)⊤v) are read with the gradient taken in x and evaluated at x=Xi; this scalar-backprop form is what the implementation actually uses and never materializes the d × d
+
+Jacobian ∇xf .
+
+SDE rollout. Fix a grid 0 = t0 < t 1 < · · · < t K < 1 with ∆ti := ti − ti−1, and draw independent innovations 
+
+εi ∼ N (0 , I ) for i = 1 , . . . , K . Each innovation is scaled by the exact step standard deviation 
+
+σ2 
+
+> i
+
+:= 
+
+∫ ti
+
+> ti−1
+
+σ2 
+
+> τ
+
+dτ, (46) which evaluates to σ2 
+
+> i
+
+= 2 log 1−ti−1 
+
+> 1−ti
+
+− 2∆ ti. The integrated variance (46) is finite for ti < 1 but diverges at the noise endpoint, since σ2 
+
+> t
+
+∼ 2/(1 − t) as t ↑ 1. We therefore take tK < 1 (in practice tK = 1 − δ for small δ). Let mθi denote the deterministic part of the reverse step ti → ti−1 under the current model, and mref  
+
+> i
+
+the corresponding reference step map. Starting from XK ∼ N (0 , I ), we roll out 
+
+Xi−1 = mθi (Xi) + σiεi, (47) and store {Xi}Ki=0 together with {εi}Ki=1 . Rather than regressing the continuous control ui directly, the implementation regresses the exact normalized mean shift of this discrete step, (mθi (x) − mref  
+
+> i
+
+(x)) /σ i. For a plain Euler step this reduces to mθi (x) = x − ∆tibuθ 
+
+> i
+
+(x). In our experiments we instead use an exact integrator that admits a closed-form mθi .
+
+Adjoint sweep. Let Si and Gi denote the discrete adjoint accumulators associated with the interval [0 , t i].Although the loop runs in increasing i, it still represents backward propagation through the reverse solver: extending the horizon from ti−1 to ti transports the previously accumulated adjoint through the transpose Jacobian of the step map and adds the new contribution from step i. The recursion is 
+
+Si = ∇x
+
+(mθi (Xi)⊤Si−1
+
+) + σiεi, (48) 
+
+Gi = ∇x
+
+(mθi (Xi)⊤Gi−1
+
+) + ∇x
+
+∥∥∥∥
+
+mθi (Xi) − mref  
+
+> i
+
+(Xi)
+
+σi
+
+∥∥∥∥
+
+> 2
+
+, (49) for i = 1 , . . . , K −1, and the bridge-score and full-horizon adjoint targets at grid point ti are ̂
+
+Si =
+
+(∑ik=1 σ2
+
+> k
+
+)−1
+
+Si,̂ Ai = r(X0)̂ Si − 12 Gi. (50) Using the Bayes bridge score (31) instead of Malliavin replaces ̂ Si by its plug-in form on (X0, X i) and leaves the path-cost sweep for Gi unchanged. 
+
+Local variant. The local estimator (45) reuses the same stored rollout with no multi-step sweep. At each interior index i,̂
+
+Alocal  
+
+> i
+
+=̂ Vi−1
+
+σi
+
+∇x
+
+(mref  
+
+> i
+
+(Xi)⊤εi
+
+),̂ Vi−1 = r(X0) − 12
+
+> i−1
+
+∑
+
+> k=1
+
+∥∥∥∥
+
+mθk(Xk) − mref  
+
+> k
+
+(Xk)
+
+σk
+
+∥∥∥∥
+
+> 2
+
+,
+
+requiring a single backward pass through the frozen reference step map and no differentiation through the current policy. Algorithm 2 gives the full-horizon Malliavin procedure. Each iteration accumulates the exact discrete analogue of the velocity-space regression loss over the interior grid points, and the Bayes and local variants substitute their respective targets into the same rollout. 21 Algorithm 2 Full-horizon Malliavin RAM 
+
+Inputs: parameters θ (initialized from vref ), reward r, grid 0= t0 < · · · < t K <1 
+
+> 1:
+
+while not converged do 
+
+▷ SDE rollout  
+
+> 2:
+
+sample XK ∼ N (0 , I ) 
+
+> 3:
+
+for i = K, . . . , 1 do  
+
+> 4:
+
+sample εi ∼ N (0 , I ) 
+
+> 5:
+
+Xi−1 ← mθi (Xi) + σiεi 
+
+> 6:
+
+end for  
+
+> 7:
+
+r0 ← r(X0)
+
+▷ Adjoint sweep and loss accumulation  
+
+> 8:
+
+S ← 0, G ← 0, L ← 0 
+
+> 9:
+
+for i = 1 , . . . , K −1 do  
+
+> 10:
+
+S ← ∇ x
+
+(mθi (Xi)⊤S) + σiεi 
+
+> 11:
+
+G ← ∇ x
+
+(mθi (Xi)⊤G) + ∇x
+
+∥∥∥ mθi (Xi)−mref  
+
+> i(Xi)
+> σi
+
+∥∥∥2
+
+> 12:
+
+̂ S ← (∑ ik=1 σ2
+
+> k
+
+)−1S
+
+> 13:
+
+̂ A ← r0̂ S − 12 G 
+
+> 14:
+
+L ← L +
+
+∥∥∥ mθi (Xi)−mref   
+
+> i(Xi)
+> σi
+
+− sg (σî A)∥∥∥2 
+
+> 15:
+
+end for  
+
+> 16:
+
+update θ with ∇θ L/ (K−1)  
+
+> 17:
+
+end while 
+
+# D Experimental Details 
+
+We adapt the general setup of prior work (Liu et al., 2025a; Zheng et al., 2026; Xue et al., 2025). We post-train Stable Diffusion 3.5 Medium (SD3.5M) (Esser et al., 2024) with LoRA (rank r = 32 , scaling α = 64 ). We train all models on a cluster of 4 NVIDIA H100 GPUs with 96 GB of memory each. 
+
+Training steps. Each training step, we draw 48 prompts, generate 24 samples per prompt, evaluate the reward on every prompt-image pair, construct K = 8 noisy training samples per image for which we compute the RAM loss, and perform a single optimizer step. This means that the effective batch size (across all GPUs) is 48 × 24 × 8 = 9216 per parameter update. For a fair comparison, we use 48 prompts per step for all baselines as well (AWM’s reference implementation uses 72 ); otherwise we retain the hyperparameters and implementation of each original work. 
+
+Per-step compute cost. Table 3 reports the average per-step compute cost of each method, measured in GPU-hours (wall-clock time multiplied by the four H100 GPUs we train on). Per-step costs are comparable across methods, so RAM’s step-count efficiency translates directly into wall-clock training time. 
+
+Table 3 Average per-step training cost, in GPU-hours (training wall-clock time multiplied by four H100 GPUs). 
+
+Method GenEval PickScore OCR 
+
+Flow-GRPO 0.701 0.431 0.498 
+
+AWM 0.653 0.329 0.370 
+
+DiffusionNFT 0.566 0.254 0.304 
+
+RAM 0.666 0.399 0.426 
+
+Sampling and guidance. We use the default Euler sampler throughout, with 20 steps during training and 40 
+
+steps at evaluation. Training uses classifier-free guidance with scale 2.0. At evaluation we use the default SD3.5M scale of 4.5 for GenEval and OCR, and a lower scale of 2.0 for PickScore. The lower scale for PickScore reflects its longer training run, during which guidance gets distilled into the model. 22 Optimizer. We use AdamW with learning rate 3e −4, weight decay 0.01 , and no learning-rate warmup. We lower Adam’s second-moment decay β2 from its default of 0.999 to 0.95 . This is a common choice for short training runs, as the smaller β2 lets the optimizer adapt more quickly to the gradient scale. 
+
+Exponential moving average. On-policy samples drawn during training come from an exponential moving average (EMA) of the model parameters with decay 0.9 and warmup rate 0.01 . Prior works use task-dependent EMA configurations; we use a single setting that works uniformly well across all three tasks. Final evaluation uses an EMA with decay 0.9 and no warmup. 
+
+Reward coefficient. After group-relative normalization, we multiply the rewards by a fixed task-dependent coefficient: 100 for GenEval and OCR, and 1000 for PickScore. Because reward scaling controls the regularization strength in our convention, this coefficient corresponds to 1/kl_weight in methods that instead report an explicit KL-penalty weight. The values were tuned to maximize the training reward while still scoring well on the image-quality metrics. 
+
+Timestep sampling. During training we sample the timestep t from the linear density p(t) = 2 t on [0 , 1] ,biasing toward values near the noise endpoint t=1 where generation begins. This notably enhances training stability over uniform sampling. 23

@@ -1,0 +1,2593 @@
+Title: Sharpen Your Flow: Sharpness-Aware Sampling for Flow Matching
+
+URL Source: https://arxiv.org/pdf/2605.11547v1
+
+Published Time: Wed, 13 May 2026 00:40:38 GMT
+
+Number of Pages: 39
+
+Markdown Content:
+# Sharpen Your Flow: Sharpness-Aware Sampling for Flow Matching 
+
+## Aditi Gupta 1,2, Soon Hoe Lim ∗3,4, Annan Yu 5, N. Benjamin Erichson ∗1,2
+
+> 1
+
+Lawrence Berkeley National Laboratory, 2International Computer Science Institute, 3Department of Mathematics, KTH Royal Institute of Technology, 4Nordita, KTH Royal Institute of Technology and Stockholm University, 5Center for Applied Mathematics, Cornell University 
+
+> ∗
+
+Equal Mentoring 
+
+Abstract 
+
+Flow matching models generate samples by numerically integrating a learned velocity field, with each integration step requiring a neural network evaluation. Fast generation therefore requires using a small fixed evaluation budget effectively: the key question is not only how to integrate the flow, but where the sampler should spend its steps. We propose SharpEuler, a training-free sampler that profiles a pretrained model offline by estimating where the learned velocity field changes most rapidly along calibration trajectories. This finite-difference estimate defines a solver-aware sharpness profile, which is smoothed and converted by a quantile transform into a timestep grid for any desired inference budget. At test time, sampling remains ordinary Euler integration with the same number of model evaluations as a uniform schedule. We justify SharpEuler using three principles: a numerical principle identifying trajectory acceleration as the leading source of Euler discretization error, a variational principle deriving sharpness-based power-law timestep densities, and a statistical guarantee showing that the finite-sample calibrated sampler is stable at the terminal distribution level. Our experiments show that SharpEuler improves sample quality at fixed budgets, reducing inter-mode leakage and increasing mode coverage. 
+
+Code: https://github.com/aditiii12/SharpEuler 
+
+Correspondence: N. Benjamin Erichson @ erichson@lbl.edu 
+
+# 1 Introduction 
+
+Flow-based generative models have become a powerful tool for modeling high-dimensional distribu-tions [ 23 , 25 , 1 ]. Their applications range from text-to-image [ 9] and text-to-video generation [ 16 ] to scientific domains such as time series modeling [ 14 , 21 ], fluid flow forecasting [ 22 ], molecule gener-ation [ 28 ], materials design [ 35 ], and protein structure generation [ 8]. As an instance of dynamical measure transport, sampling with a flow matching model requires integrating a learned velocity field that transports samples from a simple noise distribution to the data distribution. This makes sampling a numerical integration problem. In classical numerical analysis, accuracy is often improved using higher-order or adaptive solvers [ 13 , 10 , 5]. For neural generative models, however, each 1
+
+> arXiv:2605.11547v1 [cs.LG] 12 May 2026
+
+function evaluation is a forward pass through a large network [ 24 ], and these evaluations dominate sampling cost in modern image and video models [ 9]. Thus the relevant quantity is not only asymptotic solver accuracy, but sample quality per neural network evaluation. For this reason, many practical samplers use simple one-stage methods with a fixed budget. Forward Euler is attractive because a sampler with budget B uses exactly B model evaluations. If we do not add solver stages or use an online adaptive method with sample-dependent cost, the remaining question is then: 
+
+Where should a flow matching sampler spend its finite Euler budget? 
+
+Uniform and shifted schedules are simple and often effective, but they are not derived from the learned dynamics being integrated. Recent work has shown that timestep allocation can strongly impact sample quality, especially in the few-evaluation regime [ 40 , 42 , 41 , 31 ]. Other schedulers use information-theoretic criteria, such as entropy-based time reparameterizations that motivates the Entropic Time Scheduler (ETS) of [ 36 ]. Our perspective is complementary: for a fixed Euler solver, the schedule should be based on where the learned vector field is changing rapidly. See also App. A for a detailed discussion of related work. We propose SharpEuler, a training-free, solver-aware schedule calibration method for pretrained flow matching models. The method estimates where the learned trajectory is sharp (velocity field changes rapidly) rather than choosing this region by hand. In an offline calibration stage, we run fine-grained Euler trajectories on a set of representative prompts or samples, record consecutive velocity evaluations, and estimate how rapidly the vector field changes along the trajectory. Averaging and smoothing the finite-difference estimated accelerations gives a time-dependent sharpness profile. At inference time, we convert this profile into a monotone grid and run the same Euler sampler on that grid. The method does not change the model, require retraining, add solver stages, or increase the number of model evaluations. It only changes where the evaluations are placed. In this sense, SharpEuler moves adaptivity out of the inner sampling loop and into a cheap offline calibration stage; the deployed sampler remains a fixed-cost Euler sampler with exactly B evaluations. SharpEuler is motivated by the local truncation error (LTE) of Euler integration along a flow trajectory. Euler’s local truncation error is controlled by trajectory acceleration: regions where the learned velocity changes rapidly require smaller steps, while nearly linear regions can be traversed more coarsely. The same signal appears in backward error analysis [ 12 ] as the leading modified-equation bias. Thus, rather than placing steps uniformly or by hand, SharpEuler estimates where the trajectory acceleration is large and places more evaluations in those regions. This perspective also explains why the method is most useful at small sampling budgets. With many evaluations, even a uniform grid can resolve most changes in the trajectory. However, with only a few evaluations, a poorly placed Euler step can cross a sharp region without evaluating the intervening dynamics, which can mix modes or leave parts of the data distribution underrepresented. We observe this behavior both on synthetic distributions, where mode coverage and leakage can be measured directly, and in high-dimensional text-to-image sampling, where calibrated timesteps improve semantic fidelity. 
+
+Contributions. Our main contributions are as follows. 
+
+• We propose SharpEuler, a training-free, solver-aware method for constructing timestep schedules for pretrained flow matching models. It uses offline calibration trajectories to estimate a sharpness profile and converts this profile into a fixed Euler grid for any inference budget. 
+
+• We provide three principles to justify SharpEuler. The numerical principle shows, via local truncation error and backward error analysis, that acceleration controls both the leading Euler error and the leading modified-equation bias. The variational principle shows that natural timestep allocation objectives yield power-law densities (Proposition 2), with the square-root case singled out by minimizing the leading Euler error proxy. The statistical principle gives a stability guarantee (Theorem 2), showing that the calibrated schedule approaches the best population schedule in the admissible class as the number of calibration trajectories grows, up to smoothing bias. 2• We demonstrate that SharpEuler improves low-budget sampling without increasing the number of model evaluations. On synthetic multimodal data, it reduces inter-mode leakage, improves mode coverage and sample quality, especially at very small Euler budgets. We then demonstrate its advantage on high-dimensional text-to-image generation tasks. 
+
+# 2 Background and Problem Setup 
+
+Flow matching models define a continuous transformation from a simple noise distribution to the data distribution through an ODE driven by a learned velocity field [ 24 ]: 
+
+dx (t)
+
+dt = uθ (x(t), t ), x(0) ∼ p0, x(t) ∈ Rd, t ∈ [0 , 1] . (1) We start from a base distribution p0 = N (0 , I ) at t = 0 and the ODE is integrated to t = 1 to obtain new samples. Let T (x0) := x(1; x0) and μ1 := T#p0 denote the learned flow map and its output distribution. Equivalently, we can use the reverse-time coordinate s = 1 −t so that s = 1 corresponds to noise and s = 0 
+
+corresponds to data. If the learned velocity field is denoted by vθ (x, s ), then the forward-time velocity in Eq. (1) is uθ (x, t ) = −vθ (x, 1 − t). Throughout, we assume the learned velocity field is sufficiently smooth so that the displayed derivatives and Taylor expansions are well defined along sampled trajectories. In practice, the ODE in (1) cannot be solved exactly and must be discretized. Let 0 = t0 < t 1 < · · · <tB = 1 be an ascending forward-time schedule with B intervals. The Euler update is 
+
+x(k+1) = x(k) + ( tk+1 − tk)uθ (x(k), t k), k = 0 , . . . , B − 1. (2) In the reverse-time implementation that we use, we consider the descending grid sk = 1 − tk, 1 = 
+
+s0 > s 1 > · · · > s B = 0 , and Eq. (2) becomes 
+
+x(k+1) = x(k) − (sk − sk+1 )vθ (x(k), s k), k = 0 , . . . , B − 1. (3) The sampler performs exactly one evaluation of the vector field per interval, and therefore uses exactly 
+
+B model evaluations. The integer B is often small in fast generation settings, because each evaluation of vθ is a forward pass through a neural network. Once the model, solver, and budget B are fixed, the main remaining design choice is the time grid itself. A uniform schedule sets sk = 1 − k/B , while other schedules redistribute the same number of evaluations toward selected parts of the trajectory. All such methods have the same online cost when they use the same value of B; they differ only in where the model evaluations are placed. This leads to the following problem setup. 
+
+Problem setup. Given a pretrained flow matching model vθ and a fixed evaluation budget B, construct a monotone time grid TB = {sk}Bk=0 , 1 = s0 > s 1 > · · · > s B = 0 , that improves Euler sampling without changing the model, retraining, adding solver stages, or increasing the number of function evaluations (NFE). In the next section, we propose to choose this grid by measuring where the learned flow is sharp, and to allocate the fixed Euler budget accordingly. 
+
+# 3 SharpEuler: A Sharpness Aware Sampler 
+
+In this section, we introduce SharpEuler, our proposed sharpness aware sampler. Given a pretrained flow matching model and an evaluation budget B, our goal is to construct a deterministic time grid for Euler sampling that allocates more model evaluations to regions where the learned dynamics are sharp, and fewer evaluations to regions where they are smooth. Following Section 2, the theory is written in forward time t, with velocity uθ , while the implementation uses the descending reverse-time coordinate s = 1 − t, with velocity vθ . The method has two stages: 3• Offline stage. We estimate a sharpness profile by computing fine-grained Euler trajectories on a small calibration set and measuring how rapidly the learned vector field changes along these trajectories. This stage is performed only once for a given model and calibration distribution. 
+
+• Online stage. We convert this profile into a monotone grid and run Euler sampling on that grid, which requires the same number of model evaluations as a uniform Euler sampler with budget B.Detailed algorithms for the two stages are given in App. B. The motivation is numerical: Euler’s method is accurate when the trajectory is nearly linear over a step, but inaccurate when the trajectory changes rapidly. Thus a fixed step size may be harmless in smooth regions and too coarse in sharp ones, suggesting that the time grid should depend on the learned dynamics. For the reverse-time ODE, the leading local error is controlled by the trajectory acceleration ¨x(t) =  
+
+> ddt
+
+vθ (x(t), t ). This derivative is taken along the sampled trajectory, so it reflects both explicit time variation in vθ and variation induced as the state moves different velocity. Computing this quantity accurately is expensive for large neural networks, while classical adaptive error control would require additional model evaluations during sampling. We therefore estimate sharpness offline using finite differences of consecutive velocity evaluations along fine-grained Euler trajectories. This proxy measures where the learned trajectory changes direction or speed rapidly, and hence where a coarse Euler step is most likely to incur error. The resulting sharpness profile is model-, data-, and conditioning-distribution dependent. It is not an online error estimate for a particular sample, but an offline summary of where the velocity field of the pretrained model changes rapidly. 
+
+## 3.1 Offline calibration 
+
+The offline stage turns the numerical intuition above into a computable signal. We would like to know, as a function of time, where the velocity field changes rapidly along typical sampling trajectories. Since we want a fixed-cost sampler, we estimate this information once from a calibration set and then reuse the resulting profile during inference. Let C = {cj }Mj=1 be a calibration set of representative conditioning inputs, prompts, or samples. For unconditional models, we omit cj from the notation. We choose a fine-grained descending reverse-time grid 1 = s0 > s 1 > · · · > s N = 0 , where N is much larger than the evaluation budgets used at inference time. For each calibration input cj , we run an N -step Euler trajectory and record the reverse-time velocity evaluations Vj,i = vθ (xj,i , s i; cj ), i = 0 , . . . , N − 1. The reference trajectory itself is generated by xj,i +1 = xj,i − (si − si+1 )Vj,i . These evaluations are already produced by the reference trajectory. We use their successive differences to estimate how rapidly the learned vector field changes along the path. For i = 0 , . . . , N − 2, define 
+
+baj,i = Vj,i +1 − Vj,i 
+
+di
+
+, di = 12 (|si − si+1 | + |si+1 − si+2 |) = 12 (si − si+2 ). (4) This is a finite difference approximation to the derivative of the velocity along the trajectory. The sign depends on the direction in which time is parameterized, but its norm does not. We therefore use ∥baj,i ∥ as the local sharpness signal. Averaging over the calibration set gives a global profile ¯Si =
+
+> 1
+> M
+
+PMj=1 ∥baj,i ∥ , i = 0 , . . . , N − 2. This averaging is important. We do not want to adapt the sampler separately for each generated sample, since that would introduce online overhead and variable cost. Instead, we estimate a reusable profile for the model and calibration distribution. In this sense, the schedule is data informed but fixed at inference time. Motivated by variational principles (see Sec. 4.2), we form the exponent-shaped sharpness signal 
+
+Iγ,i =   ¯Si + εa
+
+γ , γ > 0, i = 0 , . . . , N − 2, (5) where εa ≥ 0 is a small numerical floor. The raw profile can be noisy, especially for small calibration sets. We therefore smooth it with a Gaussian kernel of bandwidth σ, i.e. eIγ = Smooth σ (Iγ ). We then normalize the smoothed values into discrete masses bwi = eIγ,i   
+
+> PN−2
+> r=0 eIγ,r
+
+, i = 0 , . . . , N − 2. The support of 4this finite-difference signal is naturally centered at esi = si+si+2  
+
+> 2
+
+, i = 0 , . . . , N − 2. To be consistent with the forward-time notation, we set eti = 1 − esi. The pairs (eti, bwi) are sorted in ascending eti, an empirical CDF is formed with a left endpoint anchor at t = 0 , and the inverse CDF is evaluated by linear interpolation. This produces a deterministic schedule for any evaluation budget. 
+
+## 3.2 Online sampling 
+
+At inference time, the sampler is ordinary Euler integration on the calibrated grid. Let F −1emp denote the linearly interpolated inverse-CDF map obtained from the offline stage. For a budget B, we compute ascending forward-time quantiles etb = F −1emp 
+
+  bB
+
+ , b = 0 , . . . , B, and convert them to a descending reverse-time schedule sb = 1 − etb, b = 0 , . . . , B. Given a conditioning input c and an initial noise sample x(0) ∼ N (0 , I ), we iterate x(k+1) = x(k) − (sk − sk+1 )vθ (x(k), s k; c), k = 0 , . . . , B − 1. The only difference from uniform sampling is the choice of the time grid {sk}. The model is unchanged, no gradients are computed, and no online error estimates or rejected steps are used. The number of model evaluations is exactly B. The calibrated schedule can be viewed as a time reparameterization [ 36 ]: the empirical sharpness profile defines a density over forward model time, and the sampler uses uniform quantiles in the corresponding CDF. This distinction from classical adaptive solvers is important. Classical adaptive methods choose step sizes during integration and usually spend additional function evaluations to estimate or control local error. Sharpness aware sampling performs this adaptation once, offline, using representative trajectories. The resulting schedule is fixed before inference begins. Thus, the online cost remains deterministic and identical to that of a uniform Euler sampler with the same budget. 
+
+# 4 Why SharpEuler: Three Justifying Principles 
+
+Throughout this section, we use the forward-time convention for clarity of analysis, and assume that the learned velocity field uθ : Rd × [0 , 1] → Rd is sufficiently smooth on the region visited by sampled trajectories so that the displayed derivatives and Taylor expansions are well defined. Let x(t; x0) solve the forward-time ODE (1) and define the acceleration sharpness a(t; x0) = ∥¨x(t; x0)∥.We justify SharpEuler through three principles. 
+
+## 4.1 Numerical principle: acceleration controls Euler error and modified-equation bias 
+
+Principle I: The acceleration magnitude ∥¨x(t)∥ is the quantity selected by both Euler local truncation error and backward error analysis. 
+
+The first justification comes from local truncation error. 
+
+Proposition 1 (Informal: Euler error selects acceleration) . For the forward-time ODE (1) , the leading local truncation error of one Euler step from the current state x(t) is proportional to h2 ¨x(t). Hence, to leading order, the size of the one-step Euler error is controlled by h2∥¨x(t)∥.
+
+See Proposition 3 for a detailed version. Indeed, Taylor expansion gives 
+
+x(t + h) − [x(t) + hu θ (x(t), t )] = h2
+
+2 ¨x(t) + O(h3) (6) as h → 0, showing that the leading local error is h2∥¨x(t)∥/2. Moreover, using the chain rule, 
+
+¨x(t) = ddt uθ (x(t), t ) = ∂tuθ (x(t), t ) + ∇xuθ (x(t), t )uθ (x(t), t ). Therefore, finite differences of learned velocities along calibration trajectories provide a first-order Euler local-error proxy for a(t; x0), i.e.      
+
+> uθ(x(tk+1 ),t k+1 )−uθ(x(tk),t k)∆t
+
+= ¨x(tk) + O(∆ t).
+
+5The same quantity is selected by backward error analysis [ 12 ]. Rather than viewing Euler only as an approximation to (1) , backward error analysis asks which nearby, step-size-dependent ODE is implicitly solved by the Euler map. For ψh(t, x ) = x + hu θ (x, t ), one seeks a formal modified vector field, uθ,h (x, t ) = uθ (x, t ) + hu θ, 1(x, t ) + O(h2), whose exact time-h flow agrees with ψh up to local error O(h3). Matching Taylor coefficients gives 
+
+uθ,h (x, t ) = uθ (x, t ) − h
+
+2 (∂tuθ (x, t ) + ∇xuθ (x, t )uθ (x, t )) + O(h2). (7) Along exact trajectories, the leading perturbation in the modified vector field is therefore − h 
+
+> 2
+
+¨x(t).Consequently, regions with large acceleration are, to leading order, precisely the regions where Euler is both locally less accurate and more strongly biased toward a modified dynamics. This motivates using acceleration as a solver-aware timestep allocation signal. Full derivations are in App. C. 
+
+## 4.2 Variational principle: power-law densities arise from optimal allocation 
+
+Principle II: Once a positive importance profile I(t) is specified, natural variational allocation rules produce power-law timestep densities. 
+
+The second justification is variational. A timestep density ρ(t) specifies how a fixed evaluation budget is distributed over sampling time. If ρ(t) is small in a region where the importance profile I(t) is large, then the sampler under-resolves an important part of the path. Thus a natural allocation rule should penalize assigning too little timestep density to high-importance regions. The Euler local-error proxy gives one concrete example. Since a timestep density induces a local step size 
+
+h(t) ≈ 1 
+
+> Bρ (t)
+
+, and local truncation error scales quadratically in h(t), the leading accumulated Euler-risk contains a term of the form R 10 
+
+> I(t)
+> ρ(t)
+
+dt. This corresponds to a power-law penalty against small ρ(t). At the other extreme, if the goal is simply to match a prescribed importance profile, then the weighted cross-entropy objective C(ρ; I) := − R 10 I(t) log ρ(t) dt is natural. This motivates the following family, which interpolates between these two allocation principles. Let I : [0 , 1] → (0 , ∞) be a positive importance profile and let ρ be a normalized timestep den-sity. For β ≥ 0, define 
+
+ψβ (r) = 
+
+
+
+r−β − 1
+
+β , β > 0,
+
+− log r, β = 0 ,r > 0. (8) The objective 
+
+min     
+
+> ρ> 0,R10ρ(t)dt =1
+
+Fβ (ρ; I), Fβ (ρ; I) = 
+
+Z 10
+
+I(t)ψβ (ρ(t)) dt (9) penalizes under-allocation of density in high-importance regions. The parameter β controls the strength of this penalty: β = 0 gives the logarithmic cross-entropy penalty, while β = 1 gives the Euler-risk penalty R I(t)/ρ (t) dt , up to an additive constant and scale. 
+
+Proposition 2 (Variational allocation gives a power law) . The unique minimizer of (9) is 
+
+ρ⋆β (t) = I(t)1/(β+1) 
+
+R 10 I(s)1/(β+1) ds . (10) 
+
+Thus variational timestep allocation naturally produces power-law densities in the importance profile. 
+
+See Proposition 5 for a detailed version. The solution ρ⋆β (t) ∝ I(t)1/(β+1) shows how the variational family converts an importance profile into a timestep density. When β = 0 , the scheduler directly matches 6the importance profile, ρ⋆
+
+> 0
+
+(t) ∝ I(t). When β = 1 , it produces the square-root law, ρ⋆
+
+> 1
+
+(t) ∝ pI(t). Larger 
+
+β produces flatter densities because the power 1/(β + 1) becomes smaller. This family recovers two timestep schedules of SharpEuler. First, let ¯a(t) = Ex0∼p0 ∥¨x(t; x0)∥ be the population acceleration sharpness. If ρ induces local step size h(t) ≈ 1 
+
+> Bρ (t)
+
+, then the accumulated leading Euler local-error (or risk) proxy scales as E[ρ] ≈ 12B
+
+R 10¯a(t) 
+
+> ρ(t)
+
+dt . This corresponds to β = 1 
+
+and I(t) = ¯a(t), yielding ρ⋆
+
+> Euler
+
+(t) ∝ ¯a(t)1/2.Second, the profile-matching objective corresponds to β = 0 , i.e. min ρ> 0, R ρ=1 C(ρ; I). Its unique minimizer is ρI (t) = I(t)    
+
+> R10I(s)ds
+
+. Equivalently, with πI (t) = I(t)    
+
+> R10I(s)ds
+
+, the objective equals a constant multiple of H(πI ) + KL (πI ∥ρ), and is minimized uniquely by ρ = πI .
+
+SharpEuler uses the solver-aware profile Iγ (t) = ¯ a(t)γ , hence ργ (t) ∝ ¯a(t)γ . The special case 
+
+γ = 1 /2 is selected by the Euler-risk proxy. 
+
+SharpEuler with exponent γ can therefore be interpreted as profile-matching to the solver-aware importance profile 
+
+Iγ (t) = ¯ a(t)γ , ργ (t) ∝ ¯a(t)γ . (11) Here γ shapes the sharpness profile, while the variational parameter β describes how a chosen profile is converted into a density. The implemented exponent schedules correspond to the profile-matching case β = 0 . The square-root case γ = 1 /2 is special: up to small smoothing, it coincides with the Euler-risk minimizer ρ(t) ∝ ¯a(t)1/2. For γ̸ = 1 /2, the schedule remains a valid profile-matching density, but is not generally Euler-risk optimal. In all cases, the underlying sharpness signal is justified by the numerical principle. Full derivations and details are given in App. C. 
+
+## 4.3 Statistical principle: statistical stability of the calibrated schedule 
+
+Principle III: With M calibration trajectories, the calibrated schedule is near its population oracle up to a finite-calibration term of order O(plog( N/δ )/M ) on a grid of size N .
+
+The preceding principles are population-level statements that involve the population sharpness profile 
+
+¯a(t) = Ex0∼p0 ∥¨x(t; x0)∥. In practice, SharpEuler estimates this profile from finitely many calibration trajectories and then constructs an empirical timestep density. Thus we also need the resulting grid to be statistically stable. The theorem below provides such a guarantee under reasonable assumptions. 
+
+Theorem 1 (Informal: statistical stability for the square-root schedule γ = 1 /2). Let bw be the schedule calibrated from M independent trajectories on a grid with N intervals, and let w⋆ be the population oracle schedule for the Euler local-error proxy J defined in App. C.3. Under boundedness, concentration, and Euler stability assumptions, with probability at least 1 − δ,
+
+W1(μ bw, μ 1) ≤ 1
+
+B
+
+"
+
+CEul J (w⋆) + C1
+
+r log( N/δ )
+
+M + C2
+
+#
+
+. (12) 
+
+Here W1 denotes the 1-Wasserstein distance, μ bw is the terminal law of the calibrated Euler sampler, 
+
+μ1 is the terminal law of the exact learned ODE flow, CEul is the Euler stability constant, C1 collects concentration and schedule-stability constants, and C2 collects smoothing, finite-grid, and finite-difference proxy bias terms. 
+
+See Theorem 2 for a detailed version and discussions for general γ cases. The bound separates the numerical sampling error into an oracle Euler term, a finite-calibration term of order plog( N/δ )/M ,and a residual implementation-bias term. Thus SharpEuler preserves the O(1 /B ) Euler scaling while its calibrated schedule concentrates toward its population counterpart as M grows. The result controls numerical error relative to the learned ODE flow, not model error relative to the data distribution. 75 Experiments 
+
+We evaluate whether SharpEuler improves fixed-budget Euler sampling by changing where, but not how many, model evaluations are placed. We report budgets in number of function evaluations (NFE), where one NFE corresponds to one evaluation of the learned vector field. The experiments address two questions. First, on controlled two-dimensional distributions, does calibrated timestep placement improve sample fidelity and coverage at small NFE? Second, on a large pretrained text-to-image model, does the same offline calibration procedure improve low-NFE sampling? Whenever possible, the model, initial noise, conditioning input, and solver are held fixed, so differences are attributable only to the timestep grid. Implementation details and additional results are given in App. D and E. 
+
+## 5.1 Synthetic two-dimensional experiments 
+
+We first evaluate SharpEuler in a controlled setting where geometric errors are visible and distributional discrepancies can be measured directly. We use two two-dimensional target distributions, Branched Manifold and Rotated Grid . The first tests whether a sampler resolves thin, curved structure; the second tests whether it preserves separated modes without introducing off-manifold mass. Figure 1 shows generated samples at B = 8 and B = 16 . At B = 8 , Uniform and ETS are visibly under-resolved. On the Branched Manifold, the generated samples miss parts of the fine branch structure. On the Rotated Grid, samples are less concentrated around the target modes and include more mass B = 8           
+
+> Uniform ETS SharpEuler =0.5 SharpEuler =1.0
+> B = 16
+> Ground truth B = 8
+> Uniform ETS SharpEuler =0.5 SharpEuler =1.0
+> B = 16
+> Ground truth
+
+Figure 1 Generated samples on Branched Manifold (top) and Rotated Grid (bottom) at B ∈ { 8, 16 }, comparing Uniform, ETS, and SharpEuler with γ ∈ { 0.5, 1.0}. At fixed NFE, SharpEuler better matches the visible support of the target distributions in the low-budget regime. The two exponents produce different sample patterns: 
+
+γ = 0 .5 favors coverage of the target support, while γ = 1 .0 produces samples that are more tightly concentrated around the visible manifold or grid structure. 
+
+8Table 1 Quantitative results on the two synthetic distributions. Density (D) measures sample fidelity, Coverage (C) measures support coverage, and W 22 measures distributional discrepancy. Higher is better for D and C; lower is better for W 22 . Best values per metric and budget are shown in bold .                                                                                                                                                          
+
+> B= 8 B= 12 B= 16 B= 20
+> Dataset Method D↑C↑W22↓D↑C↑W22↓D↑C↑W22↓D↑C↑W22↓
+> Branched Manifold Uniform 0.139 0.357 0.020 0.163 0.398 0.016 0.214 0.456 0.013 0.265 0.512 0.013 ETS 0.269 0.428 0.055 0.316 0.520 0.026 0.359 0.551 0.017 0.364 0.575 0.016 SharpEuler γ=0 .50.261 0.479 0.017 0.338 0.554 0.013 0.385 0.597 0.012 0.404 0.604 0.012
+> SharpEuler γ=1 .00.422 0.582 0.018 0.435 0.598 0.014 0.441 0.620 0.015 0.425 0.613 0.013 SharpEuler γ=1 .50.510 0.554 0.035 0.474 0.576 0.020 0.458 0.608 0.018 0.456 0.603 0.015 Rotated Grid Uniform 0.426 0.581 0.022 0.705 0.771 0.015 0.810 0.685 0.012 0.855 0.699 0.010 ETS 0.652 0.723 0.038 0.779 0.831 0.026 0.846 0.877 0.017 0.885 0.902 0.017 SharpEuler γ=0 .50.845 0.749 0.020 0.900 0.890 0.013 0.924 0.921 0.011 0.941 0.928 0.009
+> SharpEuler γ=1 .00.913 0.872 0.029 0.931 0.924 0.020 0.942 0.934 0.018 0.953 0.939 0.015 SharpEuler γ=1 .50.903 0.700 0.070 0.940 0.820 0.044 0.951 0.876 0.033 0.948 0.904 0.028
+
+Table 2 FLUX.1-dev results at 1024 ×1024 resolution on 80 held-out prompts. RMSE measures pixel-level deviation from the 50-step pipeline reference, FID measures distributional discrepancy from the reference image set, and CLIP measures prompt-image alignment. Higher is better for CLIP; lower is better for RMSE and FID. Best values per metric and budget are shown in bold .                                                         
+
+> B= 8 B= 12 B= 16 B= 20
+> Method RMSE ↓CLIP ↑FID ↓RMSE ↓CLIP ↑FID ↓RMSE ↓CLIP ↑FID ↓RMSE ↓CLIP ↑FID ↓
+> Uniform 44.38 0.32 124.31 39.97 0.32 104.77 35.95 0.33 90.32 28.58 0.33 74.20 Shifted α=3 43.76 0.32 120.84 39.70 0.32 104.01 35.96 0.33 89.35 28.55 0.33 74.05 SharpEuler γ=0 .524.63 0.33 80.61 16.51 0.33 48.65 12.18 0.33 32.76 12.40 0.33 28.56
+
+between modes. SharpEuler produces samples that better match the visible support of the target distribution at the same NFE. The two exponents produce different sample patterns: γ = 0 .5 gives better coverage of the target support, while γ = 1 .0 produces samples that are more tightly concentrated around the visible manifold or grid structure. At B = 16 , the gap between methods narrows, but SharpEuler remains visually closer to the target samples than Uniform and ETS. Table 1 quantifies the same behavior using Density, Coverage [ 29 ], and squared 2-Wasserstein distance W 22 .SharpEuler gives the strongest results in the low-budget regime, where timestep placement matters most. At B = 8 , SharpEuler substantially improves Coverage on both datasets and achieves the best Density on the Rotated Grid, while γ = 1 .5 gives the highest Density on the Branched Manifold. The W 22 metric is consistently minimized by γ = 0 .5, in agreement with the LTE-based choice: this exponent gives the best overall distributional match rather than the most concentrated samples. The Density and Coverage columns also show the effect of the exponent. On the Branched Manifold, increasing γ raises Density but can reduce Coverage and worsen W 22 , indicating that the samples become more concentrated on parts of the target support. On the Rotated Grid, γ = 1 .0 gives the best Coverage across all budgets and the best or near-best Density, while γ = 1 .5 again loses coverage. These results suggest using γ = 0 .5 when the goal is distributional agreement, and γ = 1 .0 when the priority is a stronger fidelity–coverage tradeoff. 
+
+## 5.2 Text-to-image generation with FLUX 
+
+We next evaluate whether the same calibration procedure improves sampling for a large pretrained rectified flow model in a high-dimensional vision setting. We use FLUX.1-dev [ 4], a 12B-parameter rectified flow transformer for text-to-image generation, at its native 1024 × 1024 resolution. We calibrate SharpEuler once using 64 prompts and a 50-step reference grid, which matches the default inference budget for FLUX.1-dev in diffusers . The calibration prompts span landscapes, urban scenes, wildlife, 9Figure 2 Representative FLUX.1-dev generations at B = 16 , comparing the default uniform pipeline schedule and SharpEuler against the corresponding 50-step reference images. All methods use the same Euler sampler, prompt conditioning, and number of model evaluations. Relative to the pipeline schedule, SharpEuler more faithfully preserves scene composition, object structure, lighting, and fine visual details from the reference images. These differences are consistent with results in Table 3. 
+
+Table 3 GPT-5.5 vision-judge comparison between SharpEuler γ = 0 .5 and the default FLUX pipeline schedule. For each prompt, the judge compares both images against the same 50-step reference image and text prompt. Higher is better for scores, ∆, and pairwise wins. Budget SharpEuler score Pipeline score Mean ∆ ↑ Std. ∆ p-value SharpEuler wins 
+
+B = 8 7.98 6.02 1.96 0.88 8.2×10 −21 50/50 
+
+B = 12 8.74 6.50 2.24 0.82 1.6×10 −24 50/50 
+
+B = 16 9.04 6.82 2.22 0.93 5.1×10 −22 50/50 
+
+B = 20 9.14 7.32 1.82 0.83 1.2×10 −20 50/50 
+
+B = 24 9.35 7.52 1.83 0.89 9.8×10 −12 50/50 
+
+and abstract content. The resulting sharpness profile is then fixed and reused for 80 held-out prompts with no prompt overlap. All samples are generated in bfloat16 with classifier-free guidance scale 3.5.We compare SharpEuler with γ = 0 .5 against two profile-agnostic schedules: the default FLUX pipeline schedule and a static shifted schedule with α = 3 , following the SD3-style FlowMatch Euler shift [ 9]. All methods use the same Euler update, the same evaluation budgets B ∈ { 8, 12 , 16 , 20 }, and the same number of model evaluations. Thus, as in the synthetic experiments, the only difference is the timestep grid. We omit ETS at this scale because its flow matching adaptation requires Jacobian-vector products through the transformer which are too expensive to obtain. Table 2 reports three complementary measures against the 50-step pipeline reference. RMSE measures pixel-level agreement with the reference sample for the same prompt and seed. FID measures distributional agreement between the generated image set and the reference set. CLIP score measures prompt-image semantic alignment. SharpEuler achieves the lowest RMSE and FID at every budget, with the largest gains in the low-NFE regime. For example, at B = 12 , RMSE decreases from 39 .97 to 16 .51 , and FID decreases from 104 .77 to 48 .65 . At B = 16 , FID decreases from 90 .32 to 32 .76 . The shifted α = 3 
+
+10 schedule remains close to the default uniform pipeline schedule across budgets, which indicates that the improvement is not explained by a generic monotone shift. CLIP scores stay within a narrow range across all methods. SharpEuler therefore improves agreement with the high-step reference while preserving prompt alignment at fixed NFE. We also evaluate perceptual agreement with the high-step reference using GPT-5.5 as a vision judge. For each prompt, the judge receives the 50-step reference image, the SharpEuler image, the Pipeline image, and the text prompt, and returns both calibrated scores and a forced pairwise preference. Candidate order is randomized to avoid position bias; the judge is instructed to compare semantic content, composition, style, lighting, color, and salient spatial relationships rather than pixel identity. At B = 16 , SharpEuler receives a mean score of 9.04 , compared with 6.82 for Pipeline, giving a mean paired improvement of 2.22 points. The judge selects SharpEuler in all 50 pairwise comparisons. This result is consistent with the RMSE and FID improvements in Table 2: the calibrated grid produces images that are not only closer to the reference under automatic metrics, but also closer under a prompt-conditioned visual comparison. Figure 2 shows representative FLUX generations at B = 16 , comparing SharpEuler and the default pipeline schedule against the 50-step reference image. 
+
+# 6 Conclusion 
+
+In this work, we asked where a flow matching sampler should spend its finite Euler budget. SharpEuler answers this question by calibrating a timestep schedule from the learned dynamics of a pretrained model. It estimates where the velocity field changes rapidly along calibration trajectories, smooths the resulting sharpness profile, and converts it into a deterministic Euler grid for any inference budget. The deployed sampler remains unchanged except for the time grid: it uses the same model, the same Euler update, and the same NFE. We justify SharpEuler with numerical, variational, and statistical principles. Experiments on synthetic distributions and FLUX.1-dev show that this calibration improves low-budget sampling at fixed NFE, reducing mode leakage, improving coverage, and producing images closer to high-step references while preserving prompt alignment. These results suggest that efficient flow sampling depends not only on the solver, but also on how its evaluations are placed. Even without retraining or additional solver stages, a fixed-cost Euler sampler can improve when its steps are allocated according to how rapidly the learnt velocity field changes. 
+
+## Acknowledgments 
+
+NBE would like to acknowledge support from the U.S. Department of Energy, Office of Science, Office of Advanced Scientific Computing Research, EXPRESS: 2025 Exploratory Research for Extreme-Scale Science program, under Contract Number DE-AC02-05CH11231 at Berkeley Lab. The views, opinions, and/or findings expressed are those of the authors and should not be interpreted as representing the official views or policies of the Department of Defense or the U.S. Government. SHL would like to acknowledge support from the Wallenberg Initiative on Networks and Quantum Information (WINQ) and the Swedish Research Council (VR/2021-03648). 
+
+# References      
+
+> [1] Michael S Albergo, Nicholas M Boffi, and Eric Vanden-Eijnden. Stochastic interpolants: A unifying framework for flows and diffusions. arXiv preprint arXiv:2303.08797 , 2023. [2] Francis Bach. Learning Theory from First Principles . MIT Press, 2024. [3] Joe Benton, Valentin De Bortoli, Arnaud Doucet, and George Deligiannidis. Nearly d-linear convergence bounds for diffusion models via stochastic localization. In The Twelfth International Conference on Learning Representations , 2024. [4] Black Forest Labs. FLUX.1, 2024.
+
+11 [5] John Charles Butcher. Numerical Methods for Ordinary Differential Equations . John Wiley & Sons, 2016. [6] Defang Chen, Zhenyu Zhou, Can Wang, Chunhua Shen, and Siwei Lyu. On the trajectory regularity of ODE-based diffusion sampling. arXiv preprint arXiv:2405.11326 , 2024. [7] Marco Cuturi. Sinkhorn distances: Lightspeed computation of optimal transport. In Advances in Neural Information Processing Systems (NeurIPS) , 2013. [8] Kieran Didi, Zuobai Zhang, Guoqing Zhou, Danny Reidenbach, Zhonglin Cao, Sooyoung Cha, Tomas Geffner, Christian Dallago, Jian Tang, Michael M Bronstein, et al. Scaling atomistic protein binder design with generative pretraining and test-time compute. In The Fourteenth International Conference on Learning Representations .[9] Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim Entezari, Jonas Müller, Harry Saini, Yam Levi, Dominik Lorenz, Axel Sauer, Frederic Boesel, et al. Scaling rectified flow transformers for high-resolution image synthesis. In Forty-First International Conference on Machine Learning , 2024. [10] David F Griffiths and Desmond J Higham. Numerical Methods for Ordinary Differential Equations: Initial Value Problems , volume 5. Springer Science & Business Media, 2010. [11] Aditi Gupta, Raphael A Meyer, Yotam Yaniv, Elynn Chen, and N Benjamin Erichson. Quantifying epistemic uncertainty in diffusion models. arXiv preprint arXiv:2602.09170 , 2026. [12] Ernst Hairer, Marlis Hochbruck, Arieh Iserles, and Christian Lubich. Geometric numerical integration. 
+
+Oberwolfach Reports , 3(1):805–882, 2006. [13] Ernst Hairer, Gerhard Wanner, and Syvert P Nørsett. Solving ordinary differential equations I: Nonstiff problems . Springer, 1993. [14] Yang Hu, Xiao Wang, Zezhen Ding, Lirong Wu, Huatian Zhang, Stan Z Li, Sheng Wang, Jiheng Zhang, Ziyun Li, and Tianlong Chen. Flowts: Time series generation via rectified flow. arXiv preprint arXiv:2411.07506 ,2024. [15] Hugging Face Diffusers. FluxPipeline documentation, 2024. Default inference budget: 50 steps. [16] Yang Jin, Zhicheng Sun, Ningyuan Li, Kun Xu, Hao Jiang, Nan Zhuang, Quzhe Huang, Yang Song, Yadong Mu, and Zhouchen Lin. Pyramidal flow matching for efficient video generative modeling. In The Thirteenth International Conference on Learning Representations .[17] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based generative models. Advances in Neural Information Processing Systems , 35:26565–26577, 2022. [18] Tuomas Kynkäänniemi, Tero Karras, Samuli Laine, Jaakko Lehtinen, and Timo Aila. Improved precision and recall metric for assessing generative models. In Advances in Neural Information Processing Systems (NeurIPS) , 2019. [19] Sangyun Lee, Beomsu Kim, and Jong Chul Ye. Minimizing trajectory curvature of ODE-based generative models. In International Conference on Machine Learning , pages 18957–18973. PMLR, 2023. [20] Ziyun Li, Huancheng Hu, Soon Hoe Lim, Xuyu Li, Fei Gao, Enmao Diao, Zezhen Ding, Michalis Vazirgiannis, and Henrik Bostrom. A kinetic-energy perspective of flow matching. arXiv preprint arXiv:2602.07928 , 2026. [21] Soon Hoe Lim, Shizheng Lin, Michael W Mahoney, and N Benjamin Erichson. Is flow matching just trajectory replay for sequential data? arXiv preprint arXiv:2602.08318 , 2026. [22] Soon Hoe Lim, Yijin Wang, Annan Yu, Emma Hart, Michael W Mahoney, Sherry Li, and N Benjamin Erichson. Elucidating the design choice of probability paths in flow matching for forecasting. Transactions on Machine Learning Research , 2024. [23] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. In The Eleventh International Conference on Learning Representations , 2023. [24] Yaron Lipman, Marton Havasi, Peter Holderrieth, Neta Shaul, Matt Le, Brian Karrer, Ricky TQ Chen, David Lopez-Paz, Heli Ben-Hamu, and Itai Gat. Flow matching guide and code. arXiv preprint arXiv:2412.06264 ,2024. 
+
+12 [25] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In The Eleventh International Conference on Learning Representations (ICLR) ,2023. [26] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in Neural Information Processing Systems , 35:5775–5787, 2022. [27] Simian Luo, Yiqin Tan, Longbo Huang, Jian Li, and Hang Zhao. Latent consistency models: Synthesizing high-resolution images with few-step inference. arXiv preprint arXiv:2310.04378 , 2023. [28] Alex Morehead, Miruna Cretu, Antonia Panescu, Rishabh Anand, Maurice Weiler, Tynan Perez, Samuel Blau, Steven Farrell, Wahid Bhimji, Anubhav Jain, Hrushikesh Sahasrabuddhe, Pietro Liò, Tommi Jaakkola, Rafael Gómez-Bombarelli, Rex Ying, N. Benjamin Erichson, and Michael W. Mahoney. Zatom-1: A multimodal flow foundation model for 3d molecules and materials. arXiv preprint arXiv:2602.22251 , 2026. [29] Muhammad Ferjad Naeem, Seong Joon Oh, Youngjung Uh, Yunjey Choi, and Jaejun Yoo. Reliable fidelity and diversity metrics for generative models. In Proceedings of the 37th International Conference on Machine Learning (ICML) , pages 7176–7185, 2020. [30] NVIDIA BioNeMo. Entropic Flow Matching for Optimal Time Scheduling, 2024. BioNeMo Framework Documentation, MoCo tutorial. [31] Amirmojtaba Sabour, Sanja Fidler, and Karsten Kreis. Align your steps: optimizing sampling schedules in diffusion models. In Proceedings of the 41st International Conference on Machine Learning , pages 42947–42975, 2024. [32] Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. In International Conference on Learning Representations , 2022. [33] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In International Conference on Learning Representations , 2021. [34] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. In Proceedings of the 40th International Conference on Machine Learning , pages 32211–32252, 2023. [35] Anuroop Sriram, Benjamin K Miller, Ricky T Chen, and Brandon M Wood. Flowllm: Flow matching for material generation with large language models as base distributions. Advances in Neural Information Processing Systems , 37:46025–46046, 2024. [36] Dejan Stancevic, Florian Handke, and Luca Ambrogioni. Entropic time schedulers for generative diffusion models. In Advances in Neural Information Processing Systems 38 (NeurIPS 2025) , 2025. [37] Panos Tsimpos, Ren Zhi, Jakob Zech, and Youssef Marzouk. Optimal scheduling of dynamic transport. In 
+
+The Thirty Eighth Annual Conference on Learning Theory , pages 5441–5505, 2025. [38] Cédric Villani. Optimal Transport: Old and New . Springer, 2008. [39] Daniel Watson, William Chan, Jonathan Ho, and Mohammad Norouzi. Learning fast samplers for diffusion models by differentiating through sample quality. In International Conference on Learning Representations ,2022. [40] Daniel Watson, Jonathan Ho, Mohammad Norouzi, and William Chan. Learning to efficiently sample from diffusion probabilistic models. arXiv preprint arXiv:2106.03802 , 2021. [41] Christopher Williams, Andrew Campbell, Arnaud Doucet, and Saifuddin Syed. Score-optimal diffusion schedules. Advances in Neural Information Processing Systems , 37:107960–107983, 2024. [42] Shuchen Xue, Zhaoqiang Liu, Fei Chen, Shifeng Zhang, Tianyang Hu, Enze Xie, and Zhenguo Li. Accelerating diffusion sampling with optimized time steps. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 8292–8301, 2024. [43] Zhantao Yang, Ruili Feng, Han Zhang, Yujun Shen, Kai Zhu, Lianghua Huang, Yifei Zhang, Yu Liu, Deli Zhao, Jingren Zhou, et al. Lipschitz singularities in diffusion models. In ICLR , 2024. 
+
+13 [44] Wenliang Zhao, Lujia Bai, Yongming Rao, Jie Zhou, and Jiwen Lu. Unipc: A unified predictor-corrector framework for fast sampling of diffusion models. Advances in Neural Information Processing Systems ,36:49842–49869, 2023. [45] Aiqing Zhu, Pengzhan Jin, Beibei Zhu, and Yifa Tang. On numerical integration in neural ordinary differential equations. In International Conference on Machine Learning , pages 27527–27547. PMLR, 2022. 
+
+14 Appendix 
+
+This appendix is organized as follows. In App. A we discuss related work in detail and position SharpEuler relative to recent works. In App. B we provide the detailed algorithms for SharpEuler. In App. C we provide full mathematical details and proofs for the three principles that we use to justisfy SharpEuler. In App. D-E we provide details on the experiments and additional results. 
+
+# A Related Work 
+
+Fast samplers and solver design. Much of the early work on fast generation was developed for diffusion and score-based models, where sampling also requires many sequential neural network evaluations. DDIM [ 33 ] showed that deterministic sampling can greatly reduce the number of denoising steps. DPM-Solver [ 26 ] and UniPC [ 44 ] design higher-order solvers that exploit the structure of diffusion ODEs, while EDM [ 17 ] clarified how solver choices, parameterization, and noise schedules interact. Other approaches use additional training to obtain very-few-step samplers, including Progressive Distillation [ 32 ], Consistency Models [ 34 ], and Latent Consistency Models [ 27 ]. These works address the same practical bottleneck: sample quality per model evaluation. In contrast, we study pretrained flow matching models, keep the Euler solver fixed, and change only where a fixed number of evaluations are placed. 
+
+Timestep schedules and time reparameterization. A complementary line of work treats the timestep schedule itself as an object of design. Prior work has optimized discrete DDPM schedules using dynamic programming and ELBO objectives [ 40 ], differentiated through sample quality to search for fast samplers [ 39 ], optimized timesteps for a chosen numerical ODE solver [ 42 ], and shown that the best schedule can depend on the solver, model, and data [ 31 ]. Other work derives path-traversal costs and discretizes the path to minimize them [ 41 ]. Entropic time schedulers (ETS) [ 36 ] also view schedules as time reparameterizations, but allocate steps using conditional-entropy information or rescaled conditional-entropy production. GITS [ 6] uses dynamic programming over trajectory costs to select timesteps. These works show that uniform schedules are often not the right default. SharpEuler shares this motivation, but uses a different signal: it estimates trajectory sharpness of a pretrained flow matching model and converts this solver-aware profile into a fixed Euler grid. 
+
+Flow matching, path geometry, and regularity. Flow matching [ 23 ], rectified flow [ 25 ], and large-scale rectified flow models [ 9] have made continuous-time vector field models a practical alternative to traditional diffusion formulations. In these models, sampling is again an ODE discretization problem. Some recent work studies timestep or noise sampling choices during training [ 9], while other work aims to reduce trajectory curvature during training [ 19 ]. Recent work has also studied time-dependent sensitivity in diffusion networks [ 43 ], discretization error in diffusion sampling [ 3], time parameterizations that improve velocity regularity in dynamic transport [ 37 ], and trajectory energy as a diagnostic for flow matching samples [ 20 ]. In particular, KTS in [ 20 ] suppresses terminal singularities and memorization by damping the learned velocity field near the data endpoint. In contrast, SharpEuler leaves the dynamics unchanged and adapts the time discretization to better resolve sharp changes in the velocity field. Since large velocity magnitude does not necessarily imply large velocity variation, the two methods address different issues: KTS reshapes the sampling dynamics, while SharpEuler improves numerical resolution. These works are related in spirit because they treat path geometry as important. SharpEuler uses this perspective at inference time: rather than changing the training path or model, it measures finite-difference acceleration along sampling trajectories, the signal selected by Euler local truncation error and backward error analysis. 
+
+Positioning of SharpEuler. SharpEuler is, to our knowledge, the first timestep scheduler for learned flow samplers that derives its schedule from an explicitly solver-aware Euler error proxy and estimates this profile using offline finite differences of the learned velocity field. While prior work has optimized timestep allocation using information-theoretic, spectral, or black-box objectives, SharpEuler targets the trajectory acceleration profile that controls Euler discretization error. This profile appears both in Euler local truncation error and in the leading backward error perturbation. The resulting square-root 15 schedule is the closed-form minimizer of a continuous Euler-risk objective, and our statistical stability result shows that the empirically calibrated schedule is near-oracle for the generated distribution. 
+
+Limitations of SharpEuler. SharpEuler assumes that the pretrained model can be sampled accurately on grids different from the one used during training or deployment. This assumption may fail for distilled models, or for models explicitly aligned to a prescribed sampling grid. For example, samplers used with Stable Diffusion variants are often tuned jointly with particular schedules, and changing the grid can violate the assumptions under which the model or sampler was calibrated. SharpEuler is also solver-specific. The schedule is derived from a leading local-error proxy for forward Euler, so the resulting grid is designed for a one-stage Euler update. Higher-order solvers, multistep solvers, or adaptive methods may require different error indicators and different timestep allocation rules. Extending sharpness-aware calibration to these solvers is an interesting direction for future work. 
+
+# B Detailed Algorithms 
+
+In this section, we provide detailed algorithms for SharpEuler. We use the reverse-time convention (using 
+
+sk for the time indices), and consider a uniform reference grid ( ∆i := 1 /N for all i). 
+
+Algorithm 1 Offline sharpness profile calibration 
+
+Require: Calibration inputs {cj }Mj=1 , model vθ , reverse-time grid 1 = s0 > · · · > s N = 0 , exponent 
+
+γ > 0, smoothing bandwidth σ > 0, small floor εa ≥ 0
+
+Ensure: Empirical inverse-CDF map F −1emp  
+
+> 1:
+
+for j = 1 to M do  
+
+> 2:
+
+Sample xj ∼ N (0 , I ) 
+
+> 3:
+
+for i = 0 to N − 1 do  
+
+> 4:
+
+Vj,i ← vθ (xj , s i; cj ) 
+
+> 5:
+
+xj ← xj − (si − si+1 )Vj,i  
+
+> 6:
+
+end for  
+
+> 7:
+
+end for  
+
+> 8:
+
+for i = 0 to N − 2 do  
+
+> 9:
+
+di ← 12
+
+ |si − si+1 | + |si+1 − si+2 | 
+
+> 10:
+
+b¯ai ← 1
+
+> M
+
+PMj=1   
+
+> Vj,i +1 −Vj,i
+> di2
+> 11:
+
+end for  
+
+> 12:
+
+Smooth the exponent-shaped signal: 
+
+eIγ ← Smooth σ
+
+ (b¯a + εa)γ  . 
+
+> 13:
+
+Normalize masses: 
+
+bwi ← eIγ,i 
+
+PN −2 
+
+> r=0
+
+eIγ,r 
+
+, i = 0 , . . . , N − 2. 
+
+> 14:
+
+Assign forward-time support points: 
+
+eti ← 1 − si + si+2 
+
+2 , i = 0 , . . . , N − 2. 
+
+> 15:
+
+Sort (eti, bwi) in ascending eti, build the empirical CDF, and add a left endpoint anchor at t = 0 . 
+
+> 16:
+
+return the linearly interpolated inverse-CDF map F −1emp : [0 , 1] → [0 , 1] .Here Smooth σ denotes normalized Gaussian convolution in index space with reflect padding: 
+
+ Smooth σ (x) 
+
+> i
+
+=
+
+> r
+
+X
+
+> k=−r
+
+Kkxi+k, Kk = exp( −k2/(2 σ2)) 
+
+Prj=−r exp( −j2/(2 σ2)) , r = max {1, ⌊3σ⌋} ,
+
+16 Algorithm 2 Online SharpEuler sampling 
+
+Require: Empirical inverse-CDF map F −1emp , budget B, model vθ , conditioning input c
+
+Ensure: Sample x(B) 
+
+> 1:
+
+Compute forward-time quantiles and convert to reverse time: 
+
+etb ← F −1emp (b/B ), sb ← 1 − etb, b = 0 , . . . , B.  
+
+> 2:
+
+Sample x(0) ∼ N (0 , I ) 
+
+> 3:
+
+for k = 0 to B − 1 do  
+
+> 4:
+
+x(k+1) ← x(k) − (sk − sk+1 )vθ (x(k), s k; c) 
+
+> 5:
+
+end for  
+
+> 6:
+
+return x(B)
+
+where xi+k is interpreted using reflect padding whenever i + k / ∈ { 0, . . . , L − 1}.
+
+# C Theoretical Justifications and Results 
+
+We assume throughout this section that the learned velocity field is sufficiently smooth on the region visited by the sampled trajectories. In particular, all derivatives and Taylor expansions below are assumed to be well defined and uniformly bounded along these trajectories. In this section, we provide full details on the three principles that we use to justify SharpEuler: (I) numerical, (II) variational, and (III) statistical. Recall that, as in Section 4, we use the forward-time convention for the ODE sampler in our theoretical analysis. 
+
+## C.1 Principle I: Trajectory Acceleration Arises Naturally From Local Truncation Error and Backward Error Analysis 
+
+Both local truncation error and backward error analyses are standard in numerical analysis of ODEs, but we include the details here for completeness and to highlight why trajectory acceleration is the relevant sharpness signal. Let x(t; x0) denote the solution of the forward-time ODE 
+
+˙x(t) = uθ (x(t), t ), x(0) = x0, (13) with x0 ∼ p0. We define the pathwise acceleration magnitude by a(t; x0) = ∥¨x(t; x0)∥. Note that we suppress conditioning variables for readability. The following result shows that this quantity is precisely the leading quantity selected by the local truncation error of Euler discretization. 
+
+Proposition 3 (Euler local truncation error) . Let x : [ t, t + h0] → Rd be an exact solution of (13) , and suppose x ∈ C3([ t, t + h0]; Rd). If forward Euler is initialized at the current state x(t) and takes one step of size 0 < h ≤ h0 in forward time, then 
+
+x(t + h) − [x(t) + hu θ (x(t), t )] = h2
+
+2 ¨x(t) + R3(t, h ), (14) 
+
+where ∥R3(t, h )∥ ≤ h3 
+
+> 6
+
+sup ξ∈[t,t +h] ∥x(3) (ξ)∥. In particular, 
+
+x(t + h) − [x(t) + hu θ (x(t), t )] = h2
+
+2 ¨x(t) + O(h3), as h → 0. (15) 
+
+Consequently, the leading-order one-step local truncation error is controlled by h2∥¨x(t)∥.
+
+17 Proof. By Taylor’s theorem with remainder applied to the trajectory x(·), there exists a remainder 
+
+R3(t, h ) satisfying 
+
+x(t + h) = x(t) + h ˙x(t) + h2
+
+2 ¨x(t) + R3(t, h ),
+
+with 
+
+∥R3(t, h )∥ ≤ h3
+
+6 sup 
+
+> ξ∈[t,t +h]
+
+∥x(3) (ξ)∥.
+
+Since x(t) solves the forward-time ODE, ˙x(t) = uθ (x(t), t ), subtracting the Euler update x(t)+ hu θ (x(t), t )
+
+gives Eq. (14). Therefore, 
+
+∥x(t + h) − [x(t) + hu θ (x(t), t )] ∥ ≤ h2
+
+2 ∥¨x(t)∥ + h3
+
+6 sup 
+
+> ξ∈[t,t +h]
+
+∥x(3) (ξ)∥.
+
+Thus, as h → 0, the leading term is h2 
+
+> 2
+
+¨x(t), so the leading local truncation error is governed by h2∥¨x(t)∥,up to the constant factor 1/2.The same sharpness signal is also selected by backward error analysis [ 12 ]. The central idea of backward error analysis is to interpret a numerical method not merely as an approximation to the original ODE, but as the exact flow, up to a prescribed order in the step size, of a nearby step-size-dependent ODE. Thus, instead of asking only how far one Euler step is from the exact flow of 
+
+˙x = uθ (x, t ),
+
+one asks which modified differential equation Euler is solving. In the present setting, this means seeking a modified vector field 
+
+uθ,h (x, t ) = uθ (x, t ) + hu θ, 1(x, t ) + h2uθ, 2(x, t ) + · · · 
+
+whose exact flow over one step of length h matches the Euler update to a prescribed order. The difference between uθ,h and uθ then describes the finite-step bias induced by the solver. Since few-step sampling uses non-negligible step sizes, the modified equation viewpoint gives a useful way to identify where the numerical method is most strongly biased. This viewpoint has also been used to study numerical integration in Neural ODEs [ 45 ]. The following proposition makes this connection explicit. 
+
+Proposition 4 (Informal: backward error interpretation) . Consider the forward-time non-autonomous ODE 
+
+˙x = uθ (x, t ), (16) 
+
+where uθ is sufficiently smooth (e.g., C3 locally in (x, t )). Forward Euler applied to (16) has one-step map 
+
+ψh(t, x ) = x + hu θ (x, t ). (17) 
+
+There exists a formal modified vector field, at the level of formal power series in h, of the form 
+
+uθ,h (x, t ) = uθ (x, t ) + hu θ, 1(x, t ) + O(h2), (18) 
+
+whose exact time-h flow matches that of the Euler map up to local error O(h3), as h → 0. Its leading correction term is 
+
+uθ, 1(x, t ) = − 12 (∂tuθ (x, t ) + ∇xuθ (x, t )uθ (x, t )) . (19) 
+
+Equivalently, 
+
+uθ,h (x, t ) = uθ (x, t ) − h
+
+2 (∂tuθ (x, t ) + ∇xuθ (x, t )uθ (x, t )) + O(h2). (20) 
+
+Along exact trajectories of (16) , the leading modified equation perturbation is therefore proportional to 
+
+− h 
+
+> 2
+
+¨x(t).
+
+18 Proof. Let the modified ODE be ˙ex = uθ,h (ex, t ), (21) with uθ,h of the form (18). Starting from ex(t) = x, Taylor’s theorem for the modified trajectory gives 
+
+ex(t + h) = x + hu θ,h (x, t ) + h2
+
+2 [∂tuθ,h (x, t ) + ∇xuθ,h (x, t )uθ,h (x, t )] + O(h3) (22) as h → 0. Substituting 
+
+uθ,h (x, t ) = uθ (x, t ) + hu θ, 1(x, t ) + O(h2)
+
+into (22) and retaining terms through order h2 gives 
+
+ex(t + h) = x + hu θ (x, t ) + h2
+
+
+
+uθ, 1(x, t ) + 12 (∂tuθ (x, t ) + ∇xuθ (x, t )uθ (x, t )) 
+
+
+
++ O(h3). (23) To match the forward Euler map 
+
+ψh(t, x ) = x + hu θ (x, t )
+
+up to O(h3), the order-h2 coefficient must vanish. Hence, 
+
+uθ, 1(x, t ) = − 12 (∂tuθ (x, t ) + ∇xuθ (x, t )uθ (x, t )) ,
+
+which proves (19) and (20). Finally, along an exact trajectory, by the chain rule, 
+
+∂tuθ (x(t), t ) + ∇xuθ (x(t), t )uθ (x(t), t ) = ddt uθ (x(t), t ) = ¨ x(t).
+
+Therefore the leading backward error perturbation is proportional to −h¨x(t)/2.The preceding results show that the same quantity, 
+
+∥∂tuθ (x(t), t ) + ∇xuθ (x(t), t )uθ (x(t), t )∥ = ∥¨x(t)∥, (24) is selected by two complementary numerical perspectives. From the local truncation error viewpoint, it controls the leading one-step Euler error. From the backward error viewpoint, it controls the leading perturbation in the modified vector field implicitly integrated by Euler. Therefore, regions with large trajectory acceleration are, to leading order, regions where Euler is both locally less accurate and more strongly biased toward modified dynamics. This provides a numerical justification for using velocity differences along calibration trajectories as a sharpness signal in SharpEuler. 
+
+## C.2 Principle II: Power Scalings in SharpEuler Arise from Variational Allo-cation Problems 
+
+The risk objective induced by the leading Euler local truncation error (Euler-risk) and the profile-matching objective in the main paper can be viewed as two members of a variational family. We introduce this family first, and then recover the two cases relevant for SharpEuler as special cases. Let I : [0 , 1] → (0 , ∞) be a positive importance profile, and let ρ(t) be a normalized timestep den-sity. For β ≥ 0, define 
+
+ψβ (r) = 
+
+
+
+r−β − 1
+
+β , β > 0,
+
+− log r, β = 0 ,r > 0. (25) which is continuous at β = 0 . Given I, define 
+
+Fβ (ρ; I) = 
+
+Z 10
+
+I(t)ψβ (ρ(t)) dt, ρ(t) > 0,
+
+Z 10
+
+ρ(t) dt = 1 . (26) 19 For β > 0, this is, up to an additive constant independent of ρ, equivalent to 
+
+Fβ (ρ; I) = 1
+
+β
+
+Z 10
+
+I(t)ρ(t)−β dt + constant . (27) For β = 0 , it becomes the weighted cross-entropy objective 
+
+F0(ρ; I) = −
+
+Z 10
+
+I(t) log ρ(t) dt. (28) The following proposition characterizes the unique minimizer of Fβ (ρ; I) over the class of normal-ized densities ρ > 0.
+
+Proposition 5 (Variational timestep density) . Let I : [0 , 1] → (0 , ∞) be continuous. For every β ≥ 0,the unique minimizer of 
+
+min     
+
+> ρ(t)>0,R10ρ(t)dt =1
+
+Fβ (ρ; I) (29) 
+
+is 
+
+ρ⋆β (t) = I(t)1/(β+1) 
+
+R 10 I(s)1/(β+1) ds . (30) 
+
+Proof. First suppose β > 0. Since the term − 1
+
+> β
+
+R 10 I(t) dt does not depend on ρ, minimizing Fβ is equivalent to minimizing 
+
+1
+
+β
+
+Z 10
+
+I(t)ρ(t)−β dt (31) subject to R 10 ρ(t) dt = 1 . The Lagrangian is 
+
+L(ρ, λ ) = 1
+
+β
+
+Z 10
+
+I(t)ρ(t)−β dt + λ
+
+Z 10
+
+ρ(t) dt − 1
+
+
+
+, (32) where λ is the Lagrange multiplier. Taking the first variation with respect to ρ gives 
+
+−I(t)ρ(t)−β−1 + λ = 0 . (33) Therefore 
+
+ρ(t) = 
+
+ I(t)
+
+λ
+
+1/(β+1) 
+
+. (34) Using the normalization constraint, 
+
+1 = 
+
+Z 10
+
+ρ(t) dt = λ−1/(β+1) 
+
+Z 10
+
+I(t)1/(β+1) dt. (35) Thus 
+
+λ1/(β+1) =
+
+Z 10
+
+I(t)1/(β+1) dt, (36) and hence Eq. (30) follows. For β = 0 , the objective is 
+
+F0(ρ; I) = −
+
+Z 10
+
+I(t) log ρ(t) dt. (37) The Lagrangian is 
+
+L(ρ, λ ) = −
+
+Z 10
+
+I(t) log ρ(t) dt + λ
+
+Z 10
+
+ρ(t) dt − 1
+
+
+
+. (38) 20 The first variation gives 
+
+− I(t)
+
+ρ(t) + λ = 0 . (39) Thus ρ(t) = I(t) 
+
+> λ
+
+, and normalizing gives 
+
+ρ⋆
+
+> 0
+
+(t) = I(t)
+
+R 10 I(s) ds , (40) which agrees with Eq. (30) at β = 0 .Finally, note that ψβ is strictly convex on r > 0 for every β ≥ 0. Indeed, for β > 0,
+
+ψ′′  
+
+> β
+
+(r) = ( β + 1) r−β−2 > 0, (41) and for β = 0 ,
+
+ψ′′  
+
+> 0
+
+(r) = 1
+
+r2 > 0. (42) Since I(t) > 0, the objective is strictly convex on the positive density constraint set. Thus, the minimizer is unique. 
+
+Special case 1: Euler-risk objective. Let ¯a(t) = Ex0∼p0 ∥¨x(t; x0)∥ be the population mean acceleration sharpness. Given an Euler budget B, the local step size induced by ρ scales as 
+
+h(t) ≈ 1
+
+Bρ (t) . (43) Using Eq. (43) , the accumulated leading Euler local-error proxy scales as 
+
+E[ρ] ≈ 12B
+
+Z 10
+
+¯a(t)
+
+ρ(t) dt. (44) The factor 1/ρ (t), rather than 1/ρ (t)2, appears because the local error is accumulated over the number of steps assigned to each time region. A small interval dt receives approximately Bρ (t) dt Euler steps, and each step contributes a leading local error of size 12 h(t)2¯a(t). Therefore 
+
+Bρ (t) dt · 12
+
+ 1
+
+Bρ (t)
+
+2
+
+¯a(t) = 12B
+
+¯a(t)
+
+ρ(t) dt. (45) The common factor 1/(2 B) does not affect the optimal density. This Euler local-error objective is recovered from the unified family by taking 
+
+β = 1 , I(t) = ¯ a(t). (46) Then Eq. (30) gives 
+
+ρ⋆
+
+> Euler
+
+(t) = 
+
+p¯a(t)
+
+R 10
+
+p¯a(s) ds . (47) Therefore, the Euler local-error analysis selects the square-root density 
+
+ρ(t) ∝ ¯a(t)1/2. (48) 21 Special case 2: cross-entropy and profile matching. The profile-matching or cross-entropy objective is recovered by taking β = 0 . Given any positive importance profile I(t) > 0, the minimizer is 
+
+ρI (t) = I(t)
+
+R 10 I(s) ds . (49) Equivalently, ρI is the unique minimizer of 
+
+min     
+
+> ρ(t)>0,R10ρ(t)dt =1
+
+−
+
+Z 10
+
+I(t) log ρ(t) dt. (50) Now, for β = 0 , define the normalized importance density 
+
+πI (t) = I(t)
+
+R 10 I(s) ds . (51) Then 
+
+−
+
+Z 10
+
+I(t) log ρ(t) dt =
+
+Z 10
+
+I(s) ds 
+
+  
+
+−
+
+Z 10
+
+πI (t) log ρ(t) dt 
+
+
+
+(52) 
+
+=
+
+Z 10
+
+I(s) ds 
+
+
+
+[H(πI ) + KL( πI ∥ρ)] . (53) Since the entropy H(πI ) does not depend on ρ, minimizing the cross-entropy objective is equivalent to minimizing the Kullback-Leibler divergence KL (πI ∥ρ). The unique minimizer is therefore ρ = πI .
+
+SharpEuler exponent schedules. SharpEuler with exponent γ > 0 can be viewed as an empirical estimator of the solver-aware importance profile 
+
+Iγ (t) = ( Ex0∼p0 ∥¨x(t; x0)∥)γ ,
+
+with associated profile density 
+
+πIγ (t) = Iγ (t)
+
+R 10 Iγ (s) ds .
+
+As discussed earlier, the use of trajectory acceleration is motivated by the Euler local truncation error and by the backward error analysis, both of which identify the material derivative of the learned velocity field as the relevant sharpness signal. 
+
+Connection to entropy-based schedulers [ 36 ]. Entropy-based schedules can be viewed as using an information-theoretic importance profile. Following the notation of [ 36 ], let H[x0 | xt] denote the conditional differential entropy of the data endpoint x0 given the intermediate state xt,
+
+H[x0 | xt] = −Ep(x0,x t) [log p(x0 | xt)] .
+
+In entropic time, the time change is 
+
+ϕent (t) = H[x0 | xt],
+
+and in rescaled entropic time, 
+
+ϕrent (t) = 
+
+Z t
+
+> 0
+
+σ(τ ) ˙H[x0 | xτ ] dτ. 
+
+22 After orienting time so that ˙ϕ(t) > 0, uniform spacing in the new time variable induces the timestep density 
+
+ρϕ(t) = ˙ϕ(t)
+
+R 10 ˙ϕ(s) ds .
+
+Thus entropy-based schedules use conditional-entropy production as their importance profile, whereas SharpEuler uses solver sharpness. The square-root SharpEuler density is special because it minimizes the Euler-risk objective and satisfies ρ(t) ∝ ¯a(t)1/2. An entropic schedule recovers this density only when its induced profile ˙ϕ(t) is proportional to ¯a(t)1/2.
+
+Specialization to discrete intervals. Let 
+
+0 = τ0 < τ 1 < · · · < τ N = 1 , ∆i = τi+1 − τi, i = 0 , . . . , N − 1. (54) A density ρ induces interval masses 
+
+wi =
+
+Z τi+1 
+
+> τi
+
+ρ(t) dt,  
+
+> N−1
+
+X
+
+> i=0
+
+wi = 1 . (55) If the profile is approximately constant on each interval, with value ϕi > 0, then the profile-matching density 
+
+ργ (t) ∝ ϕγi , t ∈ [τi, τ i+1 ), (56) induces weights 
+
+w(γ) 
+
+> i
+
+= ∆iϕγi
+
+PN −1 
+
+> ℓ=0
+
+∆ℓϕγℓ
+
+. (57) In particular, for γ = 1 /2,
+
+w(1 /2)  
+
+> i
+
+= ∆i
+
+√ϕi
+
+PN −1 
+
+> ℓ=0
+
+∆ℓ
+
+√ϕℓ
+
+. (58) 
+
+Proposition 6 (Discrete profile matching) . Fix γ > 0 and ϕi > 0. The weights in Eq. (57) are the unique minimizer of 
+
+min    
+
+> wi>0,P
+> iwi=1
+
+− 
+
+> N−1
+
+X
+
+> i=0
+
+∆iϕγi log wi. (59) 
+
+Proof. Let qi = ∆ iϕγi . The Lagrangian is 
+
+L(w, λ ) = − X
+
+> i
+
+qi log wi + λ X
+
+> i
+
+wi − 1
+
+!
+
+, (60) where λ is the Lagrange multiplier. The first-order optimality condition gives 
+
+− qi
+
+wi
+
++ λ = 0 , (61) so wi = qi/λ . The normalization constraint gives 
+
+λ = X
+
+> i
+
+qi, (62) and hence 
+
+wi = ∆iϕγi
+
+PN −1 
+
+> ℓ=0
+
+∆ℓϕγℓ
+
+. (63) Strict convexity of − log wi gives uniqueness and concludes the proof. 23 C.3 Principle III: Statistical Stability Guarantee For the Calibrated Schedule 
+
+In the main paper, we introduce a practical offline calibration procedure for learned flow samplers that estimates where the learned vector field is numerically sharp and converts this profile into a fixed-budget timestep schedule (SharpEuler). In this subsection, we provide a statistical stability guarantee to show that the calibrated schedule is near-oracle at the level of the generated distribution at the terminal time 
+
+t = 1 . We focus on the square-root schedule γ = 1 /2, which is the exponent selected by the leading Euler local-error proxy. General exponent schedules are discussed in Remark 3. 
+
+Motivation. The scheduler is calibrated offline from finitely many ODE trajectories. Hence the schedule used at sampling time is random, since it depends on the calibration set. Our goal here is to show that this calibration randomness is controlled at the level of the final generated distribution. 
+
+Setting. We use the forward-time convention. Consider the learned flow ODE 
+
+˙x(t) = uθ (x(t), t ), t ∈ [0 , 1] , (64) where x0 ∼ p0 is the initial noise sampled from the base distribution p0. Let T (x0) := x(1; x0) denote the learned flow map, and define the learned flow distribution μ1 := T#p0.Let us fix an N from now on, and let 0 = τ0 < τ 1 < · · · < τ N = 1 be a reference grid, writing 
+
+∆i := τi+1 − τi, i = 0 , . . . , N − 1. A schedule is represented by the weights 
+
+w = ( w0, . . . , w N −1), wi > 0, 
+
+> N−1
+
+X
+
+> i=0
+
+wi = 1 . (65) The interpretation is that interval i receives fraction wi of a total Euler budget B. Thus interval 
+
+i receives approximately Bw i steps, with local step size approximately hi ≈ ∆i 
+
+> Bw i
+
+. Let Tw(x0) be the Euler sampler output at t = 1 using schedule w, and let μw := ( Tw)#p0 be the correspond-ing sampler distribution at t = 1 .
+
+Local-error risk and implemented sharpness. For each trajectory initialized at x0, let Ai(x0) ≥ 0
+
+be an interval-wise local-error coefficient on [τi, τ i+1 ].A natural continuous coefficient is the interval average 
+
+Ai(x0) = 1∆i
+
+Z τi+1 
+
+> τi
+
+∥¨x(t; x0)∥ dt. (66) Alternatively, one may instead take a dominating coefficient such as 
+
+Ai(x0) = sup 
+
+> t∈[τi,τ i+1 ]
+
+∥¨x(t; x0)∥. (67) The motivation comes from Euler local truncation error as discussed in Section 4. The leading local Euler error is controlled by h2∥¨x(t)∥. If interval i receives Bw i steps of size hi ≈ ∆i 
+
+> Bw i
+
+, then the accumulated local-error proxy on interval i is 
+
+Bw iAi(x0)
+
+ ∆i
+
+Bw i
+
+2
+
+= 1
+
+BAi(x0)∆ 2
+
+> i
+
+wi
+
+. (68) Ignoring the common factor 1/B , define the population local-error risk 
+
+J (w) := Ex0∼p0
+
+"N −1X
+
+> i=0
+
+Ai(x0)∆ 2
+
+> i
+
+wi
+
+#
+
+. (69) 24 Equivalently, 
+
+J (w) =  
+
+> N−1
+
+X
+
+> i=0
+
+Ai∆2
+
+> i
+
+wi
+
+, Ai := Ex0∼p0 [Ai(x0)] . (70) The factor 1/w i is essential: allocating more steps to interval i decreases its local-error contribution. 
+
+Smoothed empirical calibration. Suppose we have M independent calibration trajectories. For each 
+
+m = 1 , . . . , M , draw x(m)0 ∼ p0 independently, and define A(m) 
+
+> i
+
+:= Ai(x(m)0 ). Note that in implementation, 
+
+A(m) 
+
+> i
+
+is replaced by the finite-difference proxy. The empirical raw profile is 
+
+bAi = 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+A(m) 
+
+> i
+
+. (71) The population raw profile is 
+
+Ai = Ex0∼p0 [Ai(x0)] . (72) For the square-root SharpEuler schedule, the exponent is applied after averaging over calibration trajectories: 
+
+bgi =
+
+qbAi + εa, εa > 0. (73) Let Kσ (i, ℓ ) ≥ 0 be Gaussian smoothing weights satisfying  
+
+> N−1
+
+X
+
+> ℓ=0
+
+Kσ (i, ℓ ) = 1 .
+
+The profile is then smoothed: 
+
+bbi = 
+
+> N−1
+
+X
+
+> ℓ=0
+
+Kσ (i, ℓ )bgℓ. (74) Since bgi ≥ 0 and the smoothing weights are nonnegative, bbi ≥ 0.The calibrated weights are 
+
+bwi = ∆ibbi
+
+PN −1 
+
+> ℓ=0
+
+∆ℓbbℓ
+
+. (75) The corresponding population square-root profile is g⋆i = √Ai + εa, and its smoothed version is 
+
+b⋆i = 
+
+> N−1
+
+X
+
+> ℓ=0
+
+Kσ (i, ℓ )g⋆ℓ . (76) Let us also define the effective empirical and population coefficients 
+
+bϕi := bb2 
+
+> i
+
+, ϕ⋆i := ( b⋆i )2. (77) Then bw is the minimizer of the empirical effective Euler-risk proxy 
+
+bJσ,ε a (w) =  
+
+> N−1
+
+X
+
+> i=0
+
+bϕi∆2
+
+> i
+
+wi
+
+. (78) 25 Assuming that these weights are realized through the piecewise-constant scheduling density 
+
+bp(t) = bwi
+
+∆i
+
+, t ∈ [τi, τ i+1 ), (79) we now analyze this idealized interval-allocation schedule. The practical implementation constructs the schedule by forming an empirical CDF from the calibrated masses and evaluating its inverse by linear interpolation; this realizes the same allocation up to integer-rounding, interpolation, and finite-grid boundary effects. 
+
+C.3.1 The Main Theorem 
+
+Consider the schedule class 
+
+Wω := 
+
+(
+
+w ∈ RN : wi ≥ ω,  
+
+> N−1
+
+X
+
+> i=0
+
+wi = 1 
+
+)
+
+, 0 < ω < 1/N. (80) The lower bound prevents degenerate schedules that allocate vanishing mass to an interval and makes the oracle comparison stable. Let 
+
+w⋆ ∈ arg min 
+
+> w∈W ω
+
+J (w) (81) be the best raw population-risk schedule in this class. Define the population effective objective 
+
+Jσ,ε a (w) :=  
+
+> N−1
+
+X
+
+> i=0
+
+ϕ⋆i ∆2
+
+> i
+
+wi
+
+. (82) and the bias due to smoothing and other procedures 
+
+βσ,ε a := max   
+
+> 0≤i≤N−1
+
+|ϕ⋆i − A i| = max  
+
+> i
+
+(b⋆i )2 − A i . (83) This term measures the mismatch between the raw profile appearing in the Euler error proxy and the profile optimized by the algorithm. We make the following assumptions. 
+
+(A1) Independent calibration trajectories. The calibration samples x(1) 0 , . . . , x (M )0 are i.i.d. from p0.
+
+(A2) Bernstein conditions. For every i = 0 , . . . , N − 1, there exist positive constants R and ν such that 
+
+|Ai(x0) − A i| ≤ R (84) almost surely, and 
+
+Var x0∼p0 (Ai(x0)) ≤ ν2. (85) The boundedness assumption is a sufficient condition used to obtain a simple Bernstein concentration bound. In practice, it can be enforced by clipping the calibrated sharpness values, or replaced by an appropriate tail assumption with the corresponding concentration bound. 26 (A3) Lower-bound and bounded effective-profile conditions. The closed-form empirical schedule 
+
+bw lies in Wω . Likewise, the unconstrained minimizer of the population effective objective Jσ,ε a lies in 
+
+Wω . In addition, assume on the calibration event under consideration that 
+
+0 ≤ bbi ≤ Gmax , 0 ≤ b⋆i ≤ Gmax , i = 0 , . . . , N − 1. (86) A sufficient deterministic condition is that 0 ≤ Ai(x0) ≤ Amax almost surely, in which case one may take Gmax = √Amax + εa. A sufficient condition for the lower-bound part is that ∆i ≥ ∆min > 0
+
+and √εa ≤ bbi ≤ Gmax , √εa ≤ b⋆i ≤ Gmax . Then 
+
+bwi = ∆ibbi
+
+P 
+
+> ℓ
+
+∆ℓbbℓ
+
+≥ ∆min 
+
+√εa
+
+Gmax 
+
+, (87) and similarly for the population effective weights. Hence one may choose 
+
+ω ≤ ∆min 
+
+√εa
+
+Gmax 
+
+. (88) 
+
+(A4) Euler stability. For every w ∈ W ω , the Euler sampler satisfies 
+
+∥Tw(x0) − T (x0)∥ ≤ CEul 
+
+B 
+
+> N−1
+
+X
+
+> i=0
+
+Ai(x0)∆ 2
+
+> i
+
+wi
+
+, (89) where CEul > 0 is a stability constant. Assumption (A4) is a standard nonuniform Euler stability bound. For example, if uθ is uniformly L-Lipschitz in x and we take Ai(x0) = sup t∈[τi,τ i+1 ] ∥¨x(t; x0)∥, then a discrete Grönwall argument gives (A4) with CEul = eL/2, up to the idealized interval-allocation approximation. We state (A4) as an assumption because learned flow fields may have endpoint singularities [ 20 ] or problem-dependent stability constants. Define D2 := PN −1 
+
+> i=0
+
+∆2 
+
+> i
+
+. For δ ∈ (0 , 1) , define 
+
+ηM (δ) := 
+
+r 2ν2 log(2 N/δ )
+
+M + 2R log(2 N/δ )3M , (90) and 
+
+αM (δ) := ηM (δ)2√εa
+
+, ζM (δ) := 2 Gmax αM (δ) (91) With these assumptions and discussions in place, we have the following statistical guarantee in terms of the 1-Wasserstein distance W1.
+
+Theorem 2 (Statistical stability guarantee) . Let δ ∈ (0 , 1) , N , and M be given. Under Assumptions (A1)–(A4), with probability at least 1 − δ over the calibration set, 
+
+W1(μ bw, μ 1) ≤ CEul 
+
+B
+
+
+
+J (w⋆) + 2D2
+
+ω (ζM (δ) + βσ,ε a )
+
+
+
+. (92) The high-probability statement above is over the random calibration trajectories. Conditional on the calibrated schedule, μ bw is the law induced by fresh samples x0 ∼ p0. Equivalently, treating Gmax 
+
+and εa as fixed constants, 
+
+W1(μ bw, μ 1) ≤ CEul 
+
+B J (w⋆) + OP
+
+CEul D2
+
+Bω 
+
+r log NM
+
+!
+
++ CEul D2
+
+Bω βσ,ε a . (93) 27 Remark 1. The oracle term CEul  
+
+> B
+
+J (w⋆) is the best Euler local-error proxy achievable by the schedule class. When all Ai > 0 and the lower-bound constraint wi ≥ ω is inactive, the oracle problem is 
+
+min    
+
+> wi>0,P
+> iwi=1
+> N−1
+
+X
+
+> i=0
+
+Ai∆2
+
+> i
+
+wi
+
+. (94) 
+
+Its minimizer is 
+
+w⋆i = ∆i
+
+√Ai
+
+PN −1 
+
+> ℓ=0
+
+∆ℓ
+
+√Aℓ
+
+, (95) 
+
+and the optimal value is 
+
+J (w⋆) =  
+
+> N−1
+
+X
+
+> i=0
+
+∆i
+
+pAi
+
+!2
+
+. (96) 
+
+Thus, in the oracle case, 
+
+W1(μw⋆ , μ 1) ≤ CEul 
+
+B 
+
+> N−1
+
+X
+
+> i=0
+
+∆i
+
+pAi
+
+!2
+
+. (97) 
+
+Since J (w⋆) does not depend on B, the oracle discretization term scales as O(1 /B ), matching the standard global convergence rate of Euler integration. The sharpness-aware schedule improves the constant in this rate by allocating more steps to intervals with larger local-error coefficients. The improvement is in the leading error constant: for the unconstrained oracle, applying Cauchy–Schwarz inequality: 
+
+J (w⋆) = X
+
+> i
+
+∆i
+
+pAi
+
+!2
+
+≤ X
+
+> i
+
+∆iAi = J (wunif ),
+
+where wunif  
+
+> i
+
+= ∆ i, corresponding to uniform step density in time. Thus the sharpness-aware oracle is never worse than uniform allocation for the local-error proxy, with larger gains when the sharpness profile is more nonuniform, while preserving the same O(1 /B ) Euler rate. As M → ∞ , the finite-calibration term vanishes at rate O(M −1/2) up to a logarithmic factor in N , so the calibrated schedule approaches the population schedule, up to the remaining gap due to smoothing and other bias βσ,ε a .
+
+Remark 2. The theorem compares two distributions at t = 1 , i.e. μ bw = ( T bw)#p0, the law generated by the Euler sampler using the empirically calibrated schedule, and μ1 = T#p0, the law generated by the learned ODE flow. It does not directly compare μ bw to the true data distribution. A full distribution bound would need the model error term: 
+
+W1(μ bw, p data ) ≤ W1(μ bw, μ 1) + W1(μ1, p data ). (98) 
+
+The scheduler controls only the first term. At a high level, the final sampler error can be decomposed as: final sampler error ≤ best schedule error + finite calibration error + smoothing and other bias .
+
+Here, we compare the flow induced by the calibrated schedule to the learned ODE flow. Thus the result controls numerical sampling error, rather than model error due to neural network approximation and optimization. 
+
+Remark 3 (General exponent schedules) . The implementation also allows schedules of the form 
+
+bg(γ) 
+
+> i
+
+=
+
+ bAi + εa
+
+γ
+
+, bb(γ) 
+
+> i
+
+= X
+
+> ℓ
+
+Kσ (i, ℓ )bg(γ) 
+
+> ℓ
+
+,
+
+28 followed by 
+
+w(γ) 
+
+> i
+
+= ∆ibb(γ)
+
+> i
+
+PN −1 
+
+> ℓ=0
+
+∆ℓbb(γ)
+
+> ℓ
+
+.
+
+The theorem above corresponds to γ = 1 /2, which is the exponent selected by the Euler local-error proxy. The statistical concentration part of the proof extends straightforwardly to these schedules, with constants depending on γ. However, only the square-root case γ = 1 /2 is the minimizer of the Euler local-error proxy P 
+
+> i
+> Ai∆2
+> i
+> wi
+
+. Therefore the near-oracle statement in Theorem 2 is stated for the square-root SharpEuler schedule. For γ̸ = 1 /2, the analogous guarantee should be interpreted as stability around the corresponding population exponent schedule, rather than as optimality for the Euler-error oracle. 
+
+C.3.2 Proofs 
+
+We provide a detailed proof to Theorem 2. First, we recall the continuous version of the minimization problem (see also (46) -(47) ). 
+
+Proposition 7. Let a : [0 , 1] → (0 , ∞) be continuous. Among all normalized positive densities ρ(t) > 0,
+
+R 10 ρ(t) dt = 1 , the unique minimizer of R 10 
+
+> a(t)
+> ρ(t)
+
+dt is 
+
+ρ⋆(t) = 
+
+pa(t)
+
+R 10
+
+pa(s) ds . (99) 
+
+Moreover, the minimum value is 
+
+R 10
+
+pa(t) dt 
+
+2
+
+.
+
+Proof. We solve the constrained optimization problem 
+
+min  
+
+> ρ
+
+J[ρ], J[ρ] = 
+
+Z 10
+
+a(t)
+
+ρ(t) dt, (100) subject to ρ(t) > 0, R 10 ρ(t) dt = 1 . Introduce a Lagrange multiplier λ ∈ R for the normalization constraint and define 
+
+L[ρ, λ ] = 
+
+Z 10
+
+a(t)
+
+ρ(t) dt + λ
+
+Z 10
+
+ρ(t) dt − 1
+
+
+
+. (101) To compute the first variation, let η(t) be a smooth perturbation and consider 
+
+ρϵ(t) = ρ(t) + ϵη (t), (102) for sufficiently small ϵ so that ρϵ(t) > 0. Then 
+
+L[ρϵ, λ ] = 
+
+Z 10
+
+a(t)
+
+ρ(t) + ϵη (t) dt + λ
+
+Z 10
+
+[ρ(t) + ϵη (t)] dt − 1
+
+
+
+. (103) Differentiating with respect to ϵ at ϵ = 0 gives 
+
+ddϵ L[ρϵ, λ ]
+
+> ϵ=0
+
+=
+
+Z 10
+
+
+
+− a(t)
+
+ρ(t)2
+
+
+
+η(t) dt + λ
+
+Z 10
+
+η(t) dt (104) 
+
+=
+
+Z 10
+
+
+
+− a(t)
+
+ρ(t)2 + λ
+
+
+
+η(t) dt. (105) At an interior constrained optimum, the first variation of the Lagrangian must vanish for all smooth perturbations η. Therefore, 
+
+− a(t)
+
+ρ(t)2 + λ = 0 for all t ∈ [0 , 1] . (106) 29 Rearranging gives 
+
+ρ(t)2 = a(t)
+
+λ . (107) Since ρ(t) > 0 and a(t) > 0, we need λ > 0, and thus 
+
+ρ(t) = 1
+
+√λ
+
+pa(t). (108) The normalization constraint determines λ. Substituting Eq. (108) into R 10 ρ(t) dt = 1 gives 
+
+1 = 
+
+Z 10
+
+1
+
+√λ
+
+pa(t) dt (109) 
+
+= 1
+
+√λ
+
+Z 10
+
+pa(t) dt. (110) Therefore, √λ =
+
+Z 10
+
+pa(t) dt, (111) and hence 
+
+ρ⋆(t) = 
+
+pa(t)
+
+R 10
+
+pa(s) ds . (112) This proves the claimed form of the optimizer. We next compute the minimum value. Let Z = R 10
+
+pa(s) ds. Then 
+
+ρ⋆(t) = 
+
+pa(t)
+
+Z . (113) Substituting into the objective gives 
+
+J[ρ⋆] = 
+
+Z 10
+
+a(t)
+
+ρ⋆(t) dt =
+
+Z 10
+
+a(t)
+
+pa(t)/Z dt = Z
+
+Z 10
+
+pa(t) dt = Z2 =
+
+Z 10
+
+pa(t) dt 
+
+2
+
+. (114) It remains to justify uniqueness. For each fixed t, the function r 7 → a(t) 
+
+> r
+
+is strictly convex on r > 0 since 
+
+d2
+
+dr 2
+
+ a(t)
+
+r
+
+
+
+= 2a(t)
+
+r3 > 0. (115) Since a(t) > 0, the integral functional is strictly convex over positive densities. The feasible set 
+
+
+
+ρ : ρ(t) > 0,
+
+Z 10
+
+ρ(t) dt = 1 
+
+
+
+(116) is convex. Therefore, any stationary point satisfying the constraint is the unique global minimizer. This completes the proof. We now state a discrete version of the minimization problem and characterize the corresponding solution. 
+
+Lemma 1. Define the empirical effective proxy 
+
+bJσ,ε a (w) =  
+
+> N−1
+
+X
+
+> i=0
+
+bϕi∆2
+
+> i
+
+wi
+
+. (117) 30 The unique minimizer over the simplex wi > 0, P 
+
+> i
+
+wi = 1 is 
+
+bwi = ∆ibbi
+
+PN −1 
+
+> ℓ=0
+
+∆ℓbbℓ
+
+. (118) 
+
+Under Assumption (A3), this minimizer lies in Wω , and therefore it is also the minimizer over Wω .Proof. The proof is the discrete analogue of Proposition 7, applied to the coefficients bϕi = bb2 
+
+> i
+
+.Since bϕi = bb2 
+
+> i
+
+, the Lagrangian is 
+
+L(w, λ ) = X
+
+> i
+
+bb2 
+
+> i
+
+∆2
+
+> i
+
+wi
+
++ λ X
+
+> i
+
+wi − 1
+
+!
+
+, (119) where λ is the Lagrange multiplier. The first-order optimality condition is 
+
+−bb2 
+
+> i
+
+∆2
+
+> i
+
+w2
+
+> i
+
++ λ = 0 . (120) Hence, w2 
+
+> i
+
+= bb2  
+
+> i∆2
+> i
+> λ
+
+. Since wi > 0,
+
+wi = ∆ibbi
+
+√λ . (121) Using P 
+
+> i
+
+wi = 1 ,
+
+√λ = 
+
+> N−1
+
+X
+
+> ℓ=0
+
+∆ℓbbℓ. (122) Therefore, 
+
+wi = ∆ibbi
+
+PN −1 
+
+> ℓ=0
+
+∆ℓbbℓ
+
+. (123) The objective is strictly convex on the positive simplex because w 7 → 1/w is strictly convex on w > 0.Therefore the minimizer is unique. Since Wω is a subset of the open simplex and the unconstrained global minimizer belongs to Wω under Assumption (A3), it is also the constrained minimizer over Wω .We next recall Bernstein’s inequality (see, e.g., Proposition 1.4 in [ 2]) in the form used below. 
+
+Lemma 2 (Bernstein’s inequality) . Let Z1, . . . , Z n be independent random variables satisfying 
+
+E[Zj ] = 0 , |Zj | ≤ c almost surely . (124) 
+
+Let s2 = 1
+
+> n
+
+Pnj=1 Var( Zj ). Then, for every t > 0,
+
+P
+
+ 1
+
+n
+
+> n
+
+X
+
+> j=1
+
+Zj ≥ t
+
+ ≤ 2 exp 
+
+
+
+− nt 2
+
+2s2 + 2ct 
+
+> 3
+
+
+
+. (125) 
+
+Moreover, for every δ ∈ (0 , 1) , with probability at least 1 − δ,
+
+1
+
+n
+
+> n
+
+X
+
+> j=1
+
+Zj ≤
+
+r 2s2 log(2 /δ )
+
+n + 2c log(2 /δ )3n . (126) 
+
+The same statement applies to noncentered variables after replacing Zj by Zj − E[Zj ].
+
+Using this inequality and our assumptions, we obtain the following auxiliary result. 31 Lemma 3. With probability at least 1 − δ,
+
+max 
+
+> i
+
+bϕi − ϕ⋆i ≤ ζM (δ). (127) 
+
+Proof. We first prove concentration of the raw empirical profile bAi. Fix i ∈ { 0, . . . , N − 1} and define 
+
+U (m) 
+
+> i
+
+:= A(m) 
+
+> i
+
+− A i, m = 1 , . . . , M. (128) By Assumption (A1), the variables U (1)  
+
+> i
+
+, . . . , U (M ) 
+
+> i
+
+are independent. By Assumption (A2), 
+
+E[U (m) 
+
+> i
+
+] = 0 , |U (m) 
+
+> i
+
+| ≤ R, Var( U (m) 
+
+> i
+
+) ≤ ν2. (129) for some positive constants R, ν . Moreover, 
+
+bAi − A i = 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+U (m) 
+
+> i
+
+. (130) Therefore, by Bernstein’s inequality (Lemma 2), for every η > 0,
+
+P
+
+ bAi − A i ≥ η
+
+
+
+≤ 2 exp 
+
+
+
+− M η 2
+
+2ν2 + 23 Rη 
+
+
+
+. (131) Taking a union bound over i = 0 , . . . , N − 1 gives 
+
+P
+
+
+
+max 
+
+> i
+
+bAi − A i ≥ η
+
+
+
+≤ 2N exp 
+
+
+
+− M η 2
+
+2ν2 + 23 Rη 
+
+
+
+. (132) Set u = log(2 N/δ ). The right-hand side is at most δ for 
+
+η =
+
+r 2ν2uM + 2Ru 
+
+3M . (133) Substituting u = log(2 N/δ ) gives 
+
+max 
+
+> i
+
+bAi − A i ≤ ηM (δ) (134) with probability at least 1 − δ.On this event, we next pass from the raw profile to the square-root profile. Since the map r 7 → √r + εa
+
+is 1/(2 √εa)-Lipschitz on r ≥ 0, we have 
+
+max  
+
+> i
+
+|bgi − g⋆i | = max 
+
+> i
+
+qbAi + εa − pAi + εa (135) 
+
+≤ 12√εa
+
+max  
+
+> i
+
+| bAi − A i| ≤ ηM (δ)2√εa
+
+= αM (δ). (136) Now we pass through the smoothing operator. Since Kσ (i, ℓ ) ≥ 0 and PN −1 
+
+> ℓ=0
+
+Kσ (i, ℓ ) = 1 , the smoothing operator is nonexpansive in the sup norm, so: 
+
+|bbi − b⋆i | = 
+
+> N−1
+
+X
+
+> ℓ=0
+
+Kσ (i, ℓ ) ( bgℓ − g⋆ℓ ) ≤ 
+
+> N−1
+
+X
+
+> ℓ=0
+
+Kσ (i, ℓ )|bgℓ − g⋆ℓ | ≤ max  
+
+> ℓ
+
+|bgℓ − g⋆ℓ | ≤ αM (δ). (137) Therefore, max i |bbi − b⋆i | ≤ αM (δ).
+
+32 Finally, recall that bϕi = bb2 
+
+> i
+
+, ϕ ⋆i = ( b⋆i )2. Using Assumption (A3), i.e. 0 ≤ bbi ≤ Gmax and 0 ≤ b⋆i ≤ Gmax ,we get 
+
+| bϕi − ϕ⋆i | = |bb2 
+
+> i
+
+− (b⋆i )2| = |bbi − b⋆i || bbi + b⋆i | ≤ 2Gmax |bbi − b⋆i | ≤ 2Gmax αM (δ) = ζM (δ). (138) Taking the maximum over i gives max i | bϕi − ϕ⋆i | ≤ ζM (δ) with probability at least 1 − δ. This completes the proof. Next, we will need the following series of lemmas. 
+
+Lemma 4. Let 
+
+w⋆σ,ε a = arg min 
+
+> w∈W ω
+
+Jσ,ε a (w). (139) 
+
+On the event 
+
+max  
+
+> i
+
+| bϕi − ϕ⋆i | ≤ ζ, (140) 
+
+we have 
+
+Jσ,ε a ( bw) ≤ J σ,ε a (w⋆σ,ε a ) + 2D2
+
+ω ζ. (141) 
+
+Proof. For any w ∈ W ω ,
+
+bJσ,ε a (w) − J σ,ε a (w) = X
+
+> i
+
+( bϕi − ϕ⋆i )∆ 2
+
+> i
+
+wi
+
+≤ X
+
+> i
+
+| bϕi − ϕ⋆i |∆2
+
+> i
+
+wi
+
+≤ ζω
+
+X
+
+> i
+
+∆2 
+
+> i
+
+= D2
+
+ω ζ. (142) Therefore, 
+
+sup 
+
+> w∈W ω
+
+bJσ,ε a (w) − J σ,ε a (w) ≤ D2
+
+ω ζ. (143) By Lemma 1 and Assumption (A3), bw minimizes bJσ,ε a over Wω . Hence 
+
+bJσ,ε a ( bw) ≤ bJσ,ε a (w⋆σ,ε a ). (144) Thus, 
+
+Jσ,ε a ( bw) ≤ bJσ,ε a ( bw) + D2
+
+ω ζ ≤ bJσ,ε a (w⋆σ,ε a ) + D2
+
+ω ζ ≤ J σ,ε a (w⋆σ,ε a ) + 2D2
+
+ω ζ. (145) 
+
+Lemma 5. For any w ∈ W ω ,
+
+|J σ,ε a (w) − J (w)| ≤ D2
+
+ω βσ,ε a . (146) 
+
+Consequently, on the event of Lemma 4, 
+
+J ( bw) ≤ J (w⋆) + 2D2
+
+ω (ζ + βσ,ε a ). (147) 
+
+Proof. For any w ∈ W ω ,
+
+|J σ,ε a (w) − J (w)| = X
+
+> i
+
+(ϕ⋆i − A i)∆ 2
+
+> i
+
+wi
+
+≤ X
+
+> i
+
+|ϕ⋆i − A i|∆2
+
+> i
+
+wi
+
+≤ βσ,ε a
+
+ω
+
+X
+
+> i
+
+∆2 
+
+> i
+
+= D2
+
+ω βσ,ε a . (148) Now, 
+
+J ( bw) ≤ J σ,ε a ( bw) + D2
+
+ω βσ,ε a . (149) 33 By Lemma 4, 
+
+Jσ,ε a ( bw) ≤ J σ,ε a (w⋆σ,ε a ) + 2D2
+
+ω ζ. (150) Since w⋆σ,ε a minimizes Jσ,ε a over Wω ,
+
+Jσ,ε a (w⋆σ,ε a ) ≤ J σ,ε a (w⋆). (151) Using the bias bound again, 
+
+Jσ,ε a (w⋆) ≤ J (w⋆) + D2
+
+ω βσ,ε a . (152) Combining the above gives 
+
+J ( bw) ≤ J (w⋆) + 2D2
+
+ω ζ + 2D2
+
+ω βσ,ε a . (153) Therefore, 
+
+J ( bw) ≤ J (w⋆) + 2D2
+
+ω (ζ + βσ,ε a ). (154) 
+
+Lemma 6. For any w ∈ W ω ,
+
+W1(μw, μ 1) ≤ CEul 
+
+B J (w). (155) 
+
+Proof. By the definition of the 1-Wasserstein distance, 
+
+W1(μw, μ 1) = inf  
+
+> π∈Π( μw,μ 1)
+
+Z
+
+∥x − y∥ dπ (x, y ), (156) where Π( μ, ν ) denotes the set of all couplings of μ and ν. Using the shared-noise coupling 
+
+πw = ( Tw, T )#p0, (157) we obtain 
+
+W1(μw, μ 1) ≤ Ex0∼p0 ∥Tw(x0) − T (x0)∥. (158) By Assumption (A4), 
+
+∥Tw(x0) − T (x0)∥ ≤ CEul 
+
+B
+
+X
+
+> i
+
+Ai(x0)∆ 2
+
+> i
+
+wi
+
+. (159) Taking expectation over x0 ∼ p0,
+
+E∥Tw(x0) − T (x0)∥ ≤ CEul 
+
+B E
+
+"X
+
+> i
+
+Ai(x0)∆ 2
+
+> i
+
+wi
+
+#
+
+. (160) The expectation on the right is exactly J (w). Therefore, 
+
+W1(μw, μ 1) ≤ CEul 
+
+B J (w). (161) We now have all the needed ingredients to prove Theorem 2. 34 Proof of Theorem 2. By Lemma 3, with probability at least 1 − δ,
+
+max  
+
+> i
+
+| bϕi − ϕ⋆i | ≤ ζM (δ). (162) On this high-probability event, Lemma 5 gives 
+
+J ( bw) ≤ J (w⋆) + 2D2
+
+ω (ζM (δ) + βσ,ε a ) . (163) By Lemma 6, 
+
+W1(μ bw, μ 1) ≤ CEul 
+
+B J ( bw). (164) Combining the two inequalities, 
+
+W1(μ bw, μ 1) ≤ CEul 
+
+B
+
+
+
+J (w⋆) + 2D2
+
+ω (ζM (δ) + βσ,ε a )
+
+
+
+. (165) This completes the proof of the main theorem. 
+
+# D Experimental Details 
+
+## D.1 Synthetic Datasets and Model Training 
+
+We evaluate SharpEuler on two synthetic two-dimensional distributions: Branched Manifold and Rotated Grid . These datasets are chosen to distinguish two failure modes of low-budget Euler sampling. Branched Manifold tests whether the sampler resolves thin, curved support, while Rotated Grid tests whether it preserves separated modes without placing excessive mass between them. For each dataset, we train a small residual MLP flow matching model whose probability path is described by the linear interpolation 
+
+xt = (1 − t)x0 + tx 1, t ∈ [0 , 1] ,
+
+where x0 is a noise sample and x1 is a data sample. The regression target is 
+
+v∗ = x1 − x0,
+
+corresponding to the forward-time convention described in the main paper, integrating from noise to data. At inference, we sample with the corresponding reverse-time Euler update. All reported samples use EMA weights. The same trained model, random seed, and initial noise samples are used across schedules whenever possible, so that differences are attributable to the timestep grid. 
+
+## D.2 Schedule Baselines 
+
+We compare schedules at fixed number of function evaluations (NFE), with budgets B ∈ { 8, 12 , 16 , 20 }
+
+for the synthetic experiments. The sampler and model are unchanged across schedules. 
+
+Uniform. The Uniform baseline uses an equally spaced descending reverse-time grid from s = 1 to s = 0 .
+
+ETS. The ETS baseline is the entropy-driven schedule of [ 36 ], adapted to our flow matching predictor following the BioNeMo MoCo implementation [ 30 ]. We use the absolute divergence when constructing the cumulative entropy estimate to ensure a monotone schedule. 35 SharpEuler. SharpEuler constructs a profile-aware density 
+
+ρ(t) ∝ ϕ(t)γ ,
+
+where ϕ(t) is the smoothed finite-difference acceleration profile estimated from calibration trajectories. We evaluate γ ∈ { 0.5, 1.0, 1.5}. The choice γ = 0 .5 corresponds to the LTE-equidistributing den-sity derived in Sec. 3. Larger values concentrate the grid more strongly in regions assigned high sharpness by the calibration profile. 
+
+## D.3 Evaluation Metrics 
+
+For the synthetic experiments, we report Density and Coverage [ 29 ], which are robust alternatives to the precision-recall metrics of [ 18 ]. Both metrics are computed using k-nearest-neighbor (NN) balls around real samples with k = 5 .
+
+Density. For each generated sample, Density counts how many real samples k-NN balls contain, averaged over generated samples and normalized by k. Higher Density indicates that generated samples lie in regions of high real sample density. 
+
+Coverage. Coverage is the fraction of real samples whose k-NN ball contains at least one generated sample. Higher Coverage indicates that the generator reaches a larger fraction of the target support. 
+
+Wasserstein-2 distance. We also report squared Wasserstein-2 distance W 22 , estimated with Sinkhorn-regularized optimal transport [ 38 , 7]. We use n = 2000 samples from each distribution and entropic regularization ε = 0 .01 . Lower W 22 indicates a closer distributional match. 
+
+## D.4 FLUX Calibration and Inference Details 
+
+We evaluate FLUX.1-dev [ 4], a 12B-parameter rectified flow transformer for text-to-image gener-ation, at its native 1024 ×1024 resolution. All samples are generated in bfloat16 precision with classifier-free guidance scale 3.5.We calibrate SharpEuler once using 64 prompts spanning landscapes, urban scenes, wildlife, and abstract content. For each prompt, we run the default 50-step FLUX.1-dev pipeline in diffusers [15 ]. During calibration, we record the velocity predictions used by scheduler.step , take finite differences of consec-utive predictions to estimate acceleration along the trajectory, average these estimates across prompts, and smooth the resulting profile with a Gaussian kernel of bandwidth σ = 1 .0 on the 49-point midpoint grid. The calibrated profile is then fixed and reused for all held-out prompts and all inference budgets. We compare SharpEuler with γ = 0 .5 against two profile-agnostic schedules. The first is the default FLUX pipeline schedule, which applies the resolution-dependent μ-shift used by diffusers . The second is a static shifted schedule with α = 3 , following the SD3-style FlowMatch Euler shift [ 9], 
+
+tshifted = αt 
+
+1 + ( α − 1) t .
+
+For SharpEuler, we use a tail-aligned variant in which the final step is replaced by the corresponding pipeline step. This preserves the hand-tuned low-noise tail of the FLUX sampler, where the calibrated finite-difference profile is empirically noisier. We omit ETS from the FLUX experiments because its flow matching adaptation requires Jacobian-vector products through the transformer at candidate timesteps, which is too expensive at 1024 ×1024 resolution. 36 D.5 GPT-5.5 Vision-Judge Protocol 
+
+We use GPT-5.5 as a vision judge to compare SharpEuler and the default FLUX pipeline schedule against the same 50-step reference image. For each prompt, the judge receives four inputs: the text prompt, the 50-step reference image, the SharpEuler image, and the Pipeline image. The two candidate images are shown in randomized order to reduce position bias. The judge returns two types of output. First, it assigns each candidate an independent integer score from 1 to 10, where higher scores indicate closer agreement with the reference image in the intended generative sense. Second, it returns a forced pairwise preference, allowing ties only when the candidates are effectively indistinguishable. The rubric instructs the judge to compare prompt-grounded semantic content, global composition, scene layout, object identity, style, viewpoint, lighting, color palette, and salient spatial relationships. It also instructs the judge not to over-penalize harmless stochastic differences or exact pixel-level deviations. For each budget, we report the mean SharpEuler score, mean Pipeline score, the paired score difference (∆ = score SharpEuler − score Pipeline ), the standard deviation of ∆ across prompts, a paired t-test p-value for the score differences, and the number of pairwise wins for SharpEuler. Statistical tests are computed over prompt-level paired comparisons. 
+
+# E Additional Results 
+
+## E.1 Sharpness Profiles 
+
+Figure 3 shows calibrated sharpness profiles for three synthetic datasets: Branched Manifold (left), Rotated Grid (middle), and Spiral (right). The top row shows the target data distributions. The middle row shows the calibrated sharpness profile together with the resulting timestep grid for γ = 0 .5 at budget 
+
+B = 16 , while the bottom row shows the corresponding profile and grid for γ = 1 .0.The profiles differ across datasets, indicating that the calibrated sharpness signal depends on both the learned model and the geometry of the target distribution. Thus, the induced timestep grids are also dataset dependent. Increasing γ concentrates grid points more strongly in regions assigned with high sharpness, producing visibly different timestep placements even at the same evaluation budget. Since the calibrated profiles are derived from the local behavior of the learned flow, an interesting direction for future work is to study whether the induced timestep densities correlate with uncertainty or ambiguity in the generative trajectory [ 11 ]. 
+
+## E.2 Gamma Ablation 
+
+We ablate the exponent γ in the schedule density ρ(t) ∝ ϕ(t)γ on Branched Manifold and Rotated Grid. We sweep γ ∈ { 0.5, 0.8, 1.0, 1.2, 1.5, 1.7, 2.0} and evaluate Density and Coverage at budgets 
+
+B ∈ { 5, 8, 12 , 16 , 20 }. Results are shown in Figure 4. The sweep shows a consistent fidelity–coverage tradeoff. Increasing γ tends to increase Density, because the resulting grid concentrates more evaluations at times with high estimated sharpness. Coverage behaves differently: it usually peaks at an intermediate value, often around γ ∈ [1 .0, 1.2] , and decreases for larger γ. This indicates that overly concentrated grids can improve local sample fidelity while leaving parts of the target support under-sampled. The effect is strongest at the smallest budget, 
+
+B = 5 , where each timestep placement has high leverage, and weakens as the budget increases. Overall, 
+
+γ = 0 .5 remains the LTE-prescribed default, while γ ∈ [1 .0, 1.5] often gives the best empirical Density– Coverage tradeoff on these synthetic datasets. 37 0.00 0.25 0.50 0.75 1.00                               
+
+> t (1=noise 0=data)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> = 0.5
+> a(t)
+> a(t)
+> 0.00 0.25 0.50 0.75 1.00
+> t (1=noise 0=data)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0 a(t)
+> a(t)
+> 0.00 0.25 0.50 0.75 1.00
+> t (1=noise 0=data)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0 a(t)
+> a(t)
+> 0.00 0.25 0.50 0.75 1.00
+> t (1=noise 0=data)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> = 1.0
+> a(t)
+> a(t)
+> 0.00 0.25 0.50 0.75 1.00
+> t (1=noise 0=data)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0 a(t)
+> a(t)
+> 0.00 0.25 0.50 0.75 1.00
+> t (1=noise 0=data)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0 a(t)
+> a(t)
+
+Figure 3 Calibrated sharpness profiles and induced timestep grids for Branched Manifold (left), Rotated Grid (middle), and Spiral (right). The top row shows target samples. The middle and bottom rows show the sharpness profile and resulting B = 16 grid for γ = 0 .5 and γ = 1 .0, respectively. The profiles and induced grids vary across datasets, and larger γ concentrates timestep placements more strongly in high-sharpness regions. 
+
+# Broader Impact 
+
+This work develops a sampling method for flow-based generative models. The contribution is primarily methodological: SharpEuler changes the placement of Euler evaluations at inference time and does not introduce new training data, model capabilities, or deployment mechanisms. Nevertheless, improvements in low-budget sampling can reduce the cost of generating images and other synthetic data, which may amplify both beneficial and harmful uses of generative models. The method should therefore be used with the same safeguards as the underlying generative model. In applications where generated outputs may affect scientific, medical, legal, or safety-critical decisions, low-budget samples should not be treated as verified outputs. Reducing the number of sampling steps can also change failure modes, introduce artifacts, or alter coverage of the target distribution. Human review and task-specific validation remain necessary when sample correctness or semantic fidelity matters. 38 0.6 0.8 1.0 1.2 1.4 1.6 1.8 2.0 
+
+exponent        
+
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Density
+> B=5
+> B=8
+> B=12
+> B=16
+> B=20
+> 0.6 0.8 1.0 1.2 1.4 1.6 1.8 2.0
+
+exponent 
+
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> Coverage
+> B=5
+> B=8
+> B=12
+> B=16
+> B=20
+
+(a) Branched Manifold 0.6 0.8 1.0 1.2 1.4 1.6 1.8 2.0 
+
+exponent        
+
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> Density
+> B=5
+> B=8
+> B=12
+> B=16
+> B=20
+> 0.6 0.8 1.0 1.2 1.4 1.6 1.8 2.0
+
+exponent 
+
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Coverage
+> B=5
+> B=8
+> B=12
+> B=16
+> B=20
+
+(b) Rotated Grid 
+
+Figure 4 Density and Coverage as functions of the exponent γ for Branched Manifold and Rotated Grid, across budgets B ∈ { 5, 8, 12 , 16 , 20 }. Increasing γ generally improves Density, while Coverage is maximized at intermediate values and can decrease when the grid becomes too concentrated. Dashed vertical lines mark 
+
+γ = 0 .5, the LTE-prescribed choice, and γ = 1 .0.
+
+39

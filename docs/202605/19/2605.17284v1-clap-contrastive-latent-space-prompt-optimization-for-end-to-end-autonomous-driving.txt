@@ -1,0 +1,704 @@
+Title: CLAP: Contrastive Latent-space Prompt Optimization for End-to-end Autonomous Driving
+
+URL Source: https://arxiv.org/pdf/2605.17284v1
+
+Published Time: Tue, 19 May 2026 01:11:59 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# CLAP: Contrastive Latent-space Prompt Optimization for End-to-end Autonomous Driving 
+
+Ruiyang Zhu 
+
+University of Michigan 
+
+ryanzhu@umich.edu 
+
+Yuehan He 
+
+University of Michigan 
+
+mperform@umich.edu 
+
+Boyuan Zheng 
+
+University of Michigan 
+
+boyuann@umich.edu 
+
+Zesen Zhao 
+
+University of Michigan 
+
+hymanzzs@umich.edu 
+
+Ahmad Chalhoub 
+
+University of Michigan 
+
+aachalho@umich.edu 
+
+Qingzhao Zhang 
+
+University of Arizona 
+
+qzzhang@arizona.edu 
+
+Z. Morley Mao 
+
+University of Michigan 
+
+zmao@umich.edu 
+
+Abstract 
+
+End-to-end autonomous driving systems powered by Vision-Language-Action (VLA) models achieve strong performance on common driving scenarios, yet re-main brittle in rare but safety-critical long-tail situations such as active construc-tion zones and complex yielding geometries. In this paper, we present a method that addresses the long-tail challenging scenes beyond data scaling and model training. We introduce CLAP ( Contrastive La tent-space Prompt optimization), a location-aware adaptation framework that augments a frozen VLA driving model with per-roadblock soft prompts, optimized from crowdsourced data and retrieved on demand via Vehicle-to-Everything (V2X) communication. Our approach rests on two observations from VLAs’ latent space: (i) at the VLA’s hidden-state layer, scenarios from the same roadblock cluster tightly and occupy compact regions of the latent space; and (ii) within a single roadblock, long-tail and normal frames are heavily intermixed in the latent representation, making it difficult to improve one without disturbing the other. CLAP addresses this via a two-stage pipeline: supervised contrastive learning to discover a roadblock-specific hard-scene direc-tion, followed by directionally regularized prompt optimization that selectively improves challenging frames while preserving normal frame performance. On the NAVSIM benchmark with various state-of-the-art VLA backbones, CLAP re-duces challenging scenario planning error by 24% with no regression on normal frames, significantly improving planning performance. 
+
+1 Introduction 
+
+The promise of end-to-end autonomous driving (AD) lies in replacing hand-engineered perception-planning stacks [1, 3] with unified models that jointly learn perception, prediction, and control from raw sensor streams [9, 14, 46, 25, 45]. Recent Vision-Language Models (VLMs), pre-trained on Internet-scale vision-text corpora, bring additional benefits: they encode rich common-sense knowl-edge about traffic rules and safety margins that are difficult to express in purely geometric repre-sentations. Building on this foundation, recent work has extended VLMs into Vision-Language-Action (VLA) planners with large-scale driving datasets [23, 22, 39, 24, 49], in both pre-training and fine-tuning stages, achieving substantial gains on end-to-end planning benchmarks. 
+
+> Preprint.
+> arXiv:2605.17284v1 [cs.CV] 17 May 2026
+
+(a) The model drive the vehicle to collide with a temporary workzone. 
+
+(b) The model fails to detour when blocked by a parked vehicle. 
+
+Figure 1: Examples of robustness issues of RecogDrive [23] tested on NAVSIM [11]. Red trajectories are produced by the driving model while green trajectories are human driver produced ground truth. 20 10 0 10 20 30  
+
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30 Roadblock
+> construction_49570
+> construction_50149
+> stop_sign_51040
+> stop_sign_66236
+> Frame type
+> Normal
+> Challenging
+
+(a) RecogDrive [23]. 20 10 0 10 20 30  
+
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> Roadblock
+> construction_49570
+> construction_50149
+> stop_sign_51040
+> stop_sign_66236
+> Frame type
+> Normal
+> Challenging
+
+(b) Alpamayo 1.5 [39]. 30 20 10 0 10 20 30 40  
+
+> 20
+> 10
+> 0
+> 10
+> 20
+> Roadblock
+> construction_49570
+> construction_50149
+> stop_sign_51040
+> stop_sign_66236
+> Frame type
+> Normal
+> Challenging
+
+(c) DriveVLA-W0 [22]. 
+
+Figure 2: 2D t-SNE [37] of hidden states from three state-of-the-art VLA planners on four NAVSIM regions. Across all three models, scenarios from the same region form clusters in the latent space. 
+
+Despite these advances, VLA-based AD systems share a well-known Achilles heel: long-tail sce-nario failures . A long-tail scenario is a driving situation that is (i) often rare in the training distribu-tion but (ii) safety-critical in deployment. Canonical examples include active road construction with partial lane closures (Figure 1a), yielding under complex geometries and semantics (Figure 1b), and adverse weather combinations not well-represented in training. These cases cause state-of-the-art VLA planners to produce erratic trajectories or resort to overly conservative behaviors [6, 13]. The dominant approach to closing this gap is scaling data collection and fine-tuning the model, an axis along which recent VLA work continues to make substantial progress [23, 39, 22, 49, 43, 24]. These gains, however, become progressively harder to extend along the long-tail: rare events are sparse by construction [26], the combinatorial space of within-category variation (layouts, weather, time of day, surrounding traffic) makes exhaustive coverage intractable [5, 8], and frequent fine-tuning on niche data risks catastrophic forgetting of previously learned competencies [29]. 
+
+Key insight: long-tail failures can be patched locally. Rather than repairing a VLA planner for all possible long-tail scenarios, we observe that many failures are tied to specific road regions, such as recurring construction zones, complex intersections, or frequently blocked lanes. For such cases, the goal does not need to be category-level generalization across all construction zones or all blocked lanes. Instead, it is sufficient to improve behavior across repeated traversals of the same location. This locality is reflected in the model’s latent space. Figure 2 shows a t-SNE projection of three state-of-the-art VLA planners’ (RecogDrive [23], Alpamayo [39], and DriveVLA-W0 [22]) hidden states over four spatial regions of the NAVSIM [11] road topology: two construction zones and two stop-sign intersections. Across all three models, scenarios from the same region cluster tightly, reflecting shared visual structure (road geometry, landmarks, lane layout, etc. ). On the other hand, different regions occupy distinguishable clusters rather than collapsing into a single category-level region ( e.g., the two stop-sign regions occupy distinct parts of the latent space). This suggests a natural unit of adaptation: we call each such region a roadblock : a contiguous spatial region of the road whose traversals share a stable visual and geometric identity (same lane topology, dominant static obstacles and surrounding scene structure). A roadblock is an operational abstraction and can be instantiated in several ways, including (i) HD-map segments [38] bounded by change points in lane-topology, (ii) geofenced polygons around persistent obstacles ( e.g., active construction), or (iii) unsupervised clusters of GPS traces with similar visual embeddings [4]. This reframes the problem: rather than patching the model globally, a manifold too large for fine-tuning to cover, we can patch it per road , where the manifold is small enough for a targeted intervention to cover cleanly. 2Vehicle 
+
+> Crowdsourced Trace Collection
+> GPS Camera
+> Pre-trained VLA
+
+Cloud       
+
+> Soft Prompt Optimization
+> 2. Frozen VLA Inference
+> Trace (frames + traj + meta)
+> 1. Route Trace Ingestion
+> Store frames, trajectories, metadata
+> 2. Partitioning
+> Partition long-tail vs.
+> normal frames
+> 3. Contrastive Learning
+> Learn prompt PA:separate long-tail vs normal
+> 4. Directional Regularized Optimization
+> Prompt PB: improve long-tail, preserve normal
+> 5. Prompt Cache (per-roadblock)
+
+Vehicle      
+
+> Optimized Inference
+> 1. GPS / Map Lookup
+> Location current roadblock ID (RB k)
+> 2. Optimized Prompt Retrieval
+> PAContrastive Prompt
+> PBPerformance Prompt
+> 3. Applying Optimized Prompt
+> PA
+> PB
+> +Pre-trained VLA
+> 4. Enhanced Planning Trajectory
+> Data Upload (V2X) Data Download (V2X) RB kRoadblock cache k, consists of a ( PA, PB) pair
+> 1. Sensing & Localization
+> 3. Long-tail Trace Collection
+
+Figure 3: Overview of CLAP. Connected vehicles upload challenging traces over V2X; the cloud optimizes a per-roadblock prompt pair (PA, P B ); other vehicles retrieve and apply them to the frozen VLA when entering the same location. 
+
+Key method: soft prompt optimization through contrastive latent-space learning. We adopt soft-prompt tuning [19, 42] as the adaptation mechanism, which optimizes continuous prompt em-beddings while keeping the backbone model frozen. This is particularly suitable for per-road adap-tation: prompts can be learned, stored, and deployed independently across locations, avoiding in-terference between patches and eliminating the cost and risk of repeated fine-tuning. Soft-prompt tuning, however, brings its own challenge in this setting: a prompt optimized for challenging frames will also perturb normal frames on the same road, as challenging and normal frames are intermixed in latent space [30] (§3.2). To address this, we design CLAP (Figure 3), a two-stage prompt opti-mization framework over a frozen VLA, instantiated per roadblock :
+
+Stage 1 — direction discovery via supervised contrastive learning. We optimize an auxiliary prompt PA with a supervised contrastive (SupCon) [17] objective that pushes hidden states of chal-lenging frames away from those of normal frames. The principal direction of the separated repre-sentation yields d⋆, a compact descriptor of the challenging-scene direction .
+
+Stage 2 — directionally regularized prompt optimization. We then optimize a performance prompt PB under a joint loss combining (a) planning loss on challenging frames, (b) a directional regularizer steering PB ’s effect on challenging frames along d⋆, and (c) a normal-frame regular-izer penalizing any shift in normal-frame representations. The resulting prompt improves long-tail behavior precisely where needed, with minimal collateral impact on common driving. We envision CLAP deployed similarly to standard V2X communication-aided AD [21, 40, 51, 52]: a central server aggregates challenging frames crowdsourced from connected vehicles (Figure 3), optimizes per-roadblock prompts offline, and pushes the resulting prompts to vehicles on demand. We evaluate CLAP on challenging scenarios from NAVSIM [11] benchmark with various SOTA VLA planners [23, 39, 22], demonstrating consistent improvements on long-tail scenarios without compromising normal driving performance. The main contributions of the paper are: 
+
+• A per-road formulation of the long-tail problem: we show, via latent-space analysis across mul-tiple SOTA VLAs, that the manifold of a single roadblock is closely clustered, motivating per-road rather than global optimization (§1). 
+
+• We propose CLAP framework to enhance long-tail scenario performance while preserving normal-frame planning, via a pipelined contrastive auxiliary prompt followed by a performance prompt optimized with directional and normal-frame regularizations (§4.2). 
+
+• We show CLAP reduce 24% Average Displacement Error (ADE) on various VLA planners on NAVSIM challenging segments, without normal-frame regression (§5), achieving new state-of-the-art performance. 32 Background and Related Work 
+
+2.1 End-to-End VLM and VLA for Autonomous Driving 
+
+Early end-to-end driving systems used convolutional or transformer architectures trained to regress waypoints from camera images, implicitly coupling perception and planning [9, 14, 46, 25, 16]. A newer generation integrates Large Language Models (LLMs) or Vision-Language Models (VLMs) to bring language understanding and reasoning directly into the driving loop. LMDrive [33] encodes multi-camera views and partial LiDAR point clouds via a vision encoder, then fine-tunes a frozen LLM plus a lightweight adaptor to produce waypoint outputs end-to-end given natural language driv-ing instructions. EMMA [15], developed by Waymo [2], processes only camera images and text in-structions and is built on Google’s Gemini model [12]; it demonstrates that a single large generative model can handle joint perception, motion prediction, and planning. OpenEMMA [44] provides an open-source replication of this paradigm. ReCogDrive [23] builds on the InternVL vision-language model [7, 50] and is fine-tuned through reinforcement learning [36]. AutoVLA [49] similarly ap-plies reinforcement fine-tuning, with adaptive reasoning tailored to driving. Alpamayo-R1 [39] explicitly targets long-tail generalization by jointly training reasoning and action prediction, and DriveVLA-W0 [22] introduces world-model amplification of the data-scaling law for VLA train-ing. UniDriveVLA [24] unifies understanding, perception, and action planning within a single VLA backbone. Despite their impressive performance on standard benchmarks, all these systems share a systematic weakness: performance degrades substantially on long-tail scenarios due to training dis-tribution mismatch. Our work is orthogonal to the backbone design and can, in principle, be applied to any differentiable VLM-based planner to improve its long-tail performance. 
+
+2.2 Prompt Optimization and Test-Time Adaptation Hard prompt engineering involves crafting natural language strings ( e.g., , “Think step by step”) that improve zero-shot or few-shot performance [27]. While effective for general tasks, the dis-crete search space makes systematic optimization difficult. Soft prompts replace human-readable tokens with continuous, learnable embeddings prepended to the input sequence. PrefixTuning [20] and PromptTuning [19] showed that optimizing a small number of embedding parameters while freezing the backbone can match full fine-tuning on many NLP benchmarks. In the adversarial set-tings, GCG [53] demonstrated that gradient-guided search over token space can reliably produce adversarial suffixes that jailbreak LLMs. AutoDAN [28] showed that the same principle applies in the multimodal domain. We adapt the optimization philosophy for a constructive purpose: rather than eliciting harmful outputs, we steer the model toward safer, more appropriate driving decisions. Test-time training [35] proposes updating a subset of model parameters at inference time using self-supervised auxiliary losses computed on the test input. TeST [34] extends this idea to semantic segmentation. Our approach differs in two important ways: (1) we do not update any model pa-rameters, the prompt patch is fixed during retrieval and injection; and (2) the optimization happens entirely in the cloud on a pre-collected set of crowdsourced data, making the online cost minimal. 
+
+3 Motivating Experiment: Per-Roadblock vs. Shared Prompt Optimization 
+
+As discussed in §1, our latent-space analysis (Figure 2) revealed a locality property: scenarios from the same roadblock cluster tightly in the VLA’s hidden-state space, while different roadblocks oc-cupy geometrically distinct regions. Building on this, we test whether per-roadblock optimization outperforms a single shared optimization across roadblocks, and uncover a second geometric obser-vation about within-roadblock structure that further shapes CLAP’s design. 
+
+Baseline: Soft prompt optimization. We apply the soft prompt optimization method [19]: a se-quence of L continuous embeddings P = [ p1, . . . , p L] ∈ RL×d injected after the visual tokens at the LLM input and optimized by gradient descent on the trajectory loss (MSE loss) via backpropagation. This recipe is standard in parameter-efficient adaptation [20, 19, 48] and serves as the motivating baseline in this section before CLAP’s contrastive two-stage refinement (§4). 
+
+3.1 Observation 1: per-roadblock scoping outperforms a shared prompt Setup. We compare two scopes of soft prompt optimization against the RecogDrive [23] model. Both methods use prompts of identical length and minimize the same trajectory loss on challenging frames; the only variable is the scope of optimization. Merged : a single prompt is optimized on the challenging frames of all four roadblocks and evaluated on each. Per-roadblock : four separate prompts are optimized, each on the challenging frames of one roadblock and evaluated on the same. 4Challenging frames Normal frames 
+
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> 1.75
+> ADE (m, lower is better)  1.585
+> 1.145
+> 1.430
+> 1.202
+> 1.317
+> 1.011
+> 9.8%
+> +5.0%
+> 16.9%
+> 11.7%
+> Per-roadblock vs. merged soft-suffix optimization
+> (mean across 4 NAVSIM roadblocks)
+> Base (no prompt)
+> Merged suffix
+> Per-roadblock suffix
+
+Figure 4: Per-roadblock vs. merged soft prompt optimization on RecogDrive, averaged across four NAVSIM roadblocks. Per-roadblock optimization yields larger reductions in both challenging-frame ADE while matching merged on normal-frame ADE. 8 6 4 2 0 2 4 6               
+
+> 15
+> 10
+> 5
+> 0
+> 5
+> construction_49570
+> 30 20 10 010
+> 5.0
+> 2.5
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> construction_50149
+> 0.0 2.5 5.0 7.5 10.0 12.5
+> 5
+> 0
+> 5
+> 10
+> 15
+> 20
+> stop_sign_51040
+> 10 50510 15
+> 2
+> 0
+> 2
+> 4
+> stop_sign_66236
+> Normal Challenging
+
+Figure 5: Per-roadblock t-SNE plots for challeng-ing and normal frames within each roadblock. The challenging data and normal data frames are largely intermixed for most cases and cannot be easily sepa-rated. 
+
+Figure 4 reports challenging- and normal-frame ADE averaged across the four roadblocks. The frozen backbone has challenging-frame ADE of 1.585 m. Merged-scope optimization reduces this to 1.430 m ( −9.8% ), and per-roadblock optimization to 1.317 m ( −16 .9% ). The merged prompt underperforms despite being trained on four times more challenging frames than each per-roadblock prompt; the bottleneck is not data, it is the geometric mismatch between a single prompt and four distinct hidden-state manifolds. The normal-frame results are more informative. Per-roadblock optimization improves normal-frame ADE by 11 .7% given that challenging and normal frames at the same roadblock share visual structure and benefit from related representational adjustments. Merged optimization, in contrast, degrades normal-frame ADE by 5.0% .
+
+3.2 Observation 2: hard and normal frames are intermixed within a roadblock 
+
+A naive view would expect challenging frames at a roadblock to occupy a distinct sub-region of the latent space relative to normal frames at the same roadblock. However, Figure 5 shows this is not the case. For each of the four roadblocks, we project the VLA’s LLM-layer-0 hidden states without additional prompt hints via t-SNE, with challenging and normal frames coloured separately. Challenging frames do not form a clean island; they are heavily intermixed with normal frames within each roadblock, occupying overlapping or interleaved regions rather than a separate cluster. This intermixing has a direct consequence for unconstrained prompt optimization. The trajectory-loss gradient on challenging frames points in the direction that locally reduces error on those frames, but because their hidden states are interleaved with normal frames’, the same direction also perturbs normal-frame representations. Whether that perturbation helps or hurts on a given roadblock de-pends on the local geometry, which is why we observed mixed normal-frame outcomes in Obser-vation 1: per-roadblock optimization happened to help normal frames on these four roadblocks, but it provides no mechanism to protect its performance. A roadblock with less favorable hard/normal overlap could see normal-frame regression even under per-roadblock scoping. 
+
+Takeaway. The two observations together motivate the rest of CLAP’s design. (a) Scoping op-timization to a single roadblock yields larger average challenging-frame gains than a shared opti-mization across roadblocks. (b) Within a roadblock, optimization should explicitly account for not degrading normal-frame performance when focusing on improving challenging scenarios. 
+
+4 Methodology 
+
+4.1 Identifying Challenging Frames per Roadblock 
+
+The goal of improving challenging-frame performance without degrading normal frames requires partitioning each roadblock’s frames into challenging and normal subsets. The partition is an input to CLAP: a deployed system could derive these labels from many signals (V2X-reported near-misses, ride-quality complaints, etc. ), and the choice of signal is orthogonal to the prompt optimization framework. In this paper, we propose a viable approach via a VLM-based pipeline that serves both as our evaluation tool and as one partitioning component in deployed CLAP: 5Input. The pipeline operates on crowdsourced route traces collected by CLAP’s cloud optimizer (Figure 3). Each trace consists of a sequence of camera frames, per-frame ego pose (position, speed, heading), the VLA-planned trajectory, and a ground-truth trajectory ( e.g., human-driven or annotated). The two trajectories together enable per-frame difficulty assessment, detailed below. 
+
+(1) Semantic identification: A strong VLM (Claude Sonnet 4.6 [10]) is given the front-camera frame sequence, per-frame ego speed and heading change, and brief map context for each route, and identifies route-level temporal segments involving non-trivial driving decisions. (2) Empirical validation: A semantically identified segment is retained only if its planning error under the frozen backbone exceeds the route mean by a margin δ (0.5 m in our experiments); within retained seg-ments, other frames are partitioned as normal. This ensures retained frames are challenging in both senses—semantically meaningful and empirically difficult for the planner. (3) Spatial coherence: 
+
+Confirmed challenging frames should form spatially contiguous clusters in map coordinates, guard-ing against incidentally but geographically scattered outlier frames. Each surviving cluster receives a fine-grained label (e.g., speed adapt nudge out odd construction for a construction zone requiring an out-of-lane maneuver) used by Stage 1’s contrastive weighting (§4.2). Full partitioning taxonomies and configurations are detailed in Appendix A.1. 
+
+4.2 CLAP: Two-Stage Contrastive Latent-Space Prompt Optimization Notations. Let fθ denote a frozen VLA planner that predicts a future trajectory ˆy = fθ (x, u ) from camera observations x and instruction tokens u. Throughout the process, θ is held fixed; CLAP only optimizes a pair of soft prompts injected at the LLM input. For a roadblock R, let DR 
+
+> c
+
+denote the challenging frames identified by the pipeline of §4.1 and DR 
+
+> n
+
+the remaining normal frames. CLAP optimizes one prompt pair (PR 
+
+> A
+
+, PR 
+
+> B
+
+) per roadblock, using only frames from R.The two prompts are continuous embedding sequences in the LLM input space, PR 
+
+> A
+
+∈ Rm×dllm and 
+
+PR 
+
+> B
+
+∈ Rn×dllm , spliced between the visual tokens and the instruction tokens: 
+
+[ v1, . . . , v K ]
+
+| {z }
+
+> visual
+
+∥ [ PR 
+
+> A
+
+]
+
+| {z } 
+
+> Stage 1 trains
+
+∥ [ PR 
+
+> B
+
+]
+
+| {z } 
+
+> Stage 2 trains
+
+∥ [ u1, . . . , u L ]
+
+| {z }
+
+> instruction
+
+.
+
+Splicing here, rather than as a trailing suffix, ensures the prompts are causally visible to every in-struction and trajectory token under the LLM’s auto-regressive mask. 
+
+Stage 1 — contrastive direction discovery. Stage 1 trains PR 
+
+> A
+
+with a single objective: induce a separation between challenging and normal frames in the planner’s hidden-state geometry. For each frame i we extract a representation hi = P ool  H(ℓ) 
+
+> i
+
+(PR 
+
+> A
+
+) ∈ Rdllm , where H(ℓ) 
+
+> i
+
+(PR 
+
+> A
+
+) is the layer-ℓ
+
+hidden state of the LLM with PR 
+
+> A
+
+present in the input, and Pool averages over the visual-token positions only ( PR 
+
+> A
+
+and instruction positions are excluded). hi is L2-normalized before the loss is applied. We use ℓ=0 throughout the main experiments as we empirically find it effective. Within a batch B containing both challenging and normal frames, we minimize the supervised con-trastive (SupCon) loss [17], treating every challenging frame as an anchor: 
+
+LSupCon = − 1
+
+|A c|
+
+X
+
+> i∈A c
+
+1
+
+P 
+
+> p
+
+wip 
+
+X
+
+> p∈P (i)
+
+wip log exp  hi ·hp/τ P  
+
+> k∈B ,k ̸=i
+
+exp  hi ·hk/τ  ,
+
+where Ac is the set of challenging frames in the batch, P(i) is the set of other challenging frames serving as positives, wip = 1 if i and p share a fine-grained label. The contrast set in the denominator includes both challenging and normal frames. After Stage 1, we estimate the roadblock’s hard-scene direction d⋆ as the top-k right-singular vector of the residualized challenging representations 
+
+{hi − ¯hn}i∈D R 
+
+> c
+
+, where ¯hn is the mean normal-frame representation under PR 
+
+> A
+
+. Intuitively, d⋆
+
+captures the dominant axis along which Stage 1 has separated hard from normal in this specific roadblock. Stage 2 will steer the planning prompt along this axis. 
+
+Stage 2 — directionally regularized prompt optimization. Stage 2 freezes PR 
+
+> A
+
+and trains the deployable prompt PR 
+
+> B
+
+under a joint loss, with each term addressing complementary requirements: 
+
+Ltotal = Lplan + λ1Ldir + λ2Lreg .
+
+(a) Planning loss. The trajectory regression loss (ADE) computed only on challenging frames: 
+
+Lplan (PR 
+
+> B
+
+) = 1
+
+|D R 
+
+> c
+
+|
+
+X
+
+> i∈D R
+> c
+
+ADE  ˆyi, y gt 
+
+> i
+
+.
+
+6(b) Directional regularizer along d⋆. This term encourages PR 
+
+> B
+
+to displace hard-frame represen-tations along the axis Stage 1 identified: 
+
+Ldir (PR 
+
+> B
+
+) = − 1
+
+|D R 
+
+> c
+
+|
+
+X
+
+> i∈D R
+> c
+
+h(ℓ) 
+
+> i
+
+(PR 
+
+> A
+
+, PR 
+
+> B
+
+) − h(ℓ) 
+
+> i
+
+(PR 
+
+> A
+
+), d⋆ .
+
+By construction, d⋆ is the axis along which Stage 1 optimized hard/normal separability; biasing 
+
+PR 
+
+> B
+
+’s update toward this axis prevents the planning gradient from drifting into arbitrary directions that could affect normal-frame representations. 
+
+(c) Normal-frame protection. This term explicitly penalizes any displacement of normal-frame representations relative to the Stage 1 baseline: 
+
+Lreg (PR 
+
+> B
+
+) = 1
+
+|D R 
+
+> n
+
+|
+
+X
+
+> j∈D R
+> n
+
+h(ℓ) 
+
+> j
+
+(PR 
+
+> A
+
+, PR 
+
+> B
+
+) − h(ℓ) 
+
+> j
+
+(PR 
+
+> A
+
+) 2.
+
+Even if λ1Ldir pushes challenging frames strongly along d⋆, Lreg structurally regularizes PR 
+
+> B
+
+from carrying a component that affects normal frames. This is the operationalization of the selectivity property that distinguishes CLAP from unconstrained prompt optimization (§3.1). 
+
+Putting the two stages together. The two stages form a constructive chain. Stage 1 discovers the roadblock-specific direction d⋆ along which challenging and normal frames are separable. Stage 2 exploits that direction: Ldir steers planning improvement along d⋆, and Lreg protects the normal frame performance. Combining them together, the result is an optimized prompt whose support is geometrically restricted to the subspace where it can plausibly help and structurally prevented from leaking into the subspace where it could hurt regular scenario performance. 
+
+5 Experimental Evaluation 
+
+5.1 Experiment Setup Dataset and base VLA models. We evaluate on the NAVSIM benchmark [11], specifically on a subset of 42 roadblock sequences identified as challenging (construction zones, complex stop sign intersections, etc. ) from §4.1. We sampled 3 routes (camera and pose grouped by roadblock ID and time, each spanning 6–7 seconds) for each roadblock from the trainval split for prompt optimization and use the test split for evaluation; per-roadblock prompts are trained only on training frames from each roadblock and evaluated on test frames from the same roadblock. In total, this yields 1,440 trainval frames and 3,810 test frames. To verify the effectiveness of CLAP, we adopt it across 3 SOTA VLA models for autonomous driving: ReCogDrive [23], Alpamayo-R1.5 [39], and DriveVLA-W0 [22] to show that our design can be applied to different VLA architectures. 
+
+Implementation details. We use soft prompts of length m = 50 for PA and n = 50 for PB , both initialized from N (0 , 1) . Stage 1 trains PA for 50 epochs with k = 3 and Stage 2 trains PB for 100 epochs at learning rate 1 × 10 −3 with Adam [18], using λ1 = 0.1 and λ2 = 0.1. All experiments run on 2× NVIDIA A40 GPUs [31]. 
+
+Baselines. We compare CLAP against: (1) each VLA base model introduced above, (2) explicit notice : a designed text hint prompt (e.g. “Construction zone ahead. Reduce speed, prepare for lane change.”) generated by a strong VLM Claude Sonnet 4.6 [10], and (3) unconstrained soft prompt: 
+
+a full-dimensional soft prompt optimized through backpropagation, following [19]. 
+
+5.2 Main Results and Ablation Study 
+
+Table 1 reports ADE@4s for all three backbones across all baselines. Three findings stand out: 
+
+Crafted natural-language explicit notice fails to improve frozen VLAs in challenging scenarios. On Alpamayo-R1.5 and DriveVLA-W0, it even increases challenging-frame ADE by an average of 13%. This suggests that crafted natural-language hints, even produced by a powerful model [10], are an unreliable mechanism for steering frozen VLA behavior in this setting. 
+
+Continuous soft prompt optimization, previously shown effective for NLP tasks [19, 20], yields sub-stantial challenging-frame gains but produces mixed normal-frame outcomes : its performance re-gresses on Alpamayo-R1.5 and DriveVLA-W0. This matches the geometric concern raised in §3 (Observation 2): with hard and normal frames intermixed in the latent representation, an uncon-strained prompt has no mechanism preventing its updates from influencing and potentially hurting normal driving performance. 7Table 1: Main results: performance comparison across methods on NAVSIM challeng-ing/normal splits. ADE@4s reported in meters; lower is better. Numbers in parentheses indicate change relative to the off-the-shelf backbone (negative = improvement). Hard denotes challenging frames at the evaluated roadblocks; Normal denotes normal frames at the same roadblocks; Overall 
+
+is the frame-weighted average across both subsets ( i.e., testset ADE). Best result marked in bold .                                             
+
+> Method Hard ADE@4s ↓Normal ADE@4s ↓Overall ADE@4s ↓
+> ReCogDrive (3 cameras) [23]
+> ReCogDrive 2.125 1.007 1.562 + Explicit Notice 2.137 ( +0 .012 )1.010 ( +0 .003 )1.566 ( +0 .004 )+ Unconstrained Soft Prompt 1.835 ( −0.290 )0.927 ( −0.080 )1.393 ( −0.169 )+CLAP (Ours) 1.426 ( −0.699 )0.934 ( −0.073 )1.227 ( −0.335 )
+> Alpamayo-R1.5 (4 cameras) [39]
+> Alpamayo-R1.5 2.998 0.970 1.342 + Explicit Notice 3.130 ( +0 .132 )1.091 ( +0 .121 )1.467 ( +0 .125 )+ Unconstrained Soft Prompt 2.385 ( −0.613 )0.997 ( +0 .027 )1.268 ( −0.074 )+CLAP (Ours) 2.281 ( −0.717 )0.959 ( −0.011 )1.185 ( −0.157 )
+> DriveVLA-W0 (1 camera) [22]
+> DriveVLA-W0 2.116 1.011 1.243 + Explicit Notice 2.581 ( +0 .465 )1.409 ( +0 .398 )1.684 ( +0 .441 )+ Unconstrained Soft Prompt 1.895 ( −0.221 )1.024 ( +0 .013 )1.199 ( −0.044 )+CLAP (Ours) 1.804 ( −0.312 )0.989 ( −0.022 )1.146 ( −0.097 )
+
+Table 2: Ablation: contribution of Stage 1 contrastive learning. ADE@4s on ReCogDrive across the NAVSIM roadblocks. CLAP outperforms both ablated variants, confirming that the contrastive direction is not interchangeable with normal-frame regularization alone or with a random anchor.                       
+
+> Configuration Hard ADE@4s ↓Normal ADE@4s ↓Overall ADE@4s ↓
+> ReCogDrive 2.125 1.007 1.562 CLAP w/o Stage 1 ( Lplan +Lreg only) 1.515 0.938 1.311 CLAP w/ random d⋆1.647 0.999 1.341
+> CLAP 1.426 0.934 1.227
+
+CLAP reduces challenging-frame ADE by an average of 24% across the three VLA models and is able to maintain the normal frame ADE. On normal frames, CLAP even slightly improves perfor-mance on Alpamayo-R1.5 and DriveVLA-W0, and matches the unconstrained soft prompt baseline on ReCogDrive. This selectivity reflects CLAP’s design goal: the directional regularizer Ldir con-fines updates to the contrastive direction d⋆, and the normal-frame regularizer Lreg structurally pre-vents leakage into the orthogonal complement. The improvements on challenging scenarios, along with the maintained performance on normal frames, make CLAP improve the overall ADE by an average of 14%, demonstrating the effectiveness of our core idea: local prompt optimizations can efficiently improve VLA performance without finetuning the model. 
+
+Impact of Contrastive Training. We ablate CLAP’s central design: Stage 1 contrastive direction discovery, using ReCogDrive as the backbone VLA. We compare RecogDrive with three configura-tions: (i) CLAP without Stage 1, where PB is optimized under Lplan + λ2Lreg (Ldir omitted as d⋆ is unavailable); (ii) CLAP with d⋆ replaced by a random direction; and (iii) the full CLAP pipeline. As shown in Table 2, removing Stage 1 entirely leaves Lreg as the only constraint on PB and recovers a substantial portion of CLAP’s gain, indicating that normal-frame protection is a useful objective. Replacing d⋆ with a random direction, however, performs worse than omitting Stage 1 entirely. The full CLAP achieves the best result by combining two complementary ingredients: Lreg provides normal-frame protection, while d⋆ supplies the specific direction along which PB should optimize. 
+
+Behavioral trajectory comparison. Figure 6 compares predicted and ground-truth trajectories on two representative challenging scenarios. With CLAP, predicted trajectories track the human-driver ground truth more closely on a construction-zone bypass and a stop-sign yielding decision, with smoother dynamics, no stop-line violation, and no collision with static obstacles. 8(a) Construction (traffic cones)     
+
+> Ground truth AlpaMayo AlpaMayo + CLAP
+> (b) Stop sign (waiting)
+> Ground truth ReCogDrive ReCogDrive + CLAP
+
+Figure 6: Planned trajectories on challenging frames before (red) and after (blue) CLAP adaptation. Vehicle with CLAP evades construction zone (left), and stops at stop sign (right)—no movement shown in camera. 
+
+Table 3: Generalization to condition shifts on ReCogDrive. Hard- and normal-frame ADE@4s under matched conditions and shifted conditions (rendered into rain and dusk). 
+
+Hard ADE@4s ↓ Normal ADE@4s ↓
+
+Method Matched Shifted Matched Shifted 
+
+ReCogDrive 2.125 2.284 1.007 1.154 CLAP w/o augmentation 1.426 1.877 0.934 1.178 
+
+CLAP + augmentation 1.408 1.291 0.928 1.072 
+
+5.3 Generalization Analysis through Data Augmentation 
+
+The limited challenging data from the training set after §4.1 (5–20 frames per roadblock) inevitably reflects specific weather and lighting conditions, raising a deployment concern: a roadblock ob-served only on sunny afternoons may yield a prompt that fails to generalize when the same road is later traversed at night or in the rain [32, 47]. To address this, we synthesize photorealistic vi-sual variants using Qwen-Image-Edit [41], a generative image-editing model, producing frames under weather and lighting conditions underrepresented in NAVSIM (Appendix A.2). The editor preserves scene geometry, agent positions, and lane structure, so the original ground-truth ego tra-jectory remains valid for each variant. We then evaluate CLAP on two additional test conditions: (1) Matched. Test frames from the same conditions as the challenging frames (identical to §5.2). (2) Shifted. Frames re-rendered into rain and dusk, on test-split frames disjoint from training. Two findings stand out from Table 3. First, augmentation improves performance even at matched conditions. CLAP + augmentation achieves the lowest hard-frame ADE, despite not including test-set augmented variants in testing. Second, augmentation is what enables CLAP’s gains to transfer across conditions. Without augmentation, hard-frame ADE rises by 32% under condition shift; with augmentation, it drops to 1.291 and also improves normal ADE by 7%. For the V2X-aided deploy-ment of CLAP, this means a roadblock’s prompt, once optimized at the cloud from augmented sets of crowdsourced challenging frames, can be deployed across various conditions at the same location. 
+
+6 Discussion and Limitations 
+
+Scope of generalization. Cross-weather generalization beyond the conditions tested in §5.3 remains an open question. The generative augmentation pipeline is designed to address part of this gap, but real-world validation at scale, including more driving diversity and a broader set of adverse conditions [32] is needed to provide better evidence for CLAP’s generalizability. 
+
+Scenario homogeneity within a roadblock. Stage 1’s contrastive objective treats all challenging frames within a roadblock as a single positive class. This implicitly assumes each roadblock con-tains one dominant challenging scenario type; when multiple distinct difficulty modes coexist ( e.g. ,a construction zone and a partially occluded stop sign together), the contrastive signal mixes het-erogeneous failure modes and weakens the recovered direction d⋆. How to delineate optimization regions so that each contains a single homogeneous challenge type, e.g., by subdividing roadblocks by challenge type or by recovering multiple d⋆ axes per region, remains an open design question. 
+
+7 Conclusion 
+
+We present CLAP, a contrastive latent prompt optimization framework for end-to-end VLA au-tonomous driving that targets long-tail scenarios without modifying backbone model weights. By combining contrastive learning with directional regularization in prompt optimization, CLAP achieves performance improvements on challenging driving situations while preserving base model 9competency on normal scenarios. Our results on NAVSIM demonstrate a 24% ADE reduction on challenging driving scenarios where state-of-the-art VLAs produce high planning errors. We believe the prompt optimization paradigm represents a practically efficient way to improve VLA perfor-mance for autonomous driving beyond data scaling and model fine-tuning. 
+
+References 
+
+[1] Baidu Apollo. https://www.apollo.auto/ , 2022. [2] Waymo - Self-Driving Cars - Autonomous Vehicles - Ride-Hail. https://waymo.com/ ,2026. [3] Autoware Foundation. Autoware: Open-source software for self-driving vehicles. https: //www.autoware.org/ , 2015. [4] G. Berton, C. Masone, and B. Caputo. Rethinking visual geo-localization for large-scale appli-cations. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recog-nition , pages 4878–4888, 2022. [5] D. Bogdoll, S. Guneshka, and J. M. Z¨ ollner. One ontology to rule them all: Corner case scenarios for autonomous driving. In European Conference on Computer Vision , pages 409– 425. Springer, 2022. [6] L. Chen, P. Wu, K. Chitta, B. Jaeger, A. Geiger, and H. Li. End-to-end autonomous driving: Challenges and frontiers. IEEE Transactions on Pattern Analysis and Machine Intelligence ,46(12):10164–10183, 2024. [7] Z. Chen, J. Wu, W. Wang, W. Su, G. Chen, S. Xing, M. Zhong, Q. Zhang, X. Zhu, L. Lu, et al. Internvl: Scaling up vision foundation models and aligning for generic visual-linguistic tasks. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition ,pages 24185–24198, 2024. [8] C.-H. Cheng, C.-H. Huang, and H. Yasuoka. Quantitative projection coverage for testing ml-enabled autonomous systems. In International Symposium on Automated Technology for Veri-fication and Analysis , pages 126–142. Springer, 2018. [9] K. Chitta, A. Prakash, B. Jaeger, Z. Yu, K. Renz, and A. Geiger. Transfuser: Imitation with transformer-based sensor fusion for autonomous driving. IEEE transactions on pattern analy-sis and machine intelligence , 45(11):12878–12895, 2022. [10] Claude. Claude sonnet 4.6. https://www.anthropic.com/claude/sonnet , 2026. [11] D. Dauner, M. Hallgarten, T. Li, X. Weng, Z. Huang, Z. Yang, H. Li, I. Gilitschenski, B. Ivanovic, M. Pavone, A. Geiger, and K. Chitta. Navsim: Data-driven non-reactive au-tonomous vehicle simulation and benchmarking. In Advances in Neural Information Process-ing Systems (NeurIPS) , 2024. URL https://github.com/autonomousvision/navsim .[12] Google. Google gemini. https://gemini.google.com/ , 2026. [13] T. Hu, X. Liu, S. Wang, Y. Zhu, A. Liang, L. Kong, G. Zhao, Z. Gong, J. Cen, Z. Huang, et al. Vision-language-action models for autonomous driving: Past, present, and future. arXiv preprint arXiv:2512.16760 , 2025. [14] Y. Hu, J. Yang, L. Chen, K. Li, C. Sima, X. Zhu, S. Chai, S. Du, T. Lin, W. Wang, et al. Planning-oriented autonomous driving. In Proceedings of the IEEE/CVF conference on com-puter vision and pattern recognition , pages 17853–17862, 2023. [15] J.-J. Hwang, R. Xu, H. Lin, W.-C. Hung, J. Ji, K. Choi, D. Huang, T. He, P. Covington, B. Sapp, et al. Emma: End-to-end multimodal model for autonomous driving. arXiv preprint arXiv:2410.23262 , 2024. [16] X. Jia, J. You, Z. Zhang, and J. Yan. Drivetransformer: Unified transformer for scalable end-to-end autonomous driving. arXiv preprint arXiv:2503.07656 , 2025. 10 [17] P. Khosla, P. Teterwak, C. Wang, A. Sarna, Y. Tian, P. Isola, A. Maschinot, C. Liu, and D. Kr-ishnan. Supervised contrastive learning. Advances in neural information processing systems ,33:18661–18673, 2020. [18] D. P. Kingma and J. Ba. Adam: A method for stochastic optimization. arXiv preprint arXiv:1412.6980 , 2014. [19] B. Lester, R. Al-Rfou, and N. Constant. The power of scale for parameter-efficient prompt tuning. In Proceedings of the 2021 conference on empirical methods in natural language processing , pages 3045–3059, 2021. [20] X. L. Li and P. Liang. Prefix-tuning: Optimizing continuous prompts for generation. In 
+
+Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers) , pages 4582–4597, 2021. [21] Y. Li, S. Ren, P. Wu, S. Chen, C. Feng, and W. Zhang. Learning distilled collaboration graph for multi-agent perception. Advances in Neural Information Processing Systems , 34:29541– 29552, 2021. [22] Y. Li, S. Shang, W. Liu, B. Zhan, H. Wang, Y. Wang, Y. Chen, X. Wang, Y. An, C. Tang, et al. Drivevla-w0: World models amplify data scaling law in autonomous driving. arXiv preprint arXiv:2510.12796 (accpeted to ICLR 2026) , 2025. [23] Y. Li, K. Xiong, X. Guo, F. Li, S. Yan, G. Xu, L. Zhou, L. Chen, H. Sun, B. Wang, et al. Recogdrive: A reinforced cognitive framework for end-to-end autonomous driving. arXiv preprint arXiv:2506.08052 (accepted to ICLR 2026) , 2025. [24] Y. Li, L. Zhou, S. Yan, B. Liao, T. Yan, K. Xiong, L. Chen, H. Xie, B. Wang, G. Chen, et al. Unidrivevla: Unifying understanding, perception, and action planning for autonomous driving. 
+
+arXiv preprint arXiv:2604.02190 , 2026. [25] B. Liao, S. Chen, H. Yin, B. Jiang, C. Wang, S. Yan, X. Zhang, X. Li, Y. Zhang, Q. Zhang, et al. Diffusiondrive: Truncated diffusion model for end-to-end autonomous driving. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Conference , pages 12037–12047, 2025. [26] H. X. Liu and S. Feng. Curse of rarity for autonomous vehicles. Nature Communications , 15 (1):4808, 2024. [27] P. Liu, W. Yuan, J. Fu, Z. Jiang, H. Hayashi, and G. Neubig. Pre-train, prompt, and predict: A systematic survey of prompting methods in natural language processing. ACM computing surveys , 55(9):1–35, 2023. [28] X. Liu, N. Xu, M. Chen, and C. Xiao. Autodan: Generating stealthy jailbreak prompts on aligned large language models. arXiv preprint arXiv:2310.04451 , 2023. [29] Y. Luo, Z. Yang, F. Meng, Y. Li, J. Zhou, and Y. Zhang. An Empirical Study of Catastrophic Forgetting in Large Language Models During Continual Fine-Tuning. IEEE/ACM Transactions on Audio, Speech, and Language Processing , 33:3776–3786, 2025. [30] O. Makansi, ¨ O. C ¸ ic ¸ek, Y. Marrakchi, and T. Brox. On exposing the challenging long tail in future prediction of traffic actors. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 13147–13157, 2021. [31] NVIDIA. NVIDIA A40: Powerful Data Center GPU For Visual Computing. https://imag es.nvidia.com/content/Solutions/data-center/a40/nvidia-a40-datasheet.p df , 2022. [32] C. Sakaridis, D. Dai, and L. Van Gool. Acdc: The adverse conditions dataset with correspon-dences for semantic driving scene understanding. In Proceedings of the IEEE/CVF interna-tional conference on computer vision , pages 10765–10775, 2021. 11 [33] H. Shao, Y. Hu, L. Wang, G. Song, S. L. Waslander, Y. Liu, and H. Li. Lmdrive: Closed-loop end-to-end driving with large language models. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 15120–15130, 2024. [34] S. Sinha, P. Gehler, F. Locatello, and B. Schiele. Test: Test-time self-training under distribution shift. In Proceedings of the IEEE/CVF winter conference on applications of computer vision ,pages 2759–2769, 2023. [35] Y. Sun, X. Wang, Z. Liu, J. Miller, A. Efros, and M. Hardt. Test-time training with self-supervision for generalization under distribution shifts. In International conference on machine learning , pages 9229–9248. PMLR, 2020. [36] R. S. Sutton and A. G. Barto. Reinforcement Learning: An Introduction . MIT Press, Cam-bridge, MA, second edition, 2018. [37] L. Van der Maaten and G. Hinton. Visualizing data using t-sne. Journal of machine learning research , 9(11), 2008. [38] H. Wang, T. Li, Y. Li, L. Chen, C. Sima, Z. Liu, B. Wang, P. Jia, Y. Wang, S. Jiang, et al. Openlane-v2: A topology reasoning benchmark for unified 3d hd mapping. Advances in Neural Information Processing Systems , 36:18873–18884, 2023. [39] Y. Wang, W. Luo, J. Bai, Y. Cao, T. Che, K. Chen, Y. Chen, J. Diamond, Y. Ding, W. Ding, et al. Alpamayo-r1: Bridging reasoning and action prediction for generalizable autonomous driving in the long tail. arXiv preprint arXiv:2511.00088 , 2025. [40] S. Wei, Y. Wei, Y. Hu, Y. Lu, Y. Zhong, S. Chen, and Y. Zhang. Asynchrony-robust collabora-tive perception via bird’s eye view flow. Advances in Neural Information Processing Systems ,36:28462–28477, 2023. [41] C. Wu, J. Li, J. Zhou, J. Lin, K. Gao, K. Yan, S.-m. Yin, S. Bai, X. Xu, Y. Chen, et al. Qwen-image technical report. arXiv preprint arXiv:2508.02324 , 2025. [42] J. Wu, T. Yu, R. Wang, Z. Song, R. Zhang, H. Zhao, C. Lu, S. Li, and R. Henao. Infoprompt: Information-theoretic soft prompt tuning for natural language understanding. Advances in neural information processing systems , 36:61060–61084, 2023. [43] Y. Xie, R. Xu, T. He, J.-J. Hwang, K. Luo, J. Ji, H. Lin, L. Chen, Y. Lu, Z. Leng, et al. S4-driver: Scalable self-supervised driving multimodal large language model with spatio-temporal visual representation. In Proceedings of the Computer Vision and Pattern Recognition Conference ,pages 1622–1632, 2025. [44] S. Xing, C. Qian, Y. Wang, H. Hua, K. Tian, Y. Zhou, and Z. Tu. Openemma: Open-source multimodal model for end-to-end autonomous driving. In Proceedings of the Winter Confer-ence on Applications of Computer Vision , pages 1001–1009, 2025. [45] Z. Xing, X. Zhang, Y. Hu, B. Jiang, T. He, Q. Zhang, X. Long, and W. Yin. Goalflow: Goal-driven flow matching for multimodal trajectories generation in end-to-end autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 1602–1611, 2025. [46] C. Yuan, Z. Zhang, J. Sun, S. Sun, Z. Huang, C. D. W. Lee, D. Li, Y. Han, A. Wong, K. P. Tee, et al. Drama: An efficient end-to-end motion planner for autonomous driving with mamba. 
+
+arXiv preprint arXiv:2408.03601 , 2024. [47] D. Zhao, J. Li, S. Wang, M. Wu, Q. Zang, N. Sebe, and Z. Zhong. Fishertune: Fisher-guided robust tuning of vision foundation models for domain generalized segmentation. In Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Conference ,pages 15043–15054, 2025. [48] C. Zheng, F. Yin, H. Zhou, F. Meng, J. Zhou, K.-W. Chang, M. Huang, and N. Peng. On prompt-driven safeguarding for large language models. arXiv preprint arXiv:2401.18018 ,2024. 12 [49] Z. Zhou, T. Cai, S. Z. Zhao, Y. Zhang, Z. Huang, B. Zhou, and J. Ma. Autovla: A vision-language-action model for end-to-end autonomous driving with adaptive reasoning and rein-forcement fine-tuning. arXiv preprint arXiv:2506.13757 , 2025. [50] J. Zhu, W. Wang, Z. Chen, Z. Liu, S. Ye, L. Gu, H. Tian, Y. Duan, W. Su, J. Shao, et al. In-ternvl3: Exploring advanced training and test-time recipes for open-source multimodal models. 
+
+arXiv preprint arXiv:2504.10479 , 2025. [51] R. Zhu, X. Zhu, A. Zhang, X. Zhang, J. Sun, F. Qian, H. Qiu, Z. M. Mao, and M. Lee. Boost-ing collaborative vehicular perception on the edge with vehicle-to-vehicle communication. In 
+
+Proceedings of the 22nd ACM Conference on Embedded Networked Sensor Systems , pages 141–154, 2024. [52] R. Zhu, M. Cho, S. Zeng, F. Bai, X. Gao, and Z. M. Mao. Scalable crowd-sourced global hd map construction via collaborative map perception and sparse graph fusion. In The 4th Workshop on Transformers for Vision (T4V) at CVPR 2025 , 2025. [53] A. Zou, Z. Wang, N. Carlini, M. Nasr, J. Z. Kolter, and M. Fredrikson. Universal and transfer-able adversarial attacks on aligned language models. arXiv preprint arXiv:2307.15043 , 2023. 13 A Appendix 
+
+Figure 7: Rain augmentation examples across three roadblocks. In each panel, columns are left, front, right, and back cameras; top row is the original NAVSIM frame, bottom row is the rain edit. 
+
+A.1 Roadblock Challenging Frames and Normal Frame Data Construction 
+
+CLAP requires a partition of each roadblock’s frames into challenging and normal. We obtain this partition with a pipeline that combines an advanced vision-language model’s semantic priors with empirical validation against the planner’s own behavior. 
+
+Step 1 — Semantic identification. For each route through the roadblock, we provide a strong ex-ternal VLM (Claude Sonnet 4.6 [10] in our implementation) with the front-camera frame sequence, ego speed and heading change per frame, and brief map context (intersection presence, lane count, road type). The model identifies temporal segments involving non-trivial driving decisions and emits a structured record per segment: a longitudinal decision label ( stop static , yield agent ,
+
+speed adapt , . . . ), a lateral decision label ( lane keep , nudge out , turn , . . . ), the critical scene component ( yield stop high , critical obj high , odd construction , . . . ), and a short rea-soning trace. Operating at the route level rather than frame-by-frame gives the VLM the temporal context required to identify where decision difficulty begins and ends. 
+
+Step 2 — Empirical validation against planner behavior. A semantically challenging segment is not necessarily challenging for the planner under analysis. We retain a Step-1 candidate segment 14 only if its mean ADE under the frozen backbone exceeds the route mean by a margin δ (δ = 0 .5 min our experiments): 
+
+ADE segment > ADE route + δ. 
+
+Within retained segments, individual frames whose ADE is below the route mean are reclassified as normal. This two-filter rule ensures that a frame is challenging in both senses: semantically meaningful and empirically difficult for the specific planner being patched. 
+
+Step 3 — Spatial coherence. Confirmed challenging frames within a roadblock should form one or a small number of spatially contiguous clusters. If they originate from multiple routes, we verify that the clusters lie in close geographic proximity in (x, y ) map coordinates. This guards against treating an incidentally hard but geographically scattered group of frames as a single roadblock-specific phenomenon. 
+
+Step 4 — Fine-grained taxonomy labels. After three steps, each surviving challenging cluster receives a fine-grained label of the form 
+
+{long decision } {lat decision } {component } {uncertainty },
+
+e.g., speed adapt nudge out odd construction (construction zone requiring an out-of-lane maneuver). 
+
+Figure 8: Dusk augmentation examples across three roadblocks. In each panel, columns are left, front, right, and back cameras; top row is the original NAVSIM frame, bottom row is the dusk edit. 
+
+15 A.2 Data Augmentation 
+
+The augmentation experiment in §5.3 evaluates whether a roadblock-level prompt remains effective when the same location is observed under weather and lighting conditions that are rare in the orig-inal NAVSIM logs. We generate condition-shifted frames with an image-to-image editing pipeline built on Qwen-Image-Edit [41], treating augmentation as an appearance-only transformation: road geometry, lane topology, traffic participants, camera pose, and ground-truth trajectory labels are all inherited from the original NAVSIM frame. 
+
+Setup. We apply rain augmentation to 42 roadblocks drawn from the NAVSIM trainval and test splits. For each roadblock, every frame recorded by all four onboard cameras (front CAM F0, left CAM L0, right CAM R0, back CAM B0) is edited. Frames from the same timestamp across cam-eras are assigned the same condition preset, ensuring multi-camera consistency: the same weather appears simultaneously in all views. Augmented frames from the trainval split are used during prompt optimization; augmented test-split frames that are held out during optimization are used exclusively for evaluation, so no edited frame seen at training time appears in the evaluation set. 
+
+Editing prompts. Below are the prompts used to generate rainy and dusk variations of the drive routes: 
+
+Rain: “Edit this front-facing driving scene into realistic rainy weather. Keep the camera viewpoint, road geometry, lane markings, traffic participants, and scene layout consistent with the original image. Add overcast sky, wet road, rain streaks, puddles, and reduced visibility while preserving the original dashcam scene struc-ture.” 
+
+Dusk: “Edit this front-facing driving scene into realistic dusk. Keep the camera viewpoint, road geometry, lane markings, and scene layout identical to the orig-inal image. Critically, every vehicle on the road must remain at the exact same position, with the same shape, size, color, and orientation as in the original — do not add, remove, move, or alter any car. Only the weather, lighting, and sky may change. Apply twilight atmosphere with warm orange sky, dimmer ambient light, slightly darker road surface, and realistic headlight visibility — without modifying any vehicle.” 
+
+Output construction. Each edited frame is saved with the original frame token as its filename stem plus a rain suffix, so it can be joined to the original NAVSIM metadata without ambiguity. The ground-truth future trajectory, roadblock id, challenging/normal label, and fine-grained challenge label are reused from the corresponding original frame. In data augmentation experiments, we replace the original camera images with the edited ones and reuse the same metadata like vehicle pose in the experiment. Figure 7 show synchronized four-camera examples from three different roadblocks, illustrating that the edit preserves scene geometry and traffic participants while producing visually consistent rainy-weather appearance across all camera views. We additionally apply dusk augmentation, simulating low-sun lighting conditions at the same road-block locations. Figure 8 show four-camera dusk examples across three roadblocks. 
+
+A.3 Experiment Details 
+
+This section expands the experimental setup of §5.1 with details too fine-grained for the main text but useful for reproducibility, including per-roadblock data composition, backbone-specific repre-sentation extraction, and the full training schedule for each stage. 
+
+Trace structure and route sampling. Each driving scenario in our experiments follows the NA VSIM convention [11]: a 2 s history window ( 4 frames at 2 Hz) plus a 4 s ground-truth future ( 8
+
+waypoints at 2 Hz). The planner predicts the 8-waypoint future trajectory from the multi-camera observation at the current frame. For each of the 42 roadblocks evaluated in §5, we sample 3 routes from the NA VSIM trainval split, each spanning 6–7 s of continuous driving (i.e. 12 –14 frames per route at 2 Hz), to form the per-roadblock training pool. Test frames are drawn from the NA VSIM test split; the partitioning pipeline of §4.1 is applied separately to each split. Across all 42 16 roadblocks, the training pool contains 1,440 frames ( 323 challenging + 1 ,117 normal) and the test pool contains 3,810 frames ( 1,664 challenging + 2 ,146 normal). 
+
+Backbone-specific representation extraction. The Stage 1 representation hi = Pool  H(ℓ)
+
+i (PA)
+
+(§4.2) requires a per-backbone definition of which positions Pool averages over, since the three VLA architectures expose visual content differently at the LLM input: • ReCogDrive [23] (InternVL, dllm =1 ,536 ): visual content is represented by <IMG CONTEXT> 
+
+sentinel tokens whose embeddings are replaced at runtime by ViT patch features via masked scatter. We pool over the LLM positions occupied by these sentinels. • Alpamayo-R1.5 [39] (Qwen3-VL, dllm =4 ,096 ): visual content uses <image pad> sentinels with the same masked-scatter mechanism. We pool over those positions (”vis all” pool). • DriveVLA-W0 [22] (Emu3, dllm =4 ,096 ): visual content is encoded as discrete VQ codes that live directly in the LLM vocabulary; no scatter is needed. We pool over the LLM positions occupied by VQ-code tokens. We extract from layer ℓ=0 of the LLM for ReCogDrive and Alpamayo and use ℓ=14 for DriveVLA, which we empirically found works well. All representations are L2-normalized before the SupCon loss is applied. (a) Stop sign (waiting)                   
+
+> Ground truth ReCogDrive ReCogDrive + CLAP
+> (b) Reduce speed at narrow intersection
+> Ground truth ReCogDrive ReCogDrive + CLAP
+> (c) Construction (traffic cones)
+> Ground truth ReCogDrive ReCogDrive + CLAP
+> (d) Curved road (avoid drift)
+> Ground truth AlpaMayo AlpaMayo + CLAP
+> (e) Curving road right turn
+> Ground truth AlpaMayo AlpaMayo + CLAP
+> (f) Following bus
+> Ground truth AlpaMayo AlpaMayo + CLAP
+> (g) Underpass curve
+> Ground truth DriveVLA DriveVLA + CLAP
+> (h) Curved road
+> Ground truth DriveVLA DriveVLA + CLAP
+> (i) Curved entrance
+> Ground truth DriveVLA DriveVLA + CLAP
+
+Figure 9: Predicted trajectories on additional challenging frames across three VLA backbones. Rows: ReCog-Drive (a–c), Alpamayo-R1.5 (d–f), DriveVLA-W0 (g–i). Each panel pairs a bird’s-eye-view map (left) with the front camera (right). Green: ground truth. Red: frozen backbone. Blue: backbone + CLAP. 
+
+A.4 Additional Performance Visualization 
+
+Figure 9 extends the qualitative comparison of Figure 6 with additional challenging scenarios per backbone, covering all three VLA planners evaluated in §5. Each row corresponds to one backbone (ReCogDrive top, Alpamayo-R1.5 middle, DriveVLA-W0 bottom), and each column shows a dif-ferent scenario. Within each panel, the left view is the bird’s-eye-view map with surrounding agents and the right view is the front camera; green denotes the human-driver ground truth, red the frozen backbone’s prediction, and blue the same backbone with CLAP applied. Across all three backbones, the CLAP-adapted trajectories track the ground truth more closely than the bare backbone in a range of characteristic failure modes: stopping accurately at a stop sign (a), reducing speed through a narrow intersection (b), navigating around construction cones without colliding (c), holding lane through curves rather than drifting straight (d, h), executing right turns through curved geometry (e, i), and matching the leading-vehicle pace when following a bus (f). The corrections span scenario types and backbone architectures, indicating that the per-roadblock prompts capture genuine challenges from roadblock envrionments and improve the planning deci-sions. 17

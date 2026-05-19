@@ -1,0 +1,470 @@
+Title: GEM: Gaussian Evolution Model for Occupancy Forecasting and Motion Planning
+
+URL Source: https://arxiv.org/pdf/2605.17682v1
+
+Published Time: Tue, 19 May 2026 02:00:36 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# GEM: Gaussian Evolution Model for Occupancy Forecasting and Motion Planning 
+
+Cheng Chen 
+
+Purdue University 
+
+chen4384@purdue.edu 
+
+Hao Huang 
+
+New York University Abu Dhabi 
+
+hh1811@nyu.edu 
+
+Saurabh Bagchi 
+
+Purdue University 
+
+sbagchi@purdue.edu 
+
+## Abstract 
+
+Future 3D semantic occupancy forecasting and motion planning are central to autonomous driving, as they require models to reason about how surrounding scenes evolve and how the ego vehicle should act. Existing occupancy world models commonly discretize scenes into latent embeddings, volumetric features, or quantized tokens, and forecast future states through fixed-step autoregressive generation. This limits temporal flexibility, obscures scene evolution, accumulates errors over long horizons, and poorly matches the continuous-time dynamics of real driving scenes. We propose GEM , a Gaussian Evolution Model for non-autoregressive occupancy world modeling, where driving scenes are represented as explicit continuous 4D Gaussian primitives with learned dynamics. Instead of rolling out future occupancy states step by step, GEM directly queries the Gaussian world representation at arbitrary timestamps and splats the corresponding conditional 3D Gaussians into semantic occupancy volumes. This enables efficient forecasting over the full horizon while retaining a compact and interpretable scene representation. By decoupling spatial geometry, temporal support, and primitive motion, GEM makes the predicted world easier to inspect, as each primitive’s evolution can be followed continuously over time. The same representation also supports motion planning by predicting future ego trajectories from the learned Gaussian world. Extensive experiments show that GEM achieves state-of-the-art future semantic occupancy forecasting and strong motion planning performance, while providing flexible temporal querying. 
+
+## 1 Introduction 
+
+Autonomous driving requires models to perceive the surrounding scene, forecast its future evolution, and plan safe ego trajectories. Vision-centric end-to-end methods [ 1, 2] directly predict future trajec-tories from monocular or multi-view camera images, but their black-box nature limits interpretability and complicates safety analysis. To introduce more structured reasoning, intermediate representations such as Bird’s-Eye View (BEV) have been widely adopted [ 3, 4 ]. However, BEV often compresses the vertical dimension, making it less suitable for fine-grained 3D scene understanding. Semantic occupancy addresses this limitation by representing 3D space with dense geometric and semantic labels, and has shown strong potential for planning. Building on this representation, 4D occupancy forecasting [5] further predicts future semantic occupancy from historical observations, providing a predictive world model for autonomous driving. Existing vision-centric occupancy world models [ 5–9] typically encode the observed 3D scene into latent states, such as discrete tokens (Figure 1-(a)), dense volumetric features (Figure 1-(b)), or sparse point queries, and then forecast future states, often sequentially in an autoregressive manner, before decoding them into occupancy. Despite promising progress, existing occupancy world models still face three formidable limitations. First , these works mainly rely on multi-stage pipelines with separate perception, embedding, and forecasting modules, making end-to-end optimization more           
+
+> Preprint.
+> arXiv:2605.17682v1 [cs.CV] 17 May 2026 (a) Decoupled Pred. (b) G rid-based Pred.
+> Discretized World Models (Prior)
+> (c) Continuous 4D Gaussian World Model (Ours)
+> Predicted Future Occupancy
+> Historical Images
+> �= . . . , �0−2,�0−1,�0
+
+. . .                             
+
+> Encoder
+> �1=�0+1
+> �2=�0+2
+> ��=�0+�
+> Quantized Tokens
+> Volume Features
+> �1=�0+0.2��2=�0+0.5���=�0+0.9�
+> Direct query with explicit and interpretable prediction.
+> �1�2��
+
+. . .  
+
+> Occupancy
+> Module
+> Occupancy
+> Network
+> Classification
+> Module Decoder
+> Query by time �
+
+Figure 1: Comparison between discretized occupancy world models and our continuous 4D Gaussian world model. Existing methods typically forecast future occupancy through (a) discrete tokens or (b) volumetric features at fixed timestamps, often requiring sequential rollout. In contrast, our GEM 
+
+shown in (c) represents the scene as evolving 4D semantic Gaussian primitives that can be directly queried at arbitrary timestamps and splatted into future semantic occupancy volumes, enabling explicit, interpretable, and non-autoregressive scene forecasting. complex. Second , their encode–predict–decode design models future dynamics in latent space rather than through an explicit and interpretable scene representation. Third , autoregressive forecasting restricts prediction to predefined time steps and requires all intermediate future states to be generated sequentially before reaching a target horizon; thus, farther-time queries require multiple dependent rollouts, increasing inference latency and computation. These limitations reduce both pipeline simplicity and temporal flexibility for downstream tasks. To address these limitations, we introduce GEM , a continuous, non-autoregressive occupancy world model built on evolving 4D semantic Gaussian primitives. Instead of predicting future states through discrete representations and step-wise rollout, GEM models scene evolution directly in continuous spatiotemporal space. As shown in Figure 1-(c), each primitive is grounded in space and time and carries explicit geometric, semantic, temporal, and motion attributes. Future occupancy can therefore be queried at arbitrary timestamps by slicing and splatting the corresponding time-conditioned Gaussians, without sequential decoding over fixed time steps. This formulation simplifies forecasting and provides a flexible representation for future scene occupancy prediction. Specifically, GEM uses a forecasting-oriented 4D primitive representation. Rather than learning a generic coupled spatiotemporal covariance, each primitive explicitly separates spatial geometry, temporal support, and motion. This structured parameterization is easier to optimize and inspect for dynamic occupancy forecasting. Furthermore, to represent future scenes in the moving ego coordinate frame, GEM injects ego-vehicle state context into both Gaussian evolution and trajectory prediction. This allows each Gaussian primitive’s velocity to be decomposed into ego-induced scene motion and object-level (e.g ., pedestrains, bicycles, trucks, cars, etc .) dynamic motion within a unified Gaussian world representation. By combining these designs, GEM achieves state-of-the-art vision-centric 4D occupancy forecasting, outperforming prior occupancy world models, such as OccWorld [ 5 ], PreWorld [ 8], and Sparse-World [ 9]. It also delivers comparable or better motion planning performance, with competitive trajectory accuracy and lower collision rates, while retaining an explicit and continuously queryable Gaussian world representation. We summarize our contributions are as follows: 2• We introduce GEM , a vision-centric, non-autoregressive occupancy world model that represents dynamic driving scenes as evolving 4D semantic Gaussian primitives. • We propose a structured continuous-time Gaussian formulation that decouples spatial geometry, temporal support, semantics, opacity, and motion, enabling arbitrary-time occupancy querying without sequential rollout over fixed future steps. • We design an ego-conditioned Gaussian world framework that decomposes Gaussian primitive motion into ego-induced and object-level components, and supports ego vehicle motion planning from the same unified Gaussian representation. • We validate GEM on the Occ3D-nuScenes benchmark [ 10 ], where it achieves state-of-the-art 4D occupancy forecasting and strong motion planning performance compared with existing vision-centric occupancy world models. 
+
+## 2 Methodology 
+
+2.1 Preliminary 
+
+For a vehicle at timestamp t, vision-centric 3D occupancy prediction takes N synchronized camera views St = {I(1)  
+
+> t
+
+, I (2)  
+
+> t
+
+, . . . , I (N ) 
+
+> t
+
+} as input and estimates the semantic occupancy of the current 3D scene. The output is a voxelized semantic occupancy volume Yt ∈ [0 , 1] X×Y ×Z×C , where 
+
+(X, Y, Z ) denotes the spatial resolution of the discretized 3D volume, and C is the number of semantic categories. Each voxel therefore stores a categorical occupancy distribution over the semantic classes. In contrast, vision-centric 4D occupancy forecasting extends 3D occupancy prediction from current scene reconstruction to future scene evolution. Given a temporal sequence of past multi-view observations St−K:t ≜ {St−K , . . . , St−1, St}, the model forecasts a sequence of future 3D semantic occupancy volumes over the next T timestamps Yt+1: t+T ≜ {Yt+1 , Yt+2 , . . . , Yt+T }. Here, each 
+
+Yt+i denotes the predicted semantic occupancy volume at future timestamp t + i.For motion planning , the end-to-end autonomous driving model predicts the future ego trajectory as a sequence of planned waypoints τ t+1: t+T ≜ {τ t+1 , τ t+2 , . . . , τ t+T }. Here, each τ t+i denotes the predicted future position of the ego vehicle at timestamp t + i, typically represented in the ego-centric ground-plane coordinate system. Together, these waypoints define the planned trajectory over the forecasting horizon. A practical occupancy-based driving world model W should jointly reason about future scene evolu-tion and ego-vehicle planning. To this end, we formulate W as a conditional predictive model that takes historical multi-view observations and historical ego-state context as input. The ego-state con-text may include velocity, acceleration, and past ego positions. Let Et−K:t ≜ {et−K , . . . , et−1, et}
+
+denote the historical ego-state sequence. The world model is then defined as: 
+
+W : ( St−K:t, Et−K:t) 7 →  Yt+1: t+T , τ t+1: t+T
+
+ . (1) Jointly predicting Yt+1: t+T and τ t+1: t+T encourages consistency between the forecasted scene dynamics and the ego vehicle’s planned motion. 
+
+2.2 Continuous Decoupled 4D Gaussian World Model 
+
+To obtain a continuous and interpretable representation of future scene evolution, we model the driving world as a set of evolving Gaussian primitives in joint space-time, which is essentially different from autoregressive occupancy world models, which typically predict future voxel grids [ 8], BEV features [ 11 ], discrete tokens [ 5, 7 , 12 , 6, 13 ], or latent queries [ 9] step by step at a fixed set of future timestamps. Such autoregressive designs must generate intermediate states before reaching a target horizon, which restricts temporal flexibility and may accumulate prediction errors over long rollouts. Recent 4D Gaussian representations have shown that continuous space-time primitives provide a natural representation for dynamic scenes in novel view synthesis [ 14 – 16 ]. Inspired by these works, we represent the entire forecasting horizon with a unified continuous 4D Gaussian world model for semantic occupancy prediction, where time-conditioned Gaussian primitives are sliced and splatted into occupancy volumes for arbitrary-time future prediction. As each primitive carries explicit spatial geometry, temporal support, semantic attributes, and motion dynamics, the future scene can be directly queried at any timestamp without sequential rollout. 3Analogous to 3D Gaussian primitives [ 17 ], each 4D primitive in dynamic scenes is defined over a 4D space-time coordinate u = [ x⊤, t ]⊤ ∈ R4, with a 4D mean μ4D = [ μ⊤ 
+
+> s
+
+, μ t]⊤ and covariance matrix 
+
+Σ4D ∈ R4×4. The corresponding Gaussian density can be written as: 
+
+G(u) = exp 
+
+
+
+− 12 (u − μ4D )⊤Σ−1 
+
+> 4D
+
+(u − μ4D )
+
+
+
+. (2) The covariance can be parameterized through a 4D rotation-scale decomposition: 
+
+Σ4D = R4D S4D S⊤
+
+> 4D
+
+R⊤ 
+
+> 4D
+
+, (3) � 
+
+> �
+> �
+> �4D
+> (a)
+> �
+> �
+> �
+> �s|tv
+> �t
+> (b)
+
+Figure 2: Unlike a full 4D covariance shown in (a) that couples space and time, our structured formu-lation shown in (b) decouples spatial covariance, temporal support, and motion for interpretable con-tinuous occupancy forecasting. For visualization, we only show the x-y plane and omit the z-axis. where S4D = diag( sx, s y , s z , s t) contains the spatial and temporal scales, and R4D denotes a 4D rotation matrix, which can be parameterized by either a pair of 4D isotropic rotations [ 14 ]or 4D rotors [ 15 ]. Although this full 4D co-variance formulation is expressive, it allows ar-bitrary coupling between spatial and temporal axes, as shown in Figure 2-(a). However, for occupancy forecasting in driving scenes, such unconstrained space-time mixing is difficult to interpret and imposes unnecessary optimization burden. This motivates our structured condi-tional formulation, which decouples spatial ge-ometry, temporal support, and primitive motion instead of learning an unrestricted 4D covari-ance as in Equation (3). Formally, rather than parameterizing each prim-itive with a 4D scale matrix S4D and a 4D rotation matrix R4D as in prior 4D Gaussian representa-tions [ 14 , 15 ], we decompose the 4D covariance into spatial and temporal components. Specifically, we write Σ4D =
+
+Σss Σst 
+
+Σts σ2
+
+> t
+
+
+
+, where Σss ∈ R3×3 describes the spatial covariance, σ2 
+
+> t
+
+∈ R denotes the temporal variance, and Σst ∈ R3×1 captures the space-time correlation. Under this formulation, a 4D Gaussian primitive can be sliced at any queried timestamp by considering the conditional distribution of space given time. Applying the standard Gaussian conditioning rule yields: 
+
+x | t ∼ N  μs + Σst σ−2 
+
+> t
+
+(t − μt), Σss − Σst σ−2 
+
+> t
+
+Σts 
+
+ . (4) An important property of Equation (4) is that the conditional covariance is independent of the queried timestamp t; only the conditional mean varies with time. This property motivates our structured parameterization: instead of learning an unrestricted 4D covariance using Equation (3) and indirectly recovering the sliced 3D Gaussian using Equation (4) , we directly predict the time-invariant conditional spatial covariance together with an explicit temporal motion term. This yields a more interpretable and easier-to-optimize representation for continuous occupancy forecasting. Concretely, as shown in Figure 2-(b), we avoid recovering the sliced 3D Gaussian from an unrestricted 4D covariance. Instead, we directly learn the spatial conditional covariance Σs|t, the temporal scale 
+
+σt, and the motion coefficient v. The time-conditioned primitive in Equation (4) can be written as: 
+
+x | t ∼ N  μs + v(t − μt), Σs|t
+
+ . (5) This parameterization gives each quantity a clear physical meaning. The spatial mean μs denotes the primitive center at the reference time μt. The vector v describes how the primitive center moves as the query time changes. The conditional covariance Σs|t specifies the spatial extent and orientation of the sliced 3D Gaussian, and is shared across queried timestamps. The temporal variance σ2 
+
+> t
+
+determines the temporal support of the primitive, i.e ., how strongly it contributes when the queried timestamp 
+
+t moves away from μt through a Gaussian temporal weight. As a result, each primitive forms a continuous, localized, and motion-aware scene element for arbitrary-time occupancy forecasting. Although Equation (5) is expressed as a time-conditioned 3D Gaussian, it is still consistent with a valid joint 4D Gaussian. Specifically, given the learned conditional spatial covariance Σs|t, motion coefficient v, and temporal variance σ2 
+
+> t
+
+, we construct the corresponding joint space-time covariance: 
+
+Σ4D =
+
+Σs|t + σ2 
+
+> t
+
+vv ⊤ σ2 
+
+> t
+
+v
+
+σ2 
+
+> t
+
+v⊤ σ2
+
+> t
+
+
+
+. (6) 4Under this construction, the space-time cross-covariance is Σst = σ2 
+
+> t
+
+v, while the spatial covariance of the joint 4D Gaussian is Σss = Σs|t + σ2 
+
+> t
+
+vv ⊤. Substituting these terms into the Gaussian condi-tioning formula in Equation (4) recovers exactly the conditional model in Equation (5) . Therefore, our formulation is not a heuristic motion parameterization; instead, it defines a structured family of valid 4D Gaussians in which the conditional mean evolves linearly with time, while the conditional spatial covariance remains time-invariant. We further constrain the motion term according to the geometry of driving scenes. While v ∈ R3
+
+could model motion along all spatial axes, scene dynamics in autonomous driving are dominated by ground-plane motion, and vertical displacement is usually limited. Allowing unrestricted z-axis motion therefore introduces an unnecessary degree of freedom that reduce training stability and make the learned primitive motion less interpretable. We therefore adopt a planar velocity parameterization: 
+
+v = [ vx vy 0] ⊤ , (7) which improves interpretability by making temporal evolution shift each primitive center only in the ground plane. The vertical spatial extent is still captured by the conditional covariance Σs|t, and the formulation can be extended to full 3D velocity when necessary. For the conditional spatial covariance, we follow GaussianFormer [ 18 ] and use a 3D rotation-scale decomposition: 
+
+Σs|t = R3D S3D S⊤
+
+> 3D
+
+R⊤ 
+
+> 3D
+
+, (8) where S3D = diag( sx, s y , s z ) defines the Gaussian scales, and R3D ∈ SO (3) is obtained from a quaternion parameterization. Unlike full 4D rotation-based formulations that mix spatial and temporal axes, this decomposition keeps the primitive geometry purely spatial: Σs|t determines the spatial extent and orientation of the sliced 3D Gaussian at any queried timestamp, while v controls how its center moves over time and σt controls its temporal support. At inference time, we query the continuous 4D Gaussian world by slicing the same primitives at any timestamp t within the forecasting horizon. Each primitive yields a conditional 3D Gaussian with mean μs|t = μs + v(t − μt) and covariance Σs|t. Its temporal support is measured by: 
+
+w(t) = exp 
+
+
+
+− (t − μt)2
+
+2σ2
+
+> t
+
+
+
+, (9) which modulates the opacity o to form the effective splatting weight ˜o(t) = o · w(t). The resulting time-conditioned Gaussians are splatted with ˜o(t) and semantic logits c to produce the semantic occupancy prediction at timestamp t. Since μs|t, Σs|t and w(t) are defined over continuous time, our GEM can be evaluated at arbitrary temporal resolutions without changing the representation or sequentially rolling out states. This essentially differs from autoregressive occupancy world models [ 5 , 13 , 8, 7, 12 , 6, 11 , 9 ], which typically predict future states at fixed time steps and must generate preceding states before reaching a target horizon. 
+
+Remark. This representation is well suited for semantic occupancy forecasting. It supports continuous-time querying, exposes interpretable primitive attributes including spatial geometry, temporal support, semantics, and motion, and models future evolution through explicit primitive motion rather than opaque latent transitions. For efficiency, GEM uses a single shared set of 4D Gaussians to describe the full forecasting horizon, avoiding separate latent states for individual future steps while remaining compatible with voxel-space supervision and Gaussian-to-voxel splatting. 
+
+2.3 GEM: Occupancy Forecasting and Motion Planning 
+
+Figure 3 illustrates the overall GEM pipeline. Each Gaussian primitive is represented by a spatiotem-poral anchor and a latent feature. For the q-th primitive, we define: 
+
+aq = ( μs,q , μ t,q ) , gq ∈ RD , (10) where μs,q and μt,q denote its spatial center and temporal anchor, respectively. The anchor provides the geometric state for projection and refinement, while the feature gq encodes the information used to predict Gaussian attributes, i.e ., semantics, opacity, scale, rotation, motion, and temporal support. To model scene evolution in the moving ego frame, we further decompose each Gaussian velocity 
+
+vq defined in Equation (7) into an ego-induced scene velocity vscene  
+
+> q
+
+and an object-level dynamic 5Scene Query          
+
+> Ego States
+> Past velocity,
+> Acceleration,
+> Trajectories ...
+> Image
+> Encoder
+> State
+> Encoder
+> Cross Attention
+> (�)(��,��)
+> ×�
+> Gaussian Heads
+> Refined
+> Gaussian
+> Anchors
+> &
+> Features
+> (��,��), �
+> . . .
+> Initial Gaussian
+> Anchors
+> &
+> Features
+> (��,��), �
+> . . .
+> Sample & Mix
+> Multi-Head Self-Attention
+> Anchor Recitifer
+> ×�
+> Gaussian Refiner
+
+�
+
+�
+
+> �s|t
+> �t
+> Future
+> Trajectory
+
+. . . 
+
+> Historical Images
+> Motion Heads
+> State
+> Encoder
+> Image
+> Features
+> Cross Attention
+> （�）
+
+�dyn
+
+�scene
+
+> �
+
+�
+
+> Future Semantic Occupancy
+
+. . . 
+
+> Gaussian-to-Voxel
+> Splatting
+> Trajectory Query
+> ��
+> ��
+
+Figure 3: Overall pipeline of GEM. Historical multi-view images and ego states are encoded to refine spatiotemporal Gaussian anchors and features. The refined Gaussians are decoded into semantic, geometric, temporal, and motion attributes, then sliced and splatted into future semantic occupancy volumes, while separate ego-conditioned queries support Gaussian velocity decomposition and future motion trajectory prediction. velocity vdyn  
+
+> q
+
+. The former captures the apparent motion of the scene caused by ego vehicle movement, while the latter captures independent object motion. 
+
+Gaussian Refiner. To align Gaussian primitives with image observations before attribute decoding, we refine their anchors and features through stacked interaction blocks. Since the initial anchors provide only coarse spatiotemporal hypotheses, repeated interaction allows each primitive to gather visual evidence, exchange global context, and adjust its location before predicting semantic and geometric attributes. Each refinement block consists of image feature aggregation, efficient global interaction, and anchor rectification. First, each Gaussian primitive aggregates multi-view, multi-scale image features through adaptive spatiotemporal feature sampling and adaptive mixing [ 19 ]. Next, we use M learnable latent features fB ∈ RM ×D , with M ≪ Q, to model global interactions among the 
+
+Q Gaussian primitive features fG = {gq }Qq=1 ∈ RQ×D . The multi-head attention is computed as: 
+
+fZ = MHAttn( fB , fG, fG) , ˜fG = {˜gq }Qq=1 = MHAttn( fG, fZ , fZ ) . (11) Finally, each anchor is updated by a residual anchor rectifier: 
+
+(∆ μs,q , ∆μt,q ) = MLP rect (˜ gq ) , ˜aq = ( ˜ μs,q , ˜μt,q ) = aq + (∆ μs,q , ∆μt,q ) . (12) By repeating these blocks, GEM progressively aligns Gaussian anchors and features with visual evidence while keeping geometric localization and attribute prediction decoupled. 
+
+Gaussian Heads. Let ˜gq denote the final refined feature of the q-th Gaussian primitive. We decode it into the attributes needed for continuous-time slicing and occupancy splatting, including semantic logits, opacity, spatial scale, rotation, object-level dynamic velocity, and temporal support: 
+
+cq = MLP c(˜ gq ) , oq = σ(MLP o(˜ gq )) , sq = MLP s(˜ gq ) ,
+
+rq = norm(MLP r (˜ gq )) , vdyn  
+
+> q
+
+= MLP vd (˜ gq ) , σt,q = MLP t(˜ gq ) . (13) Here sq and rq parameterize the conditional spatial covariance Σs|t,q , while σt,q determines the primitive’s temporal support. 
+
+Gaussian Velocity Decomposition. Let e denote the ego state. As shown at the bottom of Figure 3, we use a state encoder to project e into a scene query qv = ψv (e), which attends to the refined Gaussian primitive features ˜fG. The corresponding motion head MLP v decodes the attended scene feature into the ego-induced scene velocity. Since the scene is represented in the ego frame, static scene elements have the opposite apparent velocity with respect to the ego vehicle: 
+
+˜ev = CrossAttn v
+
+
+
+qv , ˜fG, ˜fG
+
+
+
+, vscene  
+
+> q
+
+= −MLP v (˜ ev ) . (14) 6For primitives associated with dynamic semantic classes, we add the object-level dynamic velocity predicted by the Gaussian head in Equation 13, modulated by the primitive’s dynamic probability: 
+
+vq = vscene  
+
+> q
+
++ αq vdyn  
+
+> q
+
+, (15) with αq ∈ [0 , 1] estimated from the semantic distribution. Static primitives have small αq and follow the ego-induced scene motion, while dynamic primitives have larger αq and move independently. 
+
+Motion Planning. To support safe motion planning, we use a separate state encoder to project the ego state into a trajectory query qτ = ψτ (e), which attends to the refined Gaussian primitive features. The corresponding motion head MLP τ decodes the attended trajectory feature into future ego displacements. We stop gradients from the planning loss to the Gaussian features ˜fG:
+
+˜eτ = CrossAttn τ
+
+
+
+qτ , sg( ˜fG), sg( ˜fG)
+
+
+
+, ˆτ 1: K = MLP τ (˜ eτ ) . (16) Here sg( ·) denotes stop-gradient, and ˆτ 1: K = {ˆτ k}Kk=1 denotes the planned future ego trajectory, where each ˆτ k ∈ R2 represents the incremental planar displacement (∆ xk, ∆yk) at step k.
+
+Voxelization and Supervision. At a query timestamp t, each 4D Gaussian is sliced into a conditional 3D Gaussian, and the resulting primitives are splatted into a semantic occupancy volume using local aggregation, following GaussianFormer-2 [ 20 ]. We supervise semantic occupancy with ground-truth semantics at each training timestamp using a combination of semantic cross-entropy and Lovasz loss [21] for robust occupancy optimization: 
+
+Locc = λce Lce + λlov Llov . (17) For motion planning, we supervise the predicted future ego waypoints with ground-truth waypoints ˆτ
+
+using mean squared error: 
+
+Lplan = MSE (ˆ τ , τ ) . (18) The final training objective is L = Locc + λplan Lplan where we set λplan to 1.0 in our experiments. 
+
+## 3 Experiments 
+
+3.1 Dataset and Metrics 
+
+We conduct experiments on the Occ3D-nuScenes benchmark [ 10 ], which provides dense semantic occupancy annotations for the nuScenes dataset [ 22 ]. Each annotation covers a spatial range of 
+
+[−40 , 40] m , [−40 , 40] m , and [−1, 5.4] m around the ego vehicle. The ground-truth occupancy is represented as a 200 × 200 × 16 voxel grid with 0.4 m resolution. Each voxel is labeled as one of 18 classes, including 17 semantic classes and one free-space class. Following common evaluation protocols, we report IoU and mIoU for 4D occupancy forecasting. IoU measures foreground-background occupancy overlap, while mIoU averages semantic IoU over the 17 semantic classes. For motion planning, we report L2 error and collision rate. 
+
+3.2 Results and Analysis 4D Occupancy Forecasting. Table 1 compares GEM with existing vision-centric occupancy world models for 4D occupancy forecasting. GEM achieves the best average mIoU among vision-centric methods, improving over SparseWorld from 13 .20 to 13 .60 . The gain is more clear in IoU, where GEM obtains the best results at all future horizons and improves the average IoU from 22 .03 to 
+
+23 .82 . We attribute the stronger IoU to GEM’s explicit continuous geometry: each Gaussian carries physical scene attributes and preserves occupied regions across future horizons through continuous spatiotemporal occupancy. We also observe that SparseWorld [ 9] has slightly higher mIoU at the 3s horizon, while GEM achieves better average mIoU and consistently stronger IoU. One possible reason is that GEM is trained end-to-end in a single stage, which requires the model to jointly balance near- and long-horizon supervision. Since near-future states are easier to infer from current observations, the optimization may favor shorter horizons, making fine-grained semantic prediction at 3s more challenging. 
+
+Motion Planning. Table 2 presents the motion planning results of GEM. GEM achieves an average L2 error of 0.27 m, matching the best camera-based result, and obtains the lowest average collision 7Table 1: 4D occupancy forecasting performance on the Occ3D-nuScenes dataset. We use bold and underlined numbers to denote the best and second-best results, respectively. Method Input Aux. Sup. mIoU ↑ IoU ↑                                                                                                 
+
+> 1s 2s 3s Avg. 1s 2s 3s Avg. OccWorld-T [5] Camera LiDAR 4.68 3.36 2.63 3.56 9.32 8.23 7.47 8.34 OccWorld-D Camera 3D Occ 11.55 8.10 6.22 8.62 18.90 16.26 14.43 16.53 PreWorld [8] Camera 3D Occ 11.69 8.72 6.77 9.06 23.01 20.79 18.84 20.88 + Pre-training Camera 2D & 3D Occ 12.27 9.24 7.15 9.55 23.62 21.76 19.63 21.62 SparseWorld [9] Camera 3D Occ 14.93 13.15 11.51 13.20 22.96 22.10 21.05 22.03 GEM (Ours) Camera 3D Occ 15.71 13.62 11.46 13.60 25.56 24.03 21.86 23.82
+> OccLLaMA-F [13] Camera+Action+Language 3D Occ 10.34 8.66 6.98 8.66 25.81 23.19 19.97 22.99 GWM [23] Camera+LiDAR 3D Occ 11.63 10.07 8.17 10.12 26.22 24.97 22.13 24.60 GEM (Ours) Camera, with LiDAR init 3D Occ 18.66 15.93 13.02 15.87 31.56 28.94 25.42 28.64
+
+Table 2: Motion planning performance on the Occ3D-nuScenes dataset. We use bold and underlined numbers to denote the best and second-best results, respectively. Method Aux. Sup. L2 (m) ↓ Collision Rate (%) ↓                                                                      
+
+> 1s 2s 3s Avg. 1s 2s 3s Avg. VAD-Tiny [1] Map & Box & Motion 0.46 0.76 1.12 0.78 0.21 0.35 0.58 0.38 VAD-Base Map & Box & Motion 0.41 0.70 1.05 0.72 0.07 0.17 0.41 0.22 OccWorld-D [5] 3D Occ 0.52 1.27 2.41 1.40 0.12 0.40 2.08 0.87 PreWorld [8] 3D Occ 0.22 0.31 0.41 0.31 0.36 0.52 0.73 0.54 + Pre-training 2D & 3D Occ 0.22 0.30 0.40 0.31 0.21 0.66 0.71 0.53 SparseWorld [9] 3D Occ 0.19 0.25 0.36 0.27 0.11 0.29 0.46 0.29 GEM (Ours) 3D Occ 0.19 0.26 0.35 0.27 0.09 0.14 0.26 0.16
+
+rate of 0.16% . Compared with SparseWorld, GEM keeps similar trajectory accuracy while reducing the average collision rate from 0.29% to 0.16% , with clear gains at 2s and 3s. We attribute the lower collision rate to the explicit and interpretable Gaussian world representation. Since the trajectory head reasons over scene-level Gaussian primitives, the planner can use a structured representation of occupied space rather than only latent tokens or dense features. This helps the model produce safer trajectories by better modeling collision-relevant scene structure. 
+
+Ablation Studies. Table 3 studies the effect of the number of Gaussian primitives. Reducing the number from 25 ,600 to 12 ,800 preserves similar forecasting performance, with slightly higher IoU and mIoU, while planning performance changes only marginally. This suggests that GEM is not highly sensitive to moderate reductions in primitive count. However, further reducing the representation to 6,400 Gaussians leads to a clear drop in occupancy forecasting accuracy and higher planning error, indicating insufficient scene coverage with too few primitives. Table 3: Ablation on the number of Gaussians. # Gaussians Forecasting Planning IoU ↑ mIoU ↑ L2 ↓ Col. ↓
+
+6400 20.91 12.12 0.29 0.24 12800 23.99 13.62 0.28 0.18 25600 23.82 13.60 0.27 0.16 Table 4: Ablation on the core design choices. Method Forecasting Planning IoU ↑ mIoU ↑ L2 ↓ Col. ↓
+
+GEM (full) 23.82 13.60 0.27 0.16 w/ unified vel. 23.23 12.88 0.37 0.24 w/ full 4D cov. 21.83 11.42 0.27 0.20 We also examine the effect of incorporating modalities beyond camera images in the bottom section of Table 1. LiDAR-based initialization significantly improves the IoU and mIoU of GEM, showing that stronger geometric priors can improve Gaussian placement and lead to more accurate future occupancy forecasting. Compared with prior methods using extra inputs such as LiDAR, action, or language, GEM achieves stronger performance, showing that the Gaussian representation can effectively use additional geometric cues. Table 4 presents the ablation study evaluating the contribution of core designs. Replacing the decomposed motion model with a unified velocity field degrades forecasting performance and increases trajectory error, supporting the separation between ego-induced scene motion and object-level dynamic residual motion. In addition, a full 4D covariance formulation leads to worse occupancy 8Ground Truth SparseWorld Ours Gaussian Primitives 
+
+> t = 1st = 2st = 3s
+> Incorrect
+> Noisy
+> Interpretable
+
+Figure 4: Qualitative comparison of future occupancy forecasting at 1–3 seconds. Compared with SparseWorld [ 9], GEM produces cleaner and more accurate occupancy predictions over time. The right column shows the corresponding Gaussian primitives, where the highlighted blue car primitives remain identifiable, making the predicted motion directly inspectable. t = 0.3s t = 0.9s t = 1.5s t = 2.1s t = 2.7s
+
+Figure 5: Arbitrary-timestamp occupancy forecasting of two scenes with GEM. The continuous 4D Gaussian world can be queried at any intermediate timestamp without sequential rollout, producing smooth scene evolution while preserving the global layout. performance, suggesting that the unconstrained spatiotemporal covariance is harder to optimize than our structured formulation. 
+
+Visualizations. Figure 4 compares future occupancy predictions from 1s to 3s. SparseWorld [ 9]captures the global layout but exhibits boundary artifacts and scattered occupied voxels near object surfaces, likely due to its point-query formulation. In contrast, GEM’s explicit continuous Gaus-sians provide smoother spatial support and more consistent temporal evolution, while keeping the underlying semantic and geometric primitives inspectable. Figure 5 illustrates the temporal flexibility of our continuous formulation. Unlike autoregressive methods with predefined 0.5s output intervals, GEM can be directly queried at arbitrary timestamps without sequential intermediate generation. The predictions evolve smoothly and preserve the global layout, enabling intermediate future occupancy outputs beyond fixed timestamps. 
+
+## 4 Conclusion 
+
+We present GEM, a vision-centric, non-autoregressive occupancy world model based on continuous 4D Gaussian primitives. Instead of relying on autoregressive voxel or token rollout, GEM directly queries a structured Gaussian scene representation at arbitrary future timestamps. This design enables dense semantic occupancy forecasting, interpretable scene evolution, and ego vehicle motion planning within a unified end-to-end framework. Extensive experiments demonstrate state-of-the-art 4D occupancy forecasting and strong motion planning performance, while the explicit Gaussian representation provides improved temporal flexibility and interpretability for dynamic driving scenes. 9References 
+
+[1] Bo Jiang, Shaoyu Chen, Qing Xu, Bencheng Liao, Jiajie Chen, Helong Zhou, Qian Zhang, Wenyu Liu, Chang Huang, and Xinggang Wang. VAD: Vectorized scene representation for efficient autonomous driving. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 8340–8350, 2023. [2] Penghao Wu, Xiaosong Jia, Li Chen, Junchi Yan, Hongyang Li, and Yu Qiao. Trajectory-guided control prediction for end-to-end autonomous driving: A simple yet strong baseline. Advances in Neural Information Processing Systems , 35:6119–6132, 2022. [3] Yihan Hu, Jiazhi Yang, Li Chen, Keyu Li, Chonghao Sima, Xizhou Zhu, Siqi Chai, Senyao Du, Tianwei Lin, Wenhai Wang, Lewei Lu, Xiaosong Jia, Qiang Liu, Jifeng Dai, Yu Qiao, and Hongyang Li. Planning-oriented autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 17853–17862, June 2023. [4] Shengchao Hu, Li Chen, Penghao Wu, Hongyang Li, Junchi Yan, and Dacheng Tao. ST-P3: End-to-end vision-based autonomous driving via spatial-temporal feature learning. In European Conference on Computer Vision , pages 533–549. Springer, 2022. [5] Wenzhao Zheng, Weiliang Chen, Yuanhui Huang, Borui Zhang, Yueqi Duan, and Jiwen Lu. OccWorld: Learning a 3d occupancy world model for autonomous driving. In European Conference on Computer Vision , pages 55–72. Springer, 2024. [6] Tianshuo Xu, Hao Lu, Xu Yan, Yingjie Cai, Bingbing Liu, and Yingcong Chen. Occ-LLM: Enhancing autonomous driving with occupancy-based large language models. In IEEE Interna-tional Conference on Robotics and Automation , pages 8434–8441. IEEE, 2025. [7] Ziyang Yan, Wenzhen Dong, Yihua Shao, Yuhang Lu, Haiyang Liu, Jingwen Liu, Haozhe Wang, Zhe Wang, Yan Wang, Fabio Remondino, et al. RenderWorld: World model with self-supervised 3d label. In IEEE International Conference on Robotics and Automation , pages 6063–6070. IEEE, 2025. [8] Xiang Li, Pengfei Li, Yupeng Zheng, Wei Sun, Yan Wang, and Yilun Chen. Semi-supervised vision-centric 3d occupancy world model for autonomous driving. In International Conference on Learning Representations , 2025. [9] Chenxu Dang, Haiyan Liu, Jason Bao, Pei An, Xinyue Tang, An Pan, Jie Ma, Bingchuan Sun, and Yan Wang. SparseWorld: A flexible, adaptive, and efficient 4d occupancy world model powered by sparse and dynamic queries. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pages 3497–3505, 2026. [10] Xiaoyu Tian, Tao Jiang, Longfei Yun, Yucheng Mao, Huitong Yang, Yue Wang, Yilun Wang, and Hang Zhao. Occ3D: A large-scale 3d occupancy prediction benchmark for autonomous driving. In Advances in Neural Information Processing Systems , volume 36, pages 64318–64330, 2023. [11] Yu Yang, Jianbiao Mei, Yukai Ma, Siliang Du, Wenqing Chen, Yijie Qian, Yuxiang Feng, and Yong Liu. Driving in the Occupancy World: Vision-centric 4d occupancy forecasting and planning via world models for autonomous driving. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 39, pages 9327–9335, 2025. [12] Zhimin Liao, Ping Wei, Ruijie Zhang, Shuaijia Chen, Haoxuan Wang, and Ziyang Ren. I2-World: Intra-inter tokenization for efficient dynamic 4d scene forecasting. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 25810–25819, 2025. [13] Julong Wei, Shanshuai Yuan, Pengfei Li, Qingda Hu, Zhongxue Gan, and Wenchao Ding. OccLLaMA: An occupancy-language-action generative world model for autonomous driving. 
+
+arXiv preprint arXiv:2409.03272 , 2024. [14] Zeyu Yang, Hongye Yang, Zijie Pan, and Li Zhang. Real-time photorealistic dynamic scene representation and rendering with 4d gaussian splatting. In International Conference on Learning Representations , 2024. 10 [15] Yuanxing Duan, Fangyin Wei, Qiyu Dai, Yuhang He, Wenzheng Chen, and Baoquan Chen. 4D-Rotor Gaussian Splatting: Towards efficient novel view synthesis for dynamic scenes. In 
+
+ACM SIGGRAPH , pages 1–11, 2024. [16] Arnold Caleb Asiimwe and Carl Vondrick. 4d gaussian splatting as a learned dynamical system. 
+
+arXiv preprint arXiv:2512.19648 , 2025. [17] Bernhard Kerbl, Georgios Kopanas, Thomas Leimkühler, and George Drettakis. 3d gaussian splatting for real-time radiance field rendering. ACM Transactions on Graphics , 42(4):139–1, 2023. [18] Yuanhui Huang, Wenzhao Zheng, Yunpeng Zhang, Jie Zhou, and Jiwen Lu. GaussianFormer: Scene as gaussians for vision-based 3d semantic occupancy prediction. In European Conference on Computer Vision , pages 376–393. Springer, 2024. [19] Haisong Liu, Yao Teng, Tao Lu, Haiguang Wang, and Limin Wang. SparseBEV: High-performance sparse 3d object detection from multi-camera videos. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 18580–18590, 2023. [20] Yuanhui Huang, Amonnut Thammatadatrakoon, Wenzhao Zheng, Yunpeng Zhang, Dalong Du, and Jiwen Lu. GaussianFormer-2: Probabilistic gaussian superposition for efficient 3d occu-pancy prediction. In Proceedings of the Computer Vision and Pattern Recognition Conference ,pages 27477–27486, 2025. [21] Maxim Berman, Amal Rannen Triki, and Matthew B Blaschko. The lovász-softmax loss: A tractable surrogate for the optimization of the intersection-over-union measure in neural networks. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 4413–4421, 2018. [22] Holger Caesar, Varun Bankiti, Alex H Lang, Sourabh Vora, Venice Erin Liong, Qiang Xu, Anush Krishnan, Yu Pan, Giancarlo Baldan, and Oscar Beijbom. nuScenes: A multimodal dataset for autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 11621–11631, 2020. [23] Tuo Feng, Wenguan Wang, and Yi Yang. Gaussian-based World Model: Gaussian priors for voxel-based occupancy prediction and future motion prediction. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 25239–25249, October 2025. [24] Yuanhui Huang, Wenzhao Zheng, Yunpeng Zhang, Jie Zhou, and Jiwen Lu. Tri-perspective view for vision-based 3d semantic occupancy prediction. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 9223–9232, 2023. [25] Yi Wei, Linqing Zhao, Wenzhao Zheng, Zheng Zhu, Jie Zhou, and Jiwen Lu. SurroundOcc: Multi-camera 3d occupancy prediction for autonomous driving. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 21729–21740, 2023. [26] Yunpeng Zhang, Zheng Zhu, and Dalong Du. OccFormer: Dual-path transformer for vision-based 3d semantic occupancy prediction. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 9433–9443, 2023. [27] Zhangchen Ye, Tao Jiang, Chenfeng Xu, Yiming Li, and Hang Zhao. CVT-Occ: Cost volume temporal fusion for 3d occupancy prediction. In European Conference on Computer Vision ,pages 381–397. Springer, 2024. [28] Zhimin Liao, Ping Wei, Shuaijia Chen, Haoxuan Wang, and Ziyang Ren. STCOcc: Sparse spatial-temporal cascade renovation for 3d occupancy and scene flow prediction. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 1516–1526, June 2025. [29] Dubing Chen, Jin Fang, Wencheng Han, Xinjing Cheng, Junbo Yin, Chengzhong Xu, Fa-had Shahbaz Khan, and Jianbing Shen. ALOcc: Adaptive lifting-based 3d semantic occupancy and cost volume-based flow predictions. In Proceedings of the IEEE/CVF International Confer-ence on Computer Vision , pages 4156–4166, 2025. 11 [30] Sicheng Zuo, Wenzhao Zheng, Yuanhui Huang, Jie Zhou, and Jiwen Lu. GaussianWorld: Gaussian world model for streaming 3d occupancy prediction. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 6772–6781, 2025. [31] Wanshui Gan, Fang Liu, Hongbin Xu, Ningkai Mo, and Naoto Yokoya. GaussianOcc: Fully self-supervised and efficient 3d occupancy estimation with gaussian splatting. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 28980–28990, 2025. [32] Simon Boeder, Fabian Gigengack, and Benjamin Risse. GaussianFlowOcc: Sparse and weakly supervised occupancy estimation using gaussian splatting and temporal flow. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 24943–24954, 2025. [33] Cheng Chen, Hao Huang, and Saurabh Bagchi. Vision-only gaussian splatting for collaborative semantic occupancy prediction. In Proceedings of the AAAI Conference on Artificial Intelligence ,volume 40, pages 2796–2804, 2026. [34] Jonathon Luiten, Georgios Kopanas, Bastian Leibe, and Deva Ramanan. Dynamic 3D Gaussians: Tracking by persistent dynamic view synthesis. In International Conference on 3D Vision ,pages 800–809. IEEE, 2024. [35] Yunzhi Yan, Haotong Lin, Chenxu Zhou, Weijie Wang, Haiyang Sun, Kun Zhan, Xianpeng Lang, Xiaowei Zhou, and Sida Peng. Street Gaussians: Modeling dynamic urban scenes with gaussian splatting. In European Conference on Computer Vision , pages 156–173. Springer, 2024. [36] Songen Gu, Wei Yin, Bu Jin, Xiaoyang Guo, Junming Wang, Haodong Li, Qian Zhang, and Xiaoxiao Long. DOME: Taming diffusion model into high-fidelity controllable occupancy world model. arXiv preprint arXiv:2410.10429 , 2024. [37] Yining Shi, Kun Jiang, Qiang Meng, Ke Wang, Jiabao Wang, Wenchao Sun, Tuopu Wen, mengmeng yang, and Diange Yang. COME: Adding scene-centric forecasting control to occupancy world model. In Advances in Neural Information Processing Systems , 2026. [38] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations , 2019. 
+
+## A Related Work 
+
+3D occupancy prediction. 3D occupancy prediction [ 24 ] has become an important scene repre-sentation for autonomous driving because it provides dense geometric and semantic understanding beyond object-level detection. In the vision-centric setting, a large body of work predicts semantic occupancy from multi-view cameras using BEV-, plane-, or volume-based representations [ 25 , 24 , 26 –29 ]. Along a different direction, Gaussian-based methods replace dense discretization with sparse scene primitives. The GaussianFormer series [ 18 , 20 ] shows that semantic Gaussians can serve as compact occupancy primitives. GaussianWorld [ 30 ] extends this idea to streaming scene modeling, while GaussianOcc [ 31 ] and GaussianFlowOcc [ 32 ] show that Gaussian representations naturally support rendering- and projection-based occupancy learning. Recent work further extends Gaussian occupancy representations to collaborative perception [ 33 ]. GEM builds on this Gaussian line, but moves beyond 3D occupancy estimation toward a structured 4D Gaussian world representation for continuous future scene evolution. 
+
+Gaussian splatting for dynamic scene representation. Gaussian splatting has become a strong explicit scene representation for real-time novel view synthesis, starting from 3D Gaussian Splat-ting [ 17 ] and extending to dynamic settings through time-varying positions, deformation fields, or 4D Gaussian parameterizations [ 34 , 14 – 16 ]. This line mainly targets view synthesis, video recon-struction, and dynamic scene rendering, where the goal is to reproduce photorealistic observations from different viewpoints and times. Recent urban-scene extensions such as Street Gaussians [ 35 ]improve reconstruction quality in driving scenes, but still focus on rendering rather than semantic scene understanding or future occupancy prediction. GEM builds on the compact, explicit, and continuous nature of Gaussian representations, but moves from rendering-oriented dynamic scene modeling to structured 4D semantic Gaussian occupancy world modeling for future scene forecasting. 12 Occupancy world models for autonomous driving. Occupancy world models extend 3D occu-pancy prediction from scene understanding to future scene evolution. Existing methods mainly follow two lines: predicting future occupancy from dense or sparse spatial representations, such as voxel features, BEV feature maps, and query-based states [ 11 , 8, 9, 36 , 37 ]; or encoding occupancy into discrete latent tokens and predicting future tokens before decoding them back to occupancy vol-umes [ 5 , 12 , 13 , 6, 7]. Although effective, these methods commonly model future dynamics in latent spaces rather than explicit scene primitives, and predict future states at fixed steps autoregressively, which limits temporal flexibility and increases inference cost. A recent Gaussian-based world model introduces Gaussian priors into occupancy forecasting, but still predicts future scenes in a tokenized state space rather than using Gaussians as the world state itself [ 23 ]. In contrast, GEM represents driving scenes directly as structured 4D semantic Gaussian primitives, which can be queried at arbitrary timestamps and splatted into conditional 3D Gaussians for explicit, continuous-time, and non-autoregressive occupancy forecasting. 
+
+## B Implementation Details 
+
+Following established protocols [ 5, 8, 9], we use a 2-second historical context to forecast the next 3 seconds. We set the number of Gaussians to Q = 25 ,600 and the feature channel dimension to 256 . The Gaussian refiner contains three interaction blocks, each using M = 1 ,280 learnable latent features. We use ResNet-50 as the image encoder and a 3-layer MLP as the state encoder. We train GEM end-to-end for 20 epochs with AdamW [ 38 ] and a cosine annealing learning-rate scheduler. The loss weights λce , λlov , and λplan are set to 6.0, 1.0, and 1.0, respectively. The initial learning rate is 2 × 10 −4, the weight decay is 0.01 , and the batch size is 1 per GPU on 2 H100 GPUs. During inference, GEM can directly query any future timestamp within the 3-second horizon without autoregressive rollout. 
+
+## C Limitations and Future Work 
+
+While GEM demonstrates strong performance with an explicit and continuously queryable 4D Gaussian world representation, several directions remain open. First, our current initialization study mainly considers two endpoints: random Gaussian initialization using only camera inputs, and LiDAR-based initialization using an additional geometric modality. A useful next step is to study camera-only initialization strategies between these endpoints, such as depth-guided placement or priors from foundation models, which may improve Gaussian coverage without relying on LiDAR. Second, GEM currently predicts occupancy over a fixed set of semantic classes. Extending the 4D Gaussian world model with language grounding could enable open-world forecasting, richer scene understanding, and more flexible planning. 
+
+## D Broader Impacts 
+
+GEM targets vision-centric occupancy forecasting and motion planning for autonomous driving. By producing explicit and continuously queryable scene representations, it may improve the transparency and temporal flexibility of driving perception systems. These properties could support safer planning, better failure analysis, and more interpretable debugging in autonomous vehicles. In the long term, such methods may contribute to more capable autonomous driving systems. However, deployment should require extensive closed-loop testing, uncertainty estimation, and human oversight. This work uses public driving datasets and does not introduce new privacy or surveillance risks beyond those already associated with such datasets. 13
