@@ -348,6 +348,90 @@ def translate_title_and_abstract_to_zh(title: str, abstract: str) -> Tuple[str, 
     return zh_title, zh_abstract
 
 
+def translate_figure_captions_to_zh(figures: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not figures:
+        return figures
+
+    out: List[Dict[str, Any]] = [dict(item) for item in figures if isinstance(item, dict)]
+    targets: List[Dict[str, Any]] = []
+    for i, item in enumerate(out):
+        caption = str(item.get("caption") or "").strip()
+        caption_zh = str(item.get("caption_zh") or "").strip()
+        if caption and not caption_zh:
+            targets.append({"index": i, "caption": caption})
+
+    if not targets or LLM_CLIENT is None:
+        return out
+
+    system_prompt = (
+        "你是一名熟悉机器学习与自然科学论文的专业翻译。"
+        "请将论文图表 caption 翻译为自然、准确的中文，保持学术风格。"
+        "保留公式、变量、引用编号、数据集名称、方法名称和专有名词，不要额外解释。"
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps({"captions": targets}, ensure_ascii=False)},
+        {
+            "role": "user",
+            "content": (
+                "请严格输出 JSON：\n"
+                "{\"translations\": [{\"index\": 0, \"caption_zh\": \"...\"}]}\n"
+                "index 必须沿用输入 captions 中的 index。只输出 JSON，不要输出 markdown 或其它文字。"
+            ),
+        },
+    ]
+    schema = {
+        "type": "object",
+        "properties": {
+            "translations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "caption_zh": {"type": "string"},
+                    },
+                    "required": ["index", "caption_zh"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["translations"],
+        "additionalProperties": False,
+    }
+
+    try:
+        parsed = call_llm_structured_json(
+            LLM_CLIENT,
+            messages,
+            schema_name="translate_figure_captions_zh",
+            schema=schema,
+            temperature=0.2,
+            max_tokens=4000,
+        )
+    except Exception:
+        return out
+
+    translations = parsed.get("translations") if isinstance(parsed, dict) else None
+    if not isinstance(translations, list):
+        return out
+
+    for item in translations:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index"))
+        except Exception:
+            continue
+        if idx < 0 or idx >= len(out):
+            continue
+        caption_zh = str(item.get("caption_zh") or "").strip()
+        if caption_zh:
+            out[idx]["caption_zh"] = caption_zh
+
+    return out
+
+
 def extract_section_tail(md_text: str, heading: str) -> str:
     """
     从 md 中提取某个自动生成段落（heading）后的尾部内容。
@@ -1232,12 +1316,13 @@ def maybe_generate_paper_figures(
 
     asset_key = str(paper.get("id") or paper_id.replace("/", "-")).strip()
     try:
-        return ensure_paper_figures(
+        figures = ensure_paper_figures(
             pdf_url=pdf_url,
             docs_dir=docs_dir,
             source_key=source_key,
             asset_key=asset_key,
         )
+        return translate_figure_captions_to_zh(figures)
     except Exception as e:
         log(f"[WARN] 论文插图提取失败：{asset_key}: {e}")
         return []
@@ -1266,6 +1351,28 @@ def upsert_front_matter_field(md_text: str, key: str, value: str) -> Tuple[str, 
         updated_lines.append(f"{key}: {value}")
     updated = "---\n" + "\n".join(updated_lines).rstrip() + "\n---" + normalized[end_idx + 4 :]
     return updated, updated != normalized
+
+
+def upsert_figures_caption_zh(md_text: str, figures_json_value: str) -> Tuple[str, bool]:
+    raw = str(figures_json_value or "").strip()
+    if not raw:
+        return md_text, False
+    try:
+        figures = json.loads(raw)
+    except Exception:
+        return md_text, False
+    if not isinstance(figures, list):
+        return md_text, False
+
+    enriched = translate_figure_captions_to_zh(figures)
+    if enriched == figures:
+        return md_text, False
+
+    return upsert_front_matter_field(
+        md_text,
+        "figures_json",
+        yaml_escape_value(json.dumps(enriched, ensure_ascii=False)),
+    )
 
 
 def build_markdown_content(
@@ -1451,6 +1558,15 @@ def process_paper(
                     with open(md_path, "w", encoding="utf-8") as f:
                         f.write(updated + ("\n" if not updated.endswith("\n") else ""))
                     existing = updated
+        else:
+            updated, changed = upsert_figures_caption_zh(
+                existing,
+                str(existing_meta.get("figures_json") or ""),
+            )
+            if changed:
+                with open(md_path, "w", encoding="utf-8") as f:
+                    f.write(updated + ("\n" if not updated.endswith("\n") else ""))
+                existing = updated
 
         # 修复模式：若自动总结/速览存在“被截断”的迹象，则仅重生成该段落，不改动前面正文
         # 若已存在 Markdown，但缺少中文标题/中文摘要，则在“重新跑 Step6”时自动补齐

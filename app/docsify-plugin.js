@@ -962,6 +962,57 @@ window.$docsify = {
           .replace(/'/g, '&#39;');
       };
 
+      const protectLatexForMarkdown = (markdown) => {
+        if (!markdown) return '';
+        const codePlaceholders = [];
+        const protectCode = (match) => {
+          const idx = codePlaceholders.length;
+          codePlaceholders.push(match);
+          return `@@DPR_CODE_PLACEHOLDER_${idx}@@`;
+        };
+        const mathPlaceholders = [];
+        const protectMathHtml = (html) => {
+          const idx = mathPlaceholders.length;
+          mathPlaceholders.push(html);
+          return `\n\n@@DPR_MATH_HTML_${idx}@@\n\n`;
+        };
+        const blockHtml = (body) => {
+          const cleanBody = String(body || '').replace(/^\n+|\n+$/g, '');
+          return `<div class="dpr-latex-block">$$\n${escapeHtml(cleanBody)}\n$$</div>`;
+        };
+        const inlineHtml = (body) => {
+          return `<span class="dpr-latex-inline">$${escapeHtml(body || '')}$</span>`;
+        };
+
+        let text = String(markdown)
+          .replace(/(```[\s\S]*?```|~~~[\s\S]*?~~~)/g, protectCode)
+          .replace(/`[^`\n]*`/g, protectCode);
+
+        text = text
+          .replace(/\\\[([\s\S]*?)\\\]/g, (_, body) =>
+            protectMathHtml(blockHtml(body)),
+          )
+          .replace(/\$\$([\s\S]*?)\$\$/g, (_, body) =>
+            protectMathHtml(blockHtml(body)),
+          );
+
+        text = text
+          .replace(/\\\(([^\n]*?)\\\)/g, (_, body) => inlineHtml(body))
+          .replace(/(^|[^\\\w])\$([^\$\n]+?)\$(?!\w)/g, (_, prefix, body) =>
+            `${prefix}${inlineHtml(body)}`,
+          );
+
+        text = text.replace(/@@DPR_MATH_HTML_(\d+)@@/g, (_, idx) => {
+          const original = mathPlaceholders[parseInt(idx, 10)];
+          return original == null ? '' : original;
+        });
+
+        return text.replace(/@@DPR_CODE_PLACEHOLDER_(\d+)@@/g, (_, idx) => {
+          const original = codePlaceholders[parseInt(idx, 10)];
+          return original == null ? '' : original;
+        });
+      };
+
       // 自定义表格渲染：检测 Markdown 表格块并手写生成 <table>，
       // 其他内容仍交给 marked 渲染。
       // 同时保护 LaTeX 公式块，避免被 marked 误解析。
@@ -1114,6 +1165,7 @@ window.$docsify = {
       window.DPRMarkdown = {
         normalizeLatexDelimiters,
         normalizeTables,
+        protectLatexForMarkdown,
         renderMarkdownWithTables,
         renderMathInEl,
       };
@@ -3608,6 +3660,7 @@ window.$docsify = {
             .map((item, index) => ({
               url: String(item.url || '').trim(),
               caption: String(item.caption || '').trim(),
+              captionZh: String(item.caption_zh || item.captionZh || '').trim(),
               page: Number(item.page || 0),
               index: Number(item.index || index + 1),
               width: Number(item.width || 0),
@@ -3633,13 +3686,17 @@ window.$docsify = {
         if (!figures || !figures.length) return '';
         const slides = figures.map((figure, index) => {
           const pageText = figure.page ? `PDF 第 ${figure.page} 页` : '';
-          const caption = figure.caption ? `<div class="paper-figure-caption">${escapePaperHtml(figure.caption)}</div>` : '';
+          const caption = [
+            figure.caption ? `<div class="paper-figure-caption paper-figure-caption-en">${escapePaperHtml(figure.caption)}</div>` : '',
+            figure.captionZh ? `<div class="paper-figure-caption paper-figure-caption-zh">${escapePaperHtml(figure.captionZh)}</div>` : '',
+          ].filter(Boolean).join('');
+          const captions = caption ? `<div class="paper-figure-captions">${caption}</div>` : '';
           return [
             `<div class="paper-figure-slide${index === 0 ? ' is-active' : ''}" data-figure-slide="${index}">`,
             `<img class="paper-figure-image" src="${escapePaperHtml(resolveDocsAssetUrl(figure.url))}" alt="Paper Figure ${index + 1}" loading="lazy">`,
             '<div class="paper-figure-meta">',
             `<div class="paper-figure-badge">Figure ${index + 1}${pageText ? ` · ${escapePaperHtml(pageText)}` : ''}</div>`,
-            caption,
+            captions,
             '</div>',
             '</div>',
           ].join('');
@@ -3834,18 +3891,18 @@ window.$docsify = {
         // 只对论文页面处理
         if (!isPaperRouteFile(file)) {
           latestPaperRawMarkdown = '';
-          return normalizeLatexDelimiters(content || '');
+          return protectLatexForMarkdown(content || '');
         }
         latestPaperRawMarkdown = content || '';
 
         const { meta, body } = parseFrontMatter(content);
         if (!meta) {
-          return normalizeLatexDelimiters(content || '');
+          return protectLatexForMarkdown(content || '');
         }
 
         // 生成论文页面 HTML + 正文
         const paperHtml = renderPaperFromMeta(meta);
-        return paperHtml + normalizeLatexDelimiters(body);
+        return paperHtml + protectLatexForMarkdown(body);
       });
 
       // --- Docsify 生命周期钩子 ---

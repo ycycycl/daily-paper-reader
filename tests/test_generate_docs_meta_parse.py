@@ -28,6 +28,7 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
             llm_stub.DEFAULT_BLT_BASE_URL = "https://api.bltcy.ai/v1"
             llm_stub.LLMClient = DummyClient
             llm_stub.create_chat_client = lambda *args, **kwargs: DummyClient()
+            llm_stub.default_chat_base_url = lambda: "https://api.openai.com/v1"
             llm_stub.first_env = lambda *names: ""
             sys.modules["llm"] = llm_stub
 
@@ -129,6 +130,7 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
                 {
                     "url": "assets/figures/arxiv/1234.5678/fig-001.webp",
                     "caption": "",
+                    "caption_zh": "图 1。演示图注。",
                     "page": 2,
                     "index": 1,
                     "width": 1280,
@@ -142,6 +144,40 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
         figures = json.loads(meta["figures_json"])
         self.assertEqual(len(figures), 1)
         self.assertEqual(figures[0]["url"], "assets/figures/arxiv/1234.5678/fig-001.webp")
+        self.assertEqual(figures[0]["caption_zh"], "图 1。演示图注。")
+
+    def test_upsert_figures_caption_zh_translates_existing_front_matter(self):
+        original_client = self.mod.LLM_CLIENT
+        original_call = self.mod.call_llm_structured_json
+
+        def fake_call(*args, **kwargs):
+            return {"translations": [{"index": 0, "caption_zh": "图 1。演示图注。"}]}
+
+        self.mod.LLM_CLIENT = object()
+        self.mod.call_llm_structured_json = fake_call
+        try:
+            figures = [{"url": "assets/figures/arxiv/demo/fig-001.webp", "caption": "Figure 1. Demo caption."}]
+            md = "\n".join(
+                [
+                    "---",
+                    "title: Demo",
+                    f"figures_json: {self.mod.yaml_escape_value(json.dumps(figures, ensure_ascii=False))}",
+                    "---",
+                    "",
+                    "## Abstract",
+                    "Demo abstract.",
+                ]
+            )
+            meta = self.mod._parse_front_matter(md)
+            updated, changed = self.mod.upsert_figures_caption_zh(md, meta["figures_json"])
+        finally:
+            self.mod.LLM_CLIENT = original_client
+            self.mod.call_llm_structured_json = original_call
+
+        self.assertTrue(changed)
+        updated_meta = self.mod._parse_front_matter(updated)
+        updated_figures = json.loads(updated_meta["figures_json"])
+        self.assertEqual(updated_figures[0]["caption_zh"], "图 1。演示图注。")
 
     def test_maybe_generate_paper_figures_accepts_biorxiv(self):
         calls = []
