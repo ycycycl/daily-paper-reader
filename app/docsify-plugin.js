@@ -3608,6 +3608,7 @@ window.$docsify = {
             .map((item, index) => ({
               url: String(item.url || '').trim(),
               caption: String(item.caption || '').trim(),
+              captionZh: String(item.caption_zh || item.captionZh || '').trim(),
               page: Number(item.page || 0),
               index: Number(item.index || index + 1),
               width: Number(item.width || 0),
@@ -3633,13 +3634,17 @@ window.$docsify = {
         if (!figures || !figures.length) return '';
         const slides = figures.map((figure, index) => {
           const pageText = figure.page ? `PDF 第 ${figure.page} 页` : '';
-          const caption = figure.caption ? `<div class="paper-figure-caption">${escapePaperHtml(figure.caption)}</div>` : '';
+          const caption = [
+            figure.caption ? `<div class="paper-figure-caption paper-figure-caption-en">${escapePaperHtml(figure.caption)}</div>` : '',
+            figure.captionZh ? `<div class="paper-figure-caption paper-figure-caption-zh">${escapePaperHtml(figure.captionZh)}</div>` : '',
+          ].filter(Boolean).join('');
+          const captions = caption ? `<div class="paper-figure-captions">${caption}</div>` : '';
           return [
             `<div class="paper-figure-slide${index === 0 ? ' is-active' : ''}" data-figure-slide="${index}">`,
             `<img class="paper-figure-image" src="${escapePaperHtml(resolveDocsAssetUrl(figure.url))}" alt="Paper Figure ${index + 1}" loading="lazy">`,
             '<div class="paper-figure-meta">',
             `<div class="paper-figure-badge">Figure ${index + 1}${pageText ? ` · ${escapePaperHtml(pageText)}` : ''}</div>`,
-            caption,
+            captions,
             '</div>',
             '</div>',
           ].join('');
