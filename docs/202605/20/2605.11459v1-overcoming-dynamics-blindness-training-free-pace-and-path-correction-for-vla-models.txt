@@ -1,0 +1,1152 @@
+Title: Overcoming Dynamics-Blindness: Training-Free Pace-and-Path Correction for VLA Models
+
+URL Source: https://arxiv.org/pdf/2605.11459v1
+
+Published Time: Wed, 13 May 2026 00:34:09 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# Overcoming Dynamics-Blindness: Training-Free Pace-and-Path Correction for VLA Models 
+
+Yanyan Zhang 1 Chaoda Song 1 Vikash Singh 1 Xinpeng Li 1 Kai Ye 1
+
+Zhe Hu 2 Zhongzhu Pu 3 Yu Yin 1 Vipin Chaudhary 1
+
+> 1
+
+Case Western Reserve University 2The Hong Kong Polytechnic University 
+
+> 3
+
+Tsinghua University 
+
+yxz3106@case.edu 
+
+## Abstract 
+
+Vision-Language-Action (VLA) models achieve remarkable flexibility and general-ization beyond classical control paradigms. However, most prevailing VLAs are trained under a single-frame observation paradigm, which leaves them structurally blind to temporal dynamics. Consequently, these models degrade severely in non-stationary scenarios, even when trained or finetuned on dynamic datasets. Existing approaches either require expensive retraining or suffer from latency bottlenecks and poor temporal consistency across action chunks. We propose Pace-and-Path Correction, a training-free, closed-form inference-time operator that wraps any chunked-action VLA. From a single quadratic cost, joint minimization yields a unified solution that decomposes orthogonally into two distinct channels. The pace channel compresses execution along the planned direction, while the path chan-nel applies an orthogonal spatial offset, jointly absorbing the perceived dynamics within the chunk window. We evaluate our approach on a comprehensive diagnostic benchmark M OVE BENCH designed to isolate motion as the sole controlled vari-able. Empirical results demonstrate that our framework consistently outperforms state-of-the-art training-free wrappers and dynamic-adaptive methods and improves success rates by up to 28.8% and 25.9% in absolute terms over foundational VLA models in dynamic-only and static-dynamic mixed environments, respectively. 
+
+## 1 Introduction 
+
+Robotic manipulation in real-world settings frequently involves environments whose state changes during policy execution, ranging from regular motions such as objects on a conveyor belt to unex-pected events such as external perturbations [ 1 –3]. Handling such dynamic conditions has therefore become a central requirement for general-purpose manipulation policies [ 4, 5]. Among recent ap-proaches, Vision-Language-Action (VLA) models map visual observations and language instructions directly to low-level control, and have emerged as a promising candidate for this setting [6–8]. However, most current VLAs adopt action chunking, where the model predicts a fixed-length sequence of future actions from a single visual frame at each inference call and the robot executes them open-loop before the next chunk is generated [ 9, 10 ]. While this design improves stability and amortizes inference cost, it leaves the policy structurally blind to dynamics [ 2, 11 ]. Each chunk is generated from an initial static snapshot without object-motion supervision and executed without visual feedback, leaving any scene changes during execution unseen until the next chunk is generated [ 7, 12 ]. As a result, even state-of-the-art VLAs that excel on static tasks degrade sharply once the task itself demands temporal awareness. Beyond methods, the evaluation landscape itself offers limited support for diagnosing motion robustness. Existing manipulation benchmarks rarely isolate motion as a 
+
+> Preprint.
+> arXiv:2605.11459v1 [cs.RO] 12 May 2026
+
+Figure 1: Comparison of methods. (a) Fundamental VLA suffers from single-frame input that leaves the latter half of each chunk stale under dynamic scenes. (b) Perception augmentation requires retraining, and the motion signal is progressively diluted through the VLA stack and ego-motion. (c) Latency reduction blindly accelerates inference, breaking chunk-to-chunk consistency and typically relying on a lightweight backbone. (d) Our framework adaptively compresses action magnitude and inference cadence, compensating spatially against the environment. primary axis, instead entangling it with perception, generalization, or scene difficulty, which makes the dynamics-blindness failure mode hard to characterize precisely [2, 3, 13, 14]. A growing body of recent work targets this gap, broadly falling into two strands. One injects motion or temporal cues into the input through historical optical flow [ 15 , 2, 16 ], visual prompting [ 17 ], memory banks [ 18 ], or motion predictors [ 19 – 21 ], but these methods rely on expensive retraining and per-backbone architectural changes. Extraction latency and forecasting hallucinations make these methods unreliable at the timescale of dynamic interaction [ 15 , 22 , 23 ]. More fundamentally, a manipulator’s visual stream is dominated by its own ego-motion, leaving genuine object motion as a small residual hard to capture [ 24 , 25 ]. A second strand reduces inference latency through compact backbones [ 3 ], parallel decoding [ 26 ], or compressed action tokenizers [ 27 ], trading away the backbone capacity that gives larger VLAs their generalization while still leaving each newly issued chunk blind to motion within the previous one. Indiscriminate re-inference can also break the temporal smoothness across chunks and degrade long-horizon coherence [ 28 ]. Other methods include asynchronous inpainting [ 28 ], rejection sampling [ 29 ], temporal ensembling [ 10 ], adaptive chunk sizing [ 30 ], and learned correction heads [ 22 ], which improve reactivity indirectly through smoother seams or more frequent re-planning. However, the chunks themselves still treat the environment as static, and any learnable corrector still suffers from the dilemma between latency and capacity as well as the ego-motion problem [ 10 , 31 ]. Without external dynamics information, identical initial observations with different target velocities make intra-chunk correction underdetermined. Therefore, we propose Pace-and-Path Correction (PPC) , a closed-form, training-free, inference-time wrapper. PPC reads an external dynamics signal in the form of velocity, which can be supplied by external tracking or depth-sensing pipelines. As illustrated in Fig. 1, unlike prior remedies that augment the input, shrink the backbone, or smooth chunk boundaries, PPC directly addresses the chunk interior where dynamics blindness actually resides, through a principled, physics-grounded formulation. It solves a single quadratic cost balancing per-waypoint tracking against per-step offset effort in closed form, whose minimum decomposes orthogonally into two channels. Pace 
+
+adaptively compresses the chunk in time to absorb the plan-parallel component of the disturbance, while Path adds per-step spatial offsets to absorb the plan-perpendicular component. A Hierarchical 2-EMA Latch Stabilizer further detects motion regimes and shortens the execution horizon for necessity under chronic instability. By decoupling perception from correction, PPC inherits the maturity of dedicated tracking pipelines, sidesteps the latency-capacity dilemma that constrains any learnable corrector, and avoids the ego-motion confound that handicaps in-backbone perception. The resulting wrapper is agnostic to the underlying backbone, requires negligible compute, and recovers the baseline VLA exactly under static environment, preserving the strong static-scene capability of modern foundational VLAs. To rigorously study PPC and the broader question of motion robustness, we further construct MOVE BENCH , a controlled benchmark that isolates motion regime as the primary evaluation axis while holding tasks, objects, and scenes fixed. The key contributions of our work are summarized as follows: • We propose Pace-and-Path Correction (PPC) , a closed-form, training-free, inference-time wrapper for general VLAs that explicitly compensates for environment dynamics with no learnable parameters and no backbone modification or specification. • We construct MOVE BENCH , a benchmark dedicated to systematically isolating and evaluating VLA performance across diverse motion patterns and speeds. 2Figure 2: Framework Overview. Given a baseline action chunk ∆p from a frozen VLA policy and dynamics signals (v, ˆd) from the dynamics sensor, our framework minimizes a single quadratic cost over per-chunk tracking error and correction effort. Stationarity decomposes the optimum orthogonally into two closed-form channels: a Pace Channel that absorbs the parallel component of 
+
+v ˆd as a temporal compression factor α⋆, and a Path Channel that absorbs the perpendicular residual 
+
+A⋆ as a Fibonacci-profile spatial offset δk. A hierarchical 2-EMA latch stabilizer monitors the velocity stream and emits a Cadence Gate that caps the execution length when irregular regimes are detected. The summed correction yields the final corrected action with zero learnable parameters. • Extensive experiments demonstrate that PPC outperforms state-of-the-art training-free wrappers and dynamic-adaptive methods, and consistently enhances all motion families across various foundational VLAs, improving success rates by up to 28 .8% and 25 .9% in dynamic-only and mixed environments, respectively. 
+
+## 2 Related Work 
+
+Vision-Language-Action Models. VLAs adapt pretrained vision-language backbones for robot control by mapping multimodal observations and language to action sequences [ 7 –9 ]. Early de-signs decode actions autoregressively as discrete text tokens, enabling reuse of language-modeling objectives but limited by the resolution of binned actions and the cost of token-by-token decod-ing [ 7, 8 , 32 , 33 ]. More recent generalist policies attach a diffusion- or flow-matching action expert that emits continuous action chunks, recovering high-frequency control at the cost of grafting newly initialized weights onto the backbone [ 11 , 9, 34 , 12 , 35 , 36 ]. Across both lines, action chunking has emerged as the de facto control unit, where each inference call produces a fixed-horizon sequence exe-cuted open-loop before the next observation, trading reactivity for inference amortization [ 10 , 37 , 38 ]. 
+
+Dynamic Manipulation Benchmarks. Robot manipulation benchmarks have largely standardized around static settings, with widely used VLA evaluation suites such as LIBERO [ 13 ], CALVIN [ 14 ], ManiSkill [ 39 , 40 ], RoboCasa [ 41 ], and VLABench [ 42 ] measuring long-horizon planning, language grounding, or skill transfer while keeping objects stationary. Dynamic settings have only recently entered the VLA picture, primarily through DOM [ 3 ] and DOMINO [ 2] as VLA-paired benchmarks targeting moving objects. These efforts establish that dynamic conditions degrade VLA performance, yet they treat motion as one axis intermixed with perception, generalization, or scene difficulty, and the underlying motion regimes are typically limited to uniform translation or simple acceleration [ 1,43 , 44 ]. A controlled evaluation that varies motion alone, across uniform, accelerated, and irregular regimes, while holding tasks, objects, and scenes fixed remains an open need. 
+
+Dynamics-Aware Vision-Language-Action Models. Existing remedies broadly follow two threads. The first injects temporal or predictive cues into the backbone: FlowVLA [ 15 ], PUMA [ 2], and LaMP [ 45 ] feed historical optical or scene flow, TraceVLA [ 17 ] overlays visual traces, Memo-ryVLA [ 18 ] retrieves from episodic memory banks, and DreamVLA [ 19 ], WorldVLA [ 20 ], 4D-3VLA [ 21 ], FUTURE-VLA [ 46 ], and SC-VLA [ 47 ] forecast future states through world models or predictive heads, all requiring retraining and architecture-specific integration [ 16 ]. The second reduces inference latency while retaining the single-frame paradigm: DynamicVLA [ 3] shrinks the backbone to 0.4B, PD-VLA [ 26 ] parallelizes autoregressive decoding, FASTer [ 27 ] compresses action tokenization, and others accelerate through token caching [ 48 , 49 ], discrete diffusion [ 50 ], or asynchronous inference [ 51 ]. Orthogonal efforts repair chunk boundaries at inference time through temporal ensembling [ 10 ], guided rejection sampling [ 29 ], asynchronous inpainting [ 28 , 52 ], learned correction heads [ 22 ], native continuation [ 53 ], or adaptive chunk sizing [ 30 ], smoothing inter-chunk seams without addressing intra-chunk drift. 
+
+## 3 Methodology 
+
+3.1 Problem Formulation 
+
+A VLA policy maps an observation ot and a language instruction to an action chunk At =(at, . . . , a t+H−1), where each ak encodes an end-effector delta ∆pk ∈ R3 together with rota-tion and gripper commands. The robot executes the first K ≤ H entries open-loop before re-querying the policy, with T denoting the full chunk length. Let ∆p denote the representative per-step delta within this window, so the nominal trajectory is pk = k∆p for k = 1 , . . . , K . Absorbing the control timestep into v, let v ˆd denote the target displacement per step along unit direction ˆd. When the target moves during execution, the waypoints to track shift to ˜pk = k(∆ p + v ˆd), while the chunk continues toward pk, yielding a tracking error ∥pk − ˜pk∥ = kv that grows linearly with disturbance magnitude and step index and remains invisible to the policy until the next chunk is queried. To close this gap at inference time, we introduce a temporal-compression scalar α ≥ 1 and per-step spatial offsets {δk}K−1 
+
+> k=0
+
+∈ R3 on the chunk interior, so that the corrected delta at env-step k becomes 
+
+uk = α∆p + δk. Introducing the residual disturbance A := v ˆd − (α − 1)∆ p and the cumulative spatial offset σk := Pk−1 
+
+> i=0
+
+δi, the per-waypoint tracking error becomes 
+
+ek(α, {δi}) = −kA + σk, k = 1 , . . . , K. 
+
+We then choose (α, {δk}) by minimizing 
+
+min   
+
+> α, {δk}
+
+L =
+
+> K
+
+X
+
+> k=1
+
+∥ek(α, {δi})∥2 + λ
+
+> K−1
+
+X
+
+> k=0
+
+∥δk∥2,
+
+balancing waypoint tracking against the effort of spatial deviation. This convex quadratic admits a closed-form minimizer whose two channels decompose orthogonally with respect to the disturbance direction, and the joint stationarity conditions yield 
+
+∆p ·
+
+> K
+
+X
+
+> k=1
+
+k e k = 0 , λ δ k +
+
+> K
+
+X
+
+> j=k+1
+
+ej = 0 .
+
+We show next that the two correction degrees of freedom act on orthogonal subspaces, so the channels can be derived sequentially without loss of optimality. 
+
+3.2 Pace Channel Correction 
+
+Rotational invariance of the cost forces every δk at the optimum to inherit the direction of A, so P 
+
+> j
+
+j e j lies parallel to A and the first stationarity condition collapses to ∆p · A = 0 . Expanding this orthogonality yields 
+
+α⋆ = 1 + v cos θ
+
+∥∆p∥ , cos θ = ˆd · c∆p. 
+
+The cosine factor ensures that only the disturbance component aligned with the plan modulates the pace, and substituting α⋆ back into A produces the orthogonal residual 
+
+A⋆ = v ˆd − v cos θ c∆p = v ˆd⊥,
+
+which lies entirely in the plane perpendicular to the planned direction. Geometrically, α⋆ stretches the chunk’s per-step magnitude exactly enough to keep the chunk endpoint Kα ⋆∆p aligned with the 4moving target’s projection onto c∆p, and the full wrapper reduces to the baseline VLA if and only if v = 0 . At runtime, the compression is realized by setting Kexec = max  K, min( ⌈T /α ⋆⌉, T ).Generalizing to an affine disturbance v(t) = v0 + at with possibly distinct directions ˆdv , ˆda (cos θv =ˆdv · c∆p, cos θa = ˆda · c∆p) yields 
+
+α⋆ = 1 + v0 cos θv
+
+∥∆p∥ + 3K(K+1) 4(2 K+1) · a cos θa
+
+∥∆p∥ ,
+
+with the second-order coefficient scaling linearly in K, reflecting the longer integration window over which acceleration accumulates. 
+
+3.3 Path Channel Correction 
+
+The Path channel handles the residual A⋆, which cannot be absorbed by temporal scaling. Setting 
+
+λ = 1 (generalized in Appendix A.7) and differencing the second stationarity condition in k yields the 2D linear recurrence δk+1 
+
+ek+1 
+
+
+
+=
+
+2 11 1
+
+  δk
+
+ek
+
+
+
+−
+
+A⋆
+
+A⋆
+
+
+
+, e0 = 0 , δ K = 0 .
+
+The companion matrix has eigenvalues φ±2 where φ = (1 + √5) /2 is the golden ratio. Solving the recursion under the boundary conditions and applying the identity φn + φ−n = √5 Fn for odd n
+
+yields 
+
+δ⋆k =
+
+
+
+1 − F2k+1 
+
+F2K+1 
+
+
+
+v ˆd⊥, k = 0 , . . . , K − 1,
+
+where Fn is the n-th Fibonacci number. The profile saturates from δ⋆ 
+
+> 0
+
+≈ v ˆd⊥ at the chunk start to δ⋆K−1 → φ−2v ˆd⊥ ≈ 0.618 v ˆd⊥ as K → ∞ , with the boundary condition δK = 0 ensuring the next chunk starts unbiased. This shape minimizes P 
+
+> k
+
+∥δk∥2 while distributing the perpendicular displacement gradually across the executed window rather than concentrating it on any single env-step. Under the second-order disturbance, the same recurrence acquires an inhomogeneous term proportional to B⋆ := 12 a ˆda, ⊥, and linearity of the recurrence yields an additive decomposition into a Fibonacci first-order branch and a Lucas-polynomial second-order branch Λk(K),
+
+δ⋆k =
+
+
+
+1 − F2k+1 
+
+F2K+1 
+
+
+
+A⋆ + Λ k(K) B⋆,
+
+where the Lucas profile is the natural dual to Fibonacci on the same eigenvalue structure. Combined with α⋆, the corrected delta uk = α⋆∆p + δ⋆k is fully determined by the chunk geometry and the dynamics signal with no learnable parameter. 
+
+3.4 Hierarchical 2-EMA Latch Stabilizer 
+
+The closed forms above are exact under a quasi-stationary disturbance. Irregular regimes such as random walk, stop-and-go, and teleport violate this condition, and a single instantaneous reading of v may briefly mislead α⋆ into a long execution that the next observation will contradict. We complement the closed-form operator with a stateful regime classifier that detects sustained instability rather than reacting to single-step transients. For each chunk reset at index t, the stabilizer reads only the velocity stream and computes a hard-thresholded direction-shift trigger τt = 1[ρgt (t) < 1/2] from the cosine similarity ρgt (t) = max(0 , v t · vt−1/(∥vt∥∥ vt−1∥)) , which fires when the disturbance direction shifts beyond the natural midpoint. The stabilizer cascades a slow outer EMA with a fast inner EMA. The outer estimates the chronic trigger rate, Ct = βout τt + (1 − βout )Ct−1, and feeds a Kalman-style sticky factor 
+
+st = Ct/(Ct + RTH ) that modulates the inner decay, 
+
+Lt =
+
+(βin + (1 − βin ) Lt−1, τt = 1 ,
+
+1 − βin (1 − st) Lt−1, τt = 0 .
+
+Under chronic instability ( st → 1) the inner state holds, while occasional triggers decay at the standard rate βin . The latch fires when Lt exceeds a threshold and caps the executed chunk length under sustained irregularity (cadence gate), 
+
+mt = 1[Lt > L th ], Kexec ≤ T / 4 when mt = 1 .
+
+51⃣ Static  
+
+> “Pick up the jar .”
+
+2⃣ —4⃣ Uniform Motion  5⃣ —7⃣ Accelerated Motion    
+
+> “Pick up the gelatin box .”
+> Velocity Trajectory Trajectory Velocity
+> 4–8
+> 2–4
+> 1–2
+> v = 0
+> 4–8
+> 2–4
+> 1–2
+
+🔟 Teleportation 
+
+> v = 0
+
+9⃣ Stop and Go 8⃣ Random Walk            
+
+> Trajectory Velocity
+> cm/s
+> cm/s
+> cm/s
+> cm/s 2
+> cm/s 2
+> cm/s 2
+> v
+> ₀
+> 5–9
+> 3–5
+> 2–3
+> v
+> ₀
+> 5–9
+> 3–5
+> 2–3
+> “Pick up the tuna fish can .”
+> Velocity Trajectory Trajectory Velocity Trajectory Velocity
+> “Pick up the lego brick .” “Pick up the foam brick .” “Pick up the baseball .”
+
+Figure 3: MOVE BENCH Overview. MOVE BENCH treats motion regimes as the primary evaluation axis, comprising 10,000 trajectories ( ∼460k frames) across 10 tasks with everyday household objects randomly sampled across regimes, spanning static, regular, and irregular motion patterns at multiple difficulty levels. All non-motion factors are held identical, isolating motion as the sole variable. The latch admits a single free hyperparameter, the inner EMA rate βin , while the outer EMA rate 
+
+βout = 1 − 2−K/T and the threshold Lth = RTH = βin (1 − βin )2 are derived from the chunk geometry by matching the outer EMA half-life to one chunk-budget cycle and calibrating Lth so that an isolated trigger sustains the latch for exactly two chunks. 
+
+## 4 Experiments 
+
+4.1 MOVE BENCH 
+
+We construct M OVE BENCH , a benchmark for systematically studying how VLA models behave across environment-motion patterns. Built on ManiSkill with the SAPIEN engine and illustrated in Fig. 3, M OVE BENCH centers on a pick task in which an xArm6 grasps objects of varied shapes, with only the target’s motion regime varying across all environments. The regimes form three families (uniform translation, accelerated motion, and irregular motion) plus a static control. Uniform and accelerated regimes are each graded over 3 difficulty levels (detailed in Appendix B). Higher difficulty shrinks the temporal window available to react. The irregular family covers three discrete event types (random walk, stop-and-go, and teleport), each at a single level, since they admit no continuous tunable scalar and instead probe regime-change response. Across the ten environments, each provides 1000 demonstrations, totaling 10K trajectories and ∼460K frames. By fixing the task, manipulator, and scene across environments, M OVE BENCH isolates motion as the sole evaluation axis. 
+
+4.2 Experimental Setup 
+
+We compare PPC against 8 baselines spanning 2 categories. The first category covers state-of-the-art foundational VLAs and general-purpose visuomotor policies trained on large-scale robot data. The second category covers training-free inference-time wrappers for chunked-action execution improvements and dynamic-focused methods. PPC is integrated as an inference-time wrapper on top of four foundational backbones as illustrated in Table 1, reusing each backbone’s released checkpoint without any retraining or architectural modification, while all foundational baselines are fine-tuned on M OVE BENCH demonstrations under their official recipes and dynamics-adaptive baselines follow 6Method Static Uniform Motion Accelerated Motion Irregular Motion Average                                                                                                                                                                                                            
+
+> Moving Accelerating Rand. Walk Stop & Go Teleport Dyn. Only All Easy Med. Hard Easy Med. Hard
+> Found.  Diffusion Policy [11] 75 56 60 21 43 28 17 63 50 56 43 .8±3.246 .9±3.1
+> GR00T N1.6 [12] 88 74 64 11 11 6167 35 67 37 .3±3.242 .4±3.1
+> SmolVLA [35] 81 76 57 27 41 33 13 53 40 44 42 .7±3.246 .5±3.1
+> π0[9] 82 81 63 30 44 30 22 60 43 51 47 .1±3.350 .6±3.1
+> π0.5[34] 80 85 78 34 58 43 29 54 48 60 54 .3±3.356 .9±3.1
+> Comp.  ACT [10] 82 79 77 19 69 50 30 53 48 147 .3±3.350 .8±3.1
+> BID [29] 79 80 75 29 57 50 33 68 51 48 54 .6±3.357 .0±3.1
+> DynamicVLA [3] 70 73 57 20 45 42 29 49 40 24 42 .1±3.244 .9±3.1
+> Ours  GR00T + PPC 88 ∗86 (+12%) 83 (+19%) 61 (+50%) 70 (+59%) 56 (+50%) 33 (+32%) 78 (+11%) 54 (+19%) 74 (+7%) 66 .1±3.1(+28.8%) 68 .3±2.9(+25.9%)
+> SmolVLA + PPC 81 ∗69 (−7%) 69 (+12%) 58 (+31%) 58 (+17%) 59 (+26%) 35 (+22%) 60 (+7%) 71 (+31%) 53 (+9%) 59 .1±3.2(+16.4%) 61 .3±3.0(+14.8%)
+> π0+ PPC 82 ∗86 (+5%) 76 (+13%) 67 (+37%) 73 (+29%) 65 (+35%) 57 (+35%) 71 (+11%) 67 (+24%) 52 (+1%) 68 .2±3.0(+21.1%) 69 .6±2.9(+19.0%)
+> π0.5+ PPC 80 ∗88 (+3%) 86 (+8%) 70 (+36%) 82 (+24%) 72 (+29%) 65 (+36%) 74 (+20%) 66 (+18%) 53 (−7%) 72.9 ±2.9(+18.6%) 73.6 ±2.7(+16.7%)
+
+Table 1: Success rate (%) on M OVE BENCH across all motion families. PPC delivers consistent improvements over every state-of-the-art foundational VLA, and PPC-equipped VLAs surpass all comparison baselines in success rate. The static column for PPC variants is marked with ∗ to indicate that PPC defaults to the underlying VLA when no environmental motion is present. Subscript ±
+
+values on aggregate columns denote 95% Clopper–Pearson confidence intervals over pooled trials. 
+
+Figure 4: (a) Per-family success rate of baseline VLAs versus their PPC-equipped counterparts, averaged across four foundational backbones. PPC yields the largest gain on accelerated motion (+32 .8). (b) Success rate as a function of physical speed and acceleration ranges. The gain from PPC grows monotonically with target speed in the uniform family while remaining consistently around 
+
++30 across the entire acceleration range. their original deployment protocols. We choose π0.5, the strongest foundational VLA, as ACT and BID’s backbone for fairness. 100 trials are conducted for each task, resulting in 1,000 trials for each method. PPC’s configuration is fixed throughout with T = 16 , K = 2 , and Stabilizer EMA rate 
+
+βin = 0 .3 (the single free knob), giving an inner-EMA half-life of ∼ 2 chunks under standard decay. 
+
+4.3 Main Results 
+
+Table 1 reports success rates across all ten M OVE BENCH environments. All foundational VLAs maintain strong static performance yet degrade sharply with increasing speed and acceleration, and neither chunk-level smoothing (ACT, BID) nor latency reduction (DynamicVLA) resolves this intra-chunk blindness. Three findings stand out. 
+
+PPC improves every foundational VLA across all motion families. Wrapping the four foundational VLAs with PPC raises their dynamic-only average by +16 .4 to +28 .8 absolute points, with the best-equipped variant ( π0.5+PPC) reaching 72 .9% on dynamic environments and 73 .6% overall. Since α⋆ → 1 and δ⋆k → 0 when v = 0 , PPC degenerates to the identity by construction, preserving the full static capability without additional computation, while consistently improving performance across both regular and irregular motion regimes. 
+
+The gain is largest where dynamics blindness is most severe. Fig. 4 (a) shows that PPC yields its largest per-family improvement on accelerated motion ( +32 .8 averaged across backbones), followed by uniform ( +18 .2) and irregular ( +12 .6). This ordering directly reflects the closed-form structure. The Fibonacci-profile δ channel is designed to absorb the perpendicular residual that accumulates under sustained acceleration, explaining the largest gain in that family. Uniform motion is largely handled by the pace channel alone, while irregular regimes receive smaller but still positive gains as the latch-regulated cadence gate partially compensates for the weakened quasi-stationarity assumption. Fig. 4 (b) further reveals that the PPC gain grows monotonically with target speed in the uniform family (peaking at +38 .5 at the hardest tier), while remaining consistently around +30 across the acceleration range, indicating that the second-order extension keeps pace with increasing acceleration. 7Figure 5: (a) Empirical sweep of βout peaks at the closed-form theoretical value βout = 1 −2−K/T ≈
+
+0.083 , validating the latch derivation. (b) Dynamic α from the closed-form cost outperforms any fixed compression factor, confirming the necessity of per-chunk adaptive compression. 
+
+PPC-equipped VLAs surpass all comparison baselines. Among the comparison methods, BID (57 .0% ) and ACT ( 50 .8% ) operate as inference-time wrappers on the same π0.5 backbone yet fall short of every PPC variant, confirming that refining chunk outputs without an external dynamics signal cannot resolve intra-chunk blindness. ACT’s near-zero teleport score ( 1% ) further demonstrates that a correction strategy mismatched to the motion regime can actively degrade performance below the uncorrected baseline, as temporal ensembling averages overlapping chunks so that a sudden object relocation causes stale actions to actively drag the end-effector toward the wrong position. DynamicVLA, despite being purpose-built for dynamic manipulation, underperforms even its backbone SmolVLA (further analyzed in Section 4.5). 
+
+4.4 Ablation Studies 
+
+Comprehensive ablation is conducted to verify the effectiveness and robustness of PPC’s components. All ablation experiments are performed on GR00T-N1.6+PPC across the dynamic environments of MOVE BENCH , with 100 rollouts per environment, matching the setting in Section 4.3.                                                          
+
+> Variant Unif. Accel. Irreg. Avg.
+> αw/o cos-θ68.7 (-8.0) 29.3 (-23.7) 74.7 (+6.0) 57.6 (-8.5)
+> Linear δ61.3 (-15.4) 23.3 (-29.7) 68.0 (-0.7) 50.9 (-15.2)
+> No αcomp. 46.0 (-30.7) 22.3 (-30.7) 45.0 (-23.7) 37.8 (-28.3)
+> δw/o ⊥proj. 68.7 (-8.0) 46.0 (-7.0) 64.3 (-4.4) 59.7 (-6.4)
+> No δoffsets 52.0 (-24.7) 9.3 (-43.7) 64.3 (-4.4) 41.9 (-24.2)
+> PPC (full) 76.7 53.0 68.7 66.1
+
+Table 2: Closed-form structural ablations. Re-moving or modifying any of the closed-form com-ponents consistently degrades performance, con-firming that all design choices are necessary. 
+
+Closed-form structural ablations. As shown in Table 2, all closed-form components are nec-essary, with every ablation falling below full PPC’s 66 .1% overall success. Removing the 
+
+α compression channel causes the largest col-lapse ( −28 .3 points), with near-uniform losses across all three motion families, confirming α as the dominant correction mechanism. Removing the δ offsets channel costs 24 .2 points overall but the loss is highly concentrated on acceler-ated motion (single-digit success) while irregu-lar regimes are barely affected, indicating that 
+
+α corrects globally while δ specifically absorbs the perpendicular drift accumulating under sus-tained acceleration. Removing the cos-θ projection in α shows the same directional split, hurting accelerated motion but slightly helping irregular regimes, since the unprojected formula yields a larger α that overshoots under consistent directional motion yet aids reactivity under rapidly-shifting directions. The Fibonacci profile and the ⊥ projection on δ contribute smaller but consistent gains, acting as shape-level refinements within the δ channel. 
+
+EMA Stabilizer Ablation. Disabling the latch costs 6.0 points overall (Uniform 74 .0↓2.7, Accel 
+
+45 .3↓7.7, Irregular 60 .7↓8.0, Avg 60 .0↓6.1), with the loss concentrated on irregular regimes and minimal on uniform motion. This asymmetry matches the latch’s role as a regime-instability detector, activating only when the closed-form’s quasi-stationarity assumption breaks down. 
+
+2nd -Order Channel Ablation. Removing the Lucas branch costs 3.4 points overall (Uniform 
+
+76 .3↓0.4, Accel 45 .7↓7.3, Irregular 66 .0↓2.7, Avg 62 .7↓3.4), with the loss concentrated on accelerated motion and negligible on uniform regimes, matching the Lucas branch’s role as a 2nd -order corrector. 80 0.1 0.3 0.5 1                                              
+
+> σv(rel. magnitude noise)
+> 0
+> 10
+> 20
+> 30
+> 45
+> σθ (deg, direction noise)
+> 64 66 62 57 52
+> 62 62 61 58 49
+> 60 58 56 52 50
+> 53 53 58 51 45
+> 46 47 46 45 40
+> Regular Motion — PPC SR (%)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Success rate (%) 00.1 0.3 0.5 1
+> σv(rel. magnitude noise)
+> 0
+> 10
+> 20
+> 30
+> 45
+> σθ (deg, direction noise)
+> 73 69 66 66 60
+> 67 67 70 69 64
+> 66 69 68 67 66
+> 63 68 70 67 64
+> 65 67 65 64 61
+> Irregular Motion — PPC SR (%)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Success rate (%)
+
+Figure 6: Robustness to perception noise. Success rate (%) under varying magnitude noise σv and directional noise σθ on the velocity signal. PPC remains above the bare baseline across all conditions. 
+
+βouter . theory validation As illustrated in Fig.5 (a), sweeping βout on irregular regimes (rand. walk and stop & go) yields a peak success rate of 68% at βout ≈ 0.08 , which closely matches the theoretical value 1 − 2−K/T ≈ 0.083 derived in Section 3. This empirical-theoretical alignment validates the closed-form derivation, confirming that βin is the only true free hyperparameter. 
+
+Dynamic vs. fix α. As illustrated in Fig.5 (b), the dynamic α derived from the closed-form cost reaches 66 .1% overall, surpassing every fixed setting by a clear margin. Among the static alternatives, 
+
+α = 4 and α = 6 peak at around 58% and degrade on either side. The collapse at α = 8 confirms that blindly accelerating execution catches up to target speed at the cost of fine-grained control, where only the per-chunk adaptive α from the closed-form derivation balances the two. 
+
+Robustness to perception noise As illustrated in Fig. 6, we inject synthetic magnitude noise σv and directional noise σθ to simulate the error of real-world tracking hardware. Across all noise conditions, averaged over the six regular-motion environments and the three irregular-motion environments, PPC never falls below the corresponding bare-backbone baseline. Under noise levels typical of depth-camera and visual-tracker pipelines ( σv ≤ 0.3, σθ ≤ 20 ), the correction operator retains the majority of its oracle-signal gains, confirming robustness sufficient for potential physical deployment. 
+
+4.5 Analysis Latency is not the only bottleneck for dynamic manipulation. DynamicVLA achieves the lowest inference latency among all methods via its compact 0.4B architecture, yet scores only 44 .9% on MOVE BENCH , below even the much slower π0.5 (56 .9% ). This inversion shows that the dominant failure mode is not how often the policy re-plans, but that each chunk remains blind to motion during its execution window. Its static score ( 70% ) also regresses from its backbone SmolVLA (81% ), confirming that indiscriminate high-frequency re-inference disrupts inter-chunk coherence even absent any dynamic demand. 
+
+Motion regime matters more than motion speed. Across all foundational VLAs, accelerated motion causes the steepest performance collapse despite its physical speed often being lower than the hardest uniform tier, because acceleration accumulates drift nonlinearly within a chunk. Irregular regimes further reveal that even moderate-speed motion becomes challenging when its direction is unpredictable. These patterns would be invisible in benchmarks that only vary speed along a single motion type, validating M OVE BENCH ’s design of isolating regime as a first-class evaluation axis. 
+
+Intra-chunk compensation scales with difficulty. Fig. 4 shows that PPC’s gain over the bare backbone grows monotonically with target speed, reaching +38 .5 at the hardest uniform tier, and remains consistently around +30 across the entire acceleration range. This scaling confirms that the closed-form correction absorbs progressively larger disturbances without saturating, and that explicit intra-chunk compensation is the effective lever for dynamic manipulation. 
+
+## 5 Conclusion 
+
+We present Pace-and-Path Correction (PPC), a closed-form, training-free, inference-time wrapper that explicitly compensates for environment dynamics in chunked-action VLAs. By decomposing the 9per-chunk correction objective into orthogonal pace and path channels, PPC introduces no learnable parameters and remains backbone-agnostic, deployable on top of any released VLA without retraining or architectural modification. We further introduce M OVE BENCH , a benchmark that isolates motion regime as the sole evaluation axis for systematically studying chunked-VLA behavior under diverse motion patterns. Extensive experiments demonstrate that PPC consistently improves foundational VLAs and outperforms state-of-the-art dynamic-adaptive methods. Future work includes validating PPC with learned tracking pipelines and extending the formulation to multi-object dynamic scenes and manipulation primitives beyond pick. 
+
+## References 
+
+[1] Yifan Zhang, Ruiping Wang, and Xilin Chen. Dynamic behavior cloning with temporal feature prediction: Enhancing robotic arm manipulation in moving object tasks. IEEE Robotics and Automation Letters , 10:5209–5216, 2025. [2] Heng Fang, Shangru Li, Shuhang Wang, Xuan Xi, Dingkang Liang, and Xiang Bai. Towards generalizable robotic manipulation in dynamic environments. 2026. [3] Haozhe Xie, Beichen Wen, Jia Zheng, Zhaoxi Chen, Fangzhou Hong, Haiwen Diao, and Ziwei Liu. Dynamicvla: A vision-language-action model for dynamic object manipulation. ArXiv ,abs/2601.22153, 2026. [4] Yafei Hu, Quanting Xie, Vidhi Jain, Jonathan Francis, Jay Patrikar, Nikhil Varma Keetha, Seungchan Kim, Yaqi Xie, Tianyi Zhang, Shibo Zhao, Yu Quan Chong, Chen Wang, Katia P. Sycara, Matthew Johnson-Roberson, Dhruv Batra, Xiaolong Wang, Sebastian Scherer, Zsolt Kira, Fei Xia, and Yonatan Bisk. Toward general-purpose robots via foundation models: A survey and meta-analysis. ArXiv , abs/2312.08782, 2023. [5] Yueen Ma, Zixing Song, Yuzheng Zhuang, Jianye Hao, and Irwin King. A survey on vision-language-action models for embodied ai. ArXiv , abs/2405.14093, 2024. [6] Octo Model Team, Dibya Ghosh, Homer Rich Walke, Karl Pertsch, Kevin Black, Oier Mees, Sudeep Dasari, Joey Hejna, Tobias Kreiman, Charles Xu, Jianlan Luo, You Liang Tan, Pannag R. Sanketi, Quan Vuong, Ted Xiao, Dorsa Sadigh, Chelsea Finn, and Sergey Levine. Octo: An open-source generalist robot policy. ArXiv , abs/2405.12213, 2024. [7] Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Krzysztof Choromanski, Tianli Ding, Danny Driess, Kumar Avinava Dubey, Chelsea Finn, Peter R. Florence, Chuyuan Fu, Montse Gonzalez Arenas, Keerthana Gopalakrishnan, Kehang Han, Karol Hausman, Alexan-der Herzog, Jasmine Hsu, Brian Ichter, Alex Irpan, Nikhil J. Joshi, Ryan C. Julian, Dmitry Kalashnikov, Yuheng Kuang, Isabel Leal, Sergey Levine, Henryk Michalewski, Igor Mordatch, Karl Pertsch, Kanishka Rao, Krista Reymann, Michael S. Ryoo, Grecia Salazar, Pannag R. Sanketi, Pierre Sermanet, Jaspiar Singh, Anikait Singh, Radu Soricut, Huong Tran, Vincent Vanhoucke, Quan Ho Vuong, Ayzaan Wahid, Stefan Welker, Paul Wohlhart, Ted Xiao, Tianhe Yu, and Brianna Zitkovich. Rt-2: Vision-language-action models transfer web knowledge to robotic control. ArXiv , abs/2307.15818, 2023. [8] Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan Paul Foster, Grace Lam, Pannag R. Sanketi, Quan Vuong, Thomas Kollar, Benjamin Burchfiel, Russ Tedrake, Dorsa Sadigh, Sergey Levine, Percy Liang, and Chelsea Finn. Openvla: An open-source vision-language-action model. ArXiv , abs/2406.09246, 2024. [9] Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom, Karol Hausman, Brian Ichter, Szymon Jakubczak, Tim Jones, Liyiming Ke, Sergey Levine, Adrian Li-Bell, Mohith Mothukuri, Suraj Nair, Karl Pertsch, Lucy Xiaoyang Shi, James Tanner, Quan Vuong, Anna Walling, Haohuan Wang, and Ury Zhilinsky. π0: A vision-language-action flow model for general robot control. ArXiv , abs/2410.24164, 2024. [10] Tony Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained bimanual manipulation with low-cost hardware. ArXiv , abs/2304.13705, 2023. 10 [11] Cheng Chi, Siyuan Feng, Yilun Du, Zhenjia Xu, Eric Cousineau, Benjamin Burchfiel, and Shu-ran Song. Diffusion policy: Visuomotor policy learning via action diffusion. The International Journal of Robotics Research , 44:1684 – 1704, 2023. [12] Nvidia, Johan Bjorck, Fernando Castañeda, Nikita Cherniadev, Xingye Da, Runyu Ding, LinxiJimFan, Yu Fang, Dieter Fox, Fengyuan Hu, Spencer Huang, Joel Jang, Zhenyuan Jiang, Jan Kautz, Kaushil Kundalia, Lawrence Lao, Zhiqi Li, Zongyu Lin, Kevin Lin, Guilin Liu, Edith Llontop, Loic Magne, Ajay Mandlekar, Avnish Narayan, Soroush Nasiriany, Scott Reed, You Liang Tan, Guanzhi Wang, Zu Wang, Jing Wang, Qi Wang, Jiannan Xiang, Yuqi Xie, Yinzhen Xu, Zhen-Teng Xu, Seonghyeon Ye, Zhiding Yu, Ao Zhang, Hao Zhang, Yizhou Zhao, Ruijie Zheng, and Yuke Zhu. Gr00t n1: An open foundation model for generalist humanoid robots. ArXiv , abs/2503.14734, 2025. [13] Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qian Liu, Yuke Zhu, and Peter Stone. Libero: Benchmarking knowledge transfer for lifelong robot learning. ArXiv , abs/2306.03310, 2023. [14] Oier Mees, Lukás Hermann, Erick Rosete-Beas, and Wolfram Burgard. Calvin: A benchmark for language-conditioned policy learning for long-horizon robot manipulation tasks. IEEE Robotics and Automation Letters , 7:7327–7334, 2021. [15] Zhide Zhong, Haodong Yan, Junfeng Li, Xiangcheng Liu, Xin Gong, Tianran Zhang, Wenx-uan Song, Jiayi Chen, Xinhu Zheng, Hesheng Wang, and Haoang Li. Flowvla: Visual chain of thought-based motion reasoning for vision-language-action models. arXiv preprint arXiv:2508.18269 , 2025. [16] Yu Fang, Kanchana Ranasinghe, Le Xue, Honglu Zhou, Juntao Tan, Ran Xu, Shelby Heinecke, Caiming Xiong, Silvio Savarese, Danielle Albers Szafir, Mingyu Ding, Michael S. Ryoo, and Juan Carlos Niebles. Robotic vla benefits from joint learning with motion image diffusion. 
+
+ArXiv , abs/2512.18007, 2025. [17] Ruijie Zheng, Yongyuan Liang, Shuaiyi Huang, Jianfeng Gao, Hal Daum’e, Andrey Kolobov, Furong Huang, and Jianwei Yang. Tracevla: Visual trace prompting enhances spatial-temporal awareness for generalist robotic policies. ArXiv , abs/2412.10345, 2024. [18] Hao Shi, Bin Xie, Yingfei Liu, Lin Sun, Feng Liu, Tiancai Wang, Erjin Zhou, Haoqiang Fan, Xiangyu Zhang, and Gao Huang. Memoryvla: Perceptual-cognitive memory in vision-language-action models for robotic manipulation. ArXiv , abs/2508.19236, 2025. [19] Wenyao Zhang, Hongsi Liu, Zekun Qi, Yunnan Wang, Xinqiang Yu, Jiazhao Zhang, Runpei Dong, Jiawei He, He Wang, Zhizheng Zhang, Li Yi, Wenjun Zeng, and Xin Jin. Dreamvla: A vision-language-action model dreamed with comprehensive world knowledge. ArXiv ,abs/2507.04447, 2025. [20] Jun Cen, Chaohui Yu, Hangjie Yuan, Yuming Jiang, Siteng Huang, Jiayan Guo, Xin Li, Yibing Song, Hao Luo, Fan Wang, Deli Zhao, and Hao Chen. Worldvla: Towards autoregressive action world model. ArXiv , abs/2506.21539, 2025. [21] Jiahui Zhang, Yurui Chen, Yueming Xu, Ze Huang, Yanpeng Zhou, Yuan Yuan, Xinyue Cai, Guowei Huang, Xingyue Quan, Hang Xu, and Li Zhang. 4d-vla: Spatiotemporal vision-language-action pretraining with cross-scene calibration. ArXiv , abs/2506.22242, 2025. [22] Kohei Sendai, Maxime Alvarez, Tatsuya Matsushima, Yutaka Matsuo, and Yusuke Iwasawa. Leave no observation behind: Real-time correction for vla action chunks. ArXiv , abs/2509.23224, 2025. [23] Zhennan Jiang, Shan Zhou, Yutong Jiang, Zefang Huang, Mingjie Wei, Yuhui Chen, Tianxing Zhou, Zhen Guo, Hao Lin, Quanlu Zhang, Yu Wang, Haoran Li, Chao Yu, and Dongbin Zhao. Wovr: World models as reliable simulators for post-training vla policies with rl. ArXiv ,abs/2602.13977, 2026. [24] Hongyan Zhi, Peihao Chen, Siyuan Zhou, Dongjie Yu, Quanxi Wu, Lei Han, and Mingkui Tan. 3dflowaction: Learning cross-embodiment manipulation from 3d flow world model. ArXiv ,abs/2506.06199, 2025. 11 [25] Motonari Kambara, Koki Seno, Tomoya Kaichi, Yanan Wang, and Komei Sugiura. Lilac: Language-conditioned object-centric optical flow for open-loop trajectory generation. IEEE Robotics and Automation Letters , 11:6767–6774, 2026. [26] Wenxuan Song, Jiayi Chen, Pengxiang Ding, Han Zhao, Wei Zhao, Zhide Zhong, Zongyuan Ge, Jun Ma, and Haoang Li. Pd-vla: Accelerating vision-language-action model integrated with action chunking via parallel decoding. 2025 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pages 13162–13169, 2025. [27] Yicheng Liu, Shiduo Zhang, Zibin Dong, Baijun Ye, Tianyuan Yuan, Xiaopeng Yu, Linqi Yin, Chenhao Lu, Junhao Shi, Luca Jiang-Tao Yu, Liangtao Zheng, Tao Jiang, Jingjing Gong, Xipeng Qiu, and Hang Zhao. Faster: Toward efficient autoregressive vision language action modeling via neural action tokenization. ArXiv , abs/2512.04952, 2025. [28] Kevin Black, Manuel Y. Galliker, and Sergey Levine. Real-time execution of action chunking flow policies. ArXiv , abs/2506.07339, 2025. [29] Yuejiang Liu, Jubayer Ibn Hamid, Annie Xie, Yoonho Lee, Maximilian Du, and Chelsea Finn. Bidirectional decoding: Improving action chunking via guided test-time sampling. In 
+
+International Conference on Learning Representations , 2024. [30] Qingpeng Wen, Haomin Zhu, Yuepeng Zhang, Linzhong Xia, Bo Gao, and Zhuozhen Li. Adaptive action chunking for robotic imitation learning. Biomimetics , 2026. [31] Zhiyu Huang, Yun Zhang, Johnson Liu, Rui Song, Chen Tang, and Jiaqi Ma. Tic-vla: A think-in-control vision-language-action model for robot navigation in dynamic environments. 
+
+ArXiv , abs/2602.02459, 2026. [32] Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Joseph Dabis, Chelsea Finn, Keerthana Gopalakrishnan, Karol Hausman, Alexander Herzog, Jasmine Hsu, Julian Ibarz, Brian Ichter, Alex Irpan, Tomas Jackson, Sally Jesmonth, Nikhil J. Joshi, Ryan C. Julian, Dmitry Kalashnikov, Yuheng Kuang, Isabel Leal, Kuang-Huei Lee, Sergey Levine, Yao Lu, Utsav Malla, Deeksha Manjunath, Igor Mordatch, Ofir Nachum, Carolina Parada, Jodilyn Peralta, Emily Perez, Karl Pertsch, Jornell Quiambao, Kanishka Rao, Michael S. Ryoo, Grecia Salazar, Pannag R. Sanketi, Kevin Sayed, Jaspiar Singh, Sumedh Anand Sontakke, Austin Stone, Clayton Tan, Huong Tran, Vincent Vanhoucke, Steve Vega, Quan Ho Vuong, F. Xia, Ted Xiao, Peng Xu, Sichun Xu, Tianhe Yu, and Brianna Zitkovich. Rt-1: Robotics transformer for real-world control at scale. ArXiv , abs/2212.06817, 2022. [33] Abhishek Padalkar, Acorn Pooley, Ajinkya Jain, Alex Bewley, Alex Herzog, Alex Irpan, Alexander Khazatsky, Anant Rai, Anikait Singh, Anthony Brohan, Antonin Raffin, Ayzaan Wahid, Ben Burgess-Limerick, Beomjoon Kim, Bernhard Schölkopf, Brian Ichter, Cewu Lu, Charles Xu, Chelsea Finn, Chenfeng Xu, Cheng Chi, Chenguang Huang, Christine Chan, Chuer Pan, Chuyuan Fu, Coline Devin, Danny Driess, Deepak Pathak, Dhruv Shah, Dieter Büchler, Dmitry Kalashnikov, Dorsa Sadigh, Edward Johns, Federico Ceola, Fei Xia, Freek Stulp, Gaoyue Zhou, Gaurav S. Sukhatme, Gautam Salhotra, Ge Yan, Giulio Schiavi, Hao Su, Haoshu Fang, Haochen Shi, Heni Ben Amor, Henrik I Christensen, Hiroki Furuta, Homer Rich Walke, Hongjie Fang, Igor Mordatch, Ilija Radosavovic, Isabel Leal, Jacky Liang, Jaehyung Kim, Jan Schneider, Jasmine Hsu, Jeannette Bohg, Jeff Bingham, Jiajun Wu, Jialin Wu, Jiankai Sun, Jianlan Luo, Jiayuan Gu, Jie Tan, Jihoon Oh, Jitendra Malik, Jonathan Tompson, Jonathan Yang, Joseph J. Lim, João Silvério, Junhyek Han, Kanishka Rao, Karl Pertsch, Karol Hausman, Keegan Go, Keerthana Gopalakrishnan, Ken Goldberg, Kendra Byrne, Kenneth Oslund, Kento Kawaharazuka, Kevin Zhang, Keyvan Majd, Krishan Rana, Krishna Parasuram Srinivasan, Lawrence Yunliang Chen, Lerrel Pinto, Liam Tan, Lionel Ott, Lisa Lee, Masayoshi Tomizuka, Maximilian Du, Michael Ahn, Mingtong Zhang, Mingyu Ding, Mohan Kumar Srirama, Mohit Sharma, Moo Jin Kim, Muhammad Zubair Irshad, Naoaki Kanazawa, Nicklas Hansen, Nicolas Manfred Otto Heess, Nikhil J. Joshi, Niko Suenderhauf, Norman Di Palo, Nur Muhammad Shafi-ullah, Oier Mees, Oliver Kroemer, Pannag R. Sanketi, Paul Wohlhart, Peng Xu, Pierre Sermanet, Priya Sundaresan, Quan Ho Vuong, Rafael Rafailov, Ran Tian, Ria Doshi, Russell Mendonca, Rutav Shah, Ryan Hoque, Ryan C. Julian, Samuel Bustamante, Sean Kirmani, Sergey Levine, Sherry Moore, Shikhar Bahl, Shivin Dass, Shuran Song, Sichun Xu, Siddhant Haldar, Simeon Adebola, Simon Guist, Soroush Nasiriany, Stefan Schaal, Stefan Welker, Stephen Tian, Sudeep 12 Dasari, Suneel Belkhale, Takayuki Osa, Tatsuya Harada, Tatsuya Matsushima, Ted Xiao, Tianhe Yu, Tianli Ding, Todor Davchev, Tony Zhao, Travis Armstrong, Trevor Darrell, Vidhi Jain, Vincent Vanhoucke, Wei Zhan, Wenxuan Zhou, Wolfram Burgard, Xi Chen, Xiaolong Wang, Xinghao Zhu, Xuanlin Li, Yao Lu, Yevgen Chebotar, Yifan Zhou, Yifeng Zhu, Ying Xu, Yixuan Wang, Yonatan Bisk, Yoonyoung Cho, Youngwoon Lee, Yuchen Cui, Yueh-Hua Wu, Yujin Tang, Yuke Zhu, Yunzhu Li, Yusuke Iwasawa, Yutaka Matsuo, Zhuo Xu, and Zichen Jeff Cui. Open x-embodiment: Robotic learning datasets and rt-x models : Open x-embodiment collaboration0. 
+
+2024 IEEE International Conference on Robotics and Automation (ICRA) , pages 6892–6903, 2023. [34] Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Manuel Y. Galliker, Dibya Ghosh, Lachy Groom, Karol Hausman, Brian Ichter, Szymon Jakubczak, Tim Jones, Liyiming Ke, Devin LeBlanc, Sergey Levine, Adrian Li-Bell, Mohith Mothukuri, Suraj Nair, Karl Pertsch, Allen Z. Ren, Lucy Xiaoyang Shi, Laura Smith, Jost Tobias Springenberg, Kyle Stachowicz, James Tanner, Quan Vuong, Homer Rich Walke, Anna Walling, Haohuan Wang, Lili Yu, and Ury Zhilinsky. π0.5: a vision-language-action model with open-world generalization. ArXiv ,abs/2504.16054, 2025. [35] Mustafa Shukor, Dana Aubakirova, Francesco Capuano, Pepijn Kooijmans, Steven Palma, Adil Zouitine, Michel Aractingi, Caroline Pascal, Martino Russi, Andrés Marafioti, Simon Alibert, Matthieu Cord, Thomas Wolf, and Rémi Cadène. Smolvla: A vision-language-action model for affordable and efficient robotics. ArXiv , abs/2506.01844, 2025. [36] Jiaming Liu, Hao Chen, Pengju An, Zhuoyang Liu, Renrui Zhang, Chenyang Gu, Xiaoqi Li, Ziyu Guo, Sixiang Chen, Mengzhen Liu, Chengkai Hou, Mengdi Zhao, KC alex Zhou, Pheng-Ann Heng, and Shanghang Zhang. Hybridvla: Collaborative diffusion and autoregression in a unified vision-language-action model. ArXiv , abs/2503.10631, 2025. [37] Songming Liu, Lingxuan Wu, Bangguo Li, Hengkai Tan, Huayu Chen, Zhengyi Wang, Ke Xu, Hang Su, and Jun Zhu. Rdt-1b: a diffusion foundation model for bimanual manipulation. ArXiv ,abs/2410.07864, 2024. [38] Thomas T. Zhang, Daniel Pfrommer, Chaoyi Pan, Nikolai Matni, and Max Simchowitz. Action chunking and exploratory data collection yield exponential improvements in behavior cloning for continuous control. 2025. URL https://api.semanticscholar.org/CorpusID: 280254015 .[39] Tongzhou Mu, Z. Ling, Fanbo Xiang, Derek Yang, Xuanlin Li, Stone Tao, Zhiao Huang, Zhiwei Jia, and Hao Su. Maniskill: Generalizable manipulation skill benchmark with large-scale demonstrations. In NeurIPS Datasets and Benchmarks , 2021. [40] Jiayuan Gu, Fanbo Xiang, Xuanlin Li, Z. Ling, Xiqiang Liu, Tongzhou Mu, Yihe Tang, Stone Tao, Xinyue Wei, Yuan Yao, Xiao Yuan, Pengwei Xie, Zhiao Huang, Rui Chen, and Hao Su. Maniskill2: A unified benchmark for generalizable manipulation skills. ArXiv , abs/2302.04659, 2023. [41] Soroush Nasiriany, Abhiram Maddukuri, Lance Zhang, Adeet Parikh, Aaron Lo, Abhishek Joshi, Ajay Mandlekar, and Yuke Zhu. Robocasa: Large-scale simulation of everyday tasks for generalist robots. ArXiv , abs/2406.02523, 2024. [42] Shiduo Zhang, Zhe Xu, Peiju Liu, Xiaopeng Yu, Yuan Li, Qinghui Gao, Zhaoye Fei, Zhangyue Yin, Zuxuan Wu, Yu-Gang Jiang, and Xipeng Qiu. Vlabench: A large-scale benchmark for language-conditioned robotics manipulation with long-horizon reasoning tasks. 2025 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 11142–11152, 2024. [43] Ben Burgess-Limerick, Christopher F. Lehnert, J. Leitner, and Peter Corke. Dgbench: An open-source, reproducible benchmark for dynamic grasping. 2022 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pages 3218–3224, 2022. [44] Mariam Hassan, Sebastian Stapf, Ahmad Rahimi, Pedro Martelleto Bressane Rezende, Yasaman Haghighi, David Brüggemann, Isinsu Katircioglu, Lin Zhang, Xiaoran Chen, Suman Saha, 13 Marco Cannici, Elie Aljalbout, Botao Ye, Xi Wang, Aram Davtyan, Mathieu Salzmann, Davide Scaramuzza, Marc Pollefeys, Paolo Favaro, and Alexandre Alahi. Gem: A generalizable ego-vision multimodal world model for fine-grained ego-motion, object dynamics, and scene composition control. 2025 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 22404–22415, 2024. [45] Xinkai Wang, Chenyi Wang, Yifu Xu, Ming Ye, Fugang Zhang, Jialin Tian, Xinyu Zhan, Lifeng Zhu, Cewu Lu, and Lixin Yang. Lamp: Learning vision-language-action policies with 3d scene flow as latent motion prior. 2026. [46] Jingjing Fan, Yushan Liu, Shoujie Li, Botao Ren, Siyuan Li, Xiao-Ping Zhang, Wenbo Ding, and Zhidong Deng. Future-vla: Forecasting unified trajectories under real-time execution. 
+
+ArXiv , abs/2602.15882, 2026. [47] Chen-Yu Liu, Wentao Tan, Lei Zhu, Fengling Li, Jingjing Li, Guoli Yang, and Heng Tao Shen. Self-correcting vla: Online action refinement via sparse world imagination. ArXiv ,abs/2602.21633, 2026. [48] Siyu Xu, Yunke Wang, Chenghao Xia, Di Zhu, Tao Huang, and Chang Xu. Vla-cache: Efficient vision-language-action manipulation via adaptive token caching. 2025. [49] Xudong Tan, Yaoxin Yang, Peng Ye, Jiali Zheng, Bizhe Bai, Xinyi Wang, Jia Hao, and Tao Chen. Think twice, act once: Token-aware compression and action reuse for efficient inference in vision-language-action models. ArXiv , abs/2505.21200, 2025. [50] Zhixuan Liang, Yizhuo Li, Tianshuo Yang, Chengyue Wu, Sitong Mao, Tian Nian, Liuao Pei, Shunbo Zhou, Xiaokang Yang, Jiangmiao Pang, et al. Discrete diffusion vla: Bring-ing discrete diffusion to action decoding in vision-language-action policies. arXiv preprint arXiv:2508.20072 , 2025. [51] Jianke Zhang, Yanjiang Guo, Xiaoyu Chen, Yen-Jen Wang, Yucheng Hu, Chengming Shi, and Jianyu Chen. Hirt: Enhancing robotic control with hierarchical robot transformers. arXiv preprint arXiv:2410.05273 , 2024. [52] Kevin Black, Allen Z. Ren, Michael Equi, and Sergey Levine. Training-time action conditioning for efficient real-time chunking. ArXiv , abs/2512.05964, 2025. [53] Yufeng Liu, Hang Yu, Juntu Zhao, Bocheng Li, Di Zhang, Ming-Zhe Li, Wenxuan Wu, Ying-dong Hu, Junyuan Xie, Junliang Guo, Dequan Wang, and Yang Gao. Learning native continua-tion for action chunking flow policies. ArXiv , abs/2602.12978, 2026. 
+
+## A Full Closed-Form Mathematical Derivation 
+
+This appendix provides the complete mathematical derivation of the Pace-and-Path Correction operator summarized in Sections 3. All results are derived from the single quadratic cost introduced in Section 3.1; no additional assumptions beyond A1–A3 (stated below) are introduced. 
+
+A.1 Assumptions 
+
+Three working assumptions underlie the derivation: 
+
+A1. Quasi-stationary plan. The per-step delta ∆pi ≈ ∆p is approximately constant within the executed chunk window i = 0 , . . . , K − 1.
+
+A2. Slowly-varying disturbance. The velocity v and direction ˆd are approximately constant over the K executed env-steps (relaxed to affine variation in Section A.8). 
+
+A3. Small rotation. Per-step rotations are small enough that xyz deltas are additive across env-steps. All three degrade gracefully: violations reduce the accuracy of the optimum but do not destabilize the operator, since the chunk boundary refresh resets all signals. 14 A.2 Cost Function 
+
+Under A1, the corrected delta at env-step k is uk = α∆p + δk with α ≥ 1 and δk ∈ R3. The cumulative arm position is pj = Pj−1 
+
+> k=0
+
+uk = jα ∆p + σj where σj := Pj−1 
+
+> k=0
+
+δk. The ideal tracking trajectory under disturbance (v, ˆd) is ˜pj = j(∆ p + v ˆd). The cost balances per-waypoint tracking against per-step offset effort: 
+
+L(α, {δk}) = 12
+
+> K
+
+X
+
+> j=1
+
+∥pj − ˜pj ∥2 + 12
+
+> K−1
+
+X
+
+> k=0
+
+∥δk∥2. (1) The penalty is on δk only, not on α, because α moves the arm along the planned direction (temporal compression with no directional deviation), whereas δk introduces off-plan spatial offset. This asymmetry is the unique choice satisfying three invariants simultaneously: (i) uniqueness of the optimum, (ii) degeneracy to the baseline VLA at v = 0 , and (iii) the cosine projection structure in α⋆.
+
+A.3 Reduced Quantities and Stationarity Conditions 
+
+Define the residual disturbance A := v ˆd − (α − 1)∆ p. The tracking error simplifies to 
+
+ej := pj − ˜pj = −jA + σj , j = 1 , . . . , K. (2) Setting ∂L/∂α = 0 and ∂L/∂δ k = 0 yields the joint stationarity conditions: 
+
+∂L ∂α = −∆p ·
+
+> K
+
+X
+
+> j=1
+
+j e j = 0 , (3) 
+
+∂L ∂δ k
+
+= δk +
+
+> K
+
+X
+
+> j=k+1
+
+ej = 0 , k = 0 , . . . , K − 1. (4) 
+
+A.4 Derivation of α⋆ (Pace Channel) 
+
+The cost (1) is rotationally invariant in R3. At the optimum, every δk inherits the direction of A:
+
+δk = ckA for some scalar ck. Consequently σj and ej are parallel to A, so P 
+
+> j
+
+j e j is also parallel to 
+
+A. Condition (3) then collapses to 
+
+∆p · A = 0 . (5) Expanding A = v ˆd − (α − 1)∆ p:
+
+∆p ·  v ˆd − (α − 1)∆ p = 0 =⇒ (α − 1) ∥∆p∥2 = v ( ˆd · ∆p) = v∥∆p∥ cos θ, (6) where cos θ := ˆd · c∆p. Solving: 
+
+α⋆ = 1 + v cos θ
+
+∥∆p∥ . (7) Substituting α⋆ back into A yields the orthogonal residual: 
+
+A⋆ = v ˆd − v cos θ c∆p = v ˆd⊥, (8) which lies entirely perpendicular to the planned direction c∆p.
+
+Clamping. The physical constraint α ≥ 1 is violated when cos θ < 0 (antagonistic motion). In this case α⋆ is clamped to 1, and the full disturbance v ˆd passes to the path channel. When α⋆ > T /K 
+
+(exceeds the chunk budget), the dynamic execution horizon Kexec absorbs the overflow (Section A.9). 15 A.5 Derivation of δ⋆k (Path Channel, Fibonacci Profile) 
+
+The path channel handles A⋆, which α⋆ cannot absorb. Differencing condition (4) in k and using 
+
+σj+1 − σj = δj yields the 2D linear recurrence 
+
+δk+1 
+
+ek+1 
+
+
+
+=
+
+2 11 1
+
+| {z }
+
+> M
+
+δk
+
+ek
+
+
+
+−
+
+A⋆
+
+A⋆
+
+
+
+, (9) with boundary conditions e0 = 0 and δK = 0 .
+
+Eigenstructure. The companion matrix M has characteristic polynomial λ2 − 3λ + 1 = 0 , yielding eigenvalues 
+
+λ± = 3 ± √52 = φ±2, φ = 1 + √52 (golden ratio) . (10) 
+
+Particular solution. Setting δk+1 = δk =: δp and ek+1 = ek =: ep in (9) gives (δp, e p) = ( A⋆, 0) .
+
+Homogeneous solution. The eigenvectors of M are w+ = ( φ, 1) ⊤ and w− = (1 , −φ)⊤. The general solution is δk
+
+ek
+
+
+
+=
+
+A⋆
+
+0
+
+
+
++ c+φ2k
+
+φ
+
+1
+
+
+
++ c−φ−2k
+
+ 1
+
+−φ
+
+
+
+. (11) 
+
+Boundary conditions. From e0 = 0 : c+ − φ c − = 0 , so c+ = φ c −. From δK = 0 :
+
+A⋆ + c−
+
+ φ2K+1 + φ−2K  = 0 . (12) Applying the identity φn + ( −φ)−n = √5 Fn for odd n (where Fn is the n-th Fibonacci number with F1 = F2 = 1 ), we obtain 
+
+φ2K+1 + φ−(2 K+1) = √5 F2K+1 , (13) noting that φ−2K = ( −1) 2K φ−2K = φ−2K and adjusting signs gives c− = −A⋆/(√5 F2K+1 ).Substituting back and collecting: 
+
+δ⋆k =
+
+
+
+1 − F2k+1 
+
+F2K+1 
+
+
+
+A⋆, k = 0 , . . . , K − 1. (14) 
+
+Profile properties. The Fibonacci ratio F2k+1 /F 2K+1 increases monotonically in k from 
+
+F1/F 2K+1 = 1 /F 2K+1 ≈ 0 to F2K−1/F 2K+1 → φ−2 ≈ 0.382 as K → ∞ . Thus δ⋆ 
+
+> 0
+
+≈ A⋆
+
+(near-full compensation at chunk start), decaying to δ⋆K−1 ≈ 0.618 A⋆, with the terminal condition 
+
+δ⋆K = 0 enforcing closure at the chunk boundary. 
+
+Verification. For K = 2 : F5 = 5 , giving δ⋆ 
+
+> 0
+
+= (1 −1/5) A⋆ = 45 A⋆ and δ⋆ 
+
+> 1
+
+= (1 −3/5) A⋆ = 25 A⋆.Direct substitution into (4) confirms both conditions are satisfied. 
+
+A.6 Orthogonal Decomposition 
+
+The two channels act on disjoint subspaces: α⋆ absorbs v cos θ c∆p (the component of v ˆd parallel to 
+
+∆p), while δ⋆k absorbs A⋆ = v ˆd⊥ (the perpendicular residual). The channels do not interact in each other’s closed forms; both are fully determined by the chunk geometry (∆ p, K ) and the dynamics signal (v, ˆd).
+
+A.7 General λ-Regularization 
+
+Replacing the unit weight on the effort term with a general λ > 0:
+
+Lλ = 12
+
+> K
+
+X
+
+> j=1
+
+∥ej ∥2 + λ
+
+2
+
+> K−1
+
+X
+
+> k=0
+
+∥δk∥2. (15) 16 α⋆ is λ-independent. The factor λ multiplies only the δ-effort term. Since the rotation-invariance argument still forces δk ∥ A and hence ∆p · A = 0 , the α⋆ formula (7) holds unchanged for all 
+
+λ > 0.
+
+δ⋆k (λ) in hyperbolic cosine form. The modified recurrence becomes 
+
+δk+1 
+
+ek+1 
+
+
+
+=
+
+1 + 1 /λ 1/λ 
+
+1 1
+
+  δk
+
+ek
+
+
+
++
+
+−A⋆/λ 
+
+−A⋆
+
+
+
+. (16) The eigenvalues μ± satisfy μ + μ−1 = 2 + 1 /λ , giving μ+ = eω(λ) with 
+
+ω(λ) = arccosh 
+
+
+
+1 + 12λ
+
+
+
+. (17) Solving under the same boundary conditions: 
+
+δ⋆k (λ) = 1 − cosh  (k + 12 ) ω
+
+cosh  (K + 12 ) ω!
+
+A⋆. (18) 
+
+Limiting cases. 
+
+• λ = 1 : ω = 2 ln φ, and cosh((2 k+1) ln φ) = √52 F2k+1 , recovering the Fibonacci pro-file (14). • λ → 0: ω → ∞ , so δ⋆k → A⋆ for all k < K (no penalty, full compensation). • λ → ∞ : ω → 0, so δ⋆k → 0 (high penalty, no spatial offset). In practice, λ is driven by the Bayesian confidence signal Kkal (Section 3) via λ = 1 /K kal , so uncertain observations ( Kkal → 0) automatically suppress spatial offsets while leaving α⋆ unaffected. 
+
+A.8 Second-Order Extension (Acceleration) 
+
+We relax A2 to an affine-in-time disturbance v(t) = v0 + at with t = 0 , . . . , K −1. The cumulative target offset under midpoint integration becomes jv 0 + 12 j2a, modifying the ideal trajectory to 
+
+˜pj = j∆p + ( jv 0 + 12 j2a) ˆd.Define the two-component disturbance: A := v0 ˆd − (α − 1)∆ p (first-order) and B := 12 a ˆd (second-order). The tracking error becomes ej = −jA − j2B + σj .
+
+α⋆ under acceleration. Setting ∂L/∂α = 0 and using the sums S2 = K(K+1)(2 K+1) /6 and 
+
+S3 = [ K(K+1) /2] 2:
+
+α⋆ = 1 + v0 cos θv
+
+∥∆p∥ + S3
+
+2S2
+
+· a cos θa
+
+∥∆p∥ , (19) where cos θv = ˆdv · c∆p and cos θa = ˆda · c∆p. The coupling coefficient 
+
+S3
+
+2S2
+
+= 3K(K + 1) 4(2 K + 1) 
+
+> K→∞
+
+−−−−→ 3K
+
+8 (20) scales linearly in K, reflecting the longer integration window over which acceleration accumulates. Setting a = 0 recovers (7). 
+
+δ⋆k under acceleration (Lucas profile). The recurrence (9) acquires an inhomogeneous term proportional to B⋆ := 12 a ˆda, ⊥ (the perpendicular component of the acceleration). Linearity of the recurrence yields an additive decomposition: 
+
+δ⋆k =
+
+
+
+1 − F2k+1 
+
+F2K+1 
+
+
+
+A⋆
+
+| {z }
+
+> Fibonacci (first-order)
+
++ Λk(K) B⋆
+
+| {z }
+
+> Lucas-polynomial (second-order)
+
+, (21) 17 where Λk(K) is the Lucas-polynomial profile coefficient: 
+
+Λk(K) = (2 k + 1) − L2k+1 + F2k+1 
+
+F2K+1 
+
+ L2K+1 − (2 K + 1) , (22) with Ln denoting the Lucas numbers ( L0 = 2 , L1 = 1 , Ln = Ln−1 +Ln−2). The Lucas profile is the natural dual to Fibonacci on the same eigenvalue structure φ±2: the j2-quadratic forcing activates the second homogeneous mode ( L2k+1 branch), which is silent in first-order because L0 = 2 contradicts the boundary condition e0 = 0 .
+
+A.9 Dynamic Execution Horizon Kexec 
+
+Rather than hard-clamping α⋆ ≤ T /K , we define a dynamic execution horizon that absorbs the overflow: 
+
+Kexec (α) = max 
+
+
+
+K, min  ⌈T /α ⌉, T 
+
+. (23) At α = 1 , Kexec = T (full chunk consumed). As α increases, Kexec shrinks, reaching the floor 
+
+K at α ≥ T /K . The Fibonacci profile (14) then uses Kexec in place of K, adjusting the profile normalization to the actual execution window. 
+
+A.10 Hierarchical 2-EMA Latch Stabilizer 
+
+The closed-form correction is exact under A2. Irregular regimes (random walk, stop-and-go, teleport) violate A2 chronically, requiring a sustained cap on Kexec beyond what the single-chunk direction trust ρt provides. The latch admits a single free hyperparameter βin ; all other constants derive from the chunk geometry (K, T ).
+
+Direction-shift trigger. At each chunk reset t:
+
+τt = 1ρgt (t) < 12
+
+ , ρgt (t) = max 
+
+
+
+0, vt · vt−1
+
+∥vt∥ ∥ vt−1∥
+
+
+
+. (24) The threshold 1/2 is the natural midpoint of ρgt ∈ [0 , 1] .
+
+Outer EMA (chronic trigger rate). 
+
+Ct = βout τt + (1 − βout ) Ct−1. (25) 
+
+Sticky factor. 
+
+st = Ct
+
+Ct + RTH 
+
+. (26) 
+
+Inner EMA with sticky-modulated decay. 
+
+Lt =
+
+(βin + (1 − βin ) Lt−1, τt = 1 ,
+
+1 − βin (1 − st) Lt−1, τt = 0 . (27) Under chronic instability ( st → 1), the effective decay rate vanishes and Lt holds near its current value. Under occasional triggers ( st → 0), Lt decays at the standard rate βin .
+
+Latch output. mt = 1[Lt > L th ]. When mt = 1 , the execution horizon is capped: Kexec ≤ T / 4.
+
+Derived constants. All three internal thresholds derive from βin and (K, T ):(a) Outer EMA rate. Match the outer half-life to one chunk-budget cycle ( T /K chunks at 
+
+α = 1 ). Solving (1 − βout )T /K = 1 /2:
+
+βout = 1 − 2−K/T . (28) For K = 2 , T = 16 : βout ≈ 0.083 .18 (b) Active threshold Lth . Under standard decay ( st = 0 ), a single trigger at t = 0 followed by 
+
+n non-trigger steps gives Ln = βin (1 − βin )n. Setting Lth = L2 makes a single isolated trigger sustain the latch for exactly two chunks: 
+
+Lth = βin (1 − βin )2. (29) For βin = 0 .3: Lth ≈ 0.147 .(c) Sticky reference. st reaches 1/2 at Ct = RTH . The natural reference is the same scale as the active threshold: 
+
+RTH = Lth . (30) 
+
+Regime behavior summary.                       
+
+> Regime Ltbehavior mtKexec
+> Stable (uniform/accel.) →00full chunk budget Single isolated event spike, decays in ∼2 chunks brief 1 brief T / 4cap Chronic (random walk) sticks high ( st→1)persistent 1 T / 4
+> Periodic (stop-and-go) bursty with slow decay intermittent 1 intermittent cap
+
+Grasp reset. When the TCP-to-object distance falls below the gripper half-span ( ∥ptcp − pobj ∥ <rgrip ), the object transitions from external dynamics to internal state of the manipulator. The latch state is reset: (Lt, C t) ← (0 , 0) .
+
+## B MOVE BENCH Details 
+
+This section expands the implementation details of M OVE BENCH that are abbreviated in the main text. We control simulation at 20 Hz via ManiSkill’s SAPIEN backend, with 512 ×512 RGB streams from a fixed overhead and a wrist-mounted camera, 7-DoF proprioception, and a language-instruction channel. Each episode admits at most 200 environment steps ( 10 s wall-clock) and is judged successful when the target is grasped and lifted by ≥ 3 cm , matching the protocol established by the foundational VLA suites we benchmark against. The target is sampled uniformly from a pool of 9 YCB household objects covering a broad range of geometries (cube, brick, cylinder, sphere, flat box, jar) and physical sizes ( 25 –103 mm along the dominant axis), exposing the policy to grasp-pose ambiguity orthogonal to the motion variable. The sub-sections below detail the object pool, motion-regime parametrization, demonstration generation pipeline, and the diagnostic statistics we report. 
+
+B.1 Object Pool 
+
+The grasp target in every M OVE BENCH environment is sampled uniformly at episode reset from a fixed pool of nine YCB household objects, shown in Fig. 7. The pool is intentionally small but geometrically heterogeneous, spanning the cube, rectangular brick, tall cylinder, flat cylinder, flat box, elongated lego, sphere, jar, and tiny block primitives, with object scales adjusted so that all targets fit within a 25 –103 mm dominant-axis range and remain reachable by the xArm6 gripper. This diversity ensures that the policy must commit to an object-specific grasp pose at the moment of contact, which interacts non-trivially with the motion regime: a motion handler that succeeds by approaching from a fixed direction collapses once the pool forces approach-direction variation. The object identity is exposed only through the natural-language instruction “ Pick up the {name}. ”, so the policy must ground each name to its visual appearance under whatever motion regime the episode draws. 
+
+B.2 Motion Regimes 
+
+Each environment is fully specified by a deterministic motion-update rule that is sampled once per episode and applied to the target object every simulation tick at 20 Hz . The seven dynamic environments instantiate three families. 
+
+Uniform translation. The object is initialized with a single uniformly-sampled direction in the table plane and a constant speed drawn from a regime-specific range, [1 , 2] , [2 , 4] , and [4 , 8] cm/s for the easy, medium, and hard tier respectively. No further randomization is applied during the episode, so the regime is fully characterized by the initial speed magnitude. 19 (a) rubik’s cube (b) foam brick (c) tomato soup can     
+
+> (d) tuna fish can (e) gelatin box (f) lego brick
+> (g) baseball (h) jar (i) wood block
+
+Figure 7: The nine YCB objects sampled in M OVE BENCH . Each panel is the base-camera frame at 
+
+t=0 from a demonstration episode of the corresponding task. 
+
+Accelerated motion. The object is initialized with a low base speed v0 ∈ [2 , 3] cm/s , common to all three tiers, and a per-episode acceleration vector whose magnitude is drawn from [2 , 3] , [3 , 5] ,and [5 , 9] cm/s 2 for easy, medium, and hard. Decoupling v0 from the acceleration tier ensures that any cross-tier performance gap is attributable to the second-order signal alone, not to a confounded initial-speed shift. 
+
+Irregular motion. Three regime-change patterns probe non-stationary behavior. Random Walk 
+
+maintains a constant 5 cm/s speed but resamples a fresh planar direction every 5–12 ticks, simulating continuous reactive disturbances at the timescale of a single chunk. Stop-and-Go alternates between 
+
+7 cm/s uniform motion for 3–7 ticks and full pauses for 3–6 ticks, presenting a binary on/off velocity signal that rewards opportunistic grasping during pause windows. Teleport keeps the object stationary except for two mid-episode discontinuities, the first scheduled within ticks 3–10 and each requiring a minimum displacement of 8 cm from the current position, an event whose magnitude exceeds any plausible per-chunk plan correction. The three patterns are each provided at a single difficulty level because they probe regime-change response rather than a continuously tunable intensity scalar; introducing a difficulty axis would conflate the regime’s qualitative novelty with its quantitative magnitude. 20 B.3 Episode and Workspace Configuration 
+
+All environments share an identical scaffolding: a 7-DoF xArm6 mounted at a fixed table-side base pose, a planar tabletop with the target object initialized within a square reachability region centered at the robot’s neutral grasp height, and two RGB cameras (a static overhead view and a wrist-mounted view) streaming at 20 Hz . The observation passed to the policy at each tick is the pair 
+
+(Ibase  
+
+> t
+
+, I wrist  
+
+> t
+
+) together with a 7-D proprioceptive state (end-effector position, axis-angle orientation, gripper width). Every episode is capped at 200 environment steps ( 10 s wall-clock) and is judged successful only if the gripper both contacts the target and lifts it by at least 3 cm above its resting height before the cap. Lift-only and approach-only events are explicitly counted as failures, removing any pseudo-success that could arise from a policy that brushes against the object without committing to a grasp. Beyond the motion-regime parameters, episode-level randomization covers only the object identity, the in-plane initial position, and the motion seed; the table, lighting, and camera intrinsics are fixed across all 10 ,000 episodes so that any cross-environment gap is attributable to the motion regime alone. 
+
+B.4 Demonstration Generation 
+
+Every episode is collected by an oracle motion-planner solution that has full access to the simulator state, including the object’s true pose and velocity at every tick. The planner emits a smooth end-effector trajectory at the control rate of 20 Hz , with each waypoint expressed as a 6-D end-effector delta (XYZ translation plus axis-angle rotation) plus a 1-D gripper command, exactly the action space exposed to the learned policy. We discard any episode whose oracle rollout fails the lift criterion in the first attempt, ensuring that the released dataset contains only successful demonstrations and that any failure observed during evaluation is attributable to the policy rather than to an unsolvable initial condition. The full 1,000 -episode pool per environment is provided for downstream finetuning, but the main benchmark protocol evaluates each method on 100 held-out seed indices that lie outside this pool, drawn from a deterministic seed offset so that all comparisons are over the same trial realisations. 
+
+B.5 Diagnostic Statistics 
+
+In addition to the per-environment success rate reported in the main text, we release for each policy run the per-episode trajectory of (α, K exec , v t, ˆdt) when the policy is wrapped by PPC, the chunk-boundary timestamps and re-inference cadence, and the minimum gripper–object distance attained within the 200 -step budget. These finer-grained signals are not used in the headline numbers but support the analysis in Section 4.5; in particular the empirical α distribution drives our worst-case inference cost discussion, and the per-object success breakdown verifies that the gain from PPC is not concentrated on a single target geometry. All statistics will be released alongside the benchmark code. 
+
+## C Supplementary Experiments and Analysis 
+
+C.1 Cross-Backbone Comparison of Inference-Time Wrappers 
+
+In the main results (Table 1), the comparison wrappers ACT [10] and BID [29] are evaluated on the strongest foundational backbone π0.5 for fairness. We supplement this with a parallel evaluation on a second backbone, SmolVLA [ 35 ], to verify that PPC’s advantage over chunk-boundary smoothing approaches generalizes across backbones rather than being specific to a single VLA. ACT applies temporal ensembling over overlapping chunks, and BID applies guided rejection sampling at chunk boundaries; both operate without an external dynamics signal. Following the same protocol as Table 1 (100 trials per environment, default deployment configurations), we report per-environment success rate in Table 3. 
+
+C.2 Additional Analysis on Experimental Results Per-backbone gain decomposition. Among the four foundational VLAs in Table 1, PPC’s largest absolute gain is on GR00T N1.6 ( +28 .8 dynamic-only), followed by π0 (+21 .1), π0.5 (+18 .6), 21 Method Static Uniform Motion Accelerated Motion Irregular Motion Average                                                                                               
+
+> Moving Accelerating Rand. Walk Stop & Go Teleport Dyn. Only All Easy Med. Hard Easy Med. Hard SmolVLA (foundational) 81 76 57 27 41 33 13 53 40 44 42.7 46.5 SmolVLA + ACT [10] 73 (−8%) 60 (−16%) 49 (−8%) 14 (−13%) 52 (+11%) 43 (+10%) 19 (+6%) 43 (−10%) 36 (−4%) 5(−39%) 35.7 (−7.0%) 39.4 (−7.1%)
+> SmolVLA + BID [29] 77 (−4%) 73 (−3%) 57 (±0% )18 (−9%) 50 (+9%) 25 (−8%) 18 (+5%) 50 (−3%) 38 (−2%) 48 (+4%) 41.9 (−0.8%) 45.4 (−1.1%)
+> SmolVLA + PPC (ours) 81 ∗69 (−7%) 69 (+12%) 58 (+31%) 58 (+17%) 59 (+26%) 35 (+22%) 60 (+7%) 71 (+31%) 53 (+9%) 59.1 (+16.4%) 61.3 (+14.8%)
+
+Table 3: Inference-time wrappers on SmolVLA. ACT and BID degrade dynamic-only success rate ( −7.0 and −0.8 points respectively), while PPC achieves +16 .4 points. ∗: PPC defaults to the baseline when v = 0 .and SmolVLA ( +16 .4). This ordering inversely correlates with the backbone’s baseline dynamic performance: weaker dynamic baselines leave more room for the closed-form correction to recover. Notably, GR00T N1.6 has the strongest static score ( 88% ) but the weakest dynamic score ( 37 .3% ), exhibiting the most severe dynamics blindness and consequently benefiting the most from PPC. 
+
+ACT’s teleport collapse. ACT on π0.5 scores 1% on Teleport, a 59 -point drop from the bare backbone (60% ). Temporal ensembling maintains a sliding buffer of overlapping chunks and averages them into a single action. When the object teleports, old chunks in the buffer still point toward the pre-teleport position, and averaging actively drags the end-effector away from the new target. The longer the buffer, the longer the stale signal persists. BID avoids this collapse ( 48% ) because rejection sampling discards rather than averages stale chunks. PPC bypasses the issue entirely: the velocity signal detects the teleport via the νt sim-consistency gate, and the wrapper defaults to the unmodified baseline until the next valid reading. 
+
+DynamicVLA’s static regression. DynamicVLA scores 70% on the static environment, 11 points below its backbone SmolVLA ( 81% ). Its compact 0.4B architecture re-infers every 2 env-steps regardless of whether the scene is changing, injecting inter-chunk discontinuities into an otherwise stable trajectory. Each re-inference resets the action chunk from a slightly different observation, creating micro-jitter that accumulates over a 200 -step episode. This confirms that indiscriminate high-frequency re-planning degrades temporal coherence even when no dynamic compensation is needed, a failure mode that PPC avoids by construction since α⋆ = 1 and δ⋆k = 0 when v = 0 .
+
+Irregular motion: regime-specific behavior. Within the irregular family, Random Walk consis-tently yields the highest PPC gain across backbones (e.g., +11% on GR00T, +7% on SmolVLA), followed by Stop & Go, with Teleport last. This ordering reflects the latch stabilizer’s operating regime: Random Walk produces frequent direction-shift triggers that keep Lt elevated, enabling the cadence gate to cap Kexec persistently. Stop & Go alternates motion and pause windows, producing intermittent latch activation that partially helps during motion phases. Teleport, by contrast, violates the quasi-stationarity assumption so severely that neither the closed-form correction nor the latch can meaningfully compensate during the discontinuity itself; PPC’s gain there comes entirely from improved tracking during the stationary intervals between teleport events. 
+
+Failure mode: SmolVLA+PPC on Uniform-Easy ( −7% ). SmolVLA already reaches 76% on the easiest uniform tier, where object speeds ( 1–2 cm/s) are close to the velocity estimator’s noise floor. At these speeds, the cosine-projected α⋆ oscillates near 1.0 with sign noise, occasionally triggering unnecessary compression that shortens the execution window without meaningful tracking benefit. This case represents the lower boundary of PPC’s effective operating range rather than a systematic failure. 
+
+## D Supplementary Experimental Details 
+
+This appendix expands the implementation details summarized in Section 4. All numerical values were extracted directly from the canonical scripts cited per subsection. 
+
+Hardware. All foundational VLAs are fine-tuned on a single NVIDIA H200 (141 GB HBM3e). All evaluation rollouts (foundational baselines, comparison wrappers, PPC, and ablations) run on a single NVIDIA RTX A6000 (48 GB GDDR6). Fine-tuning each backbone takes at most 48 H200-hours; evaluating each method (1,000 trials across 10 environments) takes approximately 2 A6000-hours. 22 Foundational VLA Fine-tuning. Each foundational backbone is fine-tuned from its publicly released checkpoint on the M OVE BENCH demonstration set following the official recipe of the corresponding policy. Table 4 summarizes the per-backbone configuration. All backbones share the same dataset (∼10K demonstrations across the ten environments), the same 7-D action space (6-D arm delta in physical space + 1-D gripper command), and the same control loop ( 20 Hz, pd_ee_delta_pose 
+
+mode, image resolution and augmentations as in each backbone’s released training config). The action chunk length Tpolicy varies by backbone: GR00T N1.5/N1.6 emits a 16 -step chunk, while π0,
+
+π0.5, and DynamicVLA emit 20 -step chunks; SmolVLA and Diffusion Policy use their default chunk size from the released configs. Every backbone’s chunked output is consumed end-to-end by the wrapper without modification of the action representation.                      
+
+> Backbone Steps BS Tpolicy
+> GR00T N1.5/N1.6 20,000 32 16
+> π030,000 32 20
+> π0.530,000 32 20 SmolVLA 30,000 32 50 DynamicVLA 30,000 32 20 Diffusion Policy 30,000 64 16
+
+Table 4: Per-backbone fine-tuning configuration on M OVE BENCH . BS = batch size; Tpolicy =native chunk length emitted by the policy. All backbones except Diffusion Policy initialize from the official released pretrained checkpoint; optimizer, learning rate, and augmentation schedules follow each backbone’s officially released training recipe and are not modified. 
+
+Comparison Baseline Deployment. The comparison wrappers ACT and BID are deployed on top of the released π0.5 checkpoint (and additionally on SmolVLA in Appendix C) using their original parameters, with one consistency adjustment for fair reactivity: the execution horizon of every chunk-boundary baseline is capped at 10 env-steps . Concretely, if a baseline’s default execution horizon exceeds 10 it is set to 10, and if its default is below 10 we keep the default. This holds the inter-chunk re-observation latency comparable across methods and prevents any baseline from being penalized by an artificially long open-loop window. The full per-method configurations follow. • ACT (temporal ensembling) on π0.5: decay_m=0.01 , buffer_size=20 ,
+
+exec_horizon=1 (ensemble emits one action per env-step, well below the 10-step cap). • BID (guided rejection sampling) on π0.5: n_samples=4 , exec_horizon=10 ,
+
+overlap_window=4 .• DynamicVLA uses its own released 0.4B SmolVLA-based checkpoint fine-tuned on MOVE BENCH . DynamicVLA’s defining contribution is a streaming pipeline that over-laps action prediction with execution; this streaming protocol is not faithfully reproducible in our SAPIEN simulator (it requires asynchronous prediction running concurrently with simulator time, which our synchronous environment loop does not expose). To preserve DynamicVLA’s reactivity argument, we follow its low-latency philosophy at the upper bound permitted by our loop: re-inference every 2 env-steps, the same minimum cadence as PPC’s Kexec floor. For reference, running DynamicVLA at the conventional 10-step fallback yields a substantially weaker 31 .9% overall ( 51 /46 /44 /21 /38 /37 /12 /37 /28 /5
+
+across Static/Mov. E/M/H/Acc. E/M/H/RW/SnG/Tele), confirming that the 2-step setting is a strict upper-bound favorable to the baseline. 
+
+PPC Configuration. All wrapper hyperparameters are fixed across every reported run. • Chunk geometry : T = 16 , K = 2 (Kexec floor), Heff = 10 (Kexec ceiling). For backbones whose native chunk length Tpolicy exceeds 16, only the first 16 model-steps enter the wrapper; remaining model-steps are unused, matching the de-facto execution length set on every comparison baseline ( ≤ 10 env-steps consumed per chunk). • Latch (single free knob): βin = 0 .3. The remaining latch constants βout , R TH , L th are derived from (βin , K, T ) per Section 3. • Bayesian α: Q = 1 .8, βrevert = 0 .0 (random-walk prior, no drift). Under the oracle velocity signal used in simulation, the perception-noise envelope is set to a large sentinel 23 value, forcing Kkal → 1 and bypassing Bayesian shrinkage in our experiments. For real-robot deployment, this envelope is supplied by the tracker’s confidence stream. • Velocity bound : Vmax = 1 m/s, matching the xArm6 published maximum TCP velocity. See Appendix E for the robustness check. • Grasp gate : ∥ptcp − pobj ∥ < 30 mm (the xArm6 finger half-span); inside this radius the wrapper bypasses, since the object becomes internal state per the contact predicate in Section 3.1. • Workspace : an 80 cm world-anchored cube, [−0.4, 0.4] ×[−0.4, 0.4] ×[0 .0, 0.3] m. • Lift threshold : 30 mm above the object’s initial height (paper success criterion). Three implementation specifics warrant explicit mention: • ∆p source . The per-step planned delta is computed from the realized TCP trajectory rather than from raw chunk outputs. Specifically, ∆pt = ( ptcp  
+
+> t
+
+− ptcp  
+
+> t−K
+
+)/K at every chunk-reset. The first chunk of each episode lacks K prior TCP samples and falls back to 
+
+∆p0 = 1
+
+> K
+
+PK−1 
+
+> i=0
+
+chunk[ i, : 3] · cpd , where cpd = 0 .04 is the simulator’s controller response factor that maps action-space delta to world-space delta. • Oracle velocity source . The dynamics signal v ˆd is obtained from the one-step finite differ-ence of the simulator’s ground-truth object position, v ˆd = cube t −cube t−1, capped at Vmax .The simulator’s reported velocity field is used only as the input to the νt sim-consistency gate (Section 3) because that field reads bit-zero on kinematic teleports; the position finite difference is the actual signal driving α⋆ and δk. On a real robot this signal source would be replaced by a tracker pipeline (e.g., CoTracker3) supplying ( v, confidence) pairs. • Channels modified . The wrapper writes only the xyz translation channel of each chunk action; the 3-D rotation deltas and 1-D gripper command are inherited unchanged from the corresponding chunk window. This preserves the policy’s grasp-timing decisions and prevents wrapper-induced rotation drift. 
+
+Evaluation Protocol. For every method (foundational, comparison wrapper, PPC, ablation) we run 
+
+100 trials per environment across the 10 MOVE BENCH environments, totaling 1,000 trials per method. Trial seeds are {0, . . . , 99 } and are disjoint from the demonstration pool. Each trial runs for at most 
+
+200 env-steps ( 10 s of simulator time at 20 Hz). Success is defined as a successful grasp followed by lifting the object by at least 30 mm above its initial height ( FORMAL_LIFT_THRESH = 0 .03 m). Reported success rates are point estimates; 95% Clopper–Pearson intervals at n = 100 correspond to a ±7 pp half-width near the 50% region and tighten near the extremes. 
+
+## E Supplementary Ablation Studies 
+
+This appendix supplements the closed-form structural ablations and the EMA-stabilizer analysis of Section 4 with four additional studies: wrapper computational overhead, adaptive engagement statistics of α⋆, the per-env activation rate of the sim-consistency gate νt, and a robustness check on the velocity bound Vmax . All studies use the same protocol as the main ablations (100 rollouts per environment on M OVE BENCH ) unless otherwise noted. 
+
+Wrapper Computational Overhead. We instrument compute_unified_correction on MOVE BENCH -MovingMedium for 5 episodes ( 42 chunk-resets) and report per-call latency in Table 5. The closed-form operator runs in 0.07 ms (mean) on a single CPU thread, with P 99 latency under 
+
+0.12 ms. Compared to a typical VLA chunk inference of ∼ 64 ms for GR00T N1.6 on an L40 GPU, the wrapper adds < 0.2% overhead, confirming PPC is suitable for real-time deployment without disturbing the inference budget. 
+
+Adaptive α⋆ Engagement. Section 3 establishes that α⋆ is bounded above by the chunk-budget cap 
+
+T /K = 8 and degenerates to 1 when no environmental motion is present. Table 6 reports the per-env distribution of α⋆ across all chunk-resets on M OVE BENCH . The distribution is heavy-tailed and regime-adaptive: median α⋆ remains near 1 across all environments while P 90 scales monotonically with difficulty, reaching the saturation cap of 8 on AccelHard. Compression engages aggressively only when needed: α⋆ ≥ 2 in 30 .2% of AccelHard chunks (vs 5% on Moving) and saturates at 24 Statistic Latency (ms)      
+
+> Mean 0.069 Median 0.080 P90 0.090 P99 0.115 Max 0.115
+
+Table 5: Per-chunk PPC computational overhead. Single-thread CPU latency of 
+
+compute_unified_correction on M OVE BENCH -MovingMedium ( n = 42 chunk-resets). 
+
+α⋆ = 8 in 10 .5% of AccelHard chunks. On Teleporting, α⋆ ≡ 1 throughout because the νt gate clamps the wrapper to identity on A1-violating chunks.                                                                
+
+> Environment Chunks Median P90 Max α⋆≥2α⋆= 8
+> Teleporting 1166 1.00 1.00 1.00 0.0% 0.0% Moving Easy 1014 1.00 1.64 8.00 4.7% 0.3% Moving Medium 987 1.01 1.60 8.00 5.2% 0.5% Moving Hard 1312 1.09 2.04 8.00 11.3% 1.0% Random Walk 1846 1.00 1.74 8.00 5.5% 0.2% Stop and Go 1547 1.00 1.67 8.00 5.2% 0.3% Accelerating Easy 1510 1.06 3.05 8.00 19.1% 3.6% Accelerating Med. 1822 1.11 4.86 8.00 27.4% 7.5%
+> Accelerating Hard 2311 1.09 8.00 8.00 30.2% 10.5%
+
+Table 6: Per-environment distribution of α⋆. Median α⋆ stays near 1 across all regimes; the upper tail scales with difficulty and saturates at T /K = 8 in 10 .5% of AccelHard chunks. 
+
+Sim-Consistency Bypass Rate. The νt gate detects A1 violations from sim-internal contradiction: simulator-reported velocity strictly zero while observed displacement is non-zero. Table 7 reports per-environment activation. The gate fires on 82 .7% of Teleporting chunks and 0% of all other regimes, exactly matching its design as a regime-specific discrete bypass. The remaining 17 .3% of Teleporting chunks correspond to stationary intervals between teleport events where both reported velocity and observed displacement are zero.         
+
+> Environment νt= 0 rate
+> Teleporting 82.7%
+> Random Walk 0.0% Stop and Go 0.0% Moving (Easy/Med./Hard) 0.0% Accel. (Easy/Med./Hard) 0.0%
+
+Table 7: Sim-consistency gate νt activation rate. Active only on Teleporting; dormant on all continuous-dynamics environments. 
+
+Vmax Robustness. The velocity bound Vmax = 1 m/s corresponds to xArm6’s official maximum TCP velocity. Doubling Vmax to 2 m/s and re-running AccelHard drops success rate from 33% to 
+
+27% (Table 8), confirming that exceeding the hardware ceiling produces wrapper aggressiveness that overshoots the physical envelope. We therefore treat Vmax as a physical specification rather than a hyperparameter. 
+
+## F Qualitative Visualization 
+
+Trajectory comparison: baseline VLA vs. PPC. Figure 8 overlays end-effector (TCP) trajectories from the bare baseline and PPC-equipped runs on identical seeds, alongside the corresponding object trajectory, across four representative dynamic environments. In every panel, the baseline TCP veers into the static target’s expected position and stops short of the moving object, terminating without grasp at distances of 30 –100 mm. The PPC-equipped TCP, sharing the same backbone and seed, instead curves toward the object’s current position at the moment of grasp closure, demonstrating that the wrapper actively redirects the executed path within the chunk window without changing the underlying policy. 25 Vmax AccelHard SR 
+
+1 m/s (xArm6 spec) 33% 
+
+2 m/s (beyond spec) 27 (−6%) 
+
+Table 8: Vmax robustness. Exceeding the hardware specification degrades performance, confirming 
+
+Vmax is a physical constraint. 300 200 100 0 100 200                       
+
+> x (mm)
+> 400
+> 300
+> 200
+> 100
+> 0
+> 100
+> y (mm)
+> Accel Hard (seed=1)
+> 50 050 100 150
+> x (mm)
+> 125
+> 100
+> 75
+> 50
+> 25
+> 0
+> 25
+> 50
+> y (mm)
+> Accel Med (seed=0)
+> 200 100 0100 200 300
+> x (mm)
+> 400
+> 300
+> 200
+> 100
+> 0
+> y (mm)
+> Moving Hard (seed=4)
+> 300 250 200 150 100 50 0
+> x (mm)
+> 200
+> 150
+> 100
+> 50
+> 0
+> 50
+> 100
+> y (mm)
+> Stop & Go (seed=13)
+> Object trajectory Baseline (fail) PPC (succ) Arm start
+
+Figure 8: Top-down ( x–y) end-effector trajectories on identical seeds. Gray dashed: object trajectory ( • start, × end). Red: bare baseline TCP (terminates without grasp). Green: PPC-equipped TCP (terminates at grasp). Black triangle: arm start. PPC redirects the chunk-interior path to track the moving target across all four motion regimes. 
+
+Adaptive α⋆ engagement across motion families. Figure 9 plots per-chunk α⋆ and the disturbance magnitudes ( ∥v∥, ∥A⋆∥) for one successful episode per family (uniform/accelerated/irregular). The three regimes produce qualitatively distinct wrapper signatures. On uniform motion, the observed velocity is small and roughly constant, producing α⋆ ≈ 1 throughout with occasional mild excursions. On accelerated motion, α⋆ rises monotonically with the cube’s accumulating velocity, saturating at the chunk-budget cap T /K = 8 in the late chunks where compression matters most. On irregular motion (random walk), α⋆ produces transient spikes correlated with direction-shift events, returning to baseline once the regime stabilizes. These traces concretize Section 3’s claim that the closed-form 
+
+α⋆ is regime-adaptive: dormant when motion is mild, aggressive when motion is fast, and reactive (rather than chronically engaged) when motion is irregular. 1                       
+
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> Uniform (Moving Med)
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> Accelerated (Accel Hard)
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> Irregular (Random Walk)
+> 010 20 30 40 50
+> env-step (chunk reset)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> magnitude
+> observed v(mm/step)
+> A(mm)
+> 010 20 30 40 50
+> env-step (chunk reset)
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> magnitude
+> observed v(mm/step)
+> A(mm)
+> 020 40 60 80
+> env-step (chunk reset)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> magnitude
+> observed v(mm/step)
+> A(mm)
+
+Figure 9: Wrapper internals across motion families. Top row: α⋆ per chunk-reset; gray dotted line marks α = 1 (no compression), red dotted line marks the chunk-budget cap T /K = 8 . Bottom row: observed velocity ∥v∥ (gray) and disturbance magnitude ∥A⋆∥ (colored) per chunk. The three regimes produce distinct α⋆ profiles: flat near 1 for uniform motion, monotone-rising for accelerated motion, and transient-spiking for irregular motion. 26 G Limitations and Broader Impact 
+
+G.1 Limitations Quasi-stationarity assumption. The closed-form derivation assumes the disturbance velocity and direction are approximately constant within each executed chunk (A2). While the hierarchical latch mitigates chronic violations by capping Kexec , the correction within any single chunk remains suboptimal when the disturbance changes rapidly during execution. Teleportation, the most extreme violation, relocates the object instantaneously and leaves no continuous trajectory for the operator to track, explaining the limited gains observed in that regime. 
+
+Simulation-only evaluation. All experiments are conducted in the ManiSkill simulator with SAPIEN physics. Although the four foundational VLAs tested span diverse architectures, sim-to-real transfer of both the wrapper and the velocity estimation pipeline remains unvalidated. In particular, real-world depth noise, occlusion, and tracker latency may degrade the quality of the external velocity signal beyond the regime where the Bayesian confidence gate can compensate. 
+
+Task diversity. MOVE BENCH isolates motion regime as the evaluation axis through a single task family (pick). While this controlled design is intentional for diagnostic purposes, it leaves open whether PPC’s gains transfer to other manipulation primitives such as place, push, or multi-step assembly, where the interaction between chunk-internal dynamics and task semantics may differ. 
+
+External velocity signal. PPC decouples perception from correction by reading velocity from an external source rather than from the VLA backbone. This design sidesteps the ego-motion confound but introduces a dependency on a reliable tracking or depth-sensing pipeline. In cluttered or heavily occluded scenes where object tracking fails, PPC degenerates to the baseline VLA. 
+
+Single-object assumption. The current formulation tracks a single target object per chunk. Multi-object scenes where multiple targets move independently would require either a target-selection mechanism or a multi-channel extension of the cost function, neither of which is addressed in this work. 
+
+G.2 Broader Impact 
+
+This work improves the robustness of robot manipulation policies in dynamic environments without requiring retraining or additional data collection. The primary positive impact is enabling safer and more capable deployment of general-purpose robots in settings where objects or people move during task execution, such as manufacturing lines, household assistance, and human-robot collaboration. Since PPC is a training-free wrapper with no learnable parameters, it does not introduce new data privacy or bias concerns beyond those of the underlying VLA. On the negative side, more capable manipulation in dynamic settings could lower the barrier for autonomous systems operating in close proximity to humans, where safety-critical failure modes must be carefully addressed before deployment. We emphasize that PPC is evaluated in simulation only and does not constitute a safety-validated system for real-world human-facing applications. Any deployment should include appropriate safety mechanisms independent of the policy layer. 27

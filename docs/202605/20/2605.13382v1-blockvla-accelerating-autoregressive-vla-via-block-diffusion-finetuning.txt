@@ -1,0 +1,674 @@
+Title: BlockVLA: Accelerating Autoregressive VLA via Block Diffusion Finetuning
+
+URL Source: https://arxiv.org/pdf/2605.13382v1
+
+Published Time: Thu, 14 May 2026 01:08:17 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# BlockVLA: Accelerating Autoregressive VLA via Block Diffusion Finetuning 
+
+Ruiheng Wang ∗, Shuanghao Bai ∗, Haoran Zhang , Badong Chen , Xiangyu Xu †
+
+Xi’an Jiaotong University 
+
+> ∗
+
+Equal Contribution , †Corresponding author 
+
+While autoregressive (AR) Vision-Language-Action (VLA) models have demonstrated formidable reasoning capabilities in robotic tasks, their sequential decoding process often incurs high inference latency and may amplify error accumulation during long-horizon execution. Discrete Diffusion Language Models (dLLMs) provide a promising alternative through parallel token refinement, but their practical deployment in robotics remains limited by repeated denoising function evaluations (NFEs) and the difficulty of directly applying standard KV caching to bidirectional iterative decoding. To bridge these paradigms, we propose BlockVLA, a framework that adapts pretrained AR backbones into an efficient discrete diffusion policy through a block diffusion paradigm. BlockVLA maintains autoregressive dependencies at the block level while enabling parallel denoising within each block, thereby combining global causal coherence with local parallel generation. This design enables prefix KV-cache reuse across completed blocks, reduces the effective cost of iterative denoising, and provides a smoother transition from AR pretraining to diffusion-based policy fine-tuning. We conduct extensive evaluations on the LIBERO and SimplerEnv benchmarks. Experimental results demonstrate that our BlockVLA achieves a 3.3 × inference acceleration over standard discrete diffusion baselines. Furthermore, our model exhibits superior training efficiency, with success rates converging substantially faster than baselines, a gain that is particularly pronounced in complex, long-horizon tasks, where BlockVLA achieves significant performance gains in the early stages of training. This work establishes Block Diffusion as a robust bridge between large-scale pretrained AR models and efficient, high-frequency real-time robotic control. 
+
+# 1 Introduction 
+
+Autoregressive (AR) models have demonstrated exceptional performance in multimodal understanding via the next-token prediction paradigm. In the realm of discrete Vision-Language-Action Models (VLA) in robotics, frameworks (e.g. RT-2 (Zitkovich et al., 2023), OpenVLA (Kim et al., 2025), π0-FAST (Pertsch et al., 2025)) tokenize continuous actions into discrete tokens, enabling models to inherit the profound reasoning and grounding capabilities of web-scale pretrained Vision-Language Models (VLMs) (Karamcheti et al., 2024; Beyer et al., 2024; Yang et al., 2025a; Chen et al., 2025) through large-scale robotic pretraining (O’Neill et al., 2024; Ebert et al., 2022; Khazatsky et al., 2024; Bu et al., 2025) and subsequent supervised fine-tuning (SFT) on specific tasks (Bai et al., 2025). However, the inherent sequential decoding of AR models imposes critical bottlenecks: high inference latency and compounding execution errors during long-horizon tasks, which frequently lead to catastrophic failure. To address these limitations, discrete Diffusion Language Models (dLLM) (Liang et al., 2025; Wen et al., 2025; Ye et al., 2025a; Chen et al., 2026) have emerged as a promising alternative. As shown in Table 1, by leveraging discrete diffusion processes, dLLMs enable parallel decoding to accelerate inference while effectively mitigating cumulative errors. While dLLMs, including dVLMs (Austin et al., 2021; Nie et al., 2025; Bie et al., 2025; Ye et al., 2025b; You et al., 2025; Yang et al., 2025b), promise to alleviate the sequential decoding bottleneck through parallel token refinement, their practical speedup in robotic applications remains constrained. The iterative denoising process typically requires a large number of denoising function evaluations (NFEs), where each NFE denotes one model forward pass during refinement, to produce high-fidelity action sequences. In addition, the bidirectional iterative decoding of conventional dLLMs limits the direct reuse of prefix states through standard KV caching (Liu et al., 2025; Wu et al., 2026b), often offsetting the throughput gains from parallelization. Beyond inference efficiency, adapting dLLMs to robotics also faces a model availability challenge. Modern VLMs are still overwhelmingly dominated by AR  
+
+> arXiv:2605.13382v1 [cs.RO] 13 May 2026 Figure 1 Quantitative results on training efficiency and inference throughput. (a) Average success rate on LIBERO: Our BlockVLA outperforms the baseline in overall average success rate across four task suites and exhibits superior training efficiency with significantly faster convergence. (b) Inference throughput comparison: Our BlockVLA achieves 3.3 ×
+> acceleration than the DDVLA baseline on a single NVIDIA RTX 4090 GPU.
+
+backbones, while mature diffusion-native VLMs remain scarce. Given the prohibitive cost of training dLLMs from scratch, adapting pretrained AR-based VLMs to the diffusion paradigm (Gong et al., 2025; Zeng et al., 2025; Cheng et al., 2025; Fu et al., 2025) offers a practical way to inherit large-scale visual-linguistic knowledge. Nevertheless, this adaptation is challenging because the causal factorization of AR models differs from the bidirectional iterative refinement used in diffusion models, creating optimization and deployment barriers for efficient robotic policy learning.     
+
+> Table 1 Comparison of different modeling paradigms for VLA models.
+> Feature Autoregressive Discrete Diffusion Block Diffusion (Ours)
+
+Less Cumulative Error ✗ ✓ ✓
+
+KV-Caching ✓ ✗ ✓
+
+Parallel Decoding ✗ ✓ ✓
+
+Efficient Seq Scaling ✓ ✗ ✓
+
+Inference speed Slow Fast Faster 
+
+To address these limitations, we propose BlockVLA , which adapts the block diffusion paradigm (Arriola et al., 2025a; Fu et al., 2025; Wu et al., 2026a; Chen et al., 2024) to robotic manipulation. Unlike standard dLLMs (Arriola et al., 2025a; Cheng et al., 2025) that treat the entire sequence as homogeneous training targets, our framework accounts for the asymmetric nature of VLA training targets, where visual-linguistic inputs serve as persistent conditions and only actions are generated. We specialized the masking strategy to accommodate this asymmetry, ensuring that parallel action denoising remains strictly grounded in the multi-modal prefix to achieve superior training-inference consistency. Our method restructures action generation by maintaining an AR structure at the block level while performing parallel denoising within each block. This hybrid design preserves the causal logic and KV-Cache efficiency of AR models, ensuring temporal consistency. Simultaneously, intra-block parallel diffusion enables high-throughput action generation. Crucially, by retaining the global causal structure, Block Diffusion facilitates a smoother transition for adapting pretrained AR backbones than bidirectional approaches, effectively balancing reasoning stability with execution speed. We implement our framework using OpenVLA (Kim et al., 2025) as the pretrained backbone and conduct extensive evaluations on the LIBERO (Liu et al., 2023a) and SimplerEnv (Li et al., 2025) robotic benchmarks. 2As shown in Figure 1(a), our experimental results demonstrate that, with a limited training budget of 50k steps on only 2 GPUs, our BlockVLA achieves an average success rate of 91.7% on LIBERO, significantly outperforming the baseline’s 83.2%, with comparable gains on Object and Long suites. Notably, our Block Diffusion achieves an inference speedup of 3.3× compared to standard discrete diffusion baseline, which is shown in Figure 1(b). Furthermore, our analysis of success rate curves across training steps reveals that Block Diffusion exhibits superior training efficiency, with success rates converging faster than the baseline. This advantage is particularly pronounced in complex, long-horizon tasks, where the synergy of causal block-wise structure and intra-block parallel generation allows the model to capture temporal dependencies more robustly and with substantially fewer training iterations. In summary, our primary contributions are as follows: 
+
+• We present BlockVLA , a novel framework that pioneers the adaptation of pretrained Autoregressive VLAs into a Discrete Diffusion paradigm through Block Diffusion. By reconciling block-level causality with intra-block parallelism, our method preserves KV-Cache while enabling high-throughput action generation. 
+
+• We provide a comprehensive investigation into the Block Diffusion training paradigm tailored for VLA’s multi-modal asymmetry. By distinguishing visual-linguistic context as persistent conditions from action generation targets, we design a specialized masking strategy that ensures training-inference consistency. Our analysis of various attention patterns and masking behaviors offers actionable insights into bridging the gap between causal pretraining and bidirectional diffusion for action sequences. 
+
+• We conduct extensive experiments on the LIBERO and SimplerEnv benchmarks. Our results demonstrate that BlockVLA achieves approximately a 3.3× inference acceleration compared to standard Discrete Diffusion baselines. Furthermore, our approach exhibits superior training efficiency, achieving higher success rates with fewer training iterations, particularly in challenging long-horizon tasks. 
+
+# 2 Related Work 
+
+2.1 Diffusion Language Models & Block Diffusion 
+
+Discrete Diffusion Language Models (Austin et al., 2021; He et al., 2023; Ye et al., 2025b; Nie et al., 2025; Bie et al., 2025; Han et al., 2023; Lou et al., 2023) have emerged as a promising new paradigm, aiming to support parallel decoding through bidirectional sequence modeling. This approach fundamentally mitigates the compounding execution errors of Autoregressive (AR) generation and significantly accelerates inference. However, the actual speedup of diffusion models is inherently bottlenecked by the iterative denoising process, which requires a large Number of Function Evaluations (NFE). Furthermore, the bidirectional attention mechanism sacrifices the causal structure, precluding the reuse of past information via KV-cache. To resolve these inefficiencies, Block Diffusion (Arriola et al., 2025a; Wu et al., 2026b,a) was introduced. By maintaining an autoregressive structure at the block level while performing parallel diffusion within each block, it successfully preserves both causality and KV-cache compatibility, ultimately achieving much faster and more practical parallel decoding. In this work, we extend Block Diffusion to VLA models to optimize the learning of multi-modal action sequences. 
+
+2.2 Adapting Autoregressive Models to Diffusion 
+
+Despite the theoretical advantages of diffusion, the vast majority of prevailing Large Language and Vision-Language Models (Touvron et al., 2023; Bai et al., 2023; Liu et al., 2023b; Yang et al., 2025a; Chen et al., 2025; Beyer et al., 2024; Karamcheti et al., 2024; Awadalla et al., 2023) are pretrained using the autoregressive paradigm, leaving a severe scarcity of strong diffusion-native backbones. This is largely because training Diffusion Language Models (dLLMs) from scratch is significantly more challenging than the standard AR paradigm; current state-of-the-art dLLMs trained from scratch often lag behind their AR counterparts in both data scale and model parameters. To harness parallel acceleration without discarding the immense world knowledge already embedded in AR models, adapting pretrained AR models (Gong et al., 2025) into diffusion models has become a vital new paradigm. Nevertheless, bridging the gap between the causal next-token prediction of AR and the bidirectional denoising objective of diffusion is notoriously difficult. Recent studies 3indicate that Block Diffusion serves as a natural interpolation between these two paradigms. Compared to direct diffusion fine-tuning , adapting an AR model through a block-wise semi-autoregressive (Bie et al., 2025; Arriola et al., 2025b; Fu et al., 2025; Cheng et al., 2025; Tian et al., 2025) approach ensures a much smoother transition towards dLLMs while better preserving pretrained capabilities. Distinct from these language-centric approaches, we extend this adaptation paradigm to the robotics VLA domain, pioneering the transition of large-scale pretrained AR VLAs into efficient Discrete Diffusion policies via Block Diffusion. 
+
+2.3 Discrete Vision-Language-Action (VLA) Models 
+
+Inspired by LLM advances, VLA models have emerged as a promising paradigm for general-purpose robotic manipulation (Li et al., 2024; Intelligence et al., 2025; Cui et al., 2025; Bai et al., 2026b,a). A major line of work focuses on discrete VLA modeling (Kim et al., 2025; Wang et al., 2025; Qu et al., 2025; Cen et al., 2025; Zhao et al., 2025), where AR backbones generate tokenized robot actions. While systems like OpenVLA demonstrate strong transfer capabilities, their token-by-token decoding introduces high latency and compounding errors. Recent studies have explored diffusion-based VLA generation (Song et al., 2026; Ye et al., 2025a; Wen et al., 2025; Chen et al., 2026) to address these issues, yet many directly adopt dLLM formulations that treat perception and action as a homogeneous sequence. Although DDVLA (Liang et al., 2025) adapts AR-based VLAs into discrete diffusion, its reliance on extensive iterative denoising limits efficiency. In this work, we leverage the asymmetric nature of perception and action by treating visual-linguistic features as stable prefix anchors. By tailoring a block-wise causal structure with a Diffusion Forcing objective, we ensure that parallel action denoising remains strictly grounded in the multi-modal context. This design enables continuous prefix KV-cache reuse, achieving a hardware-friendly balance between reasoning depth and execution reactivity. 
+
+# 3 Method 
+
+As illustrated in Figure 2, BlockVLA is a semi-autoregressive discrete diffusion framework for robotic action generation. It preserves autoregressive dependencies across action blocks while enabling parallel denoising within each block, thereby combining global temporal consistency with efficient local refinement. We first review the preliminaries of discrete diffusion and block diffusion language modeling in Section 3.1, and then formulate their extension to VLA policy learning. We then present the architecture of BlockVLA in Section 3.2, including the pretrained backbone, action tokenization, block-wise diffusion formulation, masking strategy, and token-shift design. Finally, Section 3.3 describes the block-wise training and inference pipeline. 
+
+3.1 Preliminaries: Discrete and Block Diffusion Language Model 
+
+Unlike continuous diffusion models (Ho et al., 2020; Song et al., 2021) that operate in continuous space using Gaussian noise xt = αtx0 + σtϵ where ϵ ∼ N (0 , I) , Discrete Diffusion Language Models (Austin et al., 2021; Nie et al., 2025; Bie et al., 2025; Han et al., 2023) (dLLMs) define the diffusion process directly on the discrete vocabulary V of size V . Let x0 = [ x(1) 0 , . . . , x(L)0 ] denote a sequence of L tokens, where each x(i)0 ∈ { 0, 1}1×V
+
+is a one-hot row vector. The forward process independently corrupts each token, where the probability of the intermediate state xt = [ x(1)  
+
+> t
+
+, . . . , x(L) 
+
+> t
+
+] ∈ RL×V is given by: 
+
+q(xt | x0) = 
+
+> L
+
+Y
+
+> i=1
+
+q(x(i) 
+
+> t
+
+| x(i)0 ) = 
+
+> L
+
+Y
+
+> i=1
+
+Categorical 
+
+
+
+x(i) 
+
+> t
+
+; p = x(i)0 ¯Qt
+
+
+
+, with ¯Qt = ¯ αtI + (1 − ¯αt)1m ⊤, (1) where ¯αt denotes the retention coefficient determined by the noise schedule, 1 ∈ RV ×1 denotes the all-one vector, and m ∈ RV ×1 denotes the one-hot vector corresponding to the absorbing [MASK] token. Under this formulation, ¯Qt ∈ RV ×V ensures that each token either stays in its original state or transitions to the mask state with probabilities defined by the schedule. The model pθ (x0 | xt) is then trained to predict the original tokens at the masked positions. The training objective minimizes the cross-entropy loss over masked tokens: 4Figure 2 Overall architecture of the proposed BlockVLA framework. The adaptation process is illustrated in three stages. Left : We initialize our model from a pretrained Autoregressive VLA, inheriting its robust vision-language alignment and causal reasoning capabilities. Middle : During the Adaption SFT phase, we illustrate the shift in training objectives. While the baseline transitions from a standard causal mask to a fully bidirectional mask (top), our method employs a Blockwise causal masking strategy (bottom). This encourages intra-block parallel denoising while preserving global causal dependencies. Right : Adapted Diffusion VLA during inference. In contrast to standard Discrete Diffusion, which requires full-sequence iterations, our Block Diffusion maintains an autoregressive flow at the block level, enabling efficient KV Cache reuse and significantly reducing the deployment latency of discrete diffusion-based robotic policies. 
+
+L(θ) = −Et, x0,xt
+
+"
+
+1
+
+t
+
+> L
+
+X
+
+> i=1
+
+1
+
+h
+
+x(i) 
+
+> t
+
+= [MASK] 
+
+i
+
+log pθ (x(i)0 | xt)
+
+#
+
+. (2) where 1[·] is the indicator function that isolates the loss to the masked indices, and the factor 1/t follows the standard reweighting used in masked dLLMs. During inference, the generation process departs from the standard token-by-token autoregressive suite. It begins with a sequence entirely composed of [MASK] tokens. In each iteration, the model performs a parallel forward pass to predict probability distributions for all masked positions. Following a predefined noise schedule, only a subset of tokens with the highest prediction confidence is retained and fixed, while remaining uncertain positions are re-masked for subsequent refinement. This iterative "predict-and-refine" strategy allows the model to utilize bidirectional context and perform robust error correction, ultimately leading to a coherent and precise action sequence within a few steps.  
+
+> Block Diffusion
+
+(Arriola et al., 2025a) emerges as a semi-autoregressive paradigm combining the advantages of global coherence and parallel generation efficiency. In this paradigm, the clean sequence x0 is partitioned into 
+
+B ordered blocks [x10, x20, . . . , xB 
+
+> 0
+
+], where each block xb 
+
+> 0
+
+contains L′ tokens xb 
+
+> 0
+
+= [( xb
+
+> 0
+
+)(1) , (xb
+
+> 0
+
+)(2) , . . . , (xb
+
+> 0
+
+)(L′)].The generation follows a hybrid scheme: autoregressive modeling between blocks and discrete diffusion within each block . The joint likelihood of the sequence factorizes as: 
+
+log pθ (x0) = 
+
+> B
+
+X
+
+> b=1
+
+log pθ (xb 
+
+> 0
+
+| x<b  
+
+> 0
+
+). (3) For each block xb
+
+> 0
+
+, the conditional distribution is modeled using a discrete diffusion process, where we independently assign timesteps (t1, t 2, . . . , t B ) to the B blocks. We distinguish two conditioning strategies for the block-level history: 5• Teacher Forcing: (Arriola et al., 2025a; Cheng et al., 2025) The model conditions on the clean ground-truth previous blocks, which is formulated as pθ (xb 
+
+> 0
+
+| xbtb , x<b  
+
+> 0
+
+). This ensures stable training by providing an uncorrupted history. 
+
+• Diffusion Forcing: (Chen et al., 2024; Wang et al., 2026; Wu et al., 2026a) The model conditions on potentially “noisy” previous blocks from earlier diffusion steps, formulated as pθ (xb 
+
+> 0
+
+| xbtb , x<b t′ ). This aligns the training distribution with the iterative refinement during inference, enhancing the model’s robustness to past prediction errors. For a sequence of length L partitioned into B blocks, each block with length L′ = L/B , assuming L is divisible by B. The overall learning objective LBD is defined as the average masked denoising loss across all blocks: 
+
+LBD (θ) = 1
+
+B
+
+> B
+
+X
+
+> b=1
+
+Etb,x0,xbtb
+
+− 1
+
+tbL′
+
+X
+
+> i=1
+
+1
+
+h
+
+(xbtb )(i) = [MASK] 
+
+i
+
+log pθ
+
+
+
+(xb
+
+> 0
+
+)(i) | xbtb , h<b  , (4) where 1[·] isolates the loss to the masked indices within block b, and h<b denotes the block-level history: 
+
+h<b = x<b  
+
+> 0
+
+for Teacher Forcing and h<b = x<b t′ for Diffusion Forcing. This unified architecture breaks the autoregressive bottleneck by allowing parallel token generation within blocks while maintaining the structural consistency of the global sequence. 
+
+3.2 Architecture of BlockVLA  
+
+> 3.2.1 Backbone and Action Tokenization
+
+BlockVLA builds upon Discrete Diffusion VLA (DDVLA) (Liang et al., 2025) and the multimodal architecture of OpenVLA (Kim et al., 2025). As illustrated in Figure 2, we preserve the Prismatic-7B (Karamcheti et al., 2024) backbone, utilizing SigLIP (Zhai et al., 2023) and DINO v2 (Oquab et al., 2023) to extract complementary visual representations that are linearly projected into the Llama (Touvron et al., 2023) embedding space. While OpenVLA generates actions autoregressively and DDVLA uses full-sequence discrete diffusion, BlockVLA retains the unified transformer structure but introduces a block-wise formulation. By enforcing block-wise causal constraints over action tokens, our framework enables efficient diffusion-based action generation. Following the action discretization scheme used in RT-2 (Zitkovich et al., 2023) and OpenVLA (Kim et al., 2025), we discretize each continuous action dimension into 256 bins using quantile-based binning. The bin boundaries are computed from the 1st to 99th percentiles of the action distribution to reduce the influence of outliers. The binary gripper command is represented as an independent token. Each single-timestep action is represented by 7 tokens, including 3 translation tokens, 3 rotation tokens, and 1 gripper token. Given an action horizon H and action dimension D, we flatten the action chunk into a one-dimensional action sequence 
+
+a of length HD and concatenate it with the multimodal prefix: 
+
+x = [ BOS , v, p, l, a (1) 1 , . . . , a (D)1 , . . . , a (1)  
+
+> H
+
+, . . . , a (D) 
+
+> H
+
+, EOS ], (5) where v, p, and l denote the visual, proprioceptive, and language tokens, respectively. The token a(d) 
+
+> h
+
+denotes the discretized value of the d-th action dimension at timestep h. We use c = [ BOS , v, p, l] to denote the multimodal prefix context, and reserve a for the flattened action token sequence.  
+
+> 3.2.2 Block Diffusion Formulation of BlockVLA
+
+To improve the efficiency of diffusion-based action generation, BlockVLA partitions the flattened action sequence a into B consecutive blocks, denoted as a = [ a1, a2, . . . , aB ]. Let ab denote the b-th action block, and let a<b denote all preceding action blocks. The model maintains an autoregressive dependency across blocks while performing parallel denoising within each block. This design differs from standard full-sequence discrete diffusion, where the entire action sequence is repeatedly refined. By restricting iterative denoising to local blocks, BlockVLA reduces the effective computation associated with repeated denoising steps and allows previously generated blocks to serve as fixed causal context. 6(1) Block-wise masking strategies for Teacher Forcing and Diffusion Forcing. (2) Training and inference with or without token shift.  
+
+> Figure 3 Visualization of the block-wise masking strategy and token-shift design in BlockVLA.
+
+During generation, completed blocks are treated as prefix context for subsequent blocks. Therefore, the hidden states associated with the multimodal prefix and completed action blocks can be reused through prefix KV caching. In contrast, conventional bidirectional diffusion decoding updates the entire sequence during each denoising step, making direct reuse of standard KV-cache states difficult. BlockVLA thus provides a practical compromise between autoregressive decoding and diffusion-based parallel refinement: global temporal coherence is preserved through block-level causality, while local action tokens are generated in parallel within each block, effectively balancing computational efficiency with high-fidelity trajectory prediction.  
+
+> 3.2.3 Masking Strategy
+
+We implement BlockVLA using a structured block-wise attention mask. As shown in Figure 3(1), we consider two training variants that differ in the context exposed to the current noisy action block: Teacher Forcing in (c) conditions on clean preceding blocks, whereas Diffusion Forcing in (b) conditions on noisy or partially denoised preceding blocks. In the Teacher Forcing variant (Arriola et al., 2025a), the b-th block is trained to predict the clean target block from its noisy version, conditioned on the prefix context and clean history blocks :
+
+pθ (ab 
+
+> 0
+
+| abtb , a<b  
+
+> 0
+
+, c), (6) where abtb is the noisy current block at noise level tb, ab 
+
+> 0
+
+is its clean target, a<b  
+
+> 0
+
+denotes clean preceding action blocks, and c = [ BOS , v, p, l] is the multimodal prefix. To expose the clean history without leaking the current or future targets, we concatenate the noisy action sequence and the clean action sequence: 
+
+xinput = [ BOS , v, p, l, at, EOS , a0], (7) where at = [ a1 
+
+> t1
+
+, . . . , aBtB ] and t = ( t1, . . . , t B ) indicate that each block can be corrupted with an independent noise level, and a0 denotes the clean action sequence. The attention mask allows tokens in abtb to attend to c
+
+and a<b  
+
+> 0
+
+, but prevents access to a≥b 
+
+> 0
+
+. Meanwhile, the Teacher Forcing implementation requires two additional details to ensure consistency between training and inference: 
+
+• Loss masking. The appended clean sequence a0 is used only as auxiliary conditioning context. It does not participate in the diffusion loss, and its CE targets are set to the ignore index −100 .
+
+• Position-index alignment. The appended clean sequence should not be treated as a new temporal continuation of the noisy sequence. Therefore, corresponding tokens in at and a0 are assigned identical RoPE position indices (Su et al., 2024). Equivalently, the position ids of the clean suffix are shifted back to match the action positions in at, so that clean previous blocks provide KV context at the correct action positions. 7In the Diffusion Forcing variant (Chen et al., 2024), no clean action suffix is appended. Thus, we only need to corrupt each block in the action sequence. 
+
+xinput = [ BOS , v, p, l, at, EOS ]. (8) The b-th block is instead trained as 
+
+pθ (ab 
+
+> 0
+
+| abtb , a<b t′ , c), (9) where a<b t′ denotes preceding blocks that may have different noise levels and may remain noisy or partially denoised. Thus, Diffusion Forcing differs from Teacher Forcing in the source of block-level history: it conditions on imperfect previous blocks rather than clean previous blocks. This better matches the inference-time pattern, where previously generated blocks may contain residual prediction errors. Finally, we impose a constraint on the prefix context c. Tokens in c use bidirectional attention to support multimodal fusion among BOS , visual, proprioceptive, and language tokens. However, prefix tokens are not allowed to attend to action tokens. This constraint prevents leakage from future actions, keeping the conditioning pattern consistent between training and inference: all action blocks condition on the full multimodal prefix, but the prefix representation is computed independently of the action sequence. Compared with the bidirectional mask in DDVLA, our mask preserves parallel denoising within each block while introducing causal dependencies across action blocks.  
+
+> 3.2.4 Token Shift
+
+Standard autoregressive language models are trained with a one token shift as shown in Figure 3(2), where the hidden state at position n − 1 predicts the token at position n. Prior work on adapting pretrained AR models to diffusion language modeling (Gong et al., 2025) suggests that preserving this shift may help align diffusion training with pretrained AR representations. DDVLA (Liang et al., 2025) follows this design.                      
+
+> Table 2 Analysis of token shift on LIBERO-Object for DDVLA baseline (Success Rate %).
+> Variant Training Steps 5k 10k 15k 20k 30k 40k
+> w token shift 51.2 56.6 80.2 90.6 95.0 94.2
+> w/o token shift 59.6 66.0 81.0 94.2 95.2 95.8
+
+We empirically revisit this choice for VLA policy learning. As shown in Table 2, which aligns with recent findings in Efficient-DLM (Fu et al., 2025), removing the token shift does not degrade perfor-mance on LIBERO-Object ; instead, it yields higher success rates throughout most training stages. This result suggests that after diffusion fine-tuning, the model can recover action tokens at their original positions without relying on the AR-style shifted prediction target. Therefore, unless otherwise specified, we remove the token-shift operation in both our DDVLA baseline and BlockVLA, which directly align each prediction target with its corresponding input position. 
+
+3.3 Training and Inference Pipeline of BlockVLA 
+
+To support efficient training and low-latency robotic control, BlockVLA adopts a block-wise generation pipeline for discrete diffusion VLA. The key idea is to decompose an action chunk into a sequence of blocks, where temporal consistency is modeled through autoregressive dependencies across blocks, and parallel refinement is performed within each block via discrete diffusion. The overall procedure is summarized in Algorithm 1.  
+
+> 3.3.1 Training Phase
+
+During training, we partition the tokenized action sequence a into B consecutive blocks, denoted as [a1, . . . , aB ].For each block ab, we independently sample a diffusion timestep tb ∼ U (0 , 1) and apply the forward masking process to obtain its noised version abtb . Within each block, bidirectional attention is used to model dependencies among action dimensions and timesteps. Across blocks, we impose a block-wise causal mask such that current block prediction can only attend to the multimodal prefix and preceding blocks. In our default Diffusion Forcing setting, preceding blocks are provided as noised blocks a<b t′ , leading to the training objective 
+
+pθ (ab 
+
+> 0
+
+| abtb , a<b t′ , c), (10) 8where c denotes the multimodal prefix consisting of BOS , visual, proprioceptive, and language tokens. This block-wise mask allows all blocks to be trained in parallel while preserving the inference-time causal structure. Since the full action sequence is available during training, we do not use KV caching, which avoids serializing block computation and enables efficient batched gradient updates.  
+
+> 3.3.2 Inference Phase
+
+During inference, BlockVLA generates action blocks sequentially while denoising tokens within each block in parallel. We first encode the multimodal prefix c and store its key-value states in the KV cache. For the 
+
+b-th block, we initialize a block of [MASK] tokens and perform iterative discrete denoising conditioned on the cached prefix and previously generated blocks. During the refinement of the current block, the cached states remain fixed, since only the current block tokens are updated. After the block is fully denoised, its final tokens are forwarded once to compute the corresponding key-value states, which are then appended to the cache and used as causal context for the next block. This procedure enables prefix KV-cache reuse across completed blocks, reducing redundant computation compared with full-sequence bidirectional diffusion decoding. The positional encoding indices are updated after each completed block so that subsequent blocks maintain the correct temporal ordering. 
+
+Algorithm 1 Block Diffusion Training Process  
+
+> Require:
+
+blocks B, noise process qt(· | a), model xθ ,loss LBD , VL prefix c = [ BOS , v, p, l], action a0  
+
+> 1: repeat
+> 2:
+
+Sample t1, . . . , t B ∼ U [0 , 1]   
+
+> 3: for
+
+b = 1 to B do  
+
+> 4:
+
+abtb ∼ qtb (· | ab) # Add noise to each block   
+
+> 5: end for
+> 6:
+
+at ← [a1 
+
+> t1
+
+, . . . , aBtB ] 
+
+> 7:
+
+xinput ← [c, at, EOS , a0] if Teacher Forcing else 
+
+[c, at, EOS ] 
+
+> 8:
+
+# Forward with asymmetric block-wise mask  
+
+> 9:
+
+alogits ← xθ (xinput ) 
+
+> 10:
+
+Take gradient step on ∇θ LBD (alogits , a0; θ)  
+
+> 11: until
+
+converged 
+
+Algorithm 2 Block Diffusion Inference Process  
+
+> Require:
+
+blocks B, model xθ , sampling algorithm SAMPLE , VL prefix c = [ BOS , v, p, l], KV-Cache 
+
+K, V 
+
+> 1:
+
+a ← ∅  
+
+> 2:
+
+# Pre-fill KV cache with prefix  
+
+> 3:
+
+(·), K, V ← xθ (c, update=True )  
+
+> 4: for
+
+b = 1 to B do  
+
+> 5:
+
+# Denoise action block b using fixed K, V 
+
+> 6:
+
+ab, (·), (·) ← SAMPLE (xθ , K, V, update=False ) 
+
+> 7:
+
+# Update cache once the action block is fixed  
+
+> 8:
+
+(·), K, V ← xθ (ab, update=True ) 
+
+> 9:
+
+a ← a ⊕ ab 
+
+> 10:
+
+Update position embedding indices    
+
+> 11: end for
+> 12: return
+
+a
+
+# 4 Experiments 
+
+4.1 Experiment Setup  
+
+> 4.1.1 Benchmarks
+
+We evaluate our method on two widely-used robotic simulation benchmarks: LIBERO (Liu et al., 2023a) and SimplerEnv (Li et al., 2025). LIBERO comprises four specialized task suites, including Spatial, Object, Goal ,and Long , designed to assess policy generalization across diverse spatial layouts, object variations, semantic goals, and extended horizons. Each suite encompasses 10 distinct tasks, with 50 episodic demonstrations provided per task (totaling 500 episodes per suite) for evaluation. We report Success Rate for the LIBERO benchmark. SimplerEnv is a high-fidelity real-to-sim benchmark that provides a simulated counterpart for physical robotic setups. We conduct evaluations on the WidowX platform across four pick-and-place tasks. Following the standard protocol, we evaluate each task over 24 episodes and report two key metrics: Grasp Count and Success Count .9Table 3 Success Rate (%) across training steps on LIBERO benchmarks. We compare our 2-step per block denoising against the 12-step Discrete Diffusion VLA (DDVLA) (Liang et al., 2025) baseline and Autoregressive OpenVLA (Kim et al., 2025). The results of OpenVLA (Kim et al., 2025) is quoted from the original paper.                                                                                                               
+
+> Method Type Success Rate (%) at Training Steps
+> 5k 10k 15k 20k 30k 40k 50k
+> LIBERO-Spatial
+> OpenVLA (Kim et al., 2025) Autoregressive 84.7 (Reported by (Kim et al., 2025)) DDVLA (Liang et al., 2025) Discrete Diffusion 48.0 56.8 68.4 81.0 88.2 87.2 89.8
+> BlockVLA (Ours) Block Diffusion 53.8 79.2 81.6 83.0 88.4 89.0 90.6
+> LIBERO-Object
+> OpenVLA (Kim et al., 2025) Autoregressive 88.4 (Reported by (Kim et al., 2025)) DDVLA (Liang et al., 2025) Discrete Diffusion 59.6 66.0 81.0 94.2 95.2 95.8 96.6
+> BlockVLA (Ours) Block Diffusion 69.2 76.6 94.0 94.8 97.0 96.8 97.6
+> LIBERO-Goal
+> OpenVLA (Kim et al., 2025) Autoregressive 79.2 (Reported by (Kim et al., 2025)) DDVLA (Liang et al., 2025) Discrete Diffusion 51.2 69.2 77.6 89.6 91.8 94.2 92.6
+> BlockVLA (Ours) Block Diffusion 60.0 75.6 86.0 89.8 92.6 93.2 93.2
+> LIBERO-Long
+> OpenVLA (Kim et al., 2025) Autoregressive 53.7 (Reported by (Kim et al., 2025)) DDVLA (Liang et al., 2025) Discrete Diffusion 0.4 3.6 3.8 18.6 23.2 37.2 53.6
+> BlockVLA (Ours) Block Diffusion 35.8 44.2 62.2 70.2 69.6 78.6 85.2 Average
+> OpenVLA (Kim et al., 2025) Autoregressive 76.5 (Reported by (Kim et al., 2025)) DDVLA (Liang et al., 2025) Discrete Diffusion 39.8 48.9 57.7 70.9 74.6 78.6 83.2
+> BlockVLA (Ours) Block Diffusion 54.7 68.9 81.0 84.5 87.0 89.4 91.7 5k 10k 15k 20k 30k 40k 50k
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Success Rate (%)
+> LIBERO-Object
+> DDVLA
+> BlockVLA
+> OpenVLA
+> 5k 10k 15k 20k 30k 40k 50k
+> Training Steps
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Success Rate (%)
+> LIBERO-Long
+> DDVLA
+> BlockVLA
+> OpenVLA
+
+Figure 4 Success Rate (%) vs. train-ing steps on LIBERO-Object and 
+
+LIBERO-Long . Our BlockVLA reaches high success rate faster than baseline. 
+
+4.1.2 Baselines 
+
+We select OpenVLA (Kim et al., 2025) and Discrete Diffusion VLA(DDVLA) (Liang et al., 2025) as our primary baselines. OpenVLA serves as the representative autoregressive baseline, utilizing a Prismatic-7B backbone that integrates SigLIP and DINOv2 as dual visual encoders with a Llama-based language model to generate action tokens. DDVLA inherits this multimodal architecture but reformulates action generation as a discrete diffusion process. Following our preliminary findings in Table 2, which suggest that token shifting provides marginal gains for diffusion-based VLA, we adopt the no token shift configuration for all DDVLA and BlockVLA results to ensure a robust and fair comparison. 
+
+4.2 Main Results 
+
+Our main experimental results across the LIBERO benchmarks and the SimplerEnv WidowX robot tasks are detailed in Table 3 and Table 4, respectively. BlockVLA demonstrates a clear performance advantage over both the autoregressive and discrete diffusion baselines. In the LIBERO suites, our method achieves an average success rate of 91.7% within 50k steps, consistently outperforming OpenVLA and showing significantly faster convergence than the standard DDVLA. In the SimplerEnv real-to-sim evaluations, BlockVLA maintains competitive performance across diverse pick-and-place scenarios. Notably, while significantly reducing the number of denoising steps compared to the diffusion baseline, our framework still achieves comparable or slightly superior success rates, validating its reliability in more complex environmental settings. Specifically, our BlockVLA exhibits significant advantages in two primary aspects: 
+
+4.2.1 Enhanced Training Efficiency 
+
+As illustrated in Figure 5 (taking LIBERO-Object as a representative), Block Diffusion exhibits significantly superior training dynamics compared to the discrete diffusion baseline. When evaluating the Action Loss with EMA smoothing (thresholded at 0.05), our framework achieves faster convergence and maintains a more stable, lower-variance loss trajectory. This enhanced efficiency facilitates rapid adaptation during fine-tuning, which is particularly critical for long-horizon tasks. 10 Table 4 SimplerEnv WidowX robot results (partial) over 4 pick-and-place tasks. Success Count (out of 24 episodes) is used as the metric. We train for 60k steps and save checkpoints every 10k steps.      
+
+> Task Method 10k 20k 40k 60k
+
+Grasp Success Grasp Success Grasp Success Grasp Success Put Carrot on Plate DDVLA (Liang et al., 2025) 10/24 3/24 13/24 6/24 13/24 3/24 17/24 5/24    
+
+> BlockVLA (Ours) 15/24 6/24
+
+12/24 6/24 12/24 2/24 20/24 4/24 Put Spoon on Towel DDVLA (Liang et al., 2025) 12/24 3/24 17/24 7/24 14/24 10/24 13/24 7/24  
+
+> BlockVLA (Ours)
+
+17/24 5/24 15/24 9/24 17/24 9/24 17/24 12/24 
+
+Stack Green on Yellow DDVLA (Liang et al., 2025) 11/24 1/24 13/24 4/24 15/24 1/24 12/24 3/24    
+
+> BlockVLA (Ours) 15/24 4/24
+
+13/24 4/24 18/24 3/24 14/24 3/24 Put Eggplant in Basket DDVLA (Liang et al., 2025) 17/24 8/24 19/24 12/24 19/24 14/24 21/24 15/24 BlockVLA (Ours) 22/24 15/24 16/24 10/24 18/24 14/24 20/24 15/24 10k 20k 30k 40k 50k  
+
+> Training Step for LIBERO-Object
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> Loss
+> 1.9 ×Faster
+> Block Diffusion
+> Discrete Diffusion
+
+Figure 5 Training dynamics on LIBERO-Object . Our method achieves faster convergence and more stable loss reduction compared to the baseline. 
+
+For instance, in the challenging LIBERO-Long shown in Figure 4 while the baseline struggles to bootstrap (merely 3.8% success rate at 15k steps), our Block-VLA effectively captures temporal dependencies to reach 
+
+60.0% within the same interval, demonstrating its high-efficiency adaptation. The similar trend of training effi-ciency is also observed on SimplerEnv, where BlockVLA consistently outperforms the DDVLA baseline at the early 10k-step checkpoint across all four evaluation tasks (see Table 4). 
+
+4.2.2 Inference Acceleration 
+
+Block Diffusion delivers a transformative leap in deployment efficiency by synergizing parallel decoding with KV-cache reuse. As shown in Figure 1(b), our framework, utilizing only 2 denoising steps per block, achieves a remarkable inference throughput of 186.7 tokens/s . This represents a 3.3 × speedup over the Discrete Diffusion baseline and an 8.0 × improvement relative to the Autoregressive OpenVLA. These results validate that Block Diffusion effectively mitigates the computational bottleneck inherent in iterative diffusion processes, making high-performance VLA models viable for high-frequency, real-time robotic control. LIBERO-Object LIBERO-Long 
+
+> 80
+> 85
+> 90
+> 95
+> 100
+> Success Rate (%)
+> 96.8
+> 82.6
+> 97.6
+> 85.2
+> Block Size = 7
+> Block Size = 14
+
+Figure 6 Ablation study on block size at 50k training steps for LIBERO-Object and LIBERO-Long . We ob-serve that block size 14 yields better performance. LIBERO-Object LIBERO-Long 
+
+> 0
+> 25
+> 50
+> 75
+> 100
+> Success Rate (%)  88.6
+> 63.4
+> 97.6
+> 85.2
+> Teacher Forcing
+> Diffusion Forcing
+
+Figure 7 Comparison of Teacher Forc-ing and Diffusion Forcing at training step 50k, demonstrating the stabil-ity of our Diffusion Forcing training strategy. 1 2 3 4
+
+Denoise Step per Block  
+
+> 90
+> 92
+> 94
+> 96
+> 98
+> 100
+> Success Rate (%)
+> Success Rate Inference Speed
+> 100
+> 150
+> 200
+> 250
+> 300
+> Inference Speed (Tokens/s)
+
+Figure 8 Ablation study on denoise steps per block under block at 50k training steps for LIBERO-Object .We observe a performance-speed trade-off as iterations increase. 
+
+4.3 Further Analysis & Ablation Study 
+
+To investigate the inner workings of BlockVLA, we perform a systematic analysis on LIBERO-Object and 
+
+LIBERO-Long . We conduct an ablation study on key architectural components as follows. 11 4.3.1 Impact of Block Size 
+
+We investigate the sensitivity of our framework to the block size B by evaluating performance on LIBERO-Object and LIBERO-Long with B = 7 and B = 14 . As illustrated in Figure 6, B = 14 consistently outperforms 
+
+B = 7 across both benchmarks. This performance gap suggests that while B = 7 corresponds to a single-step action, the larger block size B = 14 enables the model to jointly model the distribution of two consecutive time steps within a single denoising process. By capturing these inter-step dynamic correlations and temporal dependencies, the parallel diffusion head ensures better motion continuity and trajectory smoothness, which are essential for maintaining stability in complex, long-horizon manipulation tasks.  
+
+> 4.3.2 Diffusion Forcing vs. Teacher Forcing
+
+Following the masking strategies illustrated in Figure 3(1) (b)(c), we compare the performance of Teacher Forcing and Diffusion Forcing across LIBERO-Object and LIBERO-Long . As previously shown in Figure 7 ,  
+
+> Diffusion Forcing
+
+consistently outperforms the standard Teacher Forcing baseline. This suggests that in robotic VLA tasks, modeling the b-th block based on corrupted (noisy) previous states facilitates a more robust coupling between causal blocks compared to training on ground-truth (clean) history. This mechanism effectively bridges the gap between training-time supervision and inference-time autoregressive error accumulation.  
+
+> 4.3.3 Impact of Denoising Steps per Block
+
+We further analyze the influence of the number of denoising iterations within each block using the LIBERO-Object as shown in Figure 8. With a fixed block size of 14, we evaluate the performance as the denoising steps vary from 1 to 4. As depicted in the accompanying figure, the success rate exhibits a notable peak at 3 denoising steps. This result reveals a critical performance-efficiency trade-off : while increasing the number of iterations enhances the fidelity of action generation, it simultaneously incurs higher computational latency, thereby reducing the inference throughput. In our framework, 2 or 3 steps provide an optimal balance, achieving high-success rate while maintaining real-time inference speeds. 
+
+# 5 Conclusion 
+
+In this paper, we presented BlockVLA , a block diffusion framework that bridges the gap between causal reasoning and parallel action generation in robotic policies. By restructuring the action sequence into a hierarchical block-wise architecture, our method successfully reconciles the temporal consistency and KV-Cache efficiency of autoregressive models with the high-throughput advantages of discrete diffusion. Our extensive evaluations on the LIBERO and SimplerEnv benchmarks demonstrate that Block Diffusion achieves superior inference efficiency , delivering a 3.3× speedup over standard diffusion baselines while maintaining high execution precision. Furthermore, we highlight a significant gain in training efficiency ; our framework facilitates a smoother adaptation from pretrained Vision-Language Models (VLMs), converging substantially faster and requiring less data than bidirectional diffusion approaches. These results underscore the potential of Block Diffusion as a scalable and efficient paradigm for deploying large-scale pretrained models into real-world robotic applications. Future work will explore the integration of this block-based diffusion strategy with multi-modal sensor fusion to further enhance the robustness of long-horizon robotic manipulation. 12 References 
+
+Marianne Arriola, Aaron Gokaslan, Justin T Chiu, Zhihan Yang, Zhixuan Qi, Jiaqi Han, Subham Sekhar Sahoo, and Volodymyr Kuleshov. Block diffusion: Interpolating between autoregressive and diffusion language models. In The Thirteenth International Conference on Learning Representations , 2025a. Marianne Arriola, Naveen Venkat, Jonathan Granskog, and Anastasis Germanidis. Adapting autoregres-sive vision language models for parallel diffusion decoding, 2025b. URL https://runwayml.com/research/ autoregressive-to-diffusion-vlms .Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den Berg. Structured denoising diffusion models in discrete state-spaces. Advances in Neural Information Processing Systems , 34:17981–17993, 2021. Anas Awadalla, Irena Gao, Josh Gardner, Jack Hessel, Yusuf Hanafy, Wanrong Zhu, Kalyani Marathe, Yonatan Bitton, Samir Gadre, Shiori Sagawa, et al. Openflamingo: An open-source framework for training large autoregressive vision-language models. arXiv preprint arXiv:2308.01390 , 2023. Jinze Bai, Shuai Bai, Yunfei Chu, Zeyu Cui, Kai Dang, Xiaodong Deng, Yang Fan, Wenbin Ge, Yu Han, Fei Huang, et al. Qwen technical report. arXiv preprint arXiv:2309.16609 , 2023. Shuanghao Bai, Wenxuan Song, Jiayi Chen, Yuheng Ji, Zhide Zhong, Jin Yang, Han Zhao, Wanqi Zhou, Zhe Li, Pengxiang Ding, et al. Embodied robot manipulation in the era of foundation models: Planning and learning perspectives. arXiv preprint arXiv:2512.22983 , 2025. Shuanghao Bai, Jing Lyu, Wanqi Zhou, Zhe Li, Dakai Wang, Lei Xing, Xiaoguang Zhao, Pengwei Wang, Zhongyuan Wang, Cheng Chi, et al. Latent reasoning vla: Latent thinking and prediction for vision-language-action models. 
+
+arXiv preprint arXiv:2602.01166 , 2026a. Shuanghao Bai, Dakai Wang, Cheng Chi, Wanqi Zhou, Jing Lyu, Xiaoguang Zhao, Pengwei Wang, Zhongyuan Wang, Lei Xing, Shanghang Zhang, et al. Reshaping action error distributions for reliable vision-language-action models. 
+
+arXiv preprint arXiv:2602.04228 , 2026b. Lucas Beyer, Andreas Steiner, André Susano Pinto, Alexander Kolesnikov, Xiao Wang, Daniel Salz, Maxim Neumann, Ibrahim Alabdulmohsin, Michael Tschannen, Emanuele Bugliarello, et al. Paligemma: A versatile 3b vlm for transfer. 
+
+arXiv preprint arXiv:2407.07726 , 2024. Tiwei Bie, Maosong Cao, Kun Chen, Lun Du, Mingliang Gong, Zhuochen Gong, Yanmei Gu, Jiaqi Hu, Zenan Huang, Zhenzhong Lan, et al. Llada2.0: Scaling up diffusion language models to 100b. arXiv preprint arXiv:2512.15745 ,2025. Qingwen Bu, Jisong Cai, Li Chen, Xiuqi Cui, Yan Ding, Siyuan Feng, Shenyuan Gao, Xindong He, Xuan Hu, Xu Huang, et al. Agibot world colosseo: A large-scale manipulation platform for scalable and intelligent embodied systems. In 
+
+2025 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , 2025. Jun Cen, Chaohui Yu, Hangjie Yuan, Yuming Jiang, Siteng Huang, Jiayan Guo, Xin Li, Yibing Song, Hao Luo, Fan Wang, et al. Worldvla: Towards autoregressive action world model. arXiv preprint arXiv:2506.21539 , 2025. Boyuan Chen, Diego Martí Monsó, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitzmann. Diffusion forcing: Next-token prediction meets full-sequence diffusion. Advances in Neural Information Processing Systems ,37:24081–24125, 2024. Jiayi Chen, Wenxuan Song, Pengxiang Ding, Ziyang Zhou, Han Zhao, Feilong Tang, Donglin Wang, and Haoang Li. Unified diffusion vla: Vision-language-action model via joint discrete denoising diffusion process. In The Fourteenth International Conference on Learning Representations (ICLR) , 2026. Zhe Chen, Weiyun Wang, Yue Cao, Yangzhou Liu, Zhangwei Gao, Erfei Cui, Jinguo Zhu, Shenglong Ye, Hao Tian, Zhaoyang Liu, et al. Expanding performance boundaries of open-source multimodal models with model, data, and test-time scaling. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2025. Shuang Cheng, Yihan Bian, Dawei Liu, Linfeng Zhang, Qian Yao, Zhongbo Tian, Wenhai Wang, Qipeng Guo, Kai Chen, Biqing Qi, et al. Sdar: A synergistic diffusion-autoregression paradigm for scalable sequence generation. arXiv preprint arXiv:2510.06303 , 2025. Can Cui, Pengxiang Ding, Wenxuan Song, Shuanghao Bai, Xinyang Tong, Zirui Ge, Runze Suo, Wanqi Zhou, Yang Liu, Bofang Jia, et al. Openhelix: A short survey, empirical analysis, and open-source dual-system vla model for robotic manipulation. arXiv preprint arXiv:2505.03912 , 2025. 
+
+13 Frederik Ebert, Yanlai Yang, Karl Schmeckpeper, Bernadette Bucher, Georgios Georgakis, Kostas Daniilidis, Chelsea Finn, and Sergey Levine. Bridge data: Boosting generalization of robotic skills with cross-domain datasets. In 
+
+Proceedings of Robotics: Science and Systems (RSS) , 2022. Yonggan Fu, Lexington Whalen, Zhifan Ye, Xin Dong, Shizhe Diao, Jingyu Liu, Chengyue Wu, Hao Zhang, Enze Xie, Song Han, et al. Efficient-dlm: From autoregressive to diffusion language models, and beyond in speed. arXiv preprint arXiv:2512.14067 , 2025. Shansan Gong, Shivam Agarwal, Yizhe Zhang, Jiacheng Ye, Lin Zheng, Mukai Li, Chenxin An, Peilin Zhao, Wei Bi, Jiawei Han, et al. Scaling diffusion language models via adaptation from autoregressive models. In The Thirteenth International Conference on Learning Representations (ICLR) , 2025. Xiaochuang Han, Sachin Kumar, and Yulia Tsvetkov. Ssd-lm: Semi-autoregressive simplex-based diffusion language model for text generation and modular control. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 11575–11596, 2023. Zhengfu He, Tianxiang Sun, Qiong Tang, Kuanning Wang, Xuan-Jing Huang, and Xipeng Qiu. Diffusionbert: Improving generative masked language models with diffusion models. In Proceedings of the 61st annual meeting of the Association for Computational Linguistics (volume 1: Long papers) , pp. 4521–4534, 2023. Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in Neural Information Processing Systems , 33:6840–6851, 2020. Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, et al. pi0.5: a vision-language-action model with open-world generalization. In Conference on Robot Learning , pp. 17–40. PMLR, 2025. Siddharth Karamcheti, Suraj Nair, Ashwin Balakrishna, Percy Liang, Thomas Kollar, and Dorsa Sadigh. Prismatic vlms: Investigating the design space of visually-conditioned language models. In Forty-first International Conference on Machine Learning , 2024. Alexander Khazatsky, Karl Pertsch, Suraj Nair, Ashwin Balakrishna, Sudeep Dasari, Siddharth Karamcheti, Soroush Nasiriany, Mohan Kumar Srirama, Lawrence Yunliang Chen, Kirsty Ellis, et al. Droid: A large-scale in-the-wild robot manipulation dataset. In Robotics: Science and Systems , 2024. Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan P Foster, Pannag R Sanketi, Quan Vuong, et al. Openvla: An open-source vision-language-action model. In 
+
+Conference on Robot Learning , pp. 2679–2713. PMLR, 2025. Qixiu Li, Yaobo Liang, Zeyu Wang, Lin Luo, Xi Chen, Mozheng Liao, Fangyun Wei, Yu Deng, Sicheng Xu, Yizhong Zhang, et al. Cogact: A foundational vision-language-action model for synergizing cognition and action in robotic manipulation. arXiv preprint arXiv:2411.19650 , 2024. Xuanlin Li, Kyle Hsu, Jiayuan Gu, Oier Mees, Karl Pertsch, Homer Rich Walke, Chuyuan Fu, Ishikaa Lunawat, Isabel Sieh, Sean Kirmani, et al. Evaluating real-world robot manipulation policies in simulation. In Conference on Robot Learning , pp. 3705–3728. PMLR, 2025. Zhixuan Liang, Yizhuo Li, Tianshuo Yang, Chengyue Wu, Sitong Mao, Tian Nian, Liuao Pei, Shunbo Zhou, Xiaokang Yang, Jiangmiao Pang, et al. Discrete diffusion vla: Bringing discrete diffusion to action decoding in vision-language-action policies. arXiv preprint arXiv:2508.20072 , 2025. Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qiang Liu, Yuke Zhu, and Peter Stone. Libero: Benchmarking knowledge transfer for lifelong robot learning. Advances in Neural Information Processing Systems , 36:44776–44791, 2023a. Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. Advances in Neural Information Processing Systems , 36:34892–34916, 2023b. Zhiyuan Liu, Yicun Yang, Yaojie Zhang, Junjie Chen, Chang Zou, Qingyuan Wei, Shaobo Wang, and Linfeng Zhang. dllm-cache: Accelerating diffusion large language models with adaptive caching. arXiv preprint arXiv:2506.06295 ,2025. Aaron Lou, Chenlin Meng, and Stefano Ermon. Discrete diffusion modeling by estimating the ratios of the data distribution. International Conference on Machine Learning (ICML) , 2023. Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. Large language diffusion models. Advances in Neural Information Processing Systems , 2025. 
+
+14 Maxime Oquab, Timothée Darcet, Théo Moutakanni, Huy Vo, Marc Szafraniec, Vasil Khalidov, Pierre Fernandez, Daniel Haziza, Francisco Massa, Alaaeldin El-Nouby, et al. Dinov2: Learning robust visual features without supervision. Transactions on Machine Learning Research , 2023. Abby O’Neill, Abdul Rehman, Abhiram Maddukuri, Abhishek Gupta, Abhishek Padalkar, Abraham Lee, Acorn Pooley, Agrim Gupta, Ajay Mandlekar, Ajinkya Jain, et al. Open x-embodiment: Robotic learning datasets and rt-x models: Open x-embodiment collaboration 0. In 2024 IEEE International Conference on Robotics and Automation (ICRA) ,pp. 6892–6903. IEEE, 2024. Karl Pertsch, Kyle Stachowicz, Brian Ichter, Danny Driess, Suraj Nair, Quan Vuong, Oier Mees, Chelsea Finn, and Sergey Levine. Fast: Efficient action tokenization for vision-language-action models. arXiv preprint arXiv:2501.09747 ,2025. Delin Qu, Haoming Song, Qizhi Chen, Yuanqi Yao, Xinyi Ye, Yan Ding, Zhigang Wang, JiaYuan Gu, Bin Zhao, Dong Wang, et al. Spatialvla: Exploring spatial representations for visual-language-action model. In Robotics: Science and Systems , 2025. Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In International Conference on Learning Representations (ICLR) , 2021. Wenxuan Song, Jiayi Chen, Shuai Chen, Jingbo Wang, Pengxiang Ding, Han Zhao, Yikai Qin, Xinhu Zheng, Donglin Wang, Yan Wang, et al. Fast-dvla: Accelerating discrete diffusion vla to real-time performance. arXiv preprint arXiv:2603.25661 , 2026. Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. Yuchuan Tian, Yuchen Liang, Shuo Zhang, Yingte Shu, Guangwen Yang, Wei He, Sibo Fang, Tianyu Guo, Kai Han, Chao Xu, et al. From next-token to next-block: A principled adaptation path for diffusion llms. arXiv preprint arXiv:2512.06776 , 2025. Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al. Llama: Open and efficient foundation language models. 
+
+arXiv preprint arXiv:2302.13971 , 2023. Xu Wang, Chenkai Xu, Yijie Jin, Jiachun Jin, Hao Zhang, and Zhijie Deng. Diffusion llms can do faster-than-ar inference via discrete diffusion forcing. In The Fourteenth International Conference on Learning Representations ,2026. Yating Wang, Haoyi Zhu, Mingyu Liu, Jiange Yang, Hao-Shu Fang, and Tong He. Vq-vla: Improving vision-language-action models via scaling vector-quantized action tokenizers. In International Conference on Computer Vision (ICCV) , 2025. Yuqing Wen, Hebei Li, Kefan Gu, Yucheng Zhao, Tiancai Wang, and Xiaoyan Sun. Llada-vla: Vision language diffusion action models. arXiv preprint arXiv:2509.06932 , 2025. Chengyue Wu, Hao Zhang, Shuchen Xue, Shizhe Diao, Yonggan Fu, Zhijian Liu, Pavlo Molchanov, Ping Luo, Song Han, and Enze Xie. Fast-dllm v2: Efficient block-diffusion llm. In The Fourteenth International Conference on Learning Representations (ICLR) , 2026a. Chengyue Wu, Hao Zhang, Shuchen Xue, Zhijian Liu, Shizhe Diao, Ligeng Zhu, Ping Luo, Song Han, and Enze Xie. Fast-dllm: Training-free acceleration of diffusion llm by enabling kv cache and parallel decoding. In The Fourteenth International Conference on Learning Representations (ICLR) , 2026b. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025a. Ling Yang, Ye Tian, Bowen Li, Xinchen Zhang, Ke Shen, Yunhai Tong, and Mengdi Wang. Mmada: Multimodal large diffusion language models. arXiv preprint arXiv:2505.15809 , 2025b. Jiacheng Ye, Shansan Gong, Jiahui Gao, Junming Fan, Shuang Wu, Wei Bi, Haoli Bai, Lifeng Shang, and Lingpeng Kong. Dream-vl & dream-vla: Open vision-language and vision-language-action models with diffusion language model backbone. arXiv preprint arXiv:2512.22615 , 2025a. Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. Dream 7b: Diffusion large language models. arXiv preprint arXiv:2508.15487 , 2025b. 
+
+15 Zebin You, Shen Nie, Xiaolu Zhang, Jun Hu, Jun Zhou, Zhiwu Lu, Ji-Rong Wen, and Chongxuan Li. Llada-v: Large language diffusion models with visual instruction tuning. arXiv preprint arXiv:2505.16933 , 2025. Lunbin Zeng, Jingfeng Yao, Bencheng Liao, Hongyuan Tao, Wenyu Liu, and Xinggang Wang. Diffusionvl: Translating any autoregressive models into diffusion vision language models. arXiv preprint arXiv:2512.15713 , 2025. Xiaohua Zhai, Basil Mustafa, Alexander Kolesnikov, and Lucas Beyer. Sigmoid loss for language image pre-training. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 11975–11986, 2023. Wei Zhao, Pengxiang Ding, Min Zhang, Zhefei Gong, Shuanghao Bai, Han Zhao, and Donglin Wang. Vlas: Vision-language-action model with speech instructions for customized robot manipulation. In International Conference on Learning Representations , 2025. Brianna Zitkovich, Tianhe Yu, Sichun Xu, Peng Xu, Ted Xiao, Fei Xia, Jialin Wu, Paul Wohlhart, Stefan Welker, Ayzaan Wahid, et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. In Conference on Robot Learning , pp. 2165–2183. PMLR, 2023. 
+
+16

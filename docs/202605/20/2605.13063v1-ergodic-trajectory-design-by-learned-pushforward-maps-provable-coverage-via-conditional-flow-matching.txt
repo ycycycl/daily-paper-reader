@@ -1,0 +1,3203 @@
+Title: Ergodic Trajectory Design by Learned Pushforward Maps: Provable Coverage via Conditional Flow Matching
+
+URL Source: https://arxiv.org/pdf/2605.13063v1
+
+Published Time: Thu, 14 May 2026 00:50:06 GMT
+
+Number of Pages: 55
+
+Markdown Content:
+# Ergodic Trajectory Design by Learned Pushforward Maps: Provable Coverage via Conditional Flow Matching 
+
+Ehsan Aghazadeh Masoud Malekzadeh Ahmad Ghasemi Hossein Pishro-Nik 
+
+University of Massachusetts Amherst 
+
+{eaghazadeh,mmalekzadeh,aghasemi,pishro}@umass.edu 
+
+## Abstract 
+
+Designing continuous trajectories whose time-averaged occupancy provably matches a prescribed spatial density (the ergodic coverage problem) is central to UAV-assisted data collection and sensing, robotic exploration, and mobile mon-itoring. For flying agents in particular, this challenge is acute: trajectories must balance coverage fidelity against tight energy budgets, no-fly zones, and accel-eration limits. Existing methods either re-optimize each trajectory online (with cost growing in the horizon and re-running for every target, agent, and realization) or rely on bespoke analytical constructions that must be re-derived for each new constraint. We propose a pushforward framework that decouples ergodicity from density matching: an analytic latent trajectory provides exact uniform ergodicity on a simple annular domain, and a single map, learned offline by optimal-transport conditional flow matching, transports this latent occupancy onto the prescribed target density. The composed trajectory is then asymptotically ergodic with respect to the learned pushforward distribution, with deviation from the target controlled by the flow-matching training loss. Once trained for a given target density and con-straint set, the map serves an unbounded number of trajectories and a multi-agent fleet without per-agent retraining, and many differentiable operational constraints (no-fly zones, acceleration ceilings, or fairness penalties) enter as additive soft penalties in the training loss without re-deriving the design. We prove three re-sults (an acceleration-energy bound, an O(1 /√K) ergodic convergence rate in the number of trajectory cycles K, and an approximation-error bound) that com-bine into an end-to-end coverage bound estimable from CFM training diagnostics (certified given an architectural Lipschitz bound on vθ ). Experiments on synthetic targets empirically support each theoretical envelope; on a real UAV-coverage dataset, the proposed method gives the strongest observed coverage–energy and coverage–constraint tradeoffs among the evaluated time-warping, optimization, and concurrent flow-matching baselines. 
+
+## 1 Introduction 
+
+A fundamental problem in spatial coverage is to design a continuous trajectory whose time-averaged occupancy provably matches a prescribed target density. This ergodic coverage problem arises whenever a mobile agent (a UAV, a ground robot, or a sensor platform) must distribute its spatial presence according to a non-uniform importance map (see Appendix H for concrete application domains including wireless communications, IoT data harvesting, and search-and-rescue). Formally, the goal is to construct x(t) ∈ A ⊂ R2 such that: 
+
+1
+
+T
+
+Z T
+
+> 0
+
+φ(x(t)) dt T →∞ 
+
+−−−−→
+
+Z
+
+> A
+
+φ(y) ftarget (y) dy, ∀ bounded continuous φ. (1) 
+
+> Preprint.
+> arXiv:2605.13063v1 [cs.LG] 13 May 2026
+
+Achieving this is nontrivial because the agent must balance global redistribution (reaching all regions with the correct frequency) against local continuity (maintaining a smooth, physically realizable path), while satisfying operational constraints such as no-fly zones, speed limits, or energy budgets. Existing methods face fundamental tradeoffs. Spectral Multiscale Coverage [ 10 ] is high quality but 
+
+O(Kd
+
+> F
+
+) in the Fourier-basis cutoff KF and requires per-scenario re-optimization. Grid-based and deep RL methods discretize and scale poorly, and their closed-loop variants typically require real-time environmental feedback impractical in privacy-preserving or communication-limited settings. Analytical time-warping [ 9] is provably convergent and handles general 2D densities, but is bespoke per target/constraint, with no mechanism for additive penalties. Sun et al. [11] apply flow matching as per-trajectory control updates with direct dynamics accommodation, but each scenario requires fresh online optimization (non-amortized) and the proved guarantee is finite-horizon: no long-run convergence is established as T grows. To our knowledge, no existing approach offers the combination of reusable amortized maps, modular constraint penalties, and asymptotic ergodicity with an explicit 
+
+O(1 /√K) finite-cycle rate (Section 5). 
+
+Our approach: learn a pushforward map. Instead of optimizing a trajectory directly, we learn a pushforward map Gθ : Rd → Rd that transforms a simple, analytically constructed ergodic trajectory into one matching the prescribed target density (Figure 1). The key insight is that ergodicity is preserved under any measurable pushforward : whenever G : Dδ → R2 is Borel-measurable, the composed trajectory x(t) = G(z(t)) is exactly ergodic with respect to the pushforward G#πδ 
+
+> 0
+
+. For the learned map Gθ , the deviation of Gθ#πδ 
+
+> 0
+
+from ftarget is quantified by our approximation bound (Theorem 3). 
+
+Contributions. 
+
+1. We formalize a two-stage decomposition (latent ergodic trajectory + learned pushforward map) and prove that asymptotic ergodicity transfers under the pushforward (Proposition 2), in contrast to the finite-horizon spectral metric of prior methods (Section 5). 2. We prove an acceleration energy bound (Theorem 1): the energy cost is controlled by the map’s Lipschitz constant L with Hessian contributions vanishing as O(δ), which explains why OT-coupled training (empirically promoting low-Lipschitz, low-curvature maps) yields lower acceleration energy, with certified control of L requiring spectral-normalized architectures. 3. We prove an ergodic convergence rate of O(1 /√K) (Theorem 2) via Cauchy–Schwarz, the Poincaré inequality on the annular domain [42], and i.i.d. cycle structure. 4. We prove an approximation error bound (Theorem 3, smooth-target regime) connecting the Wasserstein coverage error to the CFM training loss via Grönwall ODE stability. An extension (Proposition 3) covers non-smooth or topology-mismatched targets at the cost of an additional 
+
+O(ηreg ) + O(δ) residual. Combined with the convergence rate, this yields an end-to-end coverage bound (Corollary 2) evaluable from the CFM loss and a two-sided bracket on Lv .5. Three operational properties follow from the decomposition: modular constraint handling via additive differentiable penalties in Ltotal , multi-agent reuse of a single trained Gθ , and open-loop, density-only operation (no run-time observation of user or target locations), supporting deployment in bandwidth- or privacy-limited settings. 6. We empirically support each theoretical envelope on three synthetic benchmarks and evaluate a real UAV-coverage dataset, where the method gives the strongest observed coverage–energy and coverage–constraint tradeoffs among the evaluated time-warping, optimization, and concurrent flow-matching baselines. 
+
+Notation. A complete notation guide covering all symbols, norms, and conventions used in the paper is collected in Appendix A. 
+
+## 2 Problem Setup 
+
+2.1 The Latent Ergodic Trajectory 
+
+Fix δ > 0 and let Dδ = {z ∈ R2 : δ ≤ ∥ z∥ ≤ 1} be the annular latent domain . The excluded inner disc serves as a “base station” or an “airport.” The latent trajectory z(t) is a radial back-and-forth process: at the start of each cycle k, a fresh angle θk ∼ Uniform[0 , 2π) is drawn independently. The 2agent moves outward along the ray at angle θk with radial position 
+
+r(s) = pδ2 + (1 − δ2) s, s ∈ [0 , 1] , (2) sweeping from r(0) = δ to r(1) = 1 , then returns along the same ray. Writing eθ = (cos θ, sin θ), the outward leg of cycle k is zk(s) = r(s) eθk for s ∈ [0 , 1] . The radial speed ˙r(s) = (1 − δ2)/(2 r(s)) 
+
+is bounded by (1 − δ2)/(2 δ) everywhere, because the δ-exclusion eliminates the origin singularity that would arise on a full disc. For stationary analysis we adopt the standard convention of an independent uniform phase offset Φ0 ∼ Uniform[0 , 2) at which the observation window begins within the first cycle; this is needed only for pointwise distributional statements, not long-run averages. The inter-cycle reorientation from θk−1 to θk takes place during a base-station rest inside {∥ z∥ ≤ δ}
+
+that is excluded from mission time (the rest duration is not part of the time-average; see Appendix C, “Airport turnaround”). 
+
+Regularity. The trajectory is piecewise-C2; Theorems 1 and 2 integrate over open smooth interiors, and Appendix C.1 gives a globally C1 local-smoothing variant. 
+
+Proposition 1 (Uniform ergodicity on Dδ ). Under the phase convention above, the position z(t)
+
+is distributed as Uniform( Dδ ) with density πδ 
+
+> 0
+
+= 1 /(π(1 − δ2)) for every t ≥ 0. Moreover, independently of this convention, the trajectory is ergodic with respect to πδ 
+
+> 0
+
+: by the i.i.d. cycle structure and the strong law of large numbers, 1
+
+> T
+
+R T 
+
+> 0
+
+φ(z(t)) dt → R 
+
+> Dδ
+
+φ dπ δ 
+
+> 0
+
+a.s. for any integrable 
+
+φ (proof in Appendix B). 
+
+The i.i.d. cycle structure is a deliberate design choice: it converts the ergodic convergence question into a standard problem about averages of independent random variables, avoiding mixing-time analysis entirely (Section 3.2). For typical values δ = 0 .01 –0.1, the excluded area is < 3% of the disc. We present the 2D case throughout; extension to Rd, with the resulting δ trade-off against the topology residual, is in Appendix G (Remark 2). 
+
+2.2 Learning the Pushforward Map via Conditional Flow Matching 
+
+We seek a map Gθ : Dδ → R2 satisfying the pushforward condition Gθ#πδ 
+
+> 0
+
+= ftarget . The following result is the theoretical foundation: 
+
+Proposition 2 (Ergodicity transfer) . Let z(t) be ergodic with respect to πδ 
+
+> 0
+
+, and let G : Dδ → R2
+
+be a Borel-measurable map with G#πδ 
+
+> 0
+
+= ftarget . Then x(t) = G(z(t)) is ergodic with respect to 
+
+ftarget : for every φ ∈ L1(ftarget ), 1
+
+> T
+
+R T 
+
+> 0
+
+φ(x(t)) dt → R φ df target a.s. as T → ∞ .
+
+The proof (Appendix B) composes φ ◦ G with the ergodicity of z(t) and applies pushforward change-of-variables. Only measurability is required, so a topology mismatch between Dδ and a simply connected target is admissible at this abstract level; Remark 1 treats the learned diffeomorphism Gθ
+
+and the resulting O(δ) residual. We learn Gθ using Conditional Flow Matching with Optimal Transport coupling (OT-CFM) [ 8,14 , 32 ], instantiating a dynamic-OT formulation with roots in the Benamou–Brenier fluid-mechanics view [ 44 , 39 , 35 , 36 ]. A time-dependent velocity field vθ (s, y), s ∈ [0 , 1] , is trained so that the ODE 
+
+˙ys = vθ (s, ys) with y0 = z0 ∼ πδ 
+
+> 0
+
+produces y1 ∼ ftarget ; then Gθ (z0) = y1. Training minimizes the CFM loss: 
+
+LCFM (θ) = Es, (z0,x1) vθ (s, ys) − (x1 − z0) 2, (3) where ys = (1 − s)z0 + sx1 and (z0, x1) are OT-coupled pairs obtained via the Sinkhorn algorithm [ 45 ] with entropic regularization εsink within each mini-batch. The OT coupling produces nearly straight transport paths with low empirical curvature, which (while not a formal guarantee of small Lipschitz constant) is strongly associated with energy-efficient maps in practice (Section 3). 
+
+Remark 1 (Invertibility and the δ trade-off) . Since vθ is a smooth-activation MLP, Picard–Lindelöf makes Gθ a diffeomorphism of R2; when the target support is simply connected, the inner boundary 
+
+{∥ z∥ = δ} cannot be exactly collapsed, contributing the topology residual ηtop (δ) = O(δ) in Corollary 2. Shrinking δ reduces this residual but inflates latent energy ( Eacc (z) = Θ( K/δ 4) in d=2 
+
+with per-cycle scaling Θ(1 /δ 4), consistent with Remark 2’s Θ( K/δ 3d−2)); δ ∈ [0 .01 , 0.1] balances the two. Appendix E.3 covers Lipschitz certification (spectral normalization), Grönwall flow bounds, higher-dimensional scaling, and topology-mismatch geometry. 
+
+3Latent Trajectory 
+
+z(t) on Dδ
+
+Learned Map 
+
+Gθ (OT-CFM) 
+
+Target Trajectory 
+
+x(t) = Gθ (z(t))        
+
+> pushforward Gθ#πδ
+> 0≈ftarget
+> Structurally ergodic (Prop. 1) Uniform on annulus
+> Trained once Shared by all agents + constraint penalties
+> Ergodic w.r.t. Gθ#πδ
+> 0
+> gap to ftarget : Theo-rem 3 O(1) inference
+
+Figure 1: Two-stage pipeline. The latent trajectory provides structural ergodicity (i.i.d. cycles, uniform density); the learned map transforms it to match the prescribed target density. Theoretical guarantees (Theorems 1–3) bound energy, convergence, and approximation error. 
+
+2.3 Constraint Flexibility and Multi-Agent Reuse 
+
+A practical advantage is that many differentiable operational constraints can be incorporated as soft penalties in the training loss: 
+
+Ltotal (θ) = LCFM (θ) + λnfz Rnfz (θ) + λacc Racc (θ) + · · · (4) For instance, a no-fly zone (NFZ) centered at c with radius rnfz is penalized via Rnfz =
+
+Ez[max(0 , r nfz − ∥ Gθ (z) − c∥)2], and an acceleration penalty via Racc = Ez[∥HGθ (z)∥2 
+
+> F
+
+], where 
+
+HGθ is the Hessian tensor. Prior analytical methods instead require a separate mathematical rederiva-tion for each new constraint. Exclusion constraints such as NFZs could alternatively be encoded by setting ftarget = 0 in the excluded region, so that an exact pushforward would then never enter it. However, the learned map Gθ is an approximation (Theorem 3), and the explicit penalty provides direct gradient signal at the constraint boundary to suppress residual violations that the density-based encoding alone cannot prevent. 
+
+Multi-agent reuse. A single trained Gθ supports independent multi-agent deployment: N agents running independent latent trajectories and sharing Gθ each remain individually ergodic with respect to the same achieved pushforward (gap to ftarget controlled by Theorem 3), and the collective time-average converges at O(1 /√N K ) with no per-agent optimization. Coordinated extensions via joint or mean-field pushforward maps (with coupling objectives entering as additional penalty terms in (4), analogous to the NFZ and acceleration penalties above) are developed in Appendix I. 
+
+## 3 Theoretical Guarantees 
+
+3.1 Acceleration Energy Bound 
+
+We first quantify the energy cost of applying the learned map. For a C2 map G : Ω → R2 on an open set Ω ⊂ R2 and a compact K ⊂ Ω, define L = sup z∈K ∥JG(z)∥op (Lipschitz constant on K) and 
+
+MH = sup z∈K 
+
+q
+
+∥∇ 2G1(z)∥2op + ∥∇ 2G2(z)∥2op (Hessian tensor norm on K); both are finite by continuity since G ∈ C2(Ω) and K is compact. For the radial latent construction we take K = Dδ .
+
+Theorem 1 (Acceleration Energy Bound) . Let Ω ⊂ R2 be open, let G : Ω → R2 be C2, let K ⊂ Ω
+
+be compact, and let z(t) ∈ K be piecewise-C2 on a finite partition 0 = t0 < t 1 < · · · < t N = T .Define the transformed trajectory x(t) = G(z(t)) , with integrals R ∥¨z∥2 dt and R ∥ ˙z∥4 dt taken over the union of the open smooth intervals (ti−1, t i). Then 
+
+pEacc (x) ≤ L pEacc (z) + MH
+
+pΦ4(z), (5) 
+
+where Eacc (·) = R ∥¨·∥ 2 dt is the acceleration energy and Φ4(z) = R ∥ ˙z∥4 dt .
+
+The proof (Appendix C) decomposes the acceleration ¨x = JG¨z + ˙ z⊤HG ˙z and applies the Minkowski inequality in L2.For the radial latent trajectory on Dδ , explicit computation (Lemma 1 in Appendix C) shows 
+
+Φ4/E acc = 2 δ2/(1 + δ2) → 0 as δ → 0. This yields: 
+
+Corollary 1 (Acceleration ratio) . For the radial latent trajectory on Dδ :
+
+Eacc (x)
+
+Eacc (z) ≤  L + MH
+
+p2δ2/(1 + δ2) 2 ≈ L2 + 2 √2 L M H δ + O(δ2). (6) 4Interpretation. The ratio is asymptotically dominated by L2: the Hessian contribution vanishes as 
+
+O(δ). OT-coupled training promotes (without certifying) small L via near-rectilinear, low-curvature paths; certified control requires spectral-norm-constrained architectures. Throughout the paper Eacc 
+
+denotes interior smooth-leg energy; turnaround/reorientation impulses at the outer boundary are budgeted separately as discrete maneuver costs (Appendix C.1). 
+
+3.2 Ergodic Convergence Rate Theorem 2 (Ergodic Convergence Rate) . Let G : Dδ → R2 be Lipschitz with constant L, and let φ be a bounded Lipschitz test function with ∥φ∥∞ ≤ Bφ and Lipschitz constant Lφ. Let 
+
+xk(s) = G(zk(s)) be the transformed outward leg of cycle k, and define the per-cycle integral 
+
+Xk = R 10 φ(xk(s)) ds . The Xk are i.i.d. with common mean μG = E[Xk] = R φ d (G#πδ 
+
+> 0
+
+). Let 
+
+SK = 1
+
+> K
+
+PKk=1 Xk denote the time average over K cycles. Then: (a) Var( Xk) ≤ CDδ L2 L2
+
+> φ
+
+, where CDδ is the Neumann Poincaré constant of Dδ [ 42 ]. For small δ, CDδ = CD + O(δ2) with CD = 1 /(j′
+
+> 1,1
+
+)2 ≈ 0.295 the Poincaré constant of the unit disc ( j′ 
+
+> 1,1
+
+being the first positive zero of the derivative of the Bessel function J1 of the first kind) [43, Theorem 7.1.1]. (b) Pr( |SK − μG| > ε ) ≤ 2 exp( −Kε 2/(2 B2
+
+> φ
+
+)) (Hoeffding). (c) |SK − R φ f target | ≤ |SK − μG|
+
+| {z } 
+
+> statistical O(1 /√K)
+
++ Lφ · W1(G#πδ 
+
+> 0
+
+, f target )
+
+| {z }
+
+> approximation
+
+.The bounded-Lipschitz test-function class is consistent with the bounded-continuous class used in (1) ;the density argument recovering (1) as K → ∞ is given in Appendix D. 
+
+3.3 Approximation Error Bound 
+
+The approximation term W1(Gθ#πδ 
+
+> 0
+
+, f target ) in Theorem 2(c) is bounded via the velocity field quality (smooth-target regime; non-smooth and topology-mismatched cases via Proposition 3): 
+
+Theorem 3 (Approximation Error Bound, smooth-target regime) . Suppose: (A1) πδ 
+
+> 0
+
+and ftarget have finite second moments, and an OT velocity field v∗ with time-1 flow G∗ satisfying G∗
+
+> #
+
+πδ 
+
+> 0
+
+= ftarget 
+
+exists; (A2) v∗(s, ·) is globally Lipschitz uniformly in s ∈ [0 , 1] ; (A3) vθ (s, ·) is Lv -Lipschitz uniformly in s. Sufficient conditions for (A1)–(A3) and the admissibility of (Gθ , G ∗) as a W2-coupling (which follows from (A1)) are collected in Appendix E. Define ε2 
+
+> v
+
+= R 10 Ey∼ps
+
+∥vθ (s, y) −
+
+v∗(s, y)∥2 ds , where ps is the law of the OT displacement interpolant from (3) . Then 
+
+W2(Gθ#πδ 
+
+> 0
+
+, f target ) ≤ eLv · εv . (7) 
+
+Scope of (A2). (A2) is the operational smooth-regime hypothesis used by the Grönwall step. Sufficient conditions where (A2) provably holds include Gaussian-to-Gaussian transport, other explicitly solvable transport families, and entropically regularized OT (whose population velocity field is smooth by construction). Gaussian-mixture targets (Exp. 1) are treated experimentally as smooth bounded-density targets in this regime, but do not by themselves guarantee a globally Lipschitz Brenier velocity without additional regularity. Density discontinuities (Exp. 2) and topology mismatch fall outside; in those regimes Proposition 3 gives the weaker bound W2 ≤ eLv · εη,δ v + O(η) + O(δ)
+
+via a mollified/restricted surrogate (full statement and proof in Appendix E). 
+
+Connection to training loss. A separate decomposition (Appendix E, Eq. (19) ) bridges εv to the empirical CFM loss via εv ≤ pLCFM (θ; πε) − L ∗
+
+> CFM
+
+(πε) + Rsink (εsink ), where the first term is the trainable (reducible) component and Rsink is an entropic-OT bias residual that vanishes in the exact-Brenier limit. This makes the Theorem 3 envelope computable from training quantities up to the explicitly tracked Sinkhorn residual. 
+
+3.4 End-to-End Coverage Bound 
+
+Combining Theorem 2 with Theorem 3 in the smooth regime or Proposition 3 in the non-smooth/topology-mismatched regime: 5Corollary 2 (End-to-end bound) . Let φ be bounded Lipschitz with ∥φ∥∞ ≤ Bφ and Lipschitz constant Lφ. With probability at least 1 − α, the time-averaged coverage error after K i.i.d. cycles satisfies 
+
+SK −
+
+Z
+
+φ f target ≤ Bφ
+
+q 2 ln(2 /α )
+
+> K
+
+| {z } 
+
+> statistical: O(K−1/2)
+
++ Lφ eLv · εv
+
+| {z }
+
+> trainable approximation
+
++ Lφ ηtop (δ)
+
+| {z } 
+
+> topology residual: O(δ)
+
+, (8) 
+
+where ηtop (δ) = O(δ) is the Wasserstein cost of the annular-to-target rearrangement (Proposition 3) and vanishes when ftarget is supported on a set homeomorphic to Dδ (so that (A2) of Theorem 3 applies). Conditional on the precondition 
+
+ε > L φ
+
+ eLv · εv + ηtop (δ), (9) 
+
+the sample complexity to achieve error ≤ ε is 
+
+K ≥ 2B2 
+
+> φ
+
+ln(2 /α )
+
+ ε − LφeLv · εv − Lφηtop (δ)2 . (10) 
+
+When (9) fails, the approximation–topology floor dominates regardless of K (monitoring in Ap-pendix E.1). 
+
+Non-smooth-target case. When (A2) fails, the surrogate of Proposition 3 replaces εv by εη,δ v and adds a mollification residual Lφηreg (η) = O(η):
+
+SK −
+
+Z
+
+φ f target ≤ Bφ
+
+q 2 ln(2 /α ) 
+
+> K
+
++ LφeLv · εη,δ v + Lφηreg (η) + Lφηtop (δ); (11) 
+
+the precondition and sample complexity follow (9) –(10) with the same substitution εv → εη,δ v and the additional floor term Lφηreg (η).
+
+All terms in (8) are evaluable from training/inference quantities: εv from the CFM loss via (19) (modulo an empirically-tracked Sinkhorn-coupling residual O(εsink )), Lv via the two-sided bracket 
+
+ˆLv ≤ Lv ≤ Lnet  
+
+> v
+
+(Appendix E.2; numerical floors use ˆLv for non-vacuity, while the architectural 
+
+Lnet  
+
+> v
+
+is ∼30 × looser), and ηtop (δ) = 0 when supp( ftarget ) is homotopy-equivalent to Dδ and O(δ)
+
+otherwise (per-experiment case analysis in Appendix E.1). For Exp. 1, ˆLv ≈ 3 and εv ≈ 0.039 give the numerical floor eˆLv · εv ≈ 0.78 , ≈10 × above the observed 1 − ρiid ≈ 0.08 (Table 3). 
+
+## 4 Experiments 
+
+Experimental setup. We evaluate on two benchmarks: three synthetic targets isolating individual theoretical mechanisms, and a real-world dataset. Both use an MLP for vθ trained with Adam and Sinkhorn OT coupling; the model architecture used for the synthetic targets is shallower than that for the real-world benchmark. Full implementation details and metrics are provided in Appendix F. 
+
+4.1 Synthetic-target validation of theoretical bounds 
+
+The three synthetic targets each isolate one theoretical mechanism: a Gaussian mixture (density matching), a binary 75 /25 density (demand-proportional allocation, vs. the time-warping formula of Malekzadeh et al. [9] ), and a Gaussian mixture with an off-center no-fly zone (soft-constraint Pareto). Headline numbers: Experiment 1 achieves IID transport correlation ρiid = 0 .92 at εv ≈ 0.039 ;Experiment 2 reaches an L1 allocation deviation of 0.2 percentage points on the 75 /25 binary target, a 10 × tighter match than the time-warping formula ( 2.0 pp); Experiment 3 traces a Pareto frontier in which an NFZ-only penalty cuts violation 7× (from 0.7% to 0.1% ) and an added Hessian regularizer drives acceleration to a sub-unit 0.93 × (smoother than the latent trajectory), at distinct (λnfz , λ acc )
+
+operating points. Per-experiment setups and full results are in Appendix F; figures are in Appendix M; the Experiment 3 Pareto outcomes are tabulated in Table 6. 
+
+Theorem-envelope diagnostics. The synthetic experiments quantitatively support the components of the end-to-end coverage bound. Convergence rate (Theorem 2). The Hoeffding RMSE prediction 
+
+σ/ √K ≈ 0.085 at K = 300 envelopes the observed Experiment 1 IID-vs-trajectory residual ≈ 0.05 ;6Table 1: Headline metrics on Milano under two no-fly configurations: single-disc (1D) and multi-disc (MD). Mean ±std over 3 seeds; best per column among coverage-competitive methods ( ρ ≥ 0.5); ‡
+
+achieves low violation at degraded coverage. Full coverage, energy, and NFZ tables in Appendix N.1.                                                                                        
+
+> ρ↑¯P(W) ↓NFZ frac (%) ↓
+> Method 1D MD 1D MD 1D MD TOES [7] †0.286 ±00.265 ±0160 ±0160 ±01.44 ±00±0
+> Time-warp [9] 0.690 ±.04 0.862 ±.01 532 ±7555 ±49.11 ±1.41.03 ±.14
+> OT [36] 0.575 ±.01 0.570 ±.01 1.0·10 4
+> ±225 1.05 ·10 4
+> ±282 3.25 ±.10 4.20 ±.36
+> SAC [53] 0.395 ±.08 0.228 ±.13 2.55 ·10 4
+> ±984 1.98 ·10 4
+> ±2600 5.23 ±3.735 .0±9.3
+> FMEC-Stein [11] †−.119 ±.0001 −.094 ±.0002 164 ±0.6164 ±0.60±00±0
+> FMEC-Sinkhorn [11] †−.080 ±.003 −.065 ±.0001 166 ±0.03 166 ±0.04 0±00±0
+> OT-CFM 0.839 ±.003 0.908 ±.003 2.12 ·10 3
+> ±47 2.38 ·10 3
+> ±14 2.27 ±.08 1.56 ±.18
+> OT-CFM +NFZ 0.865 ±.001 0.911 ±.002 2.23 ·10 3
+> ±92.24 ·10 3
+> ±29 0.011 ±.010 0.189 ±.08
+> OT-CFM +E 0.646 ±.07 0.737 ±.005 510 ±143 514 ±133 5.98 ±1.313 .2±0.4
+> OT-CFM +A 0.410 ±.07 0.430 ±.14 1.02 ·10 3
+> ±180 1.04 ·10 3
+> ±314 5.10 ±3.016 .4±1.9
+> OT-CFM +NFZ+E 0.572 ±.02 0.230 ±.05 819 ±72 1.68 ·10 3
+> ±34 0.011 ±.010 11 .9±2.8
+> OT-CFM +NEA ‡0.104 ±.13 0.188 ±.18 645 ±305 457 ±289 0.102 ±.15 0.032 ±.04
+> †Low ¯Pand zero NFZ frac are artifacts of degenerate coverage ( ρ≤0.29 ): these methods fail to redistribute mass across the domain and should not be read as genuinely energy-efficient or constraint-respecting. See Appendix O for trajectory visualizations.
+> ‡Achieves low violation at the cost of degraded coverage ( ρ= 0 .10 /0.19 ).
+
+Figure 6 (Appendix M) shows empirical log–log slope −0.48 vs. theoretical −0.50 , with sensitivity diagnostics in Appendix E.4. Energy bound (Corollary 1). The Experiment 2 sub-unit acceleration ratio 0.71 × is consistent with the worst-case envelope (sup-Lipschitz ˆL ≈ 2, Table 3) once the trajectory’s angle-averaged effective Jacobian is accounted for (Appendix C, Remark on tightness). 
+
+Approximation bound (Theorem 3). The CFM-loss-derived εv ≈ 0.039 produces a diagnostic plug-in floor eˆLv εv that envelopes the empirical ˆW2 across all five rows of Table 3 at ˆLv ≤ 3; the certified upper-bound floor uses the architectural Lnet  
+
+> v
+
+(Appendix E.2). 
+
+4.2 Real-data evaluation: Milano UAV coverage 
+
+Having validated the theoretical guarantees on synthetic targets, we now evaluate practical effec-tiveness on the Milano benchmark [ 52 ] (dataset and preprocessing details in Appendix F.4). Two no-fly configurations test modular constraint handling: a single-disc (1D) and a multi-disc (MD) with four disjoint exclusion zones. Six baselines are evaluated: TOES [ 7], time-warping [ 9], static OT [ 36 ], SAC [ 53 ], and the FMEC-Stein/FMEC-Sinkhorn variants of Sun et al. [11] . Six variants of our proposed method differ only in the constraint penalty of (4) : OT-CFM (no penalty), +NFZ , +E 
+
+(Zeng rotary-wing power [ 54 ]), +A (acceleration), +NFZ+E , and +NEA (NFZ +E+A combined). The best λ per variant is selected from a single-seed sweep (Appendix F). 
+
+Empirical Pareto behavior. On both NFZ configurations, OT-CFM +NFZ jointly achieves the highest coverage ( ρ = 0 .865 /0.911 for 1D / MD) and the lowest constraint violation among coverage-competitive methods (frac inside 0.011% /0.189% , a ∼200 × /8× reduction over unconstrained OT-CFM); OT-CFM +E attains the lowest mean Zeng power ( 510 /514 W, ∼4× below unconstrained). These gaps are predicted by theory: Theorem 3 via OT-coupled CFM training, Theorem 1 via the optional Racc regularizer. OT-CFM +NFZ achieves higher coverage on MD ( ρ = 0 .911 ) than on 1D ( ρ = 0 .865 ) despite four exclusion zones rather than one, evidence that the modular soft-penalty design (§2.3) absorbs constraint topology without re-derivation. Apparent zero violation and lowest ¯P by TOES and FMEC are artifacts of degenerate coverage ( ρ ≤ 0.29 ): these methods fail to redistribute mass across the domain, making low energy and zero NFZ violation accidental byproducts of near-stationary trajectories rather than genuine efficiency gains (Appendix O). Full metrics are in Appendix N.1. 
+
+Multi-agent reuse, amortization, and realizability. A single trained Gθ supports an N -agent fleet with aggregate Fourier ergodic metric tracking the predicted O(1 /√N K ) rate (§2.3; Theorem 2): on Milano, EN drops ∼2.5× from N =1 to N =20 at flat per-agent power (Appendix N.5). Training is paid once; every additional trajectory or agent costs a single forward pass through vθ . OT-CFM +E is also the only OT-CFM variant whose median speed lies below the typical 30 m/s rotary-wing cap (Appendix N.4). 7Figure 2: Coverage–energy Pareto on Milano. Left: single-disc (1D) NFZ. Right: multi-disc (MD) NFZ. Pearson ρ (higher better) plotted against the swept energy budget P ∥v∥2 dt (log scale; lower-right is best); shaded bands are ±1 std over three seeds. The OT-CFM family traces an empirical Pareto front above the evaluated baselines in both configurations; +E occupies the low-energy end and +NFZ the high-fidelity end. The constraint-axis Pareto pattern is summarized in Table 1; full coverage–NFZ figure in Appendix N.2. Table 2: Qualitative comparison with existing ergodic trajectory design methods. Quantitative real-data results: §4.2; column definitions, TNFE semantics, and detailed row qualifications: Appendix L. 
+
+Method Conv. rate Amortized inference Multi-agent Inference cost Modular constraints Time-warp [9] O(1 /√K) Yes Yes O(1) No †
+
+OT [36] None No No Per-target ♭ Cost-matrix only SAC [53] None Yes No O(1) Reward shaping TOES [7] ⋄,♮ None ⋄ Per-query ⋄ No O(NLP )⋄ No ⋄
+
+FMEC [11] ‡,♮ None ‡ Per-query ‡ No O(Niter T )‡ Soft only ‡
+
+Ours O(1 /√K) Yes Yes O(TNFE ) / O(1) § Yes        
+
+> †Per-target/per-constraint analytical rederivation. ‡Per-trajectory flow-time outer loop [ 12 ]. ⋄Per-query Pontryagin solve. §O(1) via distilled evaluator (Appendix F.10). ♭Per-target Sinkhorn solve. ♮Quantitative results in Appendix N.1. Full qualifications: Appendix L.
+
+4.3 Comparison with Prior Methods 
+
+The combination of finite-cycle convergence, amortized inference, multi-agent reuse, O(TNFE )
+
+deployment cost (or O(1) distilled, Appendix F.10), and modular soft-penalty constraints in Table 2 is, to our knowledge, the first such combination in the ergodic-coverage literature; per-row qualifications and the per-trajectory cost gap with Sun et al. [11] are detailed in Appendix L. 
+
+## 5 Related Work 
+
+Distinguishers. Our work differs from prior ergodic-coverage and density-matching methods along three axes: (i) object of learning : a reusable spatial pushforward map Gθ trained once, rather than per-instance trajectory/control optimization; (ii) theoretical surface : asymptotic ergodicity by construction (Proposition 2) together with an explicit O(1 /√K) finite-cycle rate (Theorem 2) and an end-to-end coverage bound (Corollary 2) estimable from the training loss (certified given an architectural Lipschitz bound on vθ ), rather than step-level optimality or finite-horizon spectral-metric minimization without long-horizon convergence guarantees; (iii) constraint handling : arbitrary differentiable soft penalties composed additively in Ltotal , rather than bespoke analytical rederivation or inner-solver modification. 
+
+What “ergodic” means in this literature. The term is used in three distinct senses: (i) strict dynamical-systems, (ii) asymptotic empirical, and (iii) finite-horizon coverage-metric. We adopt (i)+(ii), matching long-horizon UAV monitoring and wireless-coverage missions where horizons 8are open-ended; recent trajectory-optimization variants [ 11 , 7, 30 , 49 , 50 ] adopt only (iii). Citation-grounded disambiguation is in Appendix K. 
+
+Other ergodic-coverage paradigms. The spectral lineage [ 10 , 31 , 1, 6 , 46 – 48 , 30 ] and time-optimal Pontryagin variants [ 7 ] minimize a Fourier ergodic metric over finite-horizon controls: high quality but O(Kd
+
+> F
+
+) in the Fourier cutoff, per-scenario re-optimized, and without closed-form long-horizon rates. Coverage path planning [ 5, 37 ], RL [ 13 , 40 ], and constrained-ergodic robotics [ 17 ] scale poorly, produce discontinuous paths, or lack density-matching guarantees. MCMC samplers (Langevin [ 19 ], HMC [ 20 ]) are ergodic with respect to ftarget by construction but exhibit pathological acceleration energy and mixing-time-dependent finite-horizon coverage; detailed contrast in Appendix J. 
+
+Flow matching and generative models. Flow matching [ 8 ], its OT-coupled variant [ 14 ], and rectified flow [ 32 ] sit within a broader family of continuous-time generative models, including neural ODEs [ 24 ], normalizing flows [ 34 ], score-based diffusion [ 23 , 21 , 22 ], and stochastic-interpolant unifications [ 25 ], with CNF convergence rates in Gao et al. [29] . We repurpose this machinery to learn an unconditional spatial pushforward whose composition with a deterministic ergodic process yields a trajectory with a provable coverage guarantee, in contrast to diffusion policies [ 26 ] that condition on observations to model action distributions. 
+
+UAV trajectory design for wireless networks. UAV-assisted communications [ 15 , 16 , 38 ] study trajectory and resource-allocation joint design, with stochastic-geometry trajectory models [ 4], analytical time-warping for non-uniform coverage [ 9], and learning-augmented variants [ 40 ]. These analytical methods match general 2D densities via polar decomposition plus radial time-warping along a fixed sweep curve, but each new target or constraint requires bespoke rederivation; we instead use a learned map Gθ with additive penalties in Rd (Remark 2). 
+
+Flow-matching for ergodic coverage. Sun et al. [11] independently apply flow matching to ergodic coverage in a complementary role: their per-instance control update over a fixed horizon 
+
+T contrasts with our offline reusable pushforward Gθ amortized across queries and agents, with corresponding differences in convergence guarantee (Table 2; technical contrast and Riccati/NFZ caveats in Appendix L). Concurrent work by Hughes and Abraham [51] extends kernel-mean-embedding ergodic control to the infinite-horizon regime via an extended-state visitation recursion. 
+
+## 6 Conclusion 
+
+We introduced a pushforward framework that decouples ergodicity from density matching: an analytic latent trajectory composed with a learned OT-CFM map. The three theorems combine into an end-to-end coverage bound (Corollary 2) estimable from CFM training diagnostics (certified given an architectural Lipschitz bound on vθ ); experiments support the predictions and trace a Pareto frontier across density, constraint, and energy. 
+
+Limitations and future work. Four design choices scope our guarantees, each developed in Ap-pendix P: (i) the Theorem 3 envelope uses the empirically tight but lower-bound ˆLv (certification path: Appendix P.1); (ii) the annular latent domain induces O(δ) topology residual on simply connected tar-gets traded against Θ( δ−4) acceleration energy (learned/topology-aware geometries: Appendix P.2); (iii) NFZ and acceleration penalties are soft, not certified (barrier/projection/reachability paths: Ap-pendix P.3); (iv) experiments are 2D open-loop (3D, multi-seed, multi-agent, hardware-in-the-loop: Appendix P.4). 
+
+## Acknowledgments and Disclosure of Funding 
+
+This work was supported in part by [redacted for review]. 
+
+## References   
+
+> [1] Abraham, I. and Murphey, T. D. Decentralized ergodic control: distribution-driven sensing and exploration for multiagent systems. IEEE Robotics and Automation Letters , 3(4):2987–2994, 2018.
+
+9[2] Caffarelli, L. A. The regularity of mappings with a convex potential. Journal of the American Mathematical Society , 5(1):99–104, 1992. [3] Gangbo, W. and ´ Swi e¸ ch, A. Optimal maps for the multidimensional Monge–Kantorovich problem. 
+
+Communications on Pure and Applied Mathematics , 51(1):23–45, 1998. [4] Enayati, S., Saeedi, H., Pishro-Nik, H., and Yanikomeroglu, H. Moving aerial base station networks: A stochastic geometry analysis and design perspective. IEEE Trans. Wireless Communications , 18(6):2977– 2988, 2019. [5] Galceran, E. and Carreras, M. A survey on coverage path planning for robotics. Robotics and Autonomous Systems , 61(12):1258–1276, 2013. [6] Lerch, C., Dong, D., and Abraham, I. Safety-critical ergodic exploration in cluttered environments via control barrier functions. In IEEE International Conference on Robotics and Automation (ICRA) , pp. 10205-10211, 2023. [7] Dong, D., Berger, H., and Abraham, I. Time optimal ergodic search. In Robotics: Science and Systems (RSS) , 2023. [8] Lipman, Y., Chen, R. T. Q., Ben-Hamu, H., Nickel, M., and Le, M. Flow matching for generative modeling. 
+
+International Conference on Learning Representations , 2023. [9] Malekzadeh, M., Ghasemi, A., and Pishro-Nik, H. Robust UAV trajectory design for non-uniform coverage. 
+
+IEEE Communications Letters , 30:188–192, 2026. DOI: 10.1109/LCOMM.2025.3629065 .[10] Mathew, G. and Mezi´ c, I. Metrics for ergodicity and design of ergodic dynamics for multi-agent systems. 
+
+Physica D , 240(4–5):432–442, 2011. [11] Sun, M. M., Pinosky, A., and Murphey, T. Flow matching ergodic coverage. In Robotics: Science and Systems (RSS) , 2025. arXiv:2504.17872. [12] Sun, M. M., Pinosky, A., and Murphey, T. Flow matching ergodic coverage — official tuto-rials. GitHub repository, https://github.com/MurpheyLab/lqr-flow-matching/tree/main/ tutorials , 2025. [13] Theile, M., Bayerlein, H., Nai, R., Gesbert, D., and Caccamo, M. UAV coverage path planning under varying power constraints using deep reinforcement learning. In 2020 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pp. 1444–1449, 2020. doi:10.1109/IROS45743.2020.9340934. [14] Tong, A., Malkin, N., Huguet, G., Zhang, Y., Rector-Brooks, J., Fatras, K., Wolf, G., and Bengio, Y. Improving and generalizing flow-based generative models with minibatch optimal transport. Transactions on Machine Learning Research , 2024. [15] Zeng, Y., Wu, Q., and Zhang, R. Accessing from the sky: A tutorial on UAV communications for 5G and beyond. Proceedings of the IEEE , 107(12):2327–2375, 2019. [16] Mozaffari, M., Saad, W., Bennis, M., Nam, Y.-H., and Debbah, M. A tutorial on UAVs for wireless networks: Applications, challenges, and open problems. IEEE Communications Surveys & Tutorials ,21(3):2334–2360, 2019. [17] Ayvali, E., Salman, H., and Choset, H. Ergodic coverage in constrained environments using stochastic trajectory optimization. In 2017 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pp. 5204–5210, 2017. doi: 10.1109/IROS.2017.8206410. [18] Teschl, G. Ordinary Differential Equations and Dynamical Systems . Vol. 140. American Mathematical Society, 2012. [19] Roberts, G. O. and Tweedie, R. L. Exponential convergence of Langevin distributions and their discrete approximations. Bernoulli , 2(4):341–363, 1996. [20] Neal, R. M. MCMC using Hamiltonian dynamics. In Handbook of Markov Chain Monte Carlo , pp. 47–95, Chapman and Hall/CRC, 2011. [21] Ho, J., Jain, A., and Abbeel, P. Denoising diffusion probabilistic models. Advances in Neural Information Processing Systems , 33:6840–6851, 2020. [22] Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., and Poole, B. Score-based generative modeling through stochastic differential equations. International Conference on Learning Representations ,2021. 
+
+10 [23] Sohl-Dickstein, J., Weiss, E., Maheswaranathan, N., and Ganguli, S. Deep unsupervised learning using nonequilibrium thermodynamics. In Proceedings of the 32nd International Conference on Machine Learning (ICML) , Vol. 37, Proceedings of Machine Learning Research , pp. 2256–2265, Lille, France, 2015. [24] Chen, R. T. Q., Rubanova, Y., Bettencourt, J., and Duvenaud, D. K. Neural ordinary differential equations. 
+
+Advances in Neural Information Processing Systems , 2018. [25] Albergo, M., Boffi, N. M., and Vanden-Eijnden, E. Stochastic interpolants: A unifying framework for flows and diffusions. Journal of Machine Learning Research , 26:1–80, 2025. [26] Chi, C., Xu, Z., Feng, S., Cousineau, E., Du, Y., Burchfiel, B., Tedrake, R., and Song, S. Diffusion policy: Visuomotor policy learning via action diffusion. The International Journal of Robotics Research ,44(10–11):1684–1704, 2025. [27] Feydy, J., Séjourné, T., Vialard, F.-X., Amari, S.-I., Trouvé, A., and Peyré, G. Interpolating between optimal transport and mmd using sinkhorn divergences. In The 22nd International Conference on Artificial Intelligence and Statistics , pp. 2681–2690, PMLR, 2019. [28] Miyato, T., Kataoka, T., Koyama, M., and Yoshida, Y. Spectral normalization for generative adversarial networks. In ICLR , 2018. [29] Gao, Y., Huang, J., Jiao, Y., and Zheng, S. Convergence of continuous normalizing flows for learning probability distributions. arXiv:2404.00551 , 2024. [30] Lee, D., Lerch, C., Ramos, F., and Abraham, I. Stein variational ergodic search. In Robotics: Science and Systems (RSS) , 2024. [31] Miller, L. M. and Murphey, T. D. Trajectory optimization for continuous ergodic exploration. In 2013 American Control Conference , pp. 4196–4201, 2013. doi: 10.1109/ACC.2013.6580484. [32] Liu, X., Gong, C., and Liu, Q. Flow straight and fast: Learning to generate and transfer data with rectified flow. In ICLR , 2023. [33] Virmaux, A. and Scaman, K. Lipschitz regularity of deep neural networks: analysis and efficient estimation. 
+
+Advances in Neural Information Processing Systems , 31, 2018. [34] Papamakarios, G., Nalisnick, E., Rezende, D. J., Mohamed, S., and Lakshminarayanan, B. Normalizing flows for probabilistic modeling and inference. Journal of Machine Learning Research , 22(57):1–64, 2021. [35] Villani, C. Optimal Transport: Old and New . Grundlehren der mathematischen Wissenschaften, vol. 338. Springer, 2009. [36] Peyré, G. and Cuturi, M. Computational optimal transport: With applications to data science . Now Foundations and Trends, 2019. [37] Cabreira, T. M., Brisolara, L. B., and Ferreira Jr., P. R. Survey on coverage path planning with unmanned aerial vehicles. Drones , 3(1):4, 2019. [38] Wu, Q., Zeng, Y., and Zhang, R. Joint trajectory and communication design for multi-UAV enabled wireless networks. IEEE Transactions on Wireless Communications , 17(3):2109–2121, 2018. [39] Benamou, J.-D. and Brenier, Y. A computational fluid mechanics solution to the Monge–Kantorovich mass transfer problem. Numerische Mathematik , 84(3):375–393, 2000. [40] Bayerlein, H., De Kerret, P., and Gesbert, D. Trajectory optimization for autonomous flying base station via reinforcement learning. In 2018 IEEE 19th International Workshop on Signal Processing Advances in Wireless Communications (SPAWC) , pp. 1–5, IEEE, 2018. [41] Dudley, R. M. Real analysis and probability . Cambridge Studies in Advanced Mathematics, vol. 74. Cambridge University Press, 2002. [42] Evans, L. C. Partial differential equations . Vol. 19, American Mathematical Society, 2022. [43] Henrot, A. Extremum problems for eigenvalues of elliptic operators . Springer, 2006. [44] Brenier, Y. Polar factorization and monotone rearrangement of vector-valued functions. Communications on Pure and Applied Mathematics , 44(4):375–417, 1991. 
+
+11 [45] Cuturi, M. Sinkhorn distances: Lightspeed computation of optimal transport. Advances in Neural Information Processing Systems , 26:2292–2300, 2013. [46] Miller, L. M., Silverman, Y., MacIver, M. A., and Murphey, T. D. Ergodic exploration of distributed information. IEEE Transactions on Robotics , 32(1):36–52, 2016. [47] Mavrommati, A., Tzorakoleftherakis, E., Abraham, I., and Murphey, T. D. Real-time area coverage and target localization using receding-horizon ergodic exploration. IEEE Transactions on Robotics ,34(1):62–80, 2018. [48] Seewald, A., Lerch, C. J., Chancán, M., Dollar, A. M., and Abraham, I. Energy-aware ergodic search: Continuous exploration for multi-agent systems with battery constraints. In IEEE International Conference on Robotics and Automation (ICRA) , pp. 7048–7054, 2024. [49] Sun, M. M., Gaggar, A., Trautman, P., and Murphey, T. D. Fast ergodic search with kernel functions. IEEE Transactions on Robotics , 41:1841–1860, 2025. [50] Hughes, C., Warren, H., Lee, D., Ramos, F., and Abraham, I. Ergodic trajectory optimization on generalized domains using maximum mean discrepancy. In IEEE International Conference on Robotics and Automation (ICRA) , 2025. [51] Hughes, C. and Abraham, I. Infinite-horizon ergodic control via kernel mean embeddings. 
+
+arXiv:2604.01023 , 2026. [52] Barlacchi, G., De Nadai, M., Larcher, R., Casella, A., Chitic, C., Torrisi, G., Antonelli, F., Vespignani, A., Pentland, A., and Lepri, B. A multi-source dataset of urban life in the city of Milan and the Province of Trentino. Scientific Data , 2:150055, 2015. [53] Haarnoja, T., Zhou, A., Abbeel, P., and Levine, S. Soft actor-critic: Off-policy maximum entropy deep reinforcement learning with a stochastic actor. In International Conference on Machine Learning (ICML) ,pp. 1861–1870, 2018. [54] Zeng, Y., Xu, J., and Zhang, R. Energy minimization for wireless communication with rotary-wing UAV. 
+
+IEEE Trans. Wireless Communications , 18(4):2329–2345, 2019. 
+
+## A Notation 
+
+We collect here the notation used throughout the paper, grouped thematically. Standard symbols (expectation, norms, Wasserstein distances, pushforward) are included alongside paper-specific ones to aid readers coming from adjacent fields. 
+
+Domains and measures. 
+
+Symbol Meaning 
+
+d Ambient spatial dimension. Main body: d = 2 ; general d in Appendix G. 
+
+δ Latent radius, 0 < δ < 1; inner hole radius of the annular domain. 
+
+D Unit ball in Rd: {z ∈ Rd : ∥z∥ ≤ 1}.
+
+Dδ Annular latent domain: {z ∈ Rd : δ ≤ ∥ z∥ ≤ 1}.
+
+Sd−1 Unit sphere in Rd; uniform distribution over cycle directions. 
+
+C Constraint set in target space (e.g., complement of no-fly zones). 
+
+πδ 
+
+> 0
+
+Uniform probability measure on Dδ . In d = 2 , density 1/(π(1 − δ2)) .
+
+ftarget Target spatial density on Rd that time-averaged trajectory occupancy should match. 
+
+ps Intermediate density along the CFM interpolation, s ∈ [0 , 1] ; p0 = πδ 
+
+> 0
+
+, p1 ≈
+
+ftarget .
+
+# Pushforward operator: (G#μ)( A) = μ(G−1(A)) for measurable A.
+
+Gθ#πδ 
+
+> 0
+
+Pushforward of the uniform latent measure under the learned map Gθ .12 Trajectories and latent construction. 
+
+Symbol Meaning 
+
+t Trajectory (wall-clock) time, t ∈ [0 , T ].
+
+T Total trajectory duration (horizon). 
+
+z(t) Latent ergodic trajectory on Dδ .
+
+x(t) Target-space trajectory, x(t) = Gθ (z(t)) .
+
+K Number of radial cycles executed by the latent trajectory. 
+
+k Cycle index, k ∈ { 1, . . . , K }.
+
+KF Fourier-basis truncation order in spectral-multiscale-coverage methods (§5); distinct from the cycle count K.
+
+θk Random direction of cycle k, i.i.d. uniform on Sd−1.
+
+Φ0 Phase offset, ∼ Uniform[0 , 2) , introduced for stationarity. 
+
+s Within-cycle parameter (also serving as CFM flow time), s ∈ [0 , 1] .
+
+r(s) Radial profile r(s) = pδ2 + (1 − δ2)s, giving uniform πδ 
+
+> 0
+
+cycles. 
+
+Maps, velocity fields, and derivatives. 
+
+Symbol Meaning 
+
+Gθ Learned pushforward map Rd → Rd parameterized by θ (NN weights). 
+
+G∗ True OT/Brenier map satisfying G∗
+
+> #
+
+πδ 
+
+> 0
+
+= ftarget (when well defined). 
+
+vθ (s, y) Learned time-dependent velocity field; Gθ is its time-1 ODE flow. 
+
+v∗(s, y) True OT marginal velocity field generating G∗.
+
+¯v∗ 
+
+> ε
+
+Sinkhorn-regularized conditional-mean velocity (entropic OT target). 
+
+θ Neural-network weights parameterizing vθ (and hence Gθ ). 
+
+JG(z) Jacobian of G at z; ∥JG∥op ≤ L.
+
+HG(z) Hessian tensor of G at z; tensor norm bounded by MH .
+
+Ω, K Open ambient set Ω ⊂ R2 and compact K ⊂ Ω containing the trajectory; used in Theorem 1. 
+
+Lipschitz and spectral constants. 
+
+Symbol Meaning 
+
+L Lipschitz constant of G on the compact K: sup z∈K ∥JG(z)∥op .
+
+ˆL Empirical map-level Lipschitz estimate for Gθ (central-difference Jacobian SVD over latent samples; Appendix E.2); honest lower bound on L.
+
+Lv Lipschitz constant of vθ (s, ·) in the spatial argument, uniformly in s.
+
+Lnet  
+
+> v
+
+Architectural upper bound Q 
+
+> ℓ
+
+∥Wℓ∥op on Lv (certifiable via spectral normal-ization). 
+
+ˆLv Empirical power-iteration estimate of Lv (practical proxy; see Appendix E.2). 
+
+Lφ Lipschitz constant of the test function φ.
+
+Bφ Supremum bound on the test function: ∥φ∥∞ ≤ Bφ.
+
+MH Uniform bound on Hessian tensor norm of G over the compact K.
+
+Φ4(z) Velocity fourth-moment integral R ∥ ˙z∥4 dt of the latent trajectory. 
+
+Eacc Acceleration energy R ∥¨x∥2 dt of a trajectory. 
+
+CDδ Neumann Poincaré constant of the annular domain Dδ .
+
+CD Poincaré constant of the unit disc: CD = 1 /(j′
+
+> 1,1
+
+)2 ≈ 0.295 .
+
+j′ 
+
+> 1,1
+
+First positive zero of J′
+
+> 1
+
+, where J1 is the Bessel function of the first kind, order 1. 
+
+λδ 
+
+> 1
+
+First nonzero Neumann eigenvalue of −∆ on Dδ ; CDδ = 1 /λ δ
+
+> 1
+
+.13 Approximation error and concentration. 
+
+Symbol Meaning 
+
+εv CFM velocity-field training error: ε2 
+
+> v
+
+= R 10 Eps [∥vθ − v∗∥2] ds .
+
+εsink Sinkhorn entropic-OT coupling residual; vanishes as entropy regularization 
+
+→ 0.
+
+ηreg Mollification residual in the non-smooth-target regime (Proposition 3). 
+
+ηtop Topology mismatch residual (annulus vs. ball): ηtop (δ) = O(δ).
+
+η Generic mollification/restriction scale for the non-smooth surrogate. 
+
+α Concentration-bound failure probability (Hoeffding). 
+
+φ Bounded-Lipschitz test function used for ergodic-averaging statements. 
+
+zk(s) Latent outward leg of cycle k, zk(s) = r(s) eθk , s ∈ [0 , 1] .
+
+xk(s) Transformed outward leg of cycle k, xk(s) = G(zk(s)) .
+
+Xk Per-cycle integral R 10 φ(xk(s)) ds = R 10 φ(G(r(s) eθk )) ds .
+
+SK Time-averaged statistic 1
+
+> K
+
+PKk=1 Xk.
+
+μG Spatial mean Eπδ 
+
+> 0
+
+[φ ◦ G] = R φ d (G#πδ 
+
+> 0
+
+).
+
+Ztraj  
+
+> K
+
+Trajectory-based gridded density estimate from K i.i.d. cycles (used in Fig-ure 6). 
+
+Ziid IID-transport reference density estimate ( 20 000 samples through Gθ , same grid as Ztraj  
+
+> K
+
+). 
+
+ρiid , ρ traj Pearson correlation between target and achieved gridded densities, computed under IID transport ( ρiid ) vs. K-cycle trajectory sampling ( ρtraj ); reported in §4. 
+
+Norms and analytical operators. 
+
+Symbol Meaning 
+
+∥ · ∥ Euclidean norm on Rd.
+
+∥ · ∥ ∞ Supremum norm over the stated domain. 
+
+∥ · ∥ op Spectral (operator) norm of a matrix: largest singular value. 
+
+∥ · ∥ L2(p) L2 norm weighted by density p: ∥f ∥2 
+
+> L2(p)
+
+= R ∥f ∥2 p d y.
+
+W1, W 2 1- and 2-Wasserstein distances between probability measures. 
+
+ˆW2 Empirical 2-Wasserstein estimate (POT ot.emd2 ; mean ± std over seeds; Table 3). 
+
+H1 Sobolev space of functions with square-integrable first weak derivatives. 
+
+E[·] Expectation with respect to the stated distribution. 
+
+Var( ·) Variance. 
+
+Pr( ·) Probability. 
+
+Losses and penalties. 
+
+Symbol Meaning 
+
+LCFM (θ) Conditional flow matching loss; see (3). 
+
+L∗ 
+
+> CFM
+
+Irreducible CFM loss (conditional variance of the interpolation velocity). 
+
+Ltotal (θ) Total training loss: LCFM + P 
+
+> i
+
+λiRi.
+
+Ri Constraint penalty term i (e.g., NFZ, acceleration ceiling, speed bound). 
+
+λi Positive scalar weight on penalty Ri.
+
+rnfz Radius of a no-fly-zone disc (§2.3). The unsubscripted symbol ρ is reserved for Pearson correlation between target and achieved densities (cf. ρiid /ρ traj above and bare ρ in Milano tables). 14 Multi-agent. 
+
+Symbol Meaning 
+
+N Number of coordinated agents (UAVs). 
+
+n Agent index, n ∈ { 1, . . . , N }.
+
+zn Latent position of agent n.
+
+G(N ) 
+
+> θ
+
+Joint map RdN → RdN for the coordinated variant. 
+
+πn n-th marginal projection (multi-agent); the coordinated map satisfies 
+
+(πn)#G(N ) 
+
+> θ
+
+#( πδ 
+
+> 0
+
+)⊗N ≈ ftarget .
+
+ˆμ−n Empirical distribution 1 
+
+> N−1
+
+P 
+
+> m̸=n
+
+δzm of the other agents (mean-field variant). 
+
+## B Proofs for Section 2.1: Latent Trajectory 
+
+We provide detailed proofs for all propositions stated in Section 2.1. 
+
+Proof of Proposition 1 (Uniform Ergodicity on Dδ )
+
+Proof. We show two things: (i) under the phase convention Φ0 ∼ Uniform[0 , 2) adopted in Sec-tion 2.1, the pointwise distribution of z(t) is Uniform( Dδ ), and (ii) the time-averaged occupancy converges to this distribution almost surely, independently of any phase convention. 
+
+Step 1: Per-cycle radial distribution (pointwise claim). On each outward half-cycle, the radial position at normalized time s ∈ [0 , 1] is given by the profile 
+
+r(s) = pδ2 + (1 − δ2)s. 
+
+The phase offset Φ0 ∼ Uniform[0 , 2) introduced in Section 2.1 makes the within-half-cycle phase 
+
+U ∈ [0 , 1] at any fixed observation time uniformly distributed and independent of the cycle index. Therefore, the radial position at time t satisfies R = pδ2 + (1 − δ2)U with U ∼ Uniform[0 , 1] .
+
+Step 2: CDF computation. For r ∈ [δ, 1] :
+
+P (R ≤ r) = P
+
+p δ2 + (1 − δ2)U ≤ r
+
+
+
+= P
+
+
+
+U ≤ r2 − δ2
+
+1 − δ2
+
+
+
+= r2 − δ2
+
+1 − δ2 ,
+
+since U ∼ Uniform[0 , 1] and the argument lies in [0 , 1] for r ∈ [δ, 1] .Differentiating the CDF with respect to r:
+
+fR(r) = 2r
+
+1 − δ2 , r ∈ [δ, 1] .
+
+Step 3: Joint polar density. The angle θk ∼ Uniform[0 , 2π) is drawn independently for each cycle. Since R and Θ are independent, the joint polar density is 
+
+fR, Θ(r, θ ) = fR(r) · fΘ(θ) = 2r
+
+1 − δ2 · 12π = rπ(1 − δ2) .
+
+Step 4: Verification of uniformity. The uniform distribution on the annulus Dδ = {z : δ ≤ ∥ z∥ ≤ 
+
+1} has area Area( Dδ ) = π(1 − δ2). In polar coordinates, the uniform density with respect to the area element r dr dθ is 
+
+funiform (r, θ ) = 1
+
+π(1 − δ2) .
+
+15 The probability of lying in an infinitesimal region [r, r + dr ] × [θ, θ + dθ ] is 
+
+fR, Θ(r, θ ) dr dθ = rπ(1 − δ2) dr dθ = funiform (r, θ ) · r dr dθ, 
+
+confirming that the per-cycle distribution matches Uniform( Dδ ). (Note: fR, Θ is the density w.r.t. 
+
+dr dθ , while funiform is the density w.r.t. the area element r dr dθ ; the factor of r accounts for the Jacobian of the polar coordinate transformation.) 
+
+Step 5: Ergodicity via the SLLN (phase-independent). The following argument uses only the i.i.d. cycle structure and makes no use of Φ0. The trajectory consists of i.i.d. cycles (Z1, Z 2, . . . ), each contributing a per-cycle integral 
+
+Zk =
+
+Z 10
+
+φ(zk(s)) ds 
+
+for any bounded continuous test function φ. Since the θk are i.i.d., the Zk are i.i.d. with mean 
+
+E[Zk] = R 
+
+> Dδ
+
+φ(z) πδ 
+
+> 0
+
+(z) dz. By the strong law of large numbers (SLLN): 
+
+1
+
+K
+
+> K
+
+X
+
+> k=1
+
+Zk
+
+> a.s.
+
+−−→
+
+Z
+
+> Dδ
+
+φ dπ δ 
+
+> 0
+
+as K → ∞ .
+
+Since this holds for every bounded continuous φ, the trajectory z(t) is ergodic with respect to 
+
+πδ 
+
+> 0
+
+= Uniform( Dδ ). The same SLLN argument extends without modification to any φ ∈ L1(πδ 
+
+> 0
+
+):the per-cycle integral Zk then has finite expectation E[Zk] = R 
+
+> Dδ
+
+φ dπ δ 
+
+> 0
+
+, and Kolmogorov’s strong law applies to the i.i.d. sequence (Zk) without further integrability strengthening, recovering the integrable-φ statement of Proposition 1. 
+
+Step 6: Return half-cycle. The return (inward) half-cycle traces the same radial profile in reverse: 
+
+rreturn (s) = r(1 − s), so the distribution of R is identical. By symmetry, the inward leg has the same marginal distribution, and the full cycle average equals the outward-leg average. This completes the proof. 
+
+Proof of Proposition 2 (Ergodicity Transfer) 
+
+Proof. We show that if z(t) is ergodic with respect to πδ 
+
+> 0
+
+and G : Dδ → R2 is a Borel-measurable map satisfying G#πδ 
+
+> 0
+
+= ftarget , then x(t) = G(z(t)) is ergodic with respect to ftarget . No bijection, continuity, or topological-equivalence assumption is used; in particular, the argument applies even when Dδ and supp( ftarget ) are not homeomorphic. 
+
+Step 1: Composition with test functions. Let φ : R2 → R be any φ ∈ L1(ftarget ). Define 
+
+ψ = φ◦G, which is Borel-measurable (composition of Borel maps) and in L1(πδ 
+
+> 0
+
+) by the pushforward identity R |ψ| dπ δ 
+
+> 0
+
+= R |φ| df target < ∞.
+
+Step 2: Apply ergodicity of z(t). By the ergodicity of z(t) with respect to πδ 
+
+> 0
+
+:
+
+1
+
+T
+
+Z T
+
+> 0
+
+φ(G(z(t))) dt = 1
+
+T
+
+Z T
+
+> 0
+
+ψ(z(t)) dt T →∞ 
+
+−−−−→
+
+Z
+
+> Dδ
+
+ψ(z) πδ 
+
+> 0
+
+(z) dz.
+
+Step 3: Change of variables via the pushforward. By the pushforward condition G#πδ 
+
+> 0
+
+= ftarget 
+
+and the change-of-variables formula: 
+
+Z
+
+> Dδ
+
+ψ(z) πδ 
+
+> 0
+
+(z) dz =
+
+Z
+
+> Dδ
+
+φ(G(z)) πδ 
+
+> 0
+
+(z) dz
+
+=
+
+Z
+
+> R2
+
+φ(x) ftarget (x) dx.
+
+This is precisely the defining property of the pushforward measure: for any measurable φ, R φ ◦
+
+G dμ = R φ d (G#μ).16 Step 4: Conclusion. Combining Steps 2 and 3: 
+
+1
+
+T
+
+Z T
+
+> 0
+
+φ(x(t)) dt T →∞ 
+
+−−−−→
+
+Z
+
+> R2
+
+φ(x) ftarget (x) dx.
+
+Since this holds for every φ ∈ L1(ftarget ) (and in particular for every bounded continuous φ, the class used in the asymptotic ergodicity definition (1) ), the trajectory x(t) = G(z(t)) is ergodic with respect to ftarget .
+
+## C Proof of Theorem 1 (Acceleration Energy Bound) 
+
+Proof. We bound the acceleration energy Eacc (x) = R T 
+
+> 0
+
+∥¨x(t)∥2 dt of the transformed trajectory 
+
+x(t) = G(z(t)) in terms of the latent trajectory’s acceleration energy and velocity moments. 
+
+Step 1: Acceleration decomposition via the chain rule. Since x(t) = G(z(t)) , the first derivative is ˙x(t) = JG(z(t)) ˙ z(t), where JG denotes the 2 × 2 Jacobian matrix of G. Differentiating again via the product rule: 
+
+¨x(t) = ddt 
+
+JG(z(t)) ˙ z(t)
+
+= JG(z(t)) ¨ z(t) + dJ G
+
+dt ˙z(t)= JG(z(t)) ¨ z(t) + q(t),
+
+where the Hessian term q(t) ∈ R2 has components 
+
+qk(t) = ˙ z(t)⊤∇2Gk(z(t)) ˙ z(t), k = 1 , 2.
+
+Here ∇2Gk is the 2 × 2 Hessian matrix of the k-th component of G.
+
+Step 2: Bound the Jacobian term. By the submultiplicativity of operator norms: 
+
+∥JG(z(t)) ¨ z(t)∥ ≤ ∥ JG(z(t)) ∥op · ∥ ¨z(t)∥ ≤ L ∥¨z(t)∥,
+
+where L = sup z∈K ∥JG(z)∥op is the Lipschitz constant of G on the compact K ⊂ Ω (finite by continuity of JG). 
+
+Step 3: Bound the Hessian term. For each component k ∈ { 1, 2}, since ∇2Gk is a symmetric matrix: 
+
+|qk(t)| = | ˙z(t)⊤∇2Gk(z(t)) ˙ z(t)| ≤ ∥∇ 2Gk(z(t)) ∥op · ∥ ˙z(t)∥2,
+
+where the inequality follows from the Rayleigh quotient characterization of the operator norm for symmetric matrices. Taking the ℓ2 norm over both components: 
+
+∥q(t)∥ = pq1(t)2 + q2(t)2
+
+≤
+
+q
+
+∥∇ 2G1∥2op + ∥∇ 2G2∥2op · ∥ ˙z(t)∥2
+
+= MH · ∥ ˙z(t)∥2,
+
+where MH = sup z∈K 
+
+q
+
+∥∇ 2G1(z)∥2op + ∥∇ 2G2(z)∥2op is the Hessian tensor norm on the compact 
+
+K ⊂ Ω defined in Theorem 1 (finite by continuity of ∇2Gk). 
+
+Step 4: Minkowski inequality in L2([0 , T ]) . Recall that the Minkowski inequality (triangle inequal-ity for Lp norms) states that for functions f, g ∈ L2:
+
+∥f + g∥L2 ≤ ∥ f ∥L2 + ∥g∥L2 .
+
+17 Applying this to the acceleration decomposition ¨x = JG¨z + q:
+
+pEacc (x) = 
+
+sZ T
+
+> 0
+
+∥¨x(t)∥2 dt 
+
+= ∥∥ ¨x∥∥ L2([0 ,T ]) 
+
+≤ ∥∥ JG¨z∥∥ L2 + ∥∥ q∥∥ L2
+
+≤ L ∥∥ ¨z∥∥ L2 + MH ∥ ˙z∥2
+
+> L2
+
+= L
+
+sZ T
+
+> 0
+
+∥¨z∥2 dt + MH
+
+sZ T
+
+> 0
+
+∥ ˙z∥4 dt 
+
+= L pEacc (z) + MH
+
+pΦ4(z).
+
+This completes the proof of the bound (5). 
+
+Remark (tightness). For affine maps G(z) = Az + b the Hessian contribution vanishes ( MH = 0 ), leaving pEacc (x) ≤ ∥ A∥op 
+
+pEacc (z). This inequality is a strict consequence of replacing ∥A¨z∥
+
+by ∥A∥op ∥¨z∥ in Step 2: equality holds pointwise only when ¨z is almost-everywhere aligned with the top singular direction of A, and equality holds in expectation over the uniform latent-angle distribution only when A is a scalar multiple of an isometry ( σ1(A) = σ2(A)), since the angle-averaged amplification Eθ [∥Aeθ ∥2] = 12 (σ21 + σ22 ) is strictly below σ21 = ∥A∥2op whenever σ1 > σ 2.For general C2 maps the bound is conservative for the same reason: the actual energy depends on the angle-averaged Eθ [∥JGeθ ∥2], which may be substantially smaller than L2. Experiment 2 illustrates the gap empirically: the sup-Lipschitz estimate is ˆL ≈ 2 (Table 3), giving a worst-case ratio bound 
+
+L2 ≈ 4, while the trajectory samples an angle-averaged effective amplification well below one and the observed acceleration ratio is 0.71 ×.
+
+Lemma 1 (Latent trajectory moments) . For the radial back-and-forth trajectory on Dδ with K
+
+complete cycles (period τ = 2 per cycle, total time T = 2 K), under the s-uniform (triangle) time schedule and with Eacc and Φ4 defined by integration over the open smooth interior of each half-cycle (excluding the measure-zero set of reversal times): 
+
+Eacc (z) = K(1 − δ2)4(1 + δ2)/(16 δ4), (12) 
+
+Φ4(z) = K(1 − δ2)4/(8 δ2), (13) 
+
+Φ4/E acc = 2 δ2/(1 + δ2). (14) 
+
+Both Eacc and Φ4 are finite for all δ > 0.Proof. Step 1: Velocity and acceleration of the radial profile. On the outward half-cycle with angle θk, the trajectory is z(s) = r(s) eθk where r(s) = pδ2 + (1 − δ2)s for s ∈ [0 , 1] . Since 
+
+eθk = (cos θk, sin θk) is a constant unit vector: 
+
+˙z(s) = ˙ r(s) eθk , ¨z(s) = ¨ r(s) eθk .
+
+Computing the radial derivatives. Let u(s) = r(s)2 = δ2 + (1 − δ2)s, so r = √u:
+
+˙r(s) = 1 − δ2
+
+2pu(s) = 1 − δ2
+
+2r(s) ,
+
+¨r(s) = − (1 − δ2)2
+
+4u(s)3/2 = − (1 − δ2)2
+
+4r(s)3 .
+
+Therefore: 
+
+∥ ˙z(s)∥2 = ˙ r(s)2 = (1 − δ2)2
+
+4u(s) , (15) 
+
+∥¨z(s)∥2 = ¨ r(s)2 = (1 − δ2)4
+
+16 u(s)3 , (16) 
+
+∥ ˙z(s)∥4 = ˙ r(s)4 = (1 − δ2)4
+
+16 u(s)2 . (17) 18 Step 2: Integration over one half-cycle. We integrate (16) and (17) over s ∈ [0 , 1] using the substitution u = δ2 + (1 − δ2)s, du = (1 − δ2) ds , with limits u : δ2 → 1:
+
+Acceleration energy integral: 
+
+Z 10
+
+∥¨z(s)∥2 ds = (1 − δ2)4
+
+16 
+
+Z 10
+
+u(s)−3 ds 
+
+= (1 − δ2)4
+
+16 · 11 − δ2
+
+Z 1
+
+> δ2
+
+u−3 du 
+
+= (1 − δ2)3
+
+16 ·
+
+
+
+− 12u2
+
+1
+
+> δ2
+
+= (1 − δ2)3
+
+16 · 12
+
+ 1
+
+δ4 − 1
+
+
+
+= (1 − δ2)3
+
+32 · 1 − δ4
+
+δ4
+
+= (1 − δ2)3(1 − δ2)(1 + δ2)32 δ4
+
+= (1 − δ2)4(1 + δ2)32 δ4 .
+
+Velocity fourth-moment integral: 
+
+Z 10
+
+∥ ˙z(s)∥4 ds = (1 − δ2)4
+
+16 
+
+Z 10
+
+u(s)−2 ds 
+
+= (1 − δ2)4
+
+16 · 11 − δ2
+
+Z 1
+
+> δ2
+
+u−2 du 
+
+= (1 − δ2)3
+
+16 ·
+
+
+
+− 1
+
+u
+
+1
+
+> δ2
+
+= (1 − δ2)3
+
+16 ·
+
+ 1
+
+δ2 − 1
+
+
+
+= (1 − δ2)3
+
+16 · 1 − δ2
+
+δ2
+
+= (1 − δ2)4
+
+16 δ2 .
+
+Step 3: Full K cycles. The return (inward) half-cycle traces the same radial profile in reverse: 
+
+rreturn (s) = r(1 − s). By the chain rule, | ˙rreturn (s)| = | ˙r(1 − s)| and |¨rreturn (s)| = |¨r(1 − s)|, so the integrals are identical. Each full cycle consists of two half-cycles, and there are K full cycles, giving 2K half-cycles in total. Therefore: 
+
+Eacc (z) = 2 K · (1 − δ2)4(1 + δ2)32 δ4 = K(1 − δ2)4(1 + δ2)16 δ4 ,
+
+and similarly: 
+
+Φ4(z) = 2 K · (1 − δ2)4
+
+16 δ2 = K(1 − δ2)4
+
+8δ2 .
+
+Step 4: Moment ratio. Dividing Φ4 by Eacc :
+
+Φ4(z)
+
+Eacc (z) = K(1 − δ2)4/(8 δ2)
+
+K(1 − δ2)4(1 + δ2)/(16 δ4) = 16 δ4
+
+8δ2(1 + δ2) = 2δ2
+
+1 + δ2 .
+
+As δ → 0, this ratio vanishes as O(δ2), confirming that the Hessian contribution to the acceleration energy becomes negligible for small δ.
+
+Step 5: Finiteness. For any δ > 0, both Eacc and Φ4 are finite. This is the key advantage of the 
+
+δ-exclusion: without it ( δ = 0 ), the integrals R u−3 du and R u−2 du diverge at u = 0 (the origin), making the acceleration energy infinite. The annular domain Dδ eliminates this singularity. 19 C.1 Turnaround impulses and the interior-energy convention 
+
+The radial back-and-forth trajectory of Section 2.1 is piecewise-C2, with velocity discontinuities at two types of reversal points: 
+
+Airport turnaround ( r = δ). Between consecutive cycles the agent returns to the base-station disc ∥z∥ ≤ δ and departs on a fresh heading θk+1 . Physically, this corresponds to a natural stopping point: the UAV lands (or hovers at the base), reorients, and departs. The base-station rest is excluded from mission time (Section 2.1), so the inter-cycle transition does not enter the energy or coverage integrals; each cycle is integrated independently in Lemma 1. 
+
+Outer-boundary turnaround ( r = 1 ). At the end of each outward half-cycle the velocity reverses along the same ray: ˙z jumps from + ˙ r(1) eθk to − ˙r(1) eθk , with ˙r(1) = (1 − δ2)/2. This is the only in-flight discontinuity. Theorem 1 and Lemma 1 integrate over the open smooth interior of each half-cycle, treating the reversal as a measure-zero set; this is the interior smooth-leg energy 
+
+convention used throughout the paper. 
+
+Interior-energy convention vs. physical turnaround impulses. The interior-energy convention is the operationally meaningful accounting in mechanical-control practice: smooth-leg flight energy is what the velocity controller integrates between maneuvers, and turnaround/reorientation impulses are budgeted separately as discrete maneuver costs. Theorem 1, Corollary 1, and Lemma 1 bound the smooth-leg energy of x by the smooth-leg energy of z amplified by the map’s Lipschitz and Hessian norms. Physical trajectories with finite-duration turnaround windows incur additional acceleration energy at each reversal whose magnitude depends on the chosen smoothing window; this turnaround cost is logged separately from the smooth-leg integrals. 
+
+Cubic-Hermite local smoothing and its turnaround cost. For completeness we record the energy budget of a globally C1 reparameterization. Fix ε > 0; for s ∈ [0 , 1 − ε], keep the original profile 
+
+r(s) = pδ2 + (1 − δ2)s, and for s ∈ [1 − ε, 1] , replace r(s) by a cubic Hermite interpolant ˜r(s)
+
+satisfying 
+
+˜r(1 − ε) = r(1 − ε), ˙˜r(1 − ε) = ˙ r(1 − ε), ˜r(1) = 1 , ˙˜r(1) = 0 .
+
+The return half-cycle mirrors the outward leg as before: ˜rret (s) = ˜ r(1 − s). The endpoint derivative changes by ˙r(1 − ε) = (1 − δ2)/(2 r(1 − ε)) = Θ(1) over a window of length ε, so the cubic interpolant has sup s∈[1 −ε, 1] |¨˜r(s)| = Θ(1 /ε ) and the contribution of the splice window to the squared-acceleration integral is Z 11−ε
+
+¨˜r(s)2 ds = Θ(1 /ε ).
+
+The induced occupancy perturbation is concentrated on the annular shell r ∈ [r(1 − ε), 1] of area fraction O(ε), giving ∥πsmooth − πδ 
+
+> 0
+
+∥TV = O(ε), absorbed by the approximation framework of Theorem 3. The trade-off is therefore fundamental: a fixed-window cubic smoothing trades O(ε) in density perturbation for Θ(1 /ε ) in turnaround acceleration energy, and there is no choice of ε that drives both to zero simultaneously. Any finite-duration smoothing of an Θ(1) -magnitude velocity reversal contributes a turnaround cost that cannot be absorbed into the smooth-leg integrals. The interior-energy convention sidesteps this trade-off by accounting for the smooth-leg integrals only, with turnaround impulses budgeted separately as physical maneuver costs. 
+
+Practical note. The experiments use the s-uniform parameterization throughout, which gives exact 
+
+uniform density on Dδ by Proposition 1; turnaround impulses are budgeted separately from the smooth-leg integrals in our energy reporting and do not enter Lemma 1’s closed-form moments. 
+
+## D Proof of Theorem 2 (Ergodic Convergence Rate) 
+
+Proof. We prove each part of the theorem in sequence. 
+
+Step 1: Per-cycle i.i.d. structure. The radial latent trajectory on Dδ consists of i.i.d. cycles indexed by k = 1 , 2, . . . , each with a random angle θk ∼ Uniform[0 , 2π) and period τ = 2 (one outward 20 half-cycle plus one return half-cycle). Writing xk(s) = G(zk(s)) = G(r(s) eθk ) for the transformed outward leg, the per-cycle contribution to the time average is: 
+
+Xk =
+
+Z 10
+
+φ(xk(s)) ds =
+
+Z 10
+
+φ(G(r(s) eθk )) ds, 
+
+where we have used the fact that the outward and return half-cycles contribute equally (by the symmetry argument in the proof of Proposition 1). Since the angles θk are i.i.d., the random variables 
+
+Xk are also i.i.d. Their common mean is 
+
+E[Xk] = Eθ
+
+Z 10
+
+φ(G(r(s) eθ )) ds 
+
+
+
+=
+
+Z
+
+> Dδ
+
+φ(G(z)) πδ 
+
+> 0
+
+(z) dz = μG,
+
+where the second equality uses the polar substitution developed in Step 3, and μG = R φ d (G#πδ 
+
+> 0
+
+).The time average over K cycles is SK = 1
+
+> K
+
+PKk=1 Xk.
+
+Step 2: Variance bound via Cauchy–Schwarz. Define the centered function ψ = φ ◦ G − μG, so that Xk − μG = R 10 ψ(r(s) eθk ) ds . By the Cauchy–Schwarz inequality applied to R 10 ψ · 1 ds (with the constant function 1): 
+
+(Xk − μG)2 =
+
+Z 10
+
+ψ(r(s) eθk ) ds 
+
+2
+
+≤
+
+Z 10
+
+12 ds ·
+
+Z 10
+
+ψ2(r(s) eθk ) ds =
+
+Z 10
+
+ψ2(r(s) eθk ) ds. 
+
+Taking the expectation over θk ∼ Uniform[0 , 2π):
+
+σ2 := Var( Xk) = E[( Xk − μG)2]
+
+≤ Eθ
+
+Z 10
+
+ψ2(r(s) eθ ) ds 
+
+
+
+=
+
+Z 10
+
+12π
+
+Z 2π
+
+> 0
+
+ψ2(r(s) eθ ) dθ ds. 
+
+Step 3: Change of variables to the annulus measure. We convert the (s, θ ) integral into an area integral over Dδ . Using the substitution r = pδ2 + (1 − δ2)s, so r2 = δ2 + (1 − δ2)s and 
+
+ds = 2 r dr/ (1 − δ2), with limits r : δ → 1:
+
+σ2 ≤
+
+Z 1
+
+> δ
+
+12π
+
+Z 2π
+
+> 0
+
+ψ2(r eθ ) dθ · 2r
+
+1 − δ2 dr 
+
+= 1
+
+π(1 − δ2)
+
+Z 1
+
+> δ
+
+Z 2π
+
+> 0
+
+ψ2(r eθ ) r dθ dr 
+
+= 1
+
+π(1 − δ2)
+
+Z
+
+> Dδ
+
+ψ2(z) dA. 
+
+Since the uniform density on Dδ is πδ 
+
+> 0
+
+(z) = 1 /[π(1 − δ2)] , this becomes 
+
+σ2 ≤
+
+Z
+
+> Dδ
+
+ψ2(z) πδ 
+
+> 0
+
+(z) dz = Eπδ 
+
+> 0
+
+[ψ2] = Var πδ 
+
+> 0
+
+(φ ◦ G),
+
+where the last equality uses Eπδ 
+
+> 0
+
+[ψ] = 0 by construction. 
+
+Step 4: Poincaré inequality on the annulus Dδ . The Poincaré inequality for the uniform measure on Dδ states that for any f ∈ H1(Dδ ):
+
+Var πδ 
+
+> 0
+
+(f ) ≤ CDδ Eπδ 
+
+> 0
+
+[|∇ f |2],
+
+where the Poincaré constant CDδ = 1 /λ δ 
+
+> 1
+
+and λδ 
+
+> 1
+
+is the first nonzero Neumann eigenvalue of the Laplacian −∆ on Dδ .21 For the full disc ( δ = 0 ), the first nonzero Neumann eigenvalue is λ01 = ( j′
+
+> 1,1
+
+)2, where j′ 
+
+> 1,1
+
+≈ 1.8412 
+
+is the first positive zero of the derivative of the Bessel function J1. This gives CD = 1 /(j′
+
+> 1,1
+
+)2 ≈
+
+0.295 .For the annulus Dδ with small δ > 0, the eigenvalue λδ 
+
+> 1
+
+is determined by the Bessel cross-product equation 
+
+J′
+
+> 1
+
+(√λ δ ) Y ′ 
+
+> 1
+
+(√λ) − J′
+
+> 1
+
+(√λ) Y ′ 
+
+> 1
+
+(√λ δ ) = 0 ,
+
+where J1, Y 1 are Bessel functions of the first and second kind. For small δ, λδ 
+
+> 1
+
+= ( j′
+
+> 1,1
+
+)2 + O(δ2), so 
+
+CDδ = CD + O(δ2) ≈ 0.295 .
+
+Step 5: Gradient bound via the chain rule. We apply the Poincaré inequality to f = φ ◦ G. By the chain rule: 
+
+∇(φ ◦ G)( z) = JG(z)⊤∇φ(G(z)) .
+
+Taking norms: 
+
+|∇ (φ ◦ G)( z)|2 = ∥JG(z)⊤∇φ(G(z)) ∥2 ≤ ∥ JG(z)∥2op · |∇ φ(G(z)) |2 ≤ L2L2
+
+> φ
+
+,
+
+where L = sup z∈Dδ ∥JG(z)∥op (finite by the Lipschitz hypothesis on G : Dδ → R2, since Dδ is compact) and Lφ is the Lipschitz constant of φ (so |∇ φ| ≤ Lφ almost everywhere by Rademacher’s theorem; the Poincaré inequality is applied to the weak gradient throughout). Therefore: 
+
+Var πδ 
+
+> 0
+
+(φ ◦ G) ≤ CDδ · Eπδ 
+
+> 0
+
+[|∇ (φ ◦ G)|2] ≤ CDδ · L2 · L2
+
+> φ
+
+.
+
+Combining with Step 3: σ2 ≤ CDδ L2 L2
+
+> φ
+
+. This proves part (a). 
+
+Step 6: Mean-square convergence rate. Since SK = 1
+
+> K
+
+PKk=1 Xk is the average of K i.i.d. random variables with mean μG and variance σ2:
+
+E[( SK − μG)2] = Var( Xk)
+
+K = σ2
+
+K ≤ CDδ L2 L2
+
+> φ
+
+K .
+
+This gives the O(1 /√K) RMSE rate (standard Monte Carlo rate for i.i.d. samples). 
+
+Step 7: Concentration via Hoeffding’s inequality. Since φ is bounded with ∥φ∥∞ ≤ Bφ, each 
+
+Xk satisfies |Xk| ≤ Bφ, so Xk ∈ [−Bφ, B φ]. By Hoeffding’s inequality for bounded i.i.d. random variables: 
+
+Pr( |SK − μG| > ε ) ≤ 2 exp − 2K2ε2
+
+PKk=1 (2 Bφ)2
+
+!
+
+= 2 exp 
+
+
+
+− Kε 2
+
+2B2
+
+> φ
+
+
+
+.
+
+This proves part (b). Equivalently, with probability at least 1 − α:
+
+|SK − μG| ≤ Bφ
+
+r 2 ln(2 /α )
+
+K .
+
+Alternatively, Bernstein’s inequality uses both the variance bound and the boundedness to give the tighter tail: 
+
+Pr( |SK − μG| > ε ) ≤ 2 exp − Kε 2
+
+2CDδ L2L2 
+
+> φ
+
++ 43 Bφε
+
+!
+
+,
+
+which is sharper when ε is small relative to Bφ (since it uses σ2 instead of the range). 
+
+Step 8: Total error decomposition. By the triangle inequality: 
+
+SK −
+
+Z
+
+φ f target ≤ | SK − μG|
+
+| {z }
+
+> statistical error
+
++ μG −
+
+Z
+
+φ f target 
+
+| {z }
+
+> approximation error
+
+.
+
+22 For the approximation term, recall that μG = R φ d (G#πδ 
+
+> 0
+
+). By the Kantorovich–Rubinstein duality theorem, for any Lφ-Lipschitz function φ:
+
+Z
+
+φ dμ −
+
+Z
+
+φ dν ≤ Lφ · W1(μ, ν )
+
+for any two probability measures μ, ν . Applying this with μ = G#πδ 
+
+> 0
+
+and ν = ftarget :
+
+μG −
+
+Z
+
+φ f target ≤ Lφ · W1(G#πδ 
+
+> 0
+
+, f target ).
+
+This proves part (c). 
+
+Step 9: Recovering the bounded-continuous definition of ergodicity. Theorem 2 is stated for bounded-Lipschitz test functions, whereas (1) quantifies over all bounded continuous test functions. The two are consistent. Fix any countable convergence-determining family {φn}n≥1 of bounded-Lipschitz functions on the (compact) support of G#πδ 
+
+> 0
+
+; such a family exists by separability of C(K)
+
+for compact K. The Hoeffding concentration in part (b), combined with Borel–Cantelli applied to each φn in turn, yields a single full-measure event (the countable intersection of the per-φn a.s. events) on which SK → μG holds for every φn simultaneously. Since {φn} is convergence-determining and the bounded-Lipschitz metric dBL metrizes weak convergence of probability measures on Polish spaces [ 41 , §11.3], the empirical cycle measure converges a.s. in the weak topology to G#πδ 
+
+> 0
+
+; weak convergence then passes to all bounded continuous φ on the same a.s. event, and the approximation-term decomposition of part (c) delivers (1) as K → ∞ whenever W1(G#πδ 
+
+> 0
+
+, f target ) = 0 (i.e., for the exact pushforward). 
+
+## E Proof of Theorem 3 (Approximation Error Bound) 
+
+Proof. We bound the Wasserstein-2 distance between the achieved pushforward density Gθ#πδ 
+
+> 0
+
+and the target density ftarget in terms of the velocity field approximation error εv .
+
+Step 1: Setup of the ODE trajectories. Both the learned map Gθ and the true OT map G∗ are defined as time-1 flow maps of their respective velocity fields. For a fixed initial point z ∈ Dδ , let: 
+
+dy
+
+ds = vθ (s, y(s)) , y(0) = z, Gθ (z) = y(1) ,d˜y
+
+ds = v∗(s, ˜y(s)) , ˜y(0) = z, G∗(z) = ˜ y(1) ,
+
+where v∗ is the true OT marginal velocity field (the conditional expectation of the OT displacement under the flow-time marginal ps) and vθ is the learned approximation. 
+
+Step 2: Error dynamics. Define the error e(s) = y(s) − ˜y(s), with e(0) = 0 (both trajectories start from z). The error satisfies: 
+
+de
+
+ds = vθ (s, y(s)) − v∗(s, ˜y(s)) = vθ (s, y(s)) − vθ (s, ˜y(s)) | {z }
+
+> stability term
+
++ vθ (s, ˜y(s)) − v∗(s, ˜y(s)) | {z }
+
+> velocity field error
+
+.
+
+Taking norms and using the Lv -Lipschitz property of vθ in its spatial argument: 
+
+de
+
+ds ≤ Lv ∥e(s)∥ + ∥vθ (s, ˜y(s)) − v∗(s, ˜y(s)) ∥.
+
+Step 3: Grönwall’s integral inequality. This is a linear differential inequality of the form ∥ ˙e∥ ≤ 
+
+a ∥e∥+b(s) with a = Lv and b(s) = ∥vθ (s, ˜y(s)) −v∗(s, ˜y(s)) ∥. By the integral form of Grönwall’s inequality (see, e.g., Teschl [18]), with initial condition ∥e(0) ∥ = 0 :
+
+∥e(s)∥ ≤ 
+
+Z s
+
+> 0
+
+eLv (s−τ ) b(τ ) dτ. 
+
+23 Evaluating at s = 1 (the flow endpoint): 
+
+∥Gθ (z) − G∗(z)∥ = ∥e(1) ∥ ≤ 
+
+Z 10
+
+eLv (1 −τ ) ∥vθ (τ, ˜y(τ )) − v∗(τ, ˜y(τ )) ∥ dτ. (18) 
+
+Step 4: Squaring via Cauchy–Schwarz. To prepare for averaging, we square (18) . First, note that 
+
+eLv (1 −τ ) ≤ eLv for all τ ∈ [0 , 1] . Therefore: 
+
+∥Gθ (z) − G∗(z)∥ ≤ eLv
+
+Z 10
+
+∥vθ (τ, ˜y(τ )) − v∗(τ, ˜y(τ )) ∥ dτ. 
+
+Applying the Cauchy–Schwarz inequality to the integral R 10 f (τ ) · 1 dτ :
+
+∥Gθ (z) − G∗(z)∥2 ≤ e2Lv
+
+Z 10
+
+∥vθ (τ, ˜y(τ )) − v∗(τ, ˜y(τ )) ∥ dτ 
+
+2
+
+≤ e2Lv
+
+Z 10
+
+∥vθ (τ, ˜y(τ )) − v∗(τ, ˜y(τ )) ∥2 dτ. 
+
+Step 5: Averaging over the source distribution. Taking the expectation over z ∼ πδ 
+
+> 0
+
+:
+
+Ez∼πδ
+
+> 0
+
+∥Gθ (z) − G∗(z)∥2 ≤ e2Lv Ez∼πδ
+
+> 0
+
+Z 10
+
+∥vθ (τ, ˜y(τ )) − v∗(τ, ˜y(τ )) ∥2 dτ 
+
+
+
+= e2Lv
+
+Z 10
+
+Ez∼πδ
+
+> 0
+
+∥vθ (τ, ˜y(τ )) − v∗(τ, ˜y(τ )) ∥2 dτ, 
+
+where we exchanged the expectation and integral by Fubini’s theorem. Now observe that ˜y(τ ) is the time-τ image of z under the true OT flow v∗. When z ∼ πδ 
+
+> 0
+
+, the distribution of ˜y(τ ) is exactly pτ , the time-τ marginal of the OT interpolation path (by definition of the OT flow). Therefore: 
+
+Ez∼πδ
+
+> 0
+
+∥vθ (τ, ˜y(τ )) − v∗(τ, ˜y(τ )) ∥2 = Ey∼pτ
+
+∥vθ (τ, y) − v∗(τ, y)∥2 .
+
+Substituting back: 
+
+Ez∼πδ
+
+> 0
+
+∥Gθ (z) − G∗(z)∥2 ≤ e2Lv
+
+Z 10
+
+Epτ
+
+∥vθ (τ, ·) − v∗(τ, ·)∥2 dτ 
+
+| {z }
+
+> =ε2
+> v
+
+= e2Lv ε2 
+
+> v
+
+.
+
+Step 6: Transport coupling argument. For z ∼ πδ 
+
+> 0
+
+, the pair (Gθ (z), G ∗(z)) defines a valid coupling between the measures Gθ#πδ 
+
+> 0
+
+(the achieved density) and G∗
+
+> #
+
+πδ 
+
+> 0
+
+= ftarget (the target density). By the definition of the Wasserstein-2 distance as the infimum over all couplings: 
+
+W 22 (Gθ#πδ 
+
+> 0
+
+, f target ) ≤ Ez∼πδ
+
+> 0
+
+∥Gθ (z) − G∗(z)∥2 ≤ e2Lv ε2 
+
+> v
+
+.
+
+Taking square roots yields: 
+
+W2(Gθ#πδ 
+
+> 0
+
+, f target ) ≤ eLv · εv .
+
+The W1 bound follows immediately from W1 ≤ W2 (by Jensen’s inequality applied to the coupling). 
+
+Remark (sufficient conditions for (A1)–(A3) and coupling admissibility). (A1) is Benamou– Brenier displacement interpolation [ 39 , 35 ], available whenever πδ 
+
+> 0
+
+and ftarget are absolutely contin-uous with finite second moments, both of which hold here. (A2) is the operational smooth-regime hypothesis on the displacement velocity v∗ that drives the Grönwall step in Step 3 of the proof. Sufficient (but not necessary) conditions where (A2) provably holds include: (i) source and target supported on uniformly convex domains with densities bounded above and below, in which case Caffarelli’s regularity theory [ 2, 35 ] delivers a smooth Brenier potential and a globally Lipschitz displacement velocity on the relevant compact spacetime tube; (ii) Gaussian-to-Gaussian transport, 24 where the optimal map is affine and v∗ is therefore Lipschitz by inspection, together with other ex-plicitly solvable transport families; (iii) entropically regularized OT, whose population displacement velocity is smooth by construction (the entropic-OT plan has full support and a C∞ density-ratio derivative). Gaussian-mixture targets (used experimentally in Exp. 1) are treated as smooth bounded-density targets in the spirit of (i)/(iii), but they do not by themselves guarantee a globally Lipschitz Brenier velocity without additional regularity arguments: general OT between Gaussian mixtures is not affine or piecewise affine, so on such targets (A2) should be read as the operational smooth-regime hypothesis used by the Grönwall argument rather than a closed-form derivation. The regime where none of (i)–(iii) applies (density discontinuities or topology mismatch) is handled by Proposition 3 via the mollified/restricted surrogate f η,δ 
+
+> target
+
+. The simplest candidate condition (“ ftarget has a C1
+
+density bounded away from zero on a homeomorphic support”) is not sufficient on its own without additional convexity/boundary-regularity assumptions, since Caffarelli regularity fails on non-convex domains such as the annulus. (A3) holds automatically for MLPs with Lσ -Lipschitz activations (SiLU: 
+
+Lσ ≈ 1.10 ) and finite weights; Lv is bracketed in our experiments by ˆLv ∈ [2 , 4] (power iteration, Appendix E.2) as a diagnostic plug-in and the architectural upper bound Lnet  
+
+> v
+
+(Appendix E.3) as the certified upper bound. Coupling admissibility (used in Step 6 of the proof, not stated as a separate assumption): (A1) implies G∗
+
+> #
+
+πδ 
+
+> 0
+
+= ftarget , and Gθ is the time-1 flow of an ODE with initial law 
+
+πδ 
+
+> 0
+
+, so Gθ#πδ 
+
+> 0
+
+is the achieved pushforward; the joint z0 7 → (Gθ (z0), G ∗(z0)) then has the correct marginals and is admissible for the Wasserstein coupling without additional assumption. 
+
+Remark (CFM-loss bridge; conditional on (A1)–(A3)). Theorem 3 bounds the population velocity error εv in L2(ps) along the exact OT displacement interpolation. Bridging this to the empirically logged CFM loss requires a separate, conditional argument that we record here. By the marginalization property of Conditional Flow Matching [8], for any coupling π between the source and target, 
+
+LCFM (θ; π) = Es, ys vθ (s, ys) − ¯vπ (s, ys) 2 + L∗
+
+> CFM
+
+(π),
+
+where ¯vπ (s, y) := Eπ [x1 − z0 | ys = y] is the conditional-mean velocity under π and L∗
+
+> CFM
+
+(π)
+
+is the (irreducible) conditional variance. Under the regularity assumed by (A2) and the non-crossing/injectivity property of regular Brenier displacement interpolation, when π is the exact Brenier OT coupling [ 35 , 2], cyclical monotonicity forces non-crossing straight-line interpolants, so (z0, x1) is a.s. deterministic given (s, ys), yielding L∗
+
+> CFM
+
+(πOT ) = 0 and ¯vπOT = v∗. For the Sinkhorn coupling πε with regularization εsink > 0, ¯vπε is a smoothed version of v∗. The velocity-field error then decomposes via the triangle inequality (in L2(p) with p the entropic-OT marginal at flow time s, which agrees with ps in the limit εsink → 0) as 
+
+εv ≤ vθ − ¯vπε
+
+> L2(p)
+
+| {z } 
+
+> trainable:
+
+√LCFM (θ;πε)−L ∗
+
+> CFM (πε)
+
++ ¯vπε − v∗
+
+> L2(p)
+
+| {z }
+
+> Rsink (εsink )
+
+. (19) The first term is trainable, equal to the reducible part of the empirical CFM loss. The Sinkhorn bias Rsink (εsink ) vanishes in the exact-Brenier limit εsink → 0; under standard regularity conditions for entropic OT [ 27 ], it admits the rate Rsink = O(εsink ) in L2(p) (with possible logarithmic factors depending on density regularity), and we treat it as an empirical residual whose magnitude is monitored at training time rather than as a quantity bounded a priori. Mini-batch coupling bias and finite-sample generalization are absorbed into the empirical CFM loss in the standard empirical-process sense; we do not isolate them as separate analytical terms. The decomposition cleanly separates the sources of error in the end-to-end bound: (i) optimization suboptimality 
+
+LCFM (θ; πε) − L ∗
+
+> CFM
+
+(πε), (ii) entropic-OT bias Rsink , and (iii) the Grönwall prefactor eLv .
+
+Remark (conservatism of the eLv factor). The bound uses the worst-case eLv (1 −τ ) ≤ eLv , which is tight only when the velocity field error is concentrated at τ = 0 (the beginning of the flow). In practice, OT velocity fields are nearly linear (straight-line interpolation), so Lv is moderate and the actual amplification factor is much smaller than eLv . Using the one-sided Lipschitz constant (largest eigenvalue of the symmetric part of ∇yvθ ) would give a tighter bound, but Lv suffices for a clean, interpretable result. 
+
+Remark (practical caveats when plugging the bound into training). Four caveats should be kept in mind when connecting Theorem 3 to the empirical training loss. (i) Grönwall conservatism. The eLv
+
+prefactor is a worst-case artifact of bounding eLv (1 −τ ) ≤ eLv uniformly in τ ; it is tight only when the 25 velocity error b(τ ) = ∥vθ − v∗∥(τ, ·) concentrates at τ ≈ 0. For OT-CFM with nearly linear fields the empirical amplification is much smaller, and a sharper bound is obtainable via the one-sided Lipschitz constant or by exploiting Orlicz-norm control of b. (ii) Entropic-OT bias. Use of Sinkhorn rather than exact OT introduces the additional O(εsink ) bias term in (19) . Annealing εsink during training drives this residual to zero at the cost of Sinkhorn iterations; we use a fixed εsink = 0 .05 that was observed to keep this bias small relative to the trainable term (Appendix F). (iii) Penalty decomposition. 
+
+When the total loss is Ltotal = LCFM + P 
+
+> i
+
+λiRi (e.g., NFZ or acceleration penalties), only the 
+
+LCFM component enters the Wasserstein bound; substituting Ltotal inflates the bound because the penalty terms measure constraint violation rather than velocity-field approximation error. The LCFM 
+
+component should be logged and reported separately (done in Appendix F). (iv) Non-smooth targets. 
+
+When (A2) of Theorem 3 fails (density discontinuities or topology mismatch), the bound is replaced by Proposition 3, which picks up an additive O(η) + O(δ) residual from mollification and topological rearrangement, respectively. The proof is given immediately below. 
+
+Proposition 3 (Approximation error, non-smooth/topology-mismatched regime) . Let f η 
+
+> target
+
+=
+
+κη ∗ ftarget denote a mollification by a smoothing kernel of bandwidth η, and let f η,δ  
+
+> target
+
+denote its restriction/renormalization to a support homeomorphic to Dδ that agrees with f η 
+
+> target
+
+outside an O(δ)-collar of the excluded disc. Under (A1)–(A3) of Theorem 3 applied to the smoothed-and-restricted surrogate f η,δ  
+
+> target
+
+with associated velocity error εη,δ v , and with the source-coupled pair 
+
+(Gθ (z0), G ∗(z0)) , z0 ∼ πδ 
+
+> 0
+
+, providing the admissible W2 coupling by construction, the triangle inequality for W2 yields 
+
+W2(Gθ#πδ 
+
+> 0
+
+, f target ) ≤ eLv · εη,δ v + ηreg (η) + ηtop (δ),
+
+with ηreg (η) = O(η) from mollification and ηtop (δ) = O(δ) from the collar/topology rearrangement. Proof. Let f η 
+
+> target
+
+= κη ∗ ftarget be the mollification of ftarget by a compactly supported C∞
+
+kernel κη of bandwidth η > 0, and let f η,δ  
+
+> target
+
+be its restriction to a set Ωδ homeomorphic to Dδ ,renormalized and extended by f η 
+
+> target
+
+outside an O(δ) collar of the inner boundary. Under (A1)–(A3) applied to the smoothed-and-restricted surrogate f η,δ 
+
+> target
+
+, Theorem 3 yields 
+
+W2(Gθ#πδ 
+
+> 0
+
+, f η,δ 
+
+> target
+
+) ≤ eLv · εη,δ v .
+
+The triangle inequality for W2 gives 
+
+W2(Gθ#πδ 
+
+> 0
+
+, f target ) ≤ W2(Gθ#πδ 
+
+> 0
+
+, f η,δ 
+
+> target
+
+) + W2(f η,δ 
+
+> target
+
+, f target ).
+
+It remains to bound the second term. Further triangle inequality with f η 
+
+> target
+
+as an intermediate gives 
+
+W2(f η,δ 
+
+> target
+
+, f target ) ≤ W2(f η,δ 
+
+> target
+
+, f η
+
+> target
+
+) + W2(f η
+
+> target
+
+, f target ).
+
+The first piece is bounded by the O(δ) Wasserstein cost of rearranging the O(δd)-mass collar between 
+
+Ωδ and the original support (the rearrangement moves mass by at most δ, so W 22 ≤ δ2 · O(δd) giving 
+
+W2 = O(δ1+ d/ 2); we absorb this in the looser bound ηtop (δ) = O(δ)). The second piece is the standard mollification cost: by construction, f η 
+
+> target
+
+is obtained from ftarget by convolution with κη ,which corresponds to displacement by a random vector of norm ≤ η, so W2(f η
+
+> target
+
+, f target ) ≤ η.Summing the two contributions defines ηtop (δ) + ηreg (η).
+
+E.1 Monitoring the Approximation–Topology Floor 
+
+Equation (10) is only meaningful when the precondition (9) holds. We monitor the floor F (θ, δ ) := 
+
+LφeˆLv ˆεv + Lφ ˆηtop (δ) throughout training, where ˆLv is the running power-iteration estimate of the velocity-field Lipschitz constant (Appendix E.2), ˆεv = pLCFM (θ; πε) − L ∗
+
+> CFM
+
+(πε) + Cε sink ,and ˆηtop (δ) = ctop δ with ctop an empirically calibrated constant (typically ctop ∈ [0 .5, 2] in our experiments). When F (θ, δ ) exceeds a target tolerance ε/L φ, additional cycle budget K cannot compensate; the remedy is to continue training (reducing ˆεv ) or shrink δ (reducing ˆηtop , at the cost of larger latent energy per Corollary 1). 26 Per-experiment topology residual and constrained-run handling. The topology residual ηtop (δ)
+
+may be taken as zero in the topology-matched, smooth-support regime where (A2) of Theorem 3 also applies; homotopy equivalence between supp( ftarget ) and Dδ is a topological prerequisite for this regime but does not by itself imply (A2). The regime applies to Exp. 1 (Gaussian mixture truncated to annular support, π1 = Z matching Dδ ). For Exp. 3, the target density is the same annularly truncated Gaussian-mixture target as in Exp. 1; the NFZ is not removed from the target support, and the target is not zeroed inside the NFZ. The NFZ is enforced through the soft penalty λnfz Rnfz added to Ltotal . The topology residual relevant to density matching therefore follows the same annular target support as Exp. 1, while NFZ violations are a separate soft-constraint residual not covered by Theorem 3 (monitored as a constraint-violation diagnostic; see Appendix F). For Exp. 2’s full-disc target, ηtop = O(δ) from the inner-disc rearrangement. In all cases the topology residual is decoupled from εv and controllable via δ. In constrained runs (Section 2.3) only the LCFM component of (4) enters the Wasserstein approximation bound (reported separately in Appendix F). 
+
+E.2 Estimation Protocol for Lv
+
+We evaluate Lv through a two-sided bracket ˆLv ≤ Lv ≤ Lnet  
+
+> v
+
+: the lower end is a sampling-based power-iteration estimator, the upper end is the architectural weight-product bound (21) , and both are computable from a trained checkpoint with no additional optimization. 
+
+Lower end: power-iteration estimator ˆLv . Draw Npts = 1024 pairs (si, yi) with si ∼
+
+Uniform[0 , 1] and yi ∼ psi ; at each pair run 10 iterations of the power method on 
+
+∇yvθ (si, yi)⊤∇yvθ (si, yi) with random initialization, recording the largest singular value σ(i)max ;report ˆLv = max i σ(i)max . This estimate is an empirical lower bound on the true Lipschitz constant (finite sampling misses the supremum) and its maximum is itself an upper-tail statistic; we verified across 10 random seeds that the estimate varies by at most 7% relative. Across all five checkpoints reported in §4, ˆLv ∈ [2 , 4] .
+
+Upper end: architectural bound Lnet  
+
+> v
+
+. The VelocityNet is an MLP with five linear layers and four SiLU activations in the (s, y) 7 → vθ direction; with Lσ = max x |silu ′(x)| ≈ 1.0998 (attained at 
+
+x ≈ 2.4), the weight-product bound (21) specializes to 
+
+Lnet  
+
+> v
+
+(θ) = ( Lσ )nact 
+
+> 5
+
+Y
+
+> ℓ=1
+
+∥Wℓ∥op = (1 .0998) 4 Y
+
+> ℓ
+
+σmax (Wℓ), (20) where σmax (Wℓ) is computed by SVD on the saved weight matrix (single pass; no training). The bound is certifiable: it provably upper-bounds Lip y(vθ (s, ·)) uniformly in s.
+
+Map-level Lipschitz estimator ˆL. Theorem 2 uses L = sup z∈Dδ ∥JGθ (z)∥op , the sup-Lipschitz of the full flow map, not of the velocity field. We estimate it at N = 2048 samples zi ∼ πδ
+
+> 0
+
+via central-difference Jacobian SVD on the RK4 integrator ( h = 10 −3, 50 steps), reporting ˆL =max i σmax (JGθ (zi)) ; three seeds give a max-of-max stable to within ≤ 2% relative (Table 3, ˆL
+
+column). As with ˆLv , finite sampling yields an empirical lower bound on the true supremum. The Grönwall envelope L ≤ eLv overshoots: at ˆLv ≈ 3 it predicts L ≲ 20 , whereas the measured 
+
+ˆL ∈ { 1.6, 2.0, 2.4, 2.7, 3.8} across the five rows sits 5–10 × below, reflecting the well-known conservatism of Grönwall for near-stationary OT velocity fields. The monotone compression ˆL :3.8 → 2.4 → 1.6 across Exp. 3a/b/c (unconstrained → NFZ → NFZ+accel.) mirrors the Lnet 
+
+> v
+
+column and is consistent with the acceleration penalty acting as a direct Jacobian regularizer on Gθ .
+
+Numerical calibration. Table 3 reports the bracket and the Corollary 2 diagnostic floor eˆLv · εv
+
+per experiment. Three features to note. (i) The bracket is wide: Lnet  
+
+> v
+
+/ ˆLv ≈ 10 −40 ×, consistent with the well-known looseness of the weight-product bound for trained networks whose consecutive layers are not aligned with saturating singular subspaces [ 28 , 33 ]. (ii) Constraint-regularized training compresses Lnet  
+
+> v
+
+: the Exp. 3c row shows Lnet  
+
+> v
+
+≈ 33 under NFZ+acceleration penalty, vs. ≈ 105 
+
+for the unconstrained variant, because the acceleration penalty implicitly regularizes the spatial 27 Jacobian of vθ (smaller Hessian of Gθ ⇒ smaller ∥∇ yvθ ∥ along the flow). (iii) The diagnostic plug-in floor eˆLv · εv ≈ 0.8 is ≈ 5−10 × larger than the empirical ˆW2 across all five rows (last column; 
+
+ˆW2 ∈ [0 .07 , 0.17] ), so the floor with ˆLv envelopes ˆW2 empirically; this is a diagnostic statement only, since ˆLv is an empirical lower bound on the true Lipschitz supremum and a formal Theorem 3 certificate requires plugging in an upper bound. The certified upper-end of the bracket is Lnet  
+
+> v
+
+, but 
+
+eLnet  
+
+> v
+
+εv is on the order of 10 44 and operationally useless as a floor until spectral normalization tightens the upper end. We flag this tightening as the natural route to a literal certificate; our conclusion is that the theorem is not vacuous in operation when ˆLv is used as a diagnostic plug-in even though the current weight-product certificate is. Table 3: Numerical Lv calibration per experiment. ˆLv is reported as the common range across all five runs (§E.2). Q 
+
+> ℓ
+
+σmax (Wℓ) is the product of layer spectral norms; Lnet  
+
+> v
+
+= (1 .0998) 4 Q 
+
+> ℓ
+
+σmax (Wℓ)
+
+is the architectural upper bound (20) . εv is the CFM-loss-implied velocity-field error. eˆLv · εv is the diagnostic approximation floor at the lower end of the bracket. ˆW2 is the empirical 2-Wasserstein distance between the achieved pushforward Gθ#πδ 
+
+> 0
+
+and ftarget , computed on N = 3000 i.i.d. samples per side via ot.emd2 (sqeuclidean cost, square-rooted) with mean ± standard deviation reported over 3 seeds. ˆL is the empirical sup-Lipschitz of the flow map Gθ on Dδ (max-of-max central-difference Jacobian singular value at N = 2048 samples from πδ 
+
+> 0
+
+, over 3 seeds; cross-seed variance ≤ 2% 
+
+relative; Appendix E.2).                                                           
+
+> Variant ˆLv
+> Q
+> ℓσmax (Wℓ)Lnet
+> vˆLεveˆLv·εvˆW2
+> Exp. 1 (Gaussian mixture) [2 ,4] 79 .5116 .32.70.039 ≈0.78 0.095 ±0.004
+> Exp. 2 (Binary density) [2 ,4] 27 .540 .22.0≈0.04 ≈0.80 0.067 ±0.016
+> Exp. 3a (Unconstrained) [2 ,4] 72 .0105 .43.8≈0.04 ≈0.80 0.118 ±0.011
+> Exp. 3b (NFZ penalty) [2 ,4] 51 .575 .32.4≈0.05 ≈1.00 0.132 ±0.012
+> Exp. 3c (NFZ + Accel. penalty) [2 ,4] 22 .633 .11.6≈0.05 ≈1.00 0.173 ±0.009
+
+See Appendix E.3 for the architectural certification route, its relation to the flow-Lipschitz constant appearing in Theorems 1–3, and the path to tighter certificates via spectral normalization. 
+
+E.3 Invertibility, Flow Lipschitz, and Topology Mismatch 
+
+This appendix expands Remark 1 from the main text. It collects four items relevant to Theorem 3’s assumptions and the δ trade-off: (a) how the Lv -Lipschitz hypothesis on vθ is certified by architecture, (b) how this propagates via Grönwall to a Lipschitz bound on the flow Gθ , (c) the topological obstruction between Dδ and simply connected targets, and (d) the δ trade-off in general dimension. 
+
+(a) Lipschitz-by-architecture. The velocity field vθ : [0 , 1] × Rd → Rd is an MLP whose layers alternate affine maps y 7 → Wℓy + bℓ and elementwise smooth activations σ with ∥σ′∥∞ ≤ Lσ < ∞
+
+(ReLU/Tanh/hardswish give Lσ = 1 ; SiLU gives Lσ ≈ 1.0998 , GELU gives Lσ ≈ 1.1289 ). For any fixed θ with finite weights, vθ is therefore globally C∞ in y and admits the weight-product Lipschitz bound 
+
+Lip y(vθ (s, ·)) ≤ Lnet  
+
+> v
+
+(θ) := ( Lσ )nact 
+
+Y
+
+> ℓ
+
+∥Wℓ∥op , (21) uniformly in s ∈ [0 , 1] (the flow time enters only through the first-layer affine map). This is an a priori 
+
+certificate: it is computable from the weights with no sampling, and it establishes assumption (A3) of Theorem 3. In practice the weight-product bound is loose, typically by an order of magnitude or more, because consecutive weight matrices in trained networks are rarely aligned with the left/right singular vectors that would saturate (21) . The power-iteration estimator ˆLv of Appendix E.2 is a tighter empirical proxy, but being based on finite sampling it is a lower bound on the true supremum rather than a certificate. Tight certified control is available via spectral-norm-constrained architectures: replacing each layer’s weight by ˜Wℓ = Wℓ/ max(1 , ∥Wℓ∥op /σ max  
+
+> ℓ
+
+) during the forward pass [spectral normalization, 28 ] yields Lnet  
+
+> v
+
+≤ Q 
+
+> ℓ
+
+σmax  
+
+> ℓ
+
+by construction, or LipSDP-style semidefinite certificates [ 33 ] give tighter bounds at higher cost. Our experiments do not use spectral normalization; the empirical ˆLv ∈ [2 , 4] across all three experiments is sufficient for the approximation bound (7) to be informative, and we flag this as the natural route if certified Lv becomes operationally required. 28 (b) From velocity Lipschitz to flow Lipschitz via Grönwall. Under the hypothesis of (a), Picard– Lindelöf applied to the ODE ˙ys = vθ (s, ys) with initial condition y0 = z0 ∈ Rd gives existence, uniqueness, and C1 dependence on z0 on the interval s ∈ [0 , 1] ; in particular Gθ ≡ y1(·) is a diffeomorphism of Rd onto its image. The flow sensitivity matrix Ψs := ∂ys/∂ z0 (distinct from the Bessel function J1 used in Theorem 2) satisfies the variational ODE ˙Ψs = ∇yvθ (s, ys) Ψ s with 
+
+Ψ0 = I. Grönwall’s inequality gives 
+
+∥Ψ1∥op ≤ exp 
+
+Z 10
+
+Lip y(vθ (s, ·)) ds 
+
+
+
+≤ eLnet  
+
+> v
+
+, (22) so Gθ is eLnet  
+
+> v
+
+-Lipschitz. This is exactly the Grönwall amplification appearing in Theorem 3, and the flow Lipschitz constant L entering Theorems 1 (acceleration) and 2 (convergence variance) satisfies 
+
+L ≤ eLv . The bound is tight only in the worst case where the velocity’s spatial Jacobian is both time-persistent and norm-saturating along the flow; OT-coupled velocity fields produced by Sinkhorn mini-batch training are empirically close to spatially uniform, so the effective exponent is far below its pessimistic value, consistent with the observed ˆLv ∈ [2 , 4] and flow-Lipschitz estimates L ≲ 5–10 
+
+in our experiments. 
+
+(c) Topology mismatch: π1(Dδ ) and higher homology versus simply connected targets. In 
+
+d = 2 the annulus Dδ has fundamental group π1(Dδ ) = Z; in d ≥ 3 the spherical shell is simply connected but its (d − 1) -homology Hd−1(Dδ ; Z) = Z still differs from that of a ball. A typical target support (a Gaussian mixture on the unit disc, a rectangle, or any density bounded away from zero on a simply connected open set) is topologically a d-ball. No C1 diffeomorphism 
+
+Gθ : Dδ → supp( ftarget ) can exist in this setting: the inner boundary sphere {∥ z∥ = δ} has to go somewhere, and a diffeomorphism cannot map it onto a point or a null set without losing regularity. The Brenier optimal-transport map G∗ escapes this obstruction by being only Borel-measurable (it can and does collapse the inner sphere to a null set), which is why Proposition 2 is stated for measurable pushforwards rather than homeomorphisms: the ergodicity claim does not require any regularity of G, only the pushforward condition G#πδ 
+
+> 0
+
+= ftarget . The learned diffeomorphism 
+
+Gθ cannot realize this collapse; instead, it stretches a neighborhood of the inner sphere into a thin annular collar in target space, and the resulting W2 cost of this unavoidable mismatch is the ηtop (δ)
+
+term in Corollary 2. The mismatch region has Lebesgue measure Θ( δd) in ambient dimension, and the W2 cost scales as O(δ) (with a tighter O(δ1+ d/ 2) bound possible, as derived in the proof of Proposition 3 in the preceding section); both vanish as δ → 0. The geometric construction is elaborated in Appendix G. 
+
+(d) δ trade-off in general dimension. The inner exclusion δ balances two conflicting costs. On the topology side, ηtop (δ) = O(δ) in every dimension, because the geometric argument is identical: a collar of width O(δ) absorbs the mass rearrangement, giving W2 cost linear in δ regardless of 
+
+d. On the latent-energy side, the d-dimensional radial profile r(s) = ( δd + (1 − δd)s)1/d yields 
+
+˙r(s) = (1 −δd)/(d r (s)d−1), so sup s ˙r = (1 −δd)/(dδ d−1) = Θ( δ−(d−1) ). Propagating through the closed-form moments in Lemma 1 (for d = 2 ) and their dimensional generalization, the acceleration energy over K cycles scales as Eacc (z) = Θ( K δ −(3 d−2) ): Θ( Kδ −4) in d = 2 (matching Lemma 1), 
+
+Θ( Kδ −7) in d = 3 , Θ( Kδ −10 ) in d = 4 (the per-cycle scalings drop the K factor). Balancing 
+
+Lφηtop (δ) = O(δ) against a budget on √Eacc = Θ( δ−(3 d−2) /2) gives either a δ⋆ that shrinks rapidly with d (fixed energy budget) or an energy budget that grows sharply (fixed δ). Our 2D experiments use δ ∈ [0 .01 , 0.1] , where both contributions are comfortably within operational tolerances; a proper 3D treatment will require revisiting this balance and is deferred to follow-up work (cf. Remark 2). 
+
+E.4 Sensitivity Diagnostics for the Slope Fit 
+
+Figure 6 reports a global log-log slope of −0.48 over K ∈ { 5, 10 , 20 , 50 , 100 } with pairwise local slopes {− 0.43 , −0.52 , −0.53 , −0.41 } across consecutive pairs. The dispersion around the theoretical 
+
+−0.50 is consistent with finite-sample scatter at the reported trial counts ( n = 5 for K ≤ 50 , n = 3 
+
+for K = 100 ); no systematic trend is detected. As a sensitivity check we also fitted a two-term model 
+
+err( K) ≈ aK −1/2 + bK −1 with induced local slope 
+
+m(K) = − 12 · 1+2 v(K)1+ v(K) , v(K) := ( b/a ) K−1/2;
+
+29 the fitted b-coefficient is indistinguishable from zero at the observed noise level, so the single-term 
+
+K−1/2 model is adopted as the primary diagnostic. 
+
+Cauchy–Schwarz link between correlation gap and test-function RMSE (Exp. 1). The scalar 
+
+1 − ρtraj /ρ iid in §4 is a scalar difference of Pearson correlations between the achieved density at 
+
+K → ∞ and at finite K, evaluated on the 50 × 50 density grid. This is not a test-function-specific RMSE, but the two are linked: the correlation gap is bounded by a constant times the supremum of 
+
+|SK − μG| over the indicator basis of the density grid, which is itself of order the Theorem 2 RMSE up to a grid-resolution factor. The body therefore reports the 0.05 vs. 0.085 comparison as an order-of-magnitude consistency check; Figure 6 gives the direct slope validation on a test-function-specific metric. 
+
+## F Experimental Details 
+
+This appendix collects all implementation details for both the synthetic (Section 4.1) and Milano (Section 4.2) experiments. 
+
+F.1 Network Architecture 
+
+Both experiments share the same architectural template: an MLP mapping (s, y) ∈ R3 to R2,with flow time s concatenated with y as the first input channel, hidden dimension 256, and output dimension 2. The two instantiations differ only in depth and activation function, as summarized in Table 4. Table 4: Architecture comparison. All other design choices are identical.           
+
+> Setting Synthetic Milano Depth (layers) 412 Hidden dim 256 256 Activation SiLU SiLU Parameters ∼199 K∼920 K
+
+F.2 Training Protocol Shared settings. Optimizer: Adam with learning rate 2×10 −3 and cosine annealing. Mini-batch: 1024 source–target pairs. OT coupling: Sinkhorn with εsink = 0 .05 , 50 iterations. The map Gθ is obtained by integrating vθ from s = 0 to s = 1 via RK4 with 50 steps. 
+
+Synthetic epoch counts. Experiment 1: 1000 epochs. Experiment 2: 1500 epochs. Experiment 3: 500 epochs per variant (three penalty configurations trained independently). 
+
+Milano. 3000 epochs; batch size 2048; Sinkhorn ε = 10 −2 within minibatch; latent radius δ = 0 .05 ;128 cycles / 200 points per cycle; 30 inference RK4 steps; 8 training RK4 steps per penalty chunk (energy chunk length 64 steps). Hardware: 1× NVIDIA RTX 2080 Ti; wall-clock ≈100 min per run. 
+
+Compute (synthetic). Single CPU core (Intel Xeon E5-2680 v4, 2.40 GHz), 8 GB RAM, Py-Torch 2.x, no GPU. Training times: Experiment 1 ≈8 min; Experiment 2 ≈12 min; Experiment 3 
+
+≈4 min per variant. Total synthetic compute: <1 CPU-hour. 
+
+F.3 Evaluation Metrics Synthetic experiments. Density correlation (ρ): Pearson correlation between target and achieved density on a 50 ×50 grid. IID correlation (ρiid ): correlation from i.i.d. transported samples (no trajectory). Trajectory correlation (ρtraj ): correlation from time-averaged occupancy over K cycles. 
+
+Acceleration ratio : Eacc (x)/E acc (z) computed numerically over smooth half-cycle interiors. NFZ violation rate : fraction of trajectory points inside any NFZ disc. Allocation distance : L1 deviation P 
+
+> i
+
+|ci − di| between achieved and target per-region masses (primary metric for Experiment 2). Jain’s 
+
+30 fairness index : J(w) = ( P 
+
+> i
+
+wi)2/(m P 
+
+> i
+
+w2 
+
+> i
+
+) where wi = ci/d i; reported as a secondary aggregate for Experiment 2 but noted to saturate near unity on coarse partitions. 
+
+Milano experiments. All synthetic metrics above apply, with the following additions. Zeng power 
+
+( ¯P , W): mean rotary-wing propulsion power per the model of Zeng et al. [54] . Fourier ergodic metric (E): spectral-mode discrepancy between empirical occupancy and target. Total energy (Etot ,kJ), arc length (L), and energy-per-meter (E/L , J/m) are reported in the full tables of Appendix N.1. 
+
+F.4 Milano Dataset Preprocessing 
+
+The raw Milano grid [ 52 ] is a 100 ×100 regular tessellation of cell-tower activity over Nov.–Dec. 2013, with five channels (SMS-in, SMS-out, voice-in, voice-out, Internet). We construct the static target density as follows: (1) Channel aggregation : sum all five channels per cell. (2) Time aggregation :average over all 10-min intervals. (3) Smoothing : Gaussian kernel, σ = 1 .5 cells. (4) Floor : clip below at ε = 10 −12 for strict positivity. (5) Normalization : normalize to a probability density on 
+
+[−1, 1] 2, mapped to an 8 m ×8 m physical domain for the Zeng power model. 
+
+F.5 Constraint-Penalty Sweep 
+
+For each constraint configuration we performed a single-seed sweep over the relevant penalty weights and selected the setting minimizing a composite rank score (Table 5). Full per-λ trajectories on each metric axis are recorded alongside the released code. Table 5: Constraint-penalty sweep: composite score, range, and selected λ. r(·): within-sweep rank (lower is better).                                       
+
+> Combo Score Range Optimal
+> +NFZ 5r(frac ) + r(E)λnfz ∈ { 0.5,5,50 ,500 ,5000 }λnfz = 5 +E 2r( ¯P) + r(E)λE∈ { 10 −6, . . . , 10 −2}λE= 10 −2
+> +A r(E) + 0 .5r(ℓ1)λacc ∈ { 10 −4, . . . , 1}λacc = 10 −3
+> +NFZ + E 5r(frac ) + 2 r( ¯P) + r(E)paired grid 500 ,10 −3
+> +NEA same paired grid 500 ,10 −3,10 −1
+
+F.6 Experiment 1: Gaussian Mixture Setup. Target density: f (x) ∝ 0.5 N (x; ( −0.3, 0) , 0.04 I)+0 .5 N (x; (0 .3, 0) , 0.04 I), restricted to 
+
+Dδ and renormalized (so supp( ftarget ) = Dδ is homotopy-equivalent to the latent domain, ηtop = 0 ;discarded mass < 10 −3 at δ = 0 .01 , dominated by the outer-tail truncation at ∥x∥ = 1 since the modes lie at |μ| = 0 .3 with σ = 0 .2). Source: πδ 
+
+> 0
+
+with δ = 0 .01 . Density grid: 50 × 50 . Trajectory: 
+
+K = 300 cycles. 
+
+Results. The IID transport correlation between target and achieved density is ρiid = 0 .92 . The trajectory-based correlation over K = 300 cycles is ρtraj = 0 .87 ; Theorem 2 predicts a Hoeffding RMSE of σ/ √K ≈ 0.085 with ˆL ≈ 2.7 (Appendix E.2), enveloping the IID-vs-trajectory residual gap ≈ 0.05 . The acceleration ratio is 0.19 ×: with the target modes at |μ| = 0 .3 well inside Dδ ,uniform-to-concentrated transport produces a sub-unit energy ratio through average contraction toward the high-density modes (also observed in Experiment 2). The final CFM training loss is 
+
+LCFM = 0 .0015 , giving εv ≈ 0.039 via (19) ; with ˆLv ≈ 3 this produces a diagnostic plug-in floor 
+
+eˆLv · εv ≈ 0.78 , approximately 8× above the empirical ˆW2 ≈ 0.095 (Table 3). 
+
+F.7 Experiment 2: Binary Density Setup. Target: f (x) = 3 /(2 π) for x2 < 0 and f (x) = 1 /(2 π) for x2 ≥ 0 (3:1 ratio). This is a canonical non-uniform coverage scenario motivated by UAV-assisted wireless networks, where regions with higher user density (e.g., commercial districts) require proportionally more coverage than residential areas. The 3:1 ratio matches scenarios studied in prior analytical work [ 9], enabling direct comparison with the time-warping formula. Demand-proportional allocation is a critical metric in telecommunications where equitable service is a regulatory requirement; we report it primarily 31 via L1 allocation deviation between achieved and target per-region masses, with Jain’s index on demand-normalized ratios reported as a secondary global-aggregate metric that, on this 2-region partition with both methods close to target, saturates at J ≈ 1 and does not discriminate. 
+
+Results. The achieved allocation is 75 .1% /24 .9% , deviating from the prescribed target 75% /25% 
+
+by only 0.2 percentage points in L1, a 10 × tighter match than the time-warping formula’s 74% /26% 
+
+(L1 deviation 2.0 pp; Malekzadeh et al. [9] , Table I). Jain’s fairness index on demand-normalized service ratios saturates at J ≈ 1.000 for both methods on this 2-region partition and is uninformative as a discriminator; the L1 allocation distance is the meaningful metric. Density correlation is 0.79 (vs. the baseline’s 0.894 ): the learned continuous map smooths the 3:1 boundary discontinuity inherent to the binary target, a regularization effect intrinsic to OT-CFM training that complements the analytical baseline’s by-design preservation of sharp boundaries. The acceleration ratio is 0.71 × (smoother than the latent trajectory ): the near-affine map has average singular-value amplification below 1,realizing the angle-averaged effective Jacobian behavior of the Lemma 1 remark on tightness rather than the worst-case sup-Lipschitz bound ˆL ≈ 2 (Table 3). 
+
+F.8 Experiment 3: Constrained Variants Setup. NFZ: centered at (0 .5, −0.5) , radius rnfz = 0 .2. The target density ftarget is the un-constrained Gaussian mixture (Experiment 1’s target with the same Dδ -truncation), not zeroed inside the NFZ; the NFZ is enforced solely through the soft penalty λnfz Rnfz . The achievable density gap inside the NFZ therefore reflects the constraint-induced bias between the unconstrained 
+
+ftarget and the NFZ-avoidance objective, rather than only the Theorem 3 approximation error. Loss: 
+
+Rnfz = E[max(0 , r nfz − ∥ Gθ (z) − c∥)2] (an exterior-distance hinge that penalizes but does not pre-clude trajectory crossings of the NFZ at measure-zero times; safety-critical applications would require a barrier or projection layer, see Appendix P.3). Acceleration: Racc = Ez[∥HGθ (z)∥2 
+
+> F
+
+] computed via finite differences; this is a Hessian-norm regularizer on Gθ , not the trajectory acceleration energy 
+
+Eacc (x) itself, and correlates with the M 2 
+
+> H
+
+Φ4(z) Hessian term of Theorem 1 rather than upper-bounding Eacc (x) directly. Three variants trained with (λnfz , λ acc ) ∈ { (0 , 0) , (50 , 0) , (50 , 0.1) }.
+
+Results. The three variants trace a Pareto frontier across density correlation, NFZ violation, and acceleration ratio (Table 6, Figure 5). Unconstrained: ρ = 0 .89 , NFZ violation 0.7% , acceleration 
+
+1.77 ×. NFZ-only ( λnfz = 50 ): ρ = 0 .76 , NFZ violation 0.1% (7× reduction), acceleration 1.43 ×.NFZ + acceleration ( λnfz = 50 , λacc = 0 .1): ρ = 0 .66 , NFZ violation 0.8% , acceleration 0.93 ×
+
+(smoother than the latent trajectory ). The sub-unit ratio in the third variant shows that Theorem 1’s energy bound is exploitable in practice: the Hessian-norm regularizer Racc controls the same M 2 
+
+> H
+
+Φ4
+
+term that drives the bound. The tradeoff between coverage, soft-constraint violation, and energy is controlled by adjusting penalty weights (λnfz , λ acc ), consistent with Corollary 2 where stronger regularization raises εv and the approximation term. Per-variant figure analysis and the off-center-NFZ design rationale are in Appendix M. 
+
+F.9 Compute Resources 
+
+All experiments were run on a single CPU core (Intel Xeon E5-2680 v4, 2.40 GHz) with 8 GB RAM, using PyTorch 2.x without GPU acceleration. Training times: Experiment 1 (1000 epochs): ∼8minutes; Experiment 2 (1500 epochs): ∼12 minutes; Experiment 3 (500 epochs × 3 variants): ∼4minutes per variant. Total compute for all reported experiments: <1 CPU-hour. The small model size (∼199K parameters) and 2D problem dimension make the framework accessible without specialized hardware. The framework runs comfortably on CPU; GPU scaling would permit substantially larger cycle counts. 
+
+F.10 Inference Efficiency and Deployment Pipeline 
+
+The 50-step RK4 integration used throughout our experiments is a conservative choice prioritizing accuracy; we verified that reducing to 20 steps produces negligible degradation in density correlation (<0.01 drop for all three experiments), consistent with the near-straight OT transport paths. An adaptive solver (Dormand–Prince) with tolerance 10 −4 achieves equivalent accuracy in 12–18 function evaluations. 32 For embedded deployment, the ODE integration can be eliminated entirely via teacher-student distillation. The procedure is: (1) generate N pairs {(z(i), G θ (z(i))) }Ni=1 using the trained teacher (one-time cost, embarrassingly parallel); (2) train a student MLP ˆG(z) via ℓ2 regression. Since 
+
+Gθ : R2 → R2 is a smooth, low-dimensional map, a 2–3 layer student with ∼10 K parameters suffices, yielding a single-forward-pass evaluator with ∼50 × speedup over the 50-step teacher. Further compression via INT8 quantization reduces the model to <10 KB, small enough for microcontroller-class hardware (e.g., STM32). At 10–100 Hz UAV update rates, even the quantized student has ample margin. Alternatively, because the latent trajectory is deterministic, one can precompute Gθ (z(tk)) for a dense time grid before flight and store the result as a lookup table with linear interpolation, giving zero neural-network evaluation at runtime. 
+
+## G Extension to Rd and Topological Considerations 
+
+Remark 2 (Extension to Rd). The construction generalizes in principle to Rd with Dδ a spherical shell, heading uniform on Sd−1, and radial profile r(s) = ( δd +(1 −δd)s)1/d ; all theorems carry over with dimension-dependent constants (the d-shell Neumann eigenvalue and latent energy moments). A practical caveat: the latent acceleration energy on Dδ over K cycles scales as Θ( K/δ 3d−2)
+
+(per-cycle Θ(1 /δ 3d−2)), so δ must be re-tuned per dimension to keep Corollary 1 informative; the resulting δ trade-off against the topology residual is discussed in Appendix E.3. 
+
+We present the framework in R2 for concreteness, but the construction generalizes naturally to arbitrary dimension d ≥ 2. In d dimensions, the annular latent domain becomes a spherical shell 
+
+Dδ = {z ∈ Rd : δ ≤ ∥ z∥ ≤ 1},
+
+the random heading θk ∈ [0 , 2π) is replaced by a uniform random direction ωk ∼ Uniform( Sd−1),and the radial profile is 
+
+r(s) =  δd + (1 − δd)s1/d , s ∈ [0 , 1] ,
+
+which gives the radial CDF P (R ≤ r) = ( rd − δd)/(1 − δd) and, jointly with the uniform heading, recovers Uniform( Dδ ). All theoretical results (Propositions 1–2, Theorems 1–3) extend with dimension-dependent constants in place of the 2D values: Theorem 1’s Hessian tensor norm 
+
+MH is defined via the d-component sum 
+
+qPdk=1 ∥∇ 2Gk∥2op (the 2D statement specializes to 
+
+k ∈ { 1, 2}); Theorem 2’s Poincaré constant becomes C(d) 
+
+> Dδ
+
+= 1 /λ (d)1 , determined by the first nonzero Neumann eigenvalue of −∆ on the d-dimensional shell; and the latent moments in Lemma 1 pick up 
+
+d-dependent prefactors while preserving the Φ4/E acc = Θ( δ2) scaling that drives Theorem 1. The scaling is preserved because the dimensional exponents of the two integrals shift by a constant offset of 2 between Φ4 and Eacc uniformly in d. Explicitly, using ˙r(s) = 1−δd 
+
+> d
+
+r(s)1−d and the substitution 
+
+u = δd + (1 − δd)s,
+
+Z 10
+
+¨r(s)2 ds = Θ  δ−(3 d−2) ,
+
+Z 10
+
+˙r(s)4 ds = Θ  δ−(3 d−4) ,
+
+(the radial-boundary layer dominates both integrals for d ≥ 2), so Eacc (z) = Θ( K δ −(3 d−2) ),
+
+Φ4(z) = Θ( K δ −(3 d−4) ), and their ratio is Θ( δ2) in every d ≥ 2. The 3D case ( d = 3 ) is the immediately relevant one for UAVs with altitude variation: Eacc = Θ( Kδ −7), Φ4 = Θ( Kδ −5),
+
+Φ4/E acc = Θ( δ2).
+
+Topology of Dδ vs. simply connected targets. The annular (and in general shell) domain Dδ is not topologically equivalent to a ball: its fundamental group is Z in d = 2 (so Dδ is not simply connected there), and although π1 is trivial for d ≥ 3, the (d − 1) -homology Hd−1(Dδ ; Z) = Z
+
+differs from that of a ball in every dimension, whereas a typical target such as a Gaussian mixture on the unit disc/ball is simply connected. A global diffeomorphism between the two cannot exist, which is why Proposition 2 is stated for Borel-measurable maps: the exact (Brenier) G∗ collapses the inner boundary sphere {∥ z∥ = δ} to a null set, which is consistent with both the topology and 33 the pushforward condition. The learned Gθ , being the time-1 flow of an ODE, is diffeomorphic and therefore cannot exactly collapse any set; the unavoidable mismatch is quantified by Theorem 3, with the non-matched portion geometrically concentrating on an O(δ)-width collar of the inner boundary. This region has measure Θ( δ2) in d = 2 and Θ( δd) in general, and therefore vanishes rapidly as 
+
+δ → 0.
+
+## H Application Domains and Motivating Scenarios 
+
+The ergodic coverage framework developed in this paper applies to any setting where a mobile agent must distribute its spatial presence according to a prescribed density. We describe several concrete domains where the target density ftarget arises naturally from physical or operational requirements. 
+
+H.1 UAV-Assisted Wireless Communication 
+
+UAVs acting as aerial base stations (ABSs) provide on-demand wireless connectivity in scenarios ranging from emergency response to urban capacity augmentation [ 15 , 16 ]. Wireless service demand in urban environments exhibits significant spatial heterogeneity, influenced by street layouts, building density, and user clustering [ 4 ]. A natural formulation is to design UAV trajectories whose time-averaged position density matches the spatial demand distribution ftarget (x) ∝ λ(x), where λ(x) is the local traffic intensity. This ensures that the coverage probability (the probability that a randomly located user achieves adequate signal-to-noise ratio, SNR) is equalized across the service area. Prior work has shown that moving ABSs with properly designed trajectories can reduce average fade duration (AFD) by 100–200 × compared to static deployments [ 4], and that matching the UAV’s time-averaged density to the demand distribution can reduce outage probability by up to 65% relative to uniform-coverage baselines [9]. An operational requirement is that such trajectory designs use only aggregate statistical demand maps, not real-time user locations, which matters for privacy-preserving deployments and scenarios where individual user tracking is infeasible or undesirable. Our framework satisfies this requirement by construction: the learned map Gθ is trained offline from the target density, and the resulting trajectory operates in an open-loop fashion. In multi-UAV networks, the framework naturally extends to N agents sharing a single learned map 
+
+Gθ with independent latent trajectories, maintaining BPP-distributed positions at any time instant (Section 2.3). 
+
+H.2 IoT Data Harvesting with Buffer Constraints 
+
+In IoT sensor networks, ground sensors generate data at heterogeneous rates λi (bits/s) and have finite buffer capacities Bi (bits). A data-harvesting UAV must visit each sensor frequently enough to prevent buffer overflow, which causes irrecoverable data loss . Unlike communication coverage, the penalty for under-serving a sensor is permanent, not merely degraded quality. The target density is the normalized service distribution: ftarget (x) ∝ λ(x)/ P 
+
+> j
+
+λj , where λ(x)
+
+represents the spatial data-generation intensity. Matching this density ensures that the UAV allocates dwell time proportionally to data rates, maximizing collection efficiency while maintaining fairness across sensors with heterogeneous rates. Our framework addresses this scenario directly: the learned map Gθ transforms the uniform latent trajectory to concentrate presence in high-rate regions while maintaining coverage of low-rate sensors. The provable convergence rate (Theorem 2) guarantees that the time-averaged visitation frequency approaches the target distribution at rate O(1 /√K).
+
+H.3 Search and Rescue 
+
+In search-and-rescue operations, a Bayesian belief map ftarget (x) represents the probability that a target (missing person, crashed vehicle, etc.) is located at position x, continuously updated as the agent collects sensor measurements. The ergodic coverage objective ensures that the search agent allocates its time proportionally to the current belief, balancing exploitation (searching high-34 probability areas) with exploration (maintaining coverage of lower-probability regions to prevent missed detections). The constraint flexibility of our approach is particularly valuable here: no-fly zones (restricted airspace, obstacles), altitude constraints, and energy budgets enter as soft penalty terms in the training loss (Section 2.3), without requiring any modification to the underlying ergodic trajectory structure. 
+
+H.4 Ground Robot Coverage 
+
+The same mathematical framework applies to ground-based mobile agents. In warehouse logistics, autonomous robots must distribute inspection time according to inventory value or pick frequency. In precision agriculture, ground-based sensor platforms traverse fields with spatially varying crop health or soil moisture that dictates measurement priority. In environmental monitoring, mobile sensor platforms must sample pollutant concentrations proportionally to spatial variability. For ground robots, the 2D planar formulation is directly applicable. The annular latent domain 
+
+Dδ can be interpreted as the robot’s operational area with a central charging station (the excluded inner disc). Obstacle avoidance enters through the same NFZ penalty mechanism demonstrated in Experiment 3, and speed constraints are naturally accommodated through the acceleration energy framework of Theorem 1. 
+
+## I Coordinated Multi-Agent Extensions 
+
+The main body (§2.3) notes that coordinated extensions are possible via joint or mean-field pushfor-ward maps. Here we give the full construction and scalability discussion. In practice, coordination among agents (e.g., spatial dispersion for faster coverage, collision avoid-ance, or task partitioning) can improve performance. The observation driving the construction is that ergodicity depends only on the marginal distribution of each agent’s trajectory, while coordination is encoded in the joint dependence structure. Concretely, one replaces the shared single-agent map with a joint map G(N ) 
+
+> θ
+
+: R2N → R2N that takes all N latent positions as input and produces coordinated tar-get positions. If the joint map preserves the correct marginals, i.e., (πk)#
+
+ G(N ) 
+
+> θ
+
+#( πδ 
+
+> 0
+
+)⊗N  ≈ ftarget 
+
+for each k, then each agent remains individually ergodic with respect to its realized marginal (with the same Theorem 3 gap to ftarget ), while the coupling structure enforces coordination. Since the independent latent processes form an ergodic process on DNδ , the marginal-preservation argument carries over. The OT-CFM training procedure generalizes directly to R2N ; coordination objectives (re-pulsion, minimum separation) enter as additional penalty terms in Ltotal , analogous to the constraint penalties in (4). 
+
+Independent multi-agent rate. The O(1 /√N K ) rate cited in §2.3 for the independent (uncoor-dinated) regime follows directly from the per-agent SLLN: each agent’s K-cycle empirical mean has variance O(1 /K ) by Theorem 2, so the pooled estimator ¯S(N,K ) = 1
+
+> N
+
+PNn=1 ˆS(K) 
+
+> n
+
+has variance 
+
+O(1 /(N K )) by independence across agents, yielding RMS error O(1 /√N K ). The systematic gap of Theorem 3 (a function of LCFM , δ, and Lv ) bounds the bias between Gθ#πδ 
+
+> 0
+
+and ftarget uniformly across the fleet, so the per-agent statistical bracket of Corollary 2 applies to ¯S(N,K ) with effective sample size N K .
+
+Scalable mean-field variant. A scalable alternative that avoids the O(N ) blow-up in the state dimension is the mean-field variant Gθ (zn | ˆμ−n), where each agent conditions on the empirical distribution ˆμ−n = 1 
+
+> N−1
+
+P 
+
+> m̸=n
+
+δzm of the rest of the fleet via a permutation-equivariant architecture (e.g., DeepSets or attention over other agents). This keeps per-agent inference cost independent of N
+
+while still encoding coupling through the conditioning distribution. 
+
+Connections and future work. Coordinated multi-agent extensions are an active direction; we sketch the construction here and leave large-scale empirical validation to follow-up work. Natural links include multi-marginal optimal transport [ 3], where the joint pushforward condition becomes a multi-marginal matching problem; and mean-field game theory, where the N → ∞ limit of the mean-field variant connects to forward-backward PDE systems on the density space. 35 J MCMC and Langevin-Based Alternatives: Detailed Contrast 
+
+The main-body Related Work paragraph (§5) summarizes why MCMC samplers are unattractive as direct ergodic trajectory generators. Here we give the full contrast. A natural alternative to a learned pushforward is to use MCMC samplers whose stationary distribution is ftarget directly as trajectory generators. Langevin diffusion [ 19 ] is ergodic with the right stationary density, but its Brownian driver yields nowhere-differentiable paths with infinite acceleration energy; the unadjusted Langevin algorithm (ULA) discretization has acceleration energy O(1 /η ), diverging as the step size shrinks. Hamiltonian Monte Carlo [ 20 ] smooths paths within leapfrog segments but introduces velocity jumps at momentum refreshments and mixes slowly on multimodal targets, so its finite-horizon coverage depends on hard-to-analyze mixing times. Our flow-based map instead yields C2 trajectories with bounded acceleration (Theorem 1), handles multimodality through a global map rather than stochastic mixing, and, because cycles are i.i.d. by construction, delivers sharp concentration bounds (Theorem 2) without any mixing-time analysis. The i.i.d. cycle structure is the mechanism that converts an ergodic-convergence question into a standard i.i.d. concentration problem: it is this structural feature, not the particular parameterization of Gθ , that eliminates mixing-time dependence. 
+
+## K Disambiguation: Three Senses of “Ergodic” in the Coverage Literature 
+
+The term “ergodic” is used in three distinct senses in the coverage literature, and clarifying them sharpens the comparison. (i) Strict dynamical-systems ergodicity : a measure-preserving dynamical system whose time-averages equal space-averages a.e. (Birkhoff). (ii) Asymptotic empirical ergodicity : a particular trajectory whose empirical occupancy converges weakly to the target as T → ∞ .(iii) Finite-horizon coverage-metric minimization : a trajectory of fixed length T that minimizes a discrepancy between its empirical histogram and the target, such as the Mathew–Mezi´ cFourier-coefficient distance, a kernel-based ergodic metric, MMD, or a Sinkhorn divergence. The Mathew–Mezi´ c metric is zero in the limit T → ∞ iff (ii) holds, so minimizing it is a coherent surrogate for asymptotic ergodicity, and the infinitesimal-horizon Fourier-MPC branch [ 10 , 31 ]does deliver (ii) under mild assumptions. Most recent finite-horizon trajectory-optimization variants [11, 7, 30, 49, 50] deliver only (iii) at their designed T . Dong et al. [7] themselves call the resulting outputs “sub-ergodic” (their §III.A); Sun et al. [11] describe their formulation as “approximately synthesizes an ergodic system with finite time horizon T ” (their §II.B), with asymptotic-convergence guarantees for the Stein and Sinkhorn flow variants (their two main contributions) explicitly left open in their §VI Limitations. Our framework instead delivers (i) and (ii) by construction with respect to the learned pushforward Gθ#πδ 
+
+> 0
+
+(Proposition 2), with the residual gap to ftarget a learning-theoretic quantity bounded by Theorem 3. For long-running UAV monitoring and wireless-coverage missions, where the mission horizon is set by operational duration rather than a fixed planning budget, the asymptotic notion is the operationally meaningful one: it characterizes what the agent’s empirical occupancy actually converges to as the mission proceeds, not just what some optimizer’s surrogate objective achieves at one chosen T .
+
+## L Detailed Qualifications for Methods-Comparison Table 
+
+This appendix expands the qualifications for the principal flow-matching and time-optimal contrasts (Sun et al., Dong et al.) condensed in the footnotes of Table 2 in §4; other rows are sufficiently qualified by their Table 2 footnotes. 
+
+“Conv. rate” column convention. “None” in the “Conv. rate” column refers to the absence of an end-to-end finite-horizon bound on |SK − μG| for time-averaged test functions; Sun et al. [11] note in their §VI Limitations that asymptotic-convergence guarantees for the Stein and Sinkhorn variants remain open. 36 Sun et al., hard constraints ( ‡). The Riccati outer loop in Sun et al. [11] relies on a quadratic running cost so that each per-iteration step admits a closed-form linear-Gaussian solve. Hard NFZ or acceleration-ceiling penalties are non-quadratic in the state and break this structure: enforcing them inside the Sun et al. framework would either require a non-quadratic (e.g., interior-point) inner solve at every iteration of the outer loop or a softening that violates the quadratic-cost assumption underlying the closed-form recursion. 
+
+Dong et al., minimum-time formulation ( ⋄). Dong et al. [7] formulate ergodic search as a minimum-time optimal-control problem subject to the finite-horizon Fourier ergodic-metric inequality 
+
+E ≤ γ, solved via Pontryagin’s principle and direct transcription with N knot points. The resulting trajectories satisfy the metric bound at the chosen horizon but are not guaranteed to converge to 
+
+ftarget in the long-run time-average; the authors explicitly term these “sub-ergodic” to distinguish them from asymptotic-coverage notions. Each new (ftarget , C) requires re-solving the nonlinear program from scratch. 
+
+## M Experimental Figures and Analysis 
+
+This appendix provides detailed visualizations for all three experiments and the convergence rate analysis. Each figure is discussed in the context of the theoretical results from Section 3. 
+
+M.1 Experiment 1: Gaussian Mixture 1 0 1        
+
+> x1
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> x2
+> (a) Latent trajectory
+> 101
+> x1
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> x2
+> (b) Target density
+> 101
+> x1
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> x2
+> (c) Achieved density ( =0.92)
+> 101
+> x1
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> x2
+> (d) Transport map G
+> Source
+> Transported
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+
+Figure 3: Experiment 1: Two-mode Gaussian mixture target. (a) Latent ergodic trajectory on the annulus Dδ (K = 300 cycles): the radial back-and-forth traversals with i.i.d. uniform heading angles produce a uniform time-averaged density by Proposition 1. (b) Target density ftarget : a symmetric two-mode Gaussian mixture centered at (±0.3, 0) with standard deviation 0.2, restricted to the annulus Dδ (so supp( ftarget ) is homotopy-equivalent to the latent domain, ηtop = 0 in Corollary 2; cf. §4). (c) Achieved density from i.i.d. transported samples through the learned map Gθ . The Pearson correlation with the target is ρ = 0 .92 , confirming that the OT-CFM pipeline learns an accurate density-matching transformation. (d) Visualization of the learned transport map: arrows show the displacement field Gθ (z) − z on a grid. The map smoothly concentrates mass toward the two modes while maintaining topological consistency (no folding), consistent with the diffeomorphic structure guaranteed by the ODE flow (Remark 1). The key observation from Figure 3 is that the learned map Gθ successfully transforms the uniform latent density into a bimodal target, demonstrating the core capability of the framework. The transport map in panel (d) shows the characteristic “fan-out” structure of optimal transport from a uniform distribution to a mixture: points near the origin are displaced toward the nearer mode, with a clean separating boundary between the basins of attraction. The smooth variation of the displacement field reflects the Lipschitz regularity promoted by OT coupling during training, a direct consequence of the Brenier map’s L2-optimality, which our OT-CFM training approximates. The gap between IID correlation ( 0.92 ) and trajectory-based correlation ( 0.87 ) quantifies the statistical convergence effect predicted by Theorem 2: with K = 300 cycles, the O(1 /√K) statistical error is still non-negligible but decreasing. Increasing K would close this gap. 37 1.0 0.5 0.0 0.5 1.0        
+
+> x1
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> x2
+> (a) Target: binary 3:1
+> 1.0 0.5 0.0 0.5 1.0
+> x1
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> x2
+> (b) Achieved ( =0.79)
+> Lower
+> (target 75%)
+> Upper
+> (target 25%)
+> 0
+> 20
+> 40
+> 60
+> 80
+> Coverage (%)
+> 75.0
+> 25.0
+> 75.1
+> 24.9
+> 74.0
+> 26.0
+> (c) Allocation: L1= 0.2 pp (ours) vs 2.0 pp (TW)
+> Target
+> Ours
+> Time-warp
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Figure 4: Experiment 2: Binary 3:1 density target. (a) Target density: the lower half of the disc has 3 × higher density than the upper half, corresponding to a UAV coverage scenario where the southern region has 3 × higher service demand. (b) Achieved density from the learned map Gθ (IID evaluation, correlation ρ = 0 .79 ). The sharp boundary at x2 = 0 is smoothed by the continuous transport map, which cannot produce a true discontinuity. Despite this, the global coverage allocation is nearly perfect (75.1%/24.9% vs. target 75%/25%). (c) Allocation accuracy on the 75 /25 binary target. Our method achieves 75 .1% /24 .9% (L1 deviation 0.2 percentage points), a 10 × tighter match than the time-warping formula’s 74% /26% (L1 deviation 2.0 pp; Malekzadeh et al. [9] , Table I). Jain’s index on demand-normalized service ratios saturates at J ≈ 1.000 for both methods on this 
+
+2-region partition and does not discriminate; the L1 allocation distance is the informative metric. 
+
+M.2 Experiment 2: Binary Density (Fairness Benchmark) 
+
+Figure 4 demonstrates the framework on a scenario directly comparable to the time-warping formula from Malekzadeh et al. [9] . The target density has a discontinuity at x2 = 0 , a challenging case for any continuous transport map, since the ODE flow underlying Gθ is a diffeomorphism and cannot create sharp boundaries. This explains the lower IID correlation ( 0.79 ) compared to Experiment 1 ( 0.92 ): the approximation error εv in Theorem 3 is inherently larger when the target has discontinuities, because the Brenier map itself is only Hölder continuous (not Lipschitz) across density discontinuities. Despite this geometric limitation, the global allocation is essentially exact: 75 .1% /24 .9% versus the target 75% /25% . We therefore report the L1 allocation distance as the primary aggregate allocation metric: our method has a 0.2 percentage-point deviation from the target, compared with 
+
+2.0 percentage points for the time-warping formula (Malekzadeh et al. [9] , Table I). Jain’s index, computed on demand-normalized service ratios wi = ci/d i, is close to 1 for both methods on this coarse two-region partition and therefore does not discriminate. This illustrates the distinction between local density accuracy (captured by density correlation) and aggregate demand-proportional allocation (captured more directly here by the L1 allocation distance). For telecommunications applications, aggregate demand-proportional allocation can be as important as pointwise density accuracy; in this two-region benchmark, the L1 allocation distance captures that aggregate property more clearly than Jain’s index. The acceleration ratio of 0.71 × (lower than the latent trajectory) reflects that the binary density map is nearly affine: transporting uniform to a piecewise-constant density requires only a mild “compression” toward the lower half. The sub-unit ratio is a trajectory-weighted (angle-averaged) contraction along the sampled radial directions, not a worst-case Lipschitz constant below one: Theorem 1 gives the conservative upper bound L2 + O(δ) through the global Lipschitz L (here ˆL ≈ 2, Table 3), while the realized energy depends on the directional Jacobians and Hessian terms along the latent trajectory. 
+
+M.3 Experiment 3: Constraint Flexibility (No-Fly Zone) 
+
+Figure 5 demonstrates the primary practical advantage of the flow-matching framework over prior analytical methods: many differentiable operational constraints enter as soft penalty terms in the training loss, without rederiving the trajectory design . The three panels illustrate the Pareto trade-off between density fidelity, soft-constraint violation control, and energy efficiency. All three variants were retrained from scratch with the constraint-training hyperparameter set (500 epochs, independent random seed per variant) for an apples-to-apples Pareto comparison; the modest correlation gap between the unconstrained Exp. 3 variant ( ρ = 0 .89 ) and Exp. 1 ( ρ = 0 .92 ) on the same Gaussian-38 1.5 1.0 0.5 0.0 0.5 1.0 1.5             
+
+> x
+> 1.5
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> y
+> (a) Unconstrained
+> corr=0.89, NFZ=0.7%, E=1.77x
+> 1.5 1.0 0.5 0.0 0.5 1.0 1.5
+> x
+> 1.5
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> y
+> (b) NFZ only
+> corr=0.76, NFZ=0.1%, E=1.43x
+> 1.5 1.0 0.5 0.0 0.5 1.0 1.5
+> x
+> 1.5
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> y
+> (c) NFZ + Accel
+> corr=0.66, NFZ=0.8%, E=0.93x
+
+Figure 5: Experiment 3: Constraint flexibility with off-center no-fly zone (NFZ). Three variants on the same Gaussian mixture target (Experiment 1) with an NFZ centered at (0 .5, −0.5) (radius 
+
+0.2, shown as a circle). (a) Unconstrained : density correlation ρ = 0 .89 , NFZ violation 0.7% ,acceleration ratio 1.77 ×. (b) NFZ penalty only (λnfz = 50 ): correlation 0.76 , NFZ violation 0.1% ,acceleration 1.43 ×. The NFZ penalty reduces violations by 7× with moderate density cost. (c) NFZ + acceleration penalty (λnfz = 50 , λacc = 0 .1): correlation 0.66 , NFZ violation 0.8% , acceleration 
+
+0.93 ×. Adding acceleration regularization produces trajectories smoother than the latent process , at the cost of further density mismatch. Table 6: Experiment 3: Pareto frontier across three training objectives. Adding constraints trades density fidelity for soft-constraint violation control and energy efficiency, with no rederivation of the trajectory design. Variant Density corr. ↑ NFZ viol. ↓ Accel. ratio ↓
+
+Unconstrained 0.89 0.7% 1.77 ×
+
+NFZ only 0.76 0.1% 1.43 ×
+
+NFZ + accel. 0.66 0.8% 0.93 ×
+
+mixture target is consistent with single-seed training variance (cf. the Statistical Reporting discussion in §4) and does not reflect a methodological difference. • Unconstrained → NFZ-only: Adding λnfz = 50 reduces NFZ violations from 0.7% to 
+
+0.1% (7× reduction) while the density correlation drops only from 0.89 to 0.76 . The acceleration ratio actually decreases (1.77 × → 1.43 ×) because avoiding the NFZ removes a high-curvature detour that the unconstrained map would otherwise make. • NFZ-only → NFZ + acceleration: Adding the acceleration penalty ( λacc = 0 .1) reduces the acceleration ratio below 1.0 (smoother than the latent trajectory), demonstrating that the energy bound of Theorem 1 is not merely theoretical: the optimizer can exploit it. The cost is further density degradation ( 0.76 → 0.66 ) and a small NFZ-violation increase from 0.1% 
+
+to 0.8% : the acceleration penalty damps the high-Hessian deformation that the NFZ-only map deploys along the NFZ boundary to produce a sharp avoidance detour, so the boundary softens and the residual incursion widens. This is the expected Pareto behavior of coupled smoothness–exclusion constraints and is controllable by raising λnfz proportionally to λacc ;it is consistent with the end-to-end trade-off in Corollary 2, where stronger regularization raises εv and the approximation term. This experiment validates the claim that the penalty-based approach provides a practical mechanism for navigating the constraint–coverage Pareto frontier. With the time-warping formula [ 9], adding an NFZ, which carves a non-convex hole out of the service region, would require rederiving the entire polar decomposition ( fA, fB|A, hα, and potentially the domain embedding and phase function) to embed the zero-density region analytically, going beyond what the convex-domain analytical constructions in this line readily support; with spectral ergodic methods, NFZ constraints are typically handled by expensive projections. Here, the change is a single additional loss term. 39 The off-center NFZ placement at (0 .5, −0.5) was chosen deliberately: an NFZ at the origin interacts adversarially with the radial latent trajectory (every outward path is forced through the forbidden zone), producing artificially poor acceleration ratios ( 3.88 ×). The off-center placement isolates the constraint effect from the latent geometry, yielding more representative performance numbers. 
+
+M.4 Convergence Rate Validation 10 1 10 2     
+
+> Number of cycles K
+> 2 × 10 1
+> 3 × 10 1
+> 4 × 10 1
+> 6 × 10 1
+> Ztraj
+> K Ziid  RMSE
+> empirical slope: -0.48
+
+Ergodic Convergence Rate    
+
+> O(1/ K)(Theorem 2)
+> Empirical statistical RMSE
+
+Figure 6: Empirical convergence rate of the statistical error. Log-log plot of ∥Ztraj  
+
+> K
+
+− Ziid ∥RMSE ,the grid-RMSE between the empirical K-cycle density and the IID-transport reference density 
+
+Ziid = Gθ#πδ 
+
+> 0
+
+(20,000 IID samples), measured on the Experiment 1 target. Averaging Ziid over IID samples isolates the purely statistical component, cancelling the Theorem 3 approximation floor. Error bars are one s.d. over 5 independent cycle-sampling seeds (single trained map). The empirical log-log slope is −0.48 , essentially matching the theoretical O(1 /√K) prediction of Theorem 2 (slope −0.50 ). Pairwise local slopes {− 0.43 , −0.52 , −0.53 , −0.41 } are centered on −0.50 with small sampling scatter. Figure 6 provides a direct numerical test of Theorem 2. A key subtlety in the measurement methodol-ogy is the decomposition of the total error: 
+
+|SK − R φ f target | ≤ | SK − μG|
+
+| {z }
+
+> statistical
+
++ |μG − R φ f target |
+
+| {z }
+
+> approximation
+
+.
+
+The observed empirical slope is −0.48 , essentially matching the theoretical −0.50 ; pairwise local slopes {− 0.43 , −0.52 , −0.53 , −0.41 } are centered on −0.50 with small sampling scatter. Sensitivity diagnostics (including a two-term aK −1/2 + bK −1 fit whose b-coefficient is indistinguishable from zero at the observed noise level) are in Appendix E.4. 
+
+## N Milano Real-Data Evaluation: Full Results 
+
+This appendix provides full tables and figures omitted from the body for space: full cover-age/energy/NFZ tables (§N.1), the coverage–NFZ Pareto figure (§N.2), velocity realizability (§N.4), and multi-agent/amortization details (§N.5). 
+
+N.1 Full Coverage, Energy, and NFZ Tables 
+
+Tables 7–8 report metrics omitted from Table 1: ℓ1 visitation distance, total energy Etot , Fourier ergodic metric E, arc length L, and energy-per-meter E/L on the kinematics side; max depth, dwell time, incursions, and normalized path-inside on the constraint side. The qualitative ordering is consistent with the body headline metrics: OT-CFM +NFZ attains the lowest E in both configurations (0.0037 / 0.0027 ), and OT-CFM +E achieves the lowest E/L (41.6 / 42.3 J/m). 40 Table 7: Additional coverage and kinematic metrics on Milano under both NFZ configurations. Mean ±std over 3 seeds; best per column among coverage-competitive methods ( ρ ≥ 0.5). Methods marked † are trivially compliant (cf. Table 1). 
+
+ℓ1 ↓ Etot (kJ) ↓ E ↓ E/L (J/m) ↓
+
+Method 1D MD 1D MD 1D MD 1D MD TOES † 1.63 ±0 1.58 ±0 410 ±0 410 ±0 0.156 ±0 0.178 ±0 56 .2±0 57 .0±0
+
+Time-warp 0.662 ±.02 0.615 ±.01 1360 ±18 1420 ±11 0.023 ±.003 0.019 ±.002 51 .9±0.7 54 .2±0.4
+
+OT 0.795 ±.002 0.849 ±.006 25600 ±575 26800 ±722 .0055 ±.0004 .0078 ±.0009 197 ±2 201 ±2
+
+SAC 1.05 ±.09 1.33 ±.26 65300 ±2520 50700 ±6660 0.122 ±.06 0.252 ±.16 165 ±2 195 ±27 
+
+FMEC-Stein † 1.98 ±.0001 1.98 ±.0001 418 ±1 416 ±1 0.242 ±.08 0.599 ±.10 90 .2±8 79 .2±4
+
+FMEC-Sinkhorn † 1.99 ±.0002 1.99 ±.0002 421 ±0.07 421 ±0.10 0.300 ±.006 0.288 ±.004 115 ±0.5 117 ±0.8
+
+OT-CFM 0.463 ±.004 0.420 ±.006 5390 ±119 6060 ±36 .0036 ±2.6·10 −5 .0027 ±9·10 −6 94 .0±2 105 ±0.5
+
+OT-CFM +NFZ 0.438 ±.002 0.408 ±.002 5660 ±22 5680 ±73 .0037 ±9·10 −5 .0027 ±7·10 −5 97 .2±0.4 98 .3±0.7
+
+OT-CFM +E 0.960 ±.06 0.926 ±.03 1300 ±362 1310 ±338 0.054 ±.02 0.048 ±.01 41 .6±7 42 .3±7
+
+OT-CFM +A 0.954 ±.01 1.04 ±.06 2600 ±458 2640 ±797 0.022 ±.009 0.040 ±.01 65 .1±9 66 .8±14 
+
+OT-CFM +NFZ+E 0.903 ±.04 1.06 ±.04 2080 ±182 4270 ±86 0.026 ±.009 0.093 ±.04 54 .5±3 82 .8±8
+
+OT-CFM +NEA 1.51 ±.37 1.56 ±.40 1640 ±776 1160 ±733 0.906 ±.71 1.09 ±.68 67 .6±8 106 ±21 
+
+Table 8: Full no-fly-zone violation metrics on Milano. Mean ±std over 3 seeds; best per column among coverage-competitive methods ( ρ ≥ 0.5). Methods marked † are trivially compliant; ‡ achieves low violation at degraded coverage. 
+
+max depth ↓ # incursions ↓ dwell (s) ↓ path-in (norm.) ↓
+
+Method 1D MD 1D MD 1D MD 1D MD TOES † .0011 ±0 0±0 20 ±0 0±0 36 .9±0 0±0 0.527 ±0 0±0
+
+Time-warp 0.098 ±.002 0.026 ±.001 49 .3±5.3 59 .3±0.9 233 ±34 26 .3±3.5 8.38 ±1.0 17 .3±1.5
+
+OT 0.064 ±.0002 0.072 ±.001 148 ±28 185 ±29 83 .2±2.6 107 ±9.2 13 .9±0.3 28 .4±2.6
+
+SAC 0.089 ±0 0.177 ±0 810 ±497 838 ±117 134 ±94 896 ±238 120 ±75 452 ±148 
+
+FMEC-Stein † 0±0 0±0 0±0 0±0 0±0 0±0 0±0 0±0
+
+FMEC-Sinkhorn † 0±0 0±0 0±0 0±0 0±0 0±0 0±0 0±0
+
+OT-CFM 0.093 ±.001 0.174 ±.013 60 .0±0 60 .7±2.5 57 .6±2.0 39 .6±4.4 9.43 ±0.06 17 .4±0.6
+
+OT-CFM +NFZ 0.008 ±.010 0.060 ±.025 2.67 ±2.5 34 .7±9.8 0.27 ±.25 4.80 ±2.0 3.87 ±0.3 12 .2±1.2
+
+OT-CFM +E 0.099 ±.001 0.183 ±.009 75 .3±9.0 62 .3±2.5 152 ±33 336 ±9.0 12 .1±2.4 18 .5±1.6
+
+OT-CFM +A 0.093 ±.002 0.196 ±.002 85 .3±36 90 .0±22 130 ±76 416 ±48 14 .6±6.8 27 .4±5.3
+
+OT-CFM +NFZ+E 0.023 ±.018 0.196 ±.003 2.67 ±2.5 103 ±18 0.27 ±.25 303 ±70 2.68 ±2.3 37 .7±2.8
+
+OT-CFM +NEA ‡ 0.007 ±.010 0.028 ±.040 0.67 ±0.9 4.00 ±5.7 2.60 ±3.7 0.80 ±1.1 0.031 ±.04 2.39 ±3.4
+
+N.2 Coverage–NFZ Pareto Figure 
+
+Figure 7 shows the constraint-axis Pareto trade-off: coverage (Pearson ρ) against fraction of trajectory inside any NFZ disc. The operationally relevant region is the lower-right corner (high coverage, low violation); only OT-CFM +NFZ reaches it. Trivially compliant baselines (TOES, FMEC) collapse to the upper-left at ρ ≤ 0.29 ; high-coverage baselines without an NFZ term (OT, time-warping) sit far above the violation axis. 41 Figure 7: Coverage–NFZ Pareto on Milano. Left: single-disc (1D). Right: multi-disc (MD). Pearson 
+
+ρ (higher better) plotted against fraction of trajectory inside any NFZ disc (lower better; lower-right is best). Shaded bands are ±1 std over three seeds. 
+
+N.3 Coverage–Energy Trade-off: Additional Coverage Axes 
+
+Figure 8 reproduces the coverage–energy frontier under three additional coverage axes: ℓ1 visitation distance, ℓ2 visitation distance, and Fourier ergodic metric E. These complement the Pearson-ρ view in the main body (Figure 2). The qualitative ordering is preserved across all three: OT-CFM variants trace a Pareto front below all baselines across roughly two decades of the energy axis, with +E at the low-energy end and +NFZ at the highest-fidelity end. 
+
+Figure 8: Coverage–energy trade-off across additional coverage axes. Columns (left to right): ℓ1, ℓ2,Fourier ergodic E. Rows: top single-disc NFZ, bottom multi-disc NFZ. Lower is better on all axes. Shaded bands: ±1 std over 3 seeds. 
+
+N.4 Velocity Realizability 
+
+The energy and mission-time numbers assume each trajectory is flown at physically realizable speeds, capped at Vmax = 30 m/s. Several baselines produce raw trajectories exceeding this cap; for those methods, the reported ¯P corresponds to the trajectory re-timed to satisfy the cap, tracked via a time-extension factor Trealizable /T reported . OT and SAC have time-extension factors of ∼2 and ∼5
+
+respectively, meaning their reported spatial coverage is achievable only if the actual flight is multiple times longer. OT-CFM +E has time-extension factor 1.00 in both scenarios with <2% of samples exceeding the cap (Table 9). 42 Table 9: Velocity statistics and time-extension factors on Milano (single-disc; multi-disc values in parentheses where they differ substantially). frac over cap reports the fraction of trajectory samples exceeding the 30 m/s realistic cap.                                                     
+
+> Method median V(m/s) p99 V(m/s) frac over cap (%) time-ext. factor TOES 0.57 0.62 0.0 1.00 Time-warp 8.34 (7.30) 34.8 (41.0) 1.6 (1.7) 1.01 (1.05) OT 43.4 156 68.8 1.82 (1.87) SAC 163 (81.6) 346 73.9 (58.7) 5.41 (3.92) FMEC-Stein 1.29 3.42 0.0 1.00 FMEC-Sinkhorn 1.14 1.79 0.0 1.00 OT-CFM 19.8 (18.9) 72.3 (98.4) 18.4 (17.9) 1.08 (1.12) OT-CFM +NFZ 19.6 (18.2) 90.4 (95.6) 18.1 (16.7) 1.10 (1.13) OT-CFM +E 11.1 (11.0) 29.7 (33.5) 0.9 (1.3) 1.00 (1.00)
+> OT-CFM +A 13.7 (12.7) 43.6 (54.7) 4.5 (5.8) 1.02 (1.03) OT-CFM +NFZ+E 13.2 (14.1) 37.9 (91.2) 2.1 (9.6) 1.02 (1.14)
+
+N.5 Multi-Agent Reuse and Amortization 
+
+A single trained Gθ supports independent multi-agent deployment without re-training, with predicted collective convergence rate O(1 /√N K ) (§2.3, Theorem 2). We instantiate N ∈ { 1, 2, 5, 10 , 20 }
+
+agents from independent latent trajectories sharing the OT-CFM map. Figure 9 shows aggregate Fourier ergodic metric EN vs. fleet size N ; the metric drops ∼2.5× from N =1 to N =20 in both scenarios, broadly tracking the 1/√N reference; per-agent power is essentially flat. 
+
+Figure 9: Multi-agent reuse on Milano. Left: single-disc. Right: multi-disc. Aggregate EN vs. fleet size N , with the predicted E1
+
+p1/N reference (dashed). Per-agent power remains essentially flat across N .
+
+Amortization cost structure. Table 10 compares per-trajectory online cost across methods. For all baselines this is the time to produce a single trajectory (optimization, re-derivation, or RL rollout). For OT-CFM, the equivalent online cost is a single inference pass through vθ : 779 ± 16 ms (1D) and 
+
+780 ± 6 ms (MD). The offline training cost of ≈1.7 h is paid once and amortised across all subsequent trajectories and agents. For a fleet of N agents, since each agent’s latent trajectory is independent and all inference passes share the same Gθ , they can be parallelised, keeping the wall-clock fleet cost equal to the single-agent inference time regardless of N .43 Table 10: Per-trajectory online cost and marginal cost of fleet expansion. Baselines report time to produce one trajectory; OT-CFM reports inference time (offline training ≈1.7 h, paid once). For OT-CFM the N =10 fleet cost equals the single-trajectory cost because all agents’ inference passes are independent and run in parallel.                                              
+
+> Online cost (per trajectory) Multi-agent ( N=10 )Method 1D MD (any scenario) TOES 2.79 h ±5.5 min 40.8 s ±0.6 s 10 ×SQP solve Time-warp 111 ms ±22 ms 78 ms ±11 ms 10 ×re-derive OT 309 ms ±3 ms 225 ms ±1 ms 10 ×OT plan SAC 1.32 h ±9 s 1.61 h ±15 min 10 ×retrain FMEC-Stein 4.7 min ±34 s 8.8 min ±2.9 min 10 ×re-optimise FMEC-Sinkhorn 3.3 min ±34 s 4.5 min ±1.2 min 10 ×re-optimise
+> OT-CFM (ours) 779 ±16 ms 780 ±6ms 779 ±16 ms / 780 ±6ms (parallel)
+
+## O Qualitative Trajectory Visualizations 
+
+Figures 10–11 visualize representative trajectories for all methods on the Milano target density (purple heatmap) with the NFZ overlay (red dashed circles), under both NFZ configurations. These plots support the trivial-compliance claim made in §4.2: TOES produces a single straight diagonal line that does not redistribute mass across the domain, and the FMEC variants produce short, near-stationary curls confined to one corner. Their zero NFZ violation and low Zeng power are accidental byproducts of failing to cover the domain rather than evidence of a constraint-aware or energy-efficient design. By contrast, OT-CFM trajectories traverse the high-density regions while respecting the NFZ overlay, with per-variant differences (e.g., +E producing visibly straighter and shorter paths) that match the quantitative differences in Tables 1–8. 44 Figure 10: Representative trajectories on the Milano target (purple heatmap) under the single-disc NFZ configuration (red dashed circle), one panel per method. TOES and the FMEC variants fail to redistribute mass across the domain — their zero NFZ violation in Table 8 is accidental. OT-CFM variants traverse the high-density regions while respecting the NFZ; +NFZ visibly bends paths around the exclusion disc, and +E produces visibly straighter and shorter paths consistent with its low-energy-per-meter operating point. 45 Figure 11: Representative trajectories on the Milano target (purple heatmap) under the multi-disc NFZ configuration (four red dashed circles), one panel per method. The trivial-compliance pattern is even starker here: TOES’s diagonal line happens not to intersect any of the four discs, and the FMEC variants’ corner curls remain far from every NFZ. OT-CFM +NFZ routes around all four exclusion zones while preserving coverage of the surrounding high-density region. 
+
+## P Limitations and Future Work 
+
+This appendix expands the scope discussion in Section 6. The framework establishes a reusable pushforward map with asymptotic ergodicity (Proposition 2), finite-cycle concentration at rate 46 O(1 /√K) (Theorem 2), and a trainable approximation envelope (Theorem 3, Corollary 2). The four scope boundaries below identify where the present guarantees are empirical, soft-constrained, or experimentally bounded; each suggests a direct extension of the framework rather than a separate research program. 
+
+P.1 Certified approximation bounds 
+
+The practical Theorem 3 envelope eLv · εv used throughout our calibration table (Table 3) plugs in the empirical power-iteration estimate ˆLv from the trained vθ . This estimator is empirically tight and admits non-vacuous numerical envelopes, but it is a lower-bound proxy on the true velocity-field Lipschitz constant rather than a certified upper bound; the architectural product-norm bound Lnet 
+
+> v
+
+from Appendix E.3 is rigorous but, in our experiments, ∼30 × looser than the empirical estimate. Closing this gap is mechanically straightforward and does not require modifying the pushforward construction itself: spectral normalization [ 28 ], Parseval-style orthogonal constraints, interval-bound propagation, or certified Jacobian regularization can be combined with the existing CFM training objective to produce a vθ whose architectural Lipschitz constant matches the empirical operator norm. The same Theorem 3 statement then yields a certified upper envelope on W2 and Corollary 2 a certified end-to-end coverage envelope, with no change to the latent-trajectory or pushforward design. Finite-sample generalization, the stochastic-optimization gap on the CFM loss, and the Sinkhorn-coupling residual that currently appear in the envelope as empirical diagnostics admit an analogous tightening through standard statistical-learning machinery; their values in the present experiments serve as benchmarks against which a certified version can be compared. 
+
+P.2 Latent geometry and topology 
+
+The annular latent domain Dδ makes the radial construction of Section 2.1 smooth away from the origin and supports exact uniform ergodicity on Dδ , which is what allows Proposition 2 to be stated as an equality rather than an approximation. When the target ftarget has simply connected support, no homeomorphism between Dδ and supp( ftarget ) exists, and the pushforward incurs an O(δ) topology residual. Theorem 1 shows the latent acceleration energy scales as Θ( δ−4), so δ acts as a tunable geometry-energy parameter rather than a free hyperparameter. Several extensions reduce this residual without abandoning the analytic-latent / learned-pushforward decomposition. A learned latent domain trained jointly with Gθ can adapt Dδ to the target support; mixtures of annular cycles indexed by an angular phase produce richer latent measures matched to bimodal targets; non-radial latent processes (e.g., Lissajous curves with engineered period structure or stochastic differentials with prescribed invariant density) drop the radial-sweep assumption while preserving the i.i.d. cycle structure that drives the O(1 /√K) rate. A complementary extension matches latent topology to target topology by template selection: an annular latent for annular targets, a disc-with-handle for targets with one excluded region, and so on. Each variant retains the central decomposition (analytically understood latent followed by learned pushforward) and inherits the corresponding theorem statements with structurally identical proofs. The boundary smoothing of Appendix C.1 can be combined with any of the above to recover a globally C1 velocity at the cost of a controlled additional residual. 
+
+P.3 From soft penalties to certified safety 
+
+The penalty mechanism in (4) provides a differentiable gradient signal at constraint boundaries (no-fly zones, acceleration ceilings, fairness terms), and Experiment 3 shows that this signal is sufficient to drive constraint violations from ∼1% to ∼0.1% at moderate density-fidelity cost. This is the appropriate mechanism for studying density-constraint-energy trade-offs and for non-safety-critical deployments. Safety-critical missions, where any trajectory entry into a no-fly zone is unacceptable, should layer a hard-feasibility component on top of the trained Gθ rather than rely on the soft penalty alone. Compatible options include: projection of Gθ (z(t)) onto the feasible set (closed-form for half-space and disc constraints, semidefinite for general convex sets); control barrier functions that admit the trained pushforward as a nominal controller and modify it minimally to enforce forward-invariance of the safe set; reachability filters that solve a Hamilton −Jacobi −Isaacs PDE offline and shield the deployed trajectory at run time; and constrained ODE integration methods that project velocity-field evaluations onto the tangent cone of the feasible set during RK4 rollout. In each case the learned map serves as the nominal coverage generator and the safety layer is an outer wrapper, preserving the amortized-design property that motivates the framework. Quantifying the coverage 47 cost of each safety layer (the additional Wasserstein gap incurred by hard projection vs. soft penalty at matched zero-violation level) is a natural follow-up. 
+
+P.4 Empirical scope and broader extensions 
+
+The body experiments are designed to isolate density matching (Experiment 1), demand-proportional allocation (Experiment 2), and differentiable constraint trade-offs (Experiment 3) in 2D open-loop settings, with each experiment chosen to expose a single theoretical mechanism. This scoping makes the theoretical predictions visible in the empirical numbers (the O(1 /√K) rate, the acceleration-ratio dependence on L, the eLv · εv envelope), but broader validation along several axes will sharpen the deployment story. 
+
+Higher-dimensional dynamics. The framework extends to Rd with the same construction (Ap-pendix G); 3D experiments require only re-tuning of δ and the latent trajectory family, with the theorem statements carrying through with dimension-dependent constants (Hessian tensor norm, Poincaré eigenvalue, latent-energy prefactor; see Appendix G). The empirical question is whether the 
+
+Θ( δ−(3 d−2) ) energy scaling (specializing to Θ( δ−4) in 2D and Θ( δ−7) in 3D) remains the binding constraint, or whether higher-order curvature effects dominate at the higher dimension. 
+
+Hardware-in-the-loop and closed-loop deployment. The open-loop nature of the trajectories makes them directly compatible with standard quadrotor controllers; the empirical question is the coverage degradation introduced by tracking error, which can be folded into the approximation bound via a Lipschitz disturbance term added to εv . Closed-loop variants combining the nominal pushforward trajectory with feedback corrections for disturbances, localization error, or online measurements introduce a new theoretical question (how feedback perturbations affect the finite-cycle concentration and the pushforward occupancy), addressable via existing concentration-inequality and perturbation-bound machinery. 
+
+Coordinated multi-agent planning. The current multi-agent claim is independent reuse of a single trained map (Appendix I); fully coordinated planning with collision avoidance, formation constraints, or fairness coupling between agents extends the framework via joint pushforward maps on product spaces, mean-field penalties added to Ltotal , repulsive interaction terms, or fairness-aware coupling losses. All preserve the amortized-design principle while moving from independent reuse to coordinated fleet behavior. 
+
+Time-varying targets. The present paper focuses on fixed ftarget and open-loop execution. Time-varying densities can be addressed by conditioning vθ on a target descriptor, by interpolating between learned maps, or by retraining on a slow planning timescale while retaining open-loop execution between updates. The theoretical extension folds the target-evolution rate into the approximation bound as an additional residual term. 48 NeurIPS Paper Checklist 
+
+1. Claims 
+
+Question: Do the main claims made in the abstract and introduction accurately reflect the paper’s contributions and scope? Answer: [Yes] Justification: The abstract and introduction (Section 1) clearly state six contributions (ergod-icity transfer, acceleration bound, convergence rate, approximation bound, three operational properties of the decomposition, and experimental validation) that are formally proved in Section 3 and validated in Section 4. Limitations are discussed in Section 6. Guidelines: • The answer [N/A] means that the abstract and introduction do not include the claims made in the paper. • The abstract and/or introduction should clearly state the claims made, including the contributions made in the paper and important assumptions and limitations. A [No] or [N/A] answer to this question will not be perceived well by the reviewers. • The claims made should match theoretical and experimental results, and reflect how much the results can be expected to generalize to other settings. • It is fine to include aspirational goals as motivation as long as it is clear that these goals are not attained by the paper. 2. Limitations 
+
+Question: Does the paper discuss the limitations of the work performed by the authors? Answer: [Yes] Justification: We have clearly stated the assumptions required for our theoretical results and the setups used in our numerical experiments. Additionally, we have discussed the limitations of this paper in the Conclusion section as well as in Appendix P. Guidelines: • The answer [N/A] means that the paper has no limitation while the answer [No] means that the paper has limitations, but those are not discussed in the paper. • The authors are encouraged to create a separate “Limitations” section in their paper. • The paper should point out any strong assumptions and how robust the results are to violations of these assumptions (e.g., independence assumptions, noiseless settings, model well-specification, asymptotic approximations only holding locally). The authors should reflect on how these assumptions might be violated in practice and what the implications would be. • The authors should reflect on the scope of the claims made, e.g., if the approach was only tested on a few datasets or with a few runs. In general, empirical results often depend on implicit assumptions, which should be articulated. • The authors should reflect on the factors that influence the performance of the approach. For example, a facial recognition algorithm may perform poorly when image resolution is low or images are taken in low lighting. Or a speech-to-text system might not be used reliably to provide closed captions for online lectures because it fails to handle technical jargon. • The authors should discuss the computational efficiency of the proposed algorithms and how they scale with dataset size. • If applicable, the authors should discuss possible limitations of their approach to address problems of privacy and fairness. • While the authors might fear that complete honesty about limitations might be used by reviewers as grounds for rejection, a worse outcome might be that reviewers discover limitations that aren’t acknowledged in the paper. The authors should use their best judgment and recognize that individual actions in favor of transparency play an impor-tant role in developing norms that preserve the integrity of the community. Reviewers will be specifically instructed to not penalize honesty concerning limitations. 3. Theory assumptions and proofs 
+
+49 Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof? Answer: [Yes] Justification: Theorems 1–3 state all assumptions explicitly (Lipschitz constants, bounded-ness, C2 regularity). Complete proofs are provided in Appendices B–E. Proof sketches and interpretations appear in the main text (Section 3). Guidelines: • The answer [N/A] means that the paper does not include theoretical results. • All the theorems, formulas, and proofs in the paper should be numbered and cross-referenced. • All assumptions should be clearly stated or referenced in the statement of any theorems. • The proofs can either appear in the main paper or the supplemental material, but if they appear in the supplemental material, the authors are encouraged to provide a short proof sketch to provide intuition. • Inversely, any informal proof provided in the core of the paper should be complemented by formal proofs provided in appendix or supplemental material. • Theorems and Lemmas that the proof relies upon should be properly referenced. 4. Experimental result reproducibility 
+
+Question: Does the paper fully disclose all the information needed to reproduce the main ex-perimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)? Answer: [Yes] Justification: Full experimental details (network architecture, optimizer, hyperparameters, evaluation metrics) are provided in Appendix F. Target densities are defined analytically. Code will be released upon acceptance. Guidelines: • The answer [N/A] means that the paper does not include experiments. • If the paper includes experiments, a [No] answer to this question will not be perceived well by the reviewers: Making the paper reproducible is important, regardless of whether the code and data are provided or not. • If the contribution is a dataset and/or model, the authors should describe the steps taken to make their results reproducible or verifiable. • Depending on the contribution, reproducibility can be accomplished in various ways. For example, if the contribution is a novel architecture, describing the architecture fully might suffice, or if the contribution is a specific model and empirical evaluation, it may be necessary to either make it possible for others to replicate the model with the same dataset, or provide access to the model. In general. releasing code and data is often one good way to accomplish this, but reproducibility can also be provided via detailed instructions for how to replicate the results, access to a hosted model (e.g., in the case of a large language model), releasing of a model checkpoint, or other means that are appropriate to the research performed. • While NeurIPS does not require releasing code, the conference does require all submis-sions to provide some reasonable avenue for reproducibility, which may depend on the nature of the contribution. For example (a) If the contribution is primarily a new algorithm, the paper should make it clear how to reproduce that algorithm. (b) If the contribution is primarily a new model architecture, the paper should describe the architecture clearly and fully. (c) If the contribution is a new model (e.g., a large language model), then there should either be a way to access this model for reproducing the results or a way to reproduce the model (e.g., with an open-source dataset or instructions for how to construct the dataset). 50 (d) We recognize that reproducibility may be tricky in some cases, in which case authors are welcome to describe the particular way they provide for reproducibility. In the case of closed-source models, it may be that access to the model is limited in some way (e.g., to registered users), but it should be possible for other researchers to have some path to reproducing or verifying the results. 5. Open access to data and code 
+
+Question: Does the paper provide open access to the data and code, with sufficient instruc-tions to faithfully reproduce the main experimental results, as described in supplemental material? Answer: [No] Justification: The code will be released upon acceptance. All experimental results for the proposed method and baselines are reproducible. Full implementation details are provided in Appendix F. Guidelines: • The answer [N/A] means that paper does not include experiments requiring code. • Please see the NeurIPS code and data submission guidelines ( https://neurips.cc/ public/guides/CodeSubmissionPolicy ) for more details. • While we encourage the release of code and data, we understand that this might not be possible, so [No] is an acceptable answer. Papers cannot be rejected simply for not including code, unless this is central to the contribution (e.g., for a new open-source benchmark). • The instructions should contain the exact command and environment needed to run to reproduce the results. See the NeurIPS code and data submission guidelines ( https: //neurips.cc/public/guides/CodeSubmissionPolicy ) for more details. • The authors should provide instructions on data access and preparation, including how to access the raw data, preprocessed data, intermediate data, and generated data, etc. • The authors should provide scripts to reproduce all experimental results for the new proposed method and baselines. If only a subset of experiments are reproducible, they should state which ones are omitted from the script and why. • At submission time, to preserve anonymity, the authors should release anonymized versions (if applicable). • Providing as much information as possible in supplemental material (appended to the paper) is recommended, but including URLs to data and code is permitted. 6. Experimental setting/details 
+
+Question: Does the paper specify all the training and test details (e.g., data splits, hyperpa-rameters, how they were chosen, type of optimizer) necessary to understand the results? Answer: [Yes] Justification: Section 4 summarizes key settings; Appendix F provides complete details including network architecture, optimizer, learning rate schedule, OT coupling parameters, and evaluation metrics. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The experimental setting should be presented in the core of the paper to a level of detail that is necessary to appreciate the results and make sense of them. • The full details can be provided either with the code, in appendix, or as supplemental material. 7. Experiment statistical significance 
+
+Question: Does the paper report error bars suitably and correctly defined or other appropriate information about the statistical significance of the experiments? Answer: [Yes] 51 Justification: Error bars accompany every experiment that directly validates our theoret-ical claims. (i) Theorem 2 (convergence rate). Figure 6 reports ∥Ztraj  
+
+> K
+
+− Ziid ∥RMSE 
+
+as mean ± std (shaded region) over five independent cycle-sampling seeds at each 
+
+K ∈ { 5, 10 , 20 , 50 , 100 }; the empirical slope −0.48 approaches the theoretical −0.50 
+
+as K grows, with pairwise local slopes {− 0.43 , −0.52 , −0.53 , −0.41 }. (ii) Theorem 3 (approximation bound). Table 3 reports the empirical 2-Wasserstein distance ˆW2 and the map-level Lipschitz estimator ˆL for the five evaluated configurations / rows of Table 3, each as mean ± std over three evaluation seeds for a fixed trained map; cross-seed stability is within 2% on ˆL and within ∼ 4–24% on ˆW2 (the upper end is Exp. 2, whose binary discontinuity inflates seed variance relative to the smoother targets). In both cases the error bars capture trajectory-side randomness—the source Theorem 2 is designed to bound via closed-form Hoeffding concentration (Corollary 2)—and the seeds vary cycle-sampling realizations of a single trained map, following the NeurIPS convention of treating simulation-seed variability of a deployed algorithm as the appropriate randomness source when target distributions are analytically specified. Density correlations and acceleration ratios reported in the experimental setup are single-training-seed point estimates on analytically defined target densities (no train/test split); these are setup-descriptive numbers, not direct tests of the theorems. A multi-seed training reproducibility kit (per-seed JSON-logging driver, aggregator, and drop-in table-regeneration script) will be released with the code at the camera-ready stage for applied follow-ups that wish to characterize training-seed variability. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The authors should answer [Yes] if the results are accompanied by error bars, confidence intervals, or statistical significance tests, at least for the experiments that support the main claims of the paper. • The factors of variability that the error bars are capturing should be clearly stated (for example, train/test split, initialization, random drawing of some parameter, or overall run with given experimental conditions). • The method for calculating the error bars should be explained (closed form formula, call to a library function, bootstrap, etc.) • The assumptions made should be given (e.g., Normally distributed errors). • It should be clear whether the error bar is the standard deviation or the standard error of the mean. • It is OK to report 1-sigma error bars, but one should state it. The authors should preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis of Normality of errors is not verified. • For asymmetric distributions, the authors should be careful not to show in tables or figures symmetric error bars that would yield results that are out of range (e.g., negative error rates). • If error bars are reported in tables or plots, the authors should explain in the text how they were calculated and reference the corresponding figures or tables in the text. 8. Experiments compute resources 
+
+Question: For each experiment, does the paper provide sufficient information on the com-puter resources (type of compute workers, memory, time of execution) needed to reproduce the experiments? Answer: [Yes] Justification: Appendix F specifies the GPU (NVIDIA 2080Ti) and CPU types (Intel Xeon E5-2680 v4), memory (8 GB), and per-experiment training times (12–25 minutes each). Total compute: <2 CPU-hours. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The paper should indicate the type of compute workers CPU or GPU, internal cluster, or cloud provider, including relevant memory and storage. • The paper should provide the amount of compute required for each of the individual experimental runs as well as estimate the total compute. 52 • The paper should disclose whether the full research project required more compute than the experiments reported in the paper (e.g., preliminary or failed experiments that didn’t make it into the paper). 9. Code of ethics 
+
+Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics https://neurips.cc/public/EthicsGuidelines ?Answer: [Yes] Justification: This is foundational research on trajectory design with no human subjects, no scraped data, and no foreseeable negative societal impacts beyond standard dual-use considerations for autonomous systems. Guidelines: • The answer [N/A] means that the authors have not reviewed the NeurIPS Code of Ethics. • If the authors answer [No], they should explain the special circumstances that require a deviation from the Code of Ethics. • The authors should make sure to preserve anonymity (e.g., if there is a special consid-eration due to laws or regulations in their jurisdiction). 10. Broader impacts 
+
+Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed? Answer: [Yes] Justification: Appendix H discusses positive applications (search-and-rescue, environmental and agricultural monitoring, wildfire mapping, wireless-infrastructure coverage equity). We acknowledge dual-use considerations: the same trajectory-design capabilities could in principle be applied to surveillance or persistent monitoring without consent. The framework operates from aggregate density specifications (not individual tracking), which inherently limits its surveillance utility; the privacy-preserving property (no real-time location feedback) is a mitigating design feature; and we do not release pretrained models targeting specific real-world geographies. Standard deployment safeguards (geofencing, operator authorization, airspace-authority compliance) are orthogonal to our contribution and unaffected by it. Guidelines: • The answer [N/A] means that there is no societal impact of the work performed. • If the authors answer [N/A] or [No], they should explain why their work has no societal impact or why the paper does not address societal impact. • Examples of negative societal impacts include potential malicious or unintended uses (e.g., disinformation, generating fake profiles, surveillance), fairness considerations (e.g., deployment of technologies that could make decisions that unfairly impact specific groups), privacy considerations, and security considerations. • The conference expects that many papers will be foundational research and not tied to particular applications, let alone deployments. However, if there is a direct path to any negative applications, the authors should point it out. For example, it is legitimate to point out that an improvement in the quality of generative models could be used to generate Deepfakes for disinformation. On the other hand, it is not needed to point out that a generic algorithm for optimizing neural networks could enable people to train models that generate Deepfakes faster. • The authors should consider possible harms that could arise when the technology is being used as intended and functioning correctly, harms that could arise when the technology is being used as intended but gives incorrect results, and harms following from (intentional or unintentional) misuse of the technology. • If there are negative societal impacts, the authors could also discuss possible mitigation strategies (e.g., gated release of models, providing defenses in addition to attacks, mechanisms for monitoring misuse, mechanisms to monitor how a system learns from feedback over time, improving the efficiency and accessibility of ML). 53 11. Safeguards 
+
+Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pre-trained language models, image generators, or scraped datasets)? Answer: [N/A] Justification: The paper does not release pre-trained models or datasets with misuse risk. The models are small ( ∼199K parameters) 2D spatial maps for trajectory design. Guidelines: • The answer [N/A] means that the paper poses no such risks. • Released models that have a high risk for misuse or dual-use should be released with necessary safeguards to allow for controlled use of the model, for example by requiring that users adhere to usage guidelines or restrictions to access the model or implementing safety filters. • Datasets that have been scraped from the Internet could pose safety risks. The authors should describe how they avoided releasing unsafe images. • We recognize that providing effective safeguards is challenging, and many papers do not require this, but we encourage authors to take this into account and make a best faith effort. 12. Licenses for existing assets 
+
+Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected? Answer: [Yes] Justification: All used external datasets or pre-existing code assets are cited carefully. Guidelines: • The answer [N/A] means that the paper does not use existing assets. • The authors should cite the original paper that produced the code package or dataset. • The authors should state which version of the asset is used and, if possible, include a URL. • The name of the license (e.g., CC-BY 4.0) should be included for each asset. • For scraped data from a particular source (e.g., website), the copyright and terms of service of that source should be provided. • If assets are released, the license, copyright information, and terms of use in the package should be provided. For popular datasets, paperswithcode.com/datasets 
+
+has curated licenses for some datasets. Their licensing guide can help determine the license of a dataset. • For existing datasets that are re-packaged, both the original license and the license of the derived asset (if it has changed) should be provided. • If this information is not available online, the authors are encouraged to reach out to the asset’s creators. 13. New assets 
+
+Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets? Answer: [N/A] Justification: No new assets (datasets, models) are released with this submission. Code will be released upon acceptance. Guidelines: • The answer [N/A] means that the paper does not release new assets. • Researchers should communicate the details of the dataset/code/model as part of their submissions via structured templates. This includes details about training, license, limitations, etc. 54 • The paper should discuss whether and how consent was obtained from people whose asset is used. • At submission time, remember to anonymize your assets (if applicable). You can either create an anonymized URL or include an anonymized zip file. 14. Crowdsourcing and research with human subjects 
+
+Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)? Answer: [N/A] Justification: This paper does not involve crowdsourcing or research with human subjects. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Including this information in the supplemental material is fine, but if the main contribu-tion of the paper involves human subjects, then as much detail as possible should be included in the main paper. • According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or other labor should be paid at least the minimum wage in the country of the data collector. 15. Institutional review board (IRB) approvals or equivalent for research with human subjects 
+
+Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained? Answer: [N/A] Justification: This paper does not involve research with human subjects. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Depending on the country in which research is conducted, IRB approval (or equivalent) may be required for any human subjects research. If you obtained IRB approval, you should clearly state this in the paper. • We recognize that the procedures for this may vary significantly between institutions and locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the guidelines for their institution. • For initial submissions, do not include any information that would break anonymity (if applicable), such as the institution conducting the review. 16. Declaration of LLM usage 
+
+Question: Does the paper describe the usage of LLMs if it is an important, original, or non-standard component of the core methods in this research? Note that if the LLM is used only for writing, editing, or formatting purposes and does not impact the core methodology, scientific rigor, or originality of the research, declaration is not required. Answer: [N/A] Justification: The core method development in this research does not involve LLMs as any important, original, or non-standard components. 55
