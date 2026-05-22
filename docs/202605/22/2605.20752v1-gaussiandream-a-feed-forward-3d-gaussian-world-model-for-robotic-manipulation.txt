@@ -1,0 +1,581 @@
+Title: GaussianDream: A Feed-Forward 3D Gaussian World Model for Robotic Manipulation
+
+URL Source: https://arxiv.org/pdf/2605.20752v1
+
+Published Time: Thu, 21 May 2026 00:43:06 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# GaussianDream: A Feed-Forward 3D Gaussian World Model for Robotic Manipulation 
+
+Zijian Zhang 2,3,1,∗, Yuqing Jiang 2,3,1,∗, Qian Cheng 4, Si Liu 5, Ding Zhao 6, Ping Luo 7, Weitao Zhou 4,
+
+Haibao Yu 7,1,‡
+
+> 1
+
+Tuojing Intelligence , 2University of Chinese Academy of Sciences , 3Institute of Automation, Chinese Academy of Sciences , 4Tsinghua University , 5Beihang University , 6Carnegie Mellon University , 7The University of Hong Kong 
+
+> ∗
+
+equal contribution , ‡corresponding author 
+
+Vision-language-action (VLA) policies have advanced language-conditioned robotic manipulation by transferring semantic priors from pretrained vision-language models to action generation. Yet, standard action-imitation training often provides limited explicit supervision for 3D geometry, dense visual structure, and short-horizon environment evolution, which are critical for physically precise manipulation. We introduce GaussianDream , a feed-forward 3D Gaussian world-model plug-in that turns robot trajectories into structured spatial-temporal supervision. The key idea is to couple current Gaussian reconstruction with horizon-conditioned future Gaussian prediction during training, forcing a compact spatio-temporal prefix to be decodable into renderable 3D Gaussian states. This enables dense RGB rendering, depth, and pseudo 3D scene-flow supervision without requiring test-time Gaussian decoding. At inference, GaussianDream discards all auxiliary decoding heads and retains only the learned prefix to condition action generation, avoiding rendering, video rollout, or additional planning during closed-loop control. Experiments on LIBERO, RoboCasa Human-50, and real-robot tasks demonstrate strong and highly competitive performance, achieving 98.4% average success on LIBERO, 52.6% on RoboCasa Human-50, and 50.0% in real-world evaluation.  
+
+> Code:
+
+https://github.com/TuojingAI/GaussianDream 
+
+# 1 Introduction 
+
+General-purpose robotic manipulation, wherein an agent physically interacts with its environment to realize language-guided goals, is a fundamental task in embodied intelligence. Recently, Vision-Language-Action (VLA) models, e.g., RT-2 (Brohan et al., 2023), OpenVLA (Kim et al., 2024), π0 (Black et al., 2024), and 
+
+π0.5 (Physical Intelligence et al., 2025), have driven remarkable progress in this domain. These architectures leverage pre-trained Vision-Language Models (VLMs) to ground semantic priors directly into physical control loops, enhancing manipulation performance and task generalization (Brohan et al., 2023; Octo Model Team et al., 2024; Kim et al., 2024; Black et al., 2024; Physical Intelligence et al., 2025). Despite their strong instruction-following capabilities and semantic generalization, standard VLA paradigms still face critical limitations in precise physical interaction, partly because their training is largely dominated by behavior cloning (Black et al., 2024; Physical Intelligence et al., 2025; Qian et al., 2025; Song et al., 2026). A fundamental deficiency lies in the spatial and geometric underspecification of existing architectures. Since pre-trained VLMs predominantly operate on 2D pixel grids, 3D spatial structures and contact constraints are often encoded only implicitly within visual latents and action labels, making the control loop vulnerable to subtle geometric execution errors such as shifted grasp points (Sun et al., 2025; Li et al., 2025b,a; Qian et al., 2025; Song et al., 2026). Furthermore, this paradigm suffers from the underutilization of dense visual and spatial supervision embedded within image observations. While robot trajectories record rich, high-dimensional evidence of object layouts, appearance cues, and depth structures, standard action-imitation objectives mainly supervise the immediate control command at each time step, leaving many dense pixel-level geometric signals underexploited (Ye et al., 2026; Kim et al., 2026; Li et al., 2026a; Bi et al., 2025). Consequently, existing VLA policies typically acquire environment dynamics only implicitly from action labels, 1
+
+> arXiv:2605.20752v1 [cs.RO] 20 May 2026
+
+rather than through explicit internal environment emulation and future-state supervision. Although emerging robotic world models (Ye et al., 2026; Kim et al., 2026; Li et al., 2026a; Bi et al., 2025) have validated that predicting future environment states can substantially benefit action learning and policy robustness, standard VLAs often lack an explicit mechanism to anticipate how the environment will evolve after interaction. This limits their capability to generalize across varying and complex manipulation scenes where execution outcomes depend on short-horizon state changes. To address these limitations, recent advanced efforts generally fall into two categories, yet both remain sub-optimal for high-performance, real-time closed-loop control. On one hand, 3D-enhanced policy networks 
+
+attempt to explicitly inject geometric structures into VLA frameworks; however, they predominantly rely on statically anchoring the current scene configuration via representations like point clouds or depth maps, while providing limited mechanisms for dynamic future environment emulation (Sun et al., 2025; Deng et al., 2025; Zhou et al., 2025; Ni et al., 2025; Li et al., 2025b,a; Abouzeid et al., 2025; Song et al., 2026). On the other hand, emerging robotic world models introduce proactive environment reasoning by forecasting future states in pixel, latent, or action spaces (Ye et al., 2026; Kim et al., 2026; Li et al., 2026a; Bi et al., 2025; Cen et al., 2025; Yuan et al., 2026). While a few recent exploratory works attempt to incorporate 3D Gaussian representations into predictive frameworks (Kerbl et al., 2023; Lu et al., 2024, 2025; Qian et al., 2025), seamlessly integrating these world models with mainstream VLA architectures poses severe structural and operational challenges. Because their generative predictions typically require iterative voxel optimization or heavy visual autoregressive rollouts, they introduce substantial computational overhead during inference, making them difficult to deploy in high-frequency robotic control loops (Ye et al., 2026; Kim et al., 2026; Yuan et al., 2026). Consequently, how to equip an actionable VLA model with unified capabilities of explicit 3D space grounding, dense supervision, and future anticipation, while maintaining an elegant and lightweight inference pipeline, remains a critically unresolved challenge. To close these gaps, we present GaussianDream , a unified, feed-forward 3D Gaussian world model framework tailored for language-conditioned robotic manipulation. Instead of operating in unconstrained hidden spaces or relying on heavy video rollouts, GaussianDream bridges the semantic strength of pre-trained VLAs with the geometric precision of 3D representations by reconstructing and predicting physical environment states within a structured 3D Gaussian space (Kerbl et al., 2023). Concretely, we design an asymmetric training-and-inference architecture that functions as a geometry-aware plug-in. During training, a lightweight spatio-temporal reasoning encoder interacts with learnable queries to extract 3D-aware features from temporal observations (Wang et al., 2025). These representations are processed by two decoupled auxiliary components: a static Gaussian head for current scene reconstruction and a dynamic, horizon-conditioned Gaussian head for future geometric change prediction. The pipeline is optimized end-to-end with dense pixel-level RGB rendering, depth estimation, and pseudo 3D scene-flow supervision, transforming ordinary robot trajectories into rich structured learning signals. Crucially, during online inference, all auxiliary decoding heads are discarded. The policy retains only a compact, information-rich GaussianDream prefix to condition action generation, bypassing test-time Gaussian decoding, geometric rendering, video rollout, and additional planning. Extensive evaluations across LIBERO (Liu et al., 2023), RoboCasa Human-50 (Nasiriany et al., 2024), and physical real-robot tasks demonstrate that GaussianDream achieves strong and highly competitive performance, including the best results on several spatially demanding settings, while showing tight spatio-temporal alignment between predictive future emulation and executable control commands. In summary, the primary contributions of this work are: 
+
+• Unified 3D Gaussian World Model. We introduce GaussianDream , a feed-forward framework that integrates language-conditioned VLA policies with structured 3D Gaussian representations for robotic manipulation. 
+
+• Spatio-Temporal Representation and Dense Supervision. GaussianDream addresses three key VLA bottlenecks in a unified design: explicit 3D spatial grounding, dense pixel-level supervision from robot trajectories, and short-horizon predictive environment emulation. 
+
+• Efficient Asymmetric Plug-in. GaussianDream uses full 3D reconstruction and future prediction for training-time supervision, while discarding auxiliary decoding heads at deployment to avoid test-time Gaussian decoding, rendering, video rollout, or an additional planner. 2Figure 1 Comparison of manipulation policy paradigms. Compared with 2D policies, 3D-enhanced policies, and video/latent world models, GaussianDream uses current Gaussian reconstruction and future Gaussian prediction to learn structured 3D supervision from robot videos while retaining efficient prefix-based action generation. 
+
+• Empirical Validation. Experiments on LIBERO (Liu et al., 2023), RoboCasa Human-50 (Nasiriany et al., 2024), and real robots show strong and highly competitive performance, with analyses validating spatio-temporal alignment between predictive emulation and action generation. 
+
+# 2 Related Work 
+
+Vision-language robot policies. Vision-language-action (VLA) models adapt pretrained vision-language representations to robot control, enabling language-conditioned manipulation across diverse tasks. RT-1 (Brohan et al., 2022) and RT-2 (Brohan et al., 2023) demonstrate the benefit of scaling robot data and transferring visual-language priors to action generation. Octo (Octo Model Team et al., 2024), OpenVLA (Kim et al., 2024), π0 (Black et al., 2024), and π0.5 (Physical Intelligence et al., 2025) further advance open-vocabulary instruction following, continuous action modeling, and generalist policy learning. Recent works improve action tokenization, deployability, speech conditioning, force awareness, and mobile manipulation (Pertsch et al., 2025; Wen et al., 2024; Shukor et al., 2025; Zhao et al., 2025; Yu et al., 2026; Wu et al., 2025). While these models provide strong semantic priors, their supervision is still largely dominated by action imitation, where dense spatial-temporal evidence in robot videos is only indirectly encoded through visual latents and action labels. GaussianDream preserves the VLA action interface while introducing explicit 3D Gaussian reconstruction, dense geometric supervision, and future Gaussian prediction. 
+
+3D-enhanced manipulation policies. A growing line of work improves robot policies by injecting explicit geometric information. GeoVLA (Sun et al., 2025), StereoVLA (Deng et al., 2025), VLA-4D (Zhou et al., 2025), SwiftVLA (Ni et al., 2025), BridgeVLA (Li et al., 2026b), and Any3D-VLA (Fan et al., 2026) incorporate depth, stereo cues, 4D features, point clouds, or projected 3D representations for spatial grounding. QDepth-VLA (Li et al., 2025b), Spatial Forcing (Li et al., 2025a), GeoAware-VLA (Abouzeid et al., 2025), and VGA (Song et al., 2026) further explore depth supervision, geometric regularization, and geometry-centric backbones. These methods show that explicit geometry benefits localization, spatial reasoning, and physically grounded control. However, most use geometry to anchor the current scene, leaving post-interaction state evolution less explicit. GeoPredict (Qian et al., 2025) moves toward predictive geometry through future keypoint trajectories and depth-supervised Gaussian prediction. GaussianDream instead unifies current reconstruction and horizon-conditioned future prediction as a training-time plug-in, turning robot trajectories into dense RGB, depth, and pseudo 3D scene-flow supervision. 
+
+World models for robotic manipulation. World models and World Action Models introduce future prediction as a way to learn richer temporal structure than one-step behavior cloning. DreamZero (Ye et al., 2026), Cosmos Policy (Kim et al., 2026), LingBot-VA (Li et al., 2026a), Motus (Bi et al., 2025), 3Figure 2 Overview of GaussianDream . denotes frozen modules, and denotes trainable modules. (a) Inputs include the language instruction, robot state, current observation, temporal context frames, and learnable GaussianDream queries. (b) The GaussianDream encoder extracts VGGT patch tokens from temporal observations and lets them interact with GaussianDream queries through the TGE module. (c) The GaussianDream decoder contains a static Gaussian head for current reconstruction and a dynamic Gaussian head for future prediction. (d) Current and future RGB/depth renderings provide dense supervision for reconstruction and prediction. (e) The GaussianDream action policy conditions on the learned prefix to generate robot actions. (f) The TGE module alternates token interaction and temporal aggregation through self-attention, temporal attention, and an MLP. 
+
+WorldVLA (Cen et al., 2025), and Fast-WAM (Yuan et al., 2026) predict future observations, actions, values, or latent states to improve long-horizon control and generalization. Many of these methods model futures in RGB pixels, video latents, or action space, where the predicted state is not explicitly organized as actionable 3D geometry; autoregressive or diffusion-based rollouts may also increase inference cost. Gaussian representations have recently been explored for manipulation or predictive geometry, including ManiGaussian (Lu et al., 2024), GWM (Lu et al., 2025), and GeoPredict (Qian et al., 2025). In contrast, GaussianDream learns future anticipation directly in structured 3D Gaussian space during training, and discards auxiliary decoding heads at inference, retaining only a compact prefix for action generation. 
+
+# 3 Method 
+
+We present GaussianDream , a feed-forward 3D Gaussian world-model plug-in for language-conditioned robotic manipulation. Motivated by Sec. 1, GaussianDream targets three VLA bottlenecks: spatial/geometric underspecification, sparse action-only supervision, and limited internal future environment emulation. It learns a compact GaussianDream prefix from robot videos, decodes the prefix into current and future 3D Gaussian states during training, and supervises it with dense RGB rendering, depth, and pseudo 3D scene-flow signals. At inference, all Gaussian decoding heads are removed, so the learned prefix alone conditions the action policy for efficient closed-loop control without test-time rendering or rollout. 
+
+## 3.1 Overview of GaussianDream 
+
+Let ot be the current multi-view observation, ot−K:t a short temporal history, l the language instruction, and st the robot state. GaussianDream preserves the action interface of the base continuous-action policy, but augments its multimodal context with learned GaussianDream tokens ZGD  
+
+> t
+
+. Image, language, and GaussianDream tokens share the 2048-dimensional PaliGemma/Gemma-2B prefix space, while the action 4expert uses a 1024-dimensional hidden space. The prefix is generated by a temporal 3D-aware encoder: 
+
+ZGD  
+
+> t
+
+= Fω (ot−K:t, QGD ) , (1) where QGD denotes learnable GaussianDream queries and Fω is implemented by the Temporal Gaussian Evolution (TGE) module in Sec. 3.3. We use three context frames, {t − 10 , t − 5, t }, as sparse motion cues. During training, the same prefix is decoded by two auxiliary Gaussian heads: 
+
+Gt = Rϕ(ZGD  
+
+> t
+
+, ot), ˆGt+∆ = Dψ (Gt, ZGD  
+
+> t
+
+, ∆) . (2) Here Rϕ maps ZGD  
+
+> t
+
+to a renderable current Gaussian state Gt, while Dψ estimates horizon-conditioned future Gaussian changes. Both decoders are used only for training-time supervision. The policy is conditioned on the original multimodal inputs and the GaussianDream prefix: 
+
+at = πθ
+
+ ot, l, st; ZGD 
+
+> t
+
+ . (3) Thus, GaussianDream does not replace the policy with a test-time simulator; instead, it transfers training-time 3D reconstruction and future prediction into an inference-time prefix for action generation. 
+
+## 3.2 Current Gaussian Reconstruction 
+
+The first bottleneck identified in Sec. 1 is spatial and geometric underspecification: standard VLAs often encode 3D scene structure only implicitly in 2D visual latents and action labels. To provide explicit spatial grounding, GaussianDream decodes the learned prefix into a renderable current 3D Gaussian state. Rather than treating the prefix as an unordered latent block, we preserve its spatial organization by arranging 1024 GaussianDream tokens into a 32 × 32 latent grid. This grid is decoded into a dense Gaussian feature map: 
+
+FG 
+
+> t
+
+= BG
+
+ Grid( ZGD  
+
+> t
+
+) , FG 
+
+> t
+
+∈ R256 ×256 ×128 . (4) The decoder progressively upsamples the prefix grid from 32 × 32 to 256 × 256 , producing a shared spatial substrate for Gaussian geometry, appearance, and depth prediction. From FG 
+
+> t
+
+, lightweight heads predict the quantities needed to construct the current Gaussian state. The geometry head estimates rotation, scale, and opacity; the appearance head predicts degree-1 spherical harmonics coefficients; and the depth head predicts a depth map for back-projecting Gaussian centers: 
+
+Dt, Θgeo  
+
+> t
+
+= Hgeo (FG 
+
+> t
+
+), Θapp  
+
+> t
+
+= Happ (FG 
+
+> t
+
+, ot). (5) Using camera intrinsics, Dt is unprojected into 3D centers μti, while other heads predict attributes θti :
+
+Gt = A(Dt, Θt) = {(μti, θ ti )}Nt
+
+> i=1
+
+, (6) where Θt = (Θ geo  
+
+> t
+
+, Θapp  
+
+> t
+
+) and Nt = 256 × 256 . The reconstructed Gaussians are rendered at the input resolution for RGB and depth supervision. This branch turns the abstract prefix into an explicitly supervised 3D representation and provides the structural template for future prediction. 
+
+## 3.3 Future Gaussian Prediction 
+
+The second and third bottlenecks are underused dense temporal supervision and limited future environment emulation. A current 3D state specifies where the scene is, but not how it changes after interaction. GaussianDream therefore predicts short-horizon Gaussian changes from temporally aligned 3D-aware features, expressing future anticipation in structured 3D space rather than RGB/video latents. Given ot−K:t, we extract multi-scale 3D-aware patch features using VGGT (Wang et al., 2025). For each context frame, features are pooled into a 32 × 32 grid and projected into temporal tokens: 
+
+P(m) 
+
+> t−K:t
+
+= Wm P32 ×32 
+
+
+
+E(m)VGGT (ot−K:t)
+
+
+
+, (7) 5where m indexes the feature scale. These tokens refine learnable GaussianDream queries through the TGE module. The 2048-dimensional queries are projected to a 512-dimensional temporal space, fused with 32 × 32 
+
+VGGT patch tokens across three context frames, and projected back to the 2048-dimensional prefix space. The TGE module contains 12 attention blocks with 8 heads; each block performs frame-wise token interaction followed by per-token temporal attention. The current-frame output becomes the GaussianDream prefix: 
+
+ZGD  
+
+> t
+
+= Proj 512 →2048 
+
+h
+
+TGE 
+
+
+
+Proj 2048 →512 (QGD ), {P(m)
+
+> t−K:t
+
+}Mm=1 
+
+
+
+> t
+
+i
+
+. (8) This prefix provides temporally aligned 3D evidence for reconstruction, prediction, and action conditioning. Given Gt = {(μti, θ ti )}Nt
+
+> i=1
+
+, the dynamic head predicts horizon-conditioned center displacements: 
+
+ν(∆)  
+
+> t
+
+= Hvel 
+
+ Bpred (ZGD  
+
+> t
+
+), e∆
+
+ , ∆X(∆)  
+
+> t
+
+= α∆ν(∆)  
+
+> t
+
+,
+
+ˆμ t+∆  
+
+> i
+
+= μti + ∆ x(∆)  
+
+> i
+
+, ˆGt+∆ =   ˆμ t+∆  
+
+> i
+
+, θ ti
+
+ Nt 
+
+> i=1
+
+.
+
+(9) Here e∆ is a learnable horizon embedding and α∆ is a temporal scale factor. The predicted future state reuses non-positional attributes θti , focusing prediction on interaction-induced changes while preserving the current Gaussian template. We supervise horizons from t + 1 to t + 5 .
+
+## 3.4 GaussianDream Training and Efficient Inference 
+
+GaussianDream is optimized with an asymmetric training-and-inference strategy. This design directly targets the tension between rich world-model supervision and real-time robotic deployment: dense reconstruction and prediction are used during training, while only the compact prefix is retained at inference. 
+
+Stage I: GaussianDream pretraining. We first train the static reconstruction head and dynamic prediction head without action learning. For each demonstration sequence, RGB frames are paired with pseudo depth and pseudo 3D scene-flow targets constructed from adjacent frames; details are provided in the appendix. The GaussianDream objective combines current reconstruction and future prediction: 
+
+LGD = λdepth cur Ldepth cur + λrender cur Lrender cur 
+
+| {z }
+
+> Lcur
+
++ X
+
+> ∆∈H
+
+w∆
+
+
+
+λdepth L(∆) depth + λrender L(∆) render + λflow L(∆) flow 
+
+| {z }
+
+> Lfut
+
+. (10) Depth and rendering terms supervise current and future Gaussian renderings, while the flow term matches predicted center displacements to pseudo 3D scene flow under a validity mask. This stage turns ordinary robot videos into dense spatial-temporal supervision, rather than using them only as action-labeled trajectories. We gradually expand the prediction horizon for stable optimization. 
+
+Stage II: GaussianDream-conditioned policy learning. After pretraining, we enable action learning and condition the base flow-matching policy on the GaussianDream prefix, with ct = ( ot, l, st; ZGD  
+
+> t
+
+):
+
+Lact = Eτ, ϵ,a∗
+
+> t
+
+h
+
+∥vθ (τ ϵ + (1 − τ )a∗ 
+
+> t
+
+, ct, τ ) − (ϵ − a∗ 
+
+> t
+
+)∥22
+
+i
+
+, (11) where ϵ ∼ N (0 , I ) and τ is sampled from the flow-matching time distribution. We optimize the joint objective 
+
+L = Lact + λGD LGD . The auxiliary Gaussian losses maintain spatial-temporal alignment, while the action loss adapts the prefix to executable control. 
+
+Inference. At test time, GaussianDream encodes the temporal buffer into prefix tokens and injects them into the policy context. The rendering, depth, and velocity heads are discarded, so no future video rollout, test-time rendering, or separate planner is invoked. The policy then follows the base denoising procedure to sample the final action chunk. In this way, GaussianDream preserves the benefits of training-time 3D reconstruction and future prediction while maintaining a lightweight online control pipeline. 6Figure 3 Real-robot evaluation scenarios covering at-tribute grounding, spatial relations, stacking/unstacking, and long-horizon execution.  
+
+> Figure 4 Depth-rendering visualization. Rows 1 and 3 show ground-truth sequences, while rows 2 and 4 show the corresponding GaussianDream reconstruction and prediction results. In each sequence, the first frame is the current frame and the following five frames are consecutive future frames.
+
+# 4 Experiments 
+
+We evaluate GaussianDream in simulation and real-world manipulation settings. The experiments are designed to verify four claims: (1) GaussianDream improves spatially precise manipulation over strong VLA, 3D-enhanced, and world-model baselines; (2) the learned GaussianDream prefix transfers to physical robot execution; (3) current reconstruction and future prediction provide complementary spatial-temporal supervision; and (4) rendering and depth losses help convert robot videos into dense geometric learning signals. 
+
+## 4.1 Experimental Setup 
+
+Simulation benchmarks. We evaluate GaussianDream on LIBERO (Liu et al., 2023) and RoboCasa (Nasiri-any et al., 2024). For LIBERO (Liu et al., 2023), we follow the standard Spatial, Object, Goal, and Long protocols with 50 human demonstrations for training and 50 evaluation trials. For RoboCasa (Nasiriany et al., 2024), we use the Human-50 few-shot setting over 24 long-horizon kitchen tasks, with 50 trials per task across five scenes. Together, these benchmarks cover spatial reasoning, object grounding, goal-conditioned manipulation, long-horizon execution, and household-scale generalization. 
+
+Real-robot evaluation. We further compare GaussianDream with the base π0.5 policy (Physical Intelligence et al., 2025) on a physical robot. As shown in Fig. 3, the tasks cover attribute grounding, spatial relations, stacking/unstacking, and long-horizon goal execution. These scenarios test whether the GaussianDream prefix remains effective under real camera noise, embodiment mismatch, and physical execution errors. 
+
+## 4.2 Main Results 
+
+LIBERO. GaussianDream achieves strong overall performance on LIBERO (Liu et al., 2023), especially on tasks that require spatial grounding and goal-conditioned execution. As shown in Tab. 1, GaussianDream reaches a 98.4% average success rate and obtains the best results on Spatial and Goal. For implementation-consistent comparison, we report the PyTorch implementation of Spatial Forcing (Li et al., 2025a). Gaussian-Dream outperforms strong 3D-enhanced policies including GeoVLA (Sun et al., 2025), VLA-4D (Zhou et al., 2025), 3D-CAVLA (Bhat et al., 2025), QDepth-VLA (Li et al., 2025b), and Spatial Forcing (PyTorch) (Li et al., 2025a). LingBot-VA (Li et al., 2026a) achieves the highest average score, but relies on a larger autoregressive video-action modeling pipeline during control; GaussianDream instead uses prediction as training-time supervision and retains only prefix tokens at inference. 
+
+RoboCasa. GaussianDream shows its strongest advantage on spatially precise pick-and-place tasks in RoboCasa (Nasiriany et al., 2024). As shown in Tab. 2, GaussianDream achieves the best average success rate of 52.6% and substantially improves Pick&Place performance. This result supports the benefit of current Gaussian reconstruction and future Gaussian prediction for manipulation categories where accurate localization 7Method Spatial Object Goal Long Average                                                                                      
+
+> π0(Black et al., 2024) 96.8 98.8 95.8 85.2 94.1
+> π0.5(Physical Intelligence et al., 2025) 97.8 98.8 97.6 92.4 96.7 GeoPredict (Qian et al., 2025) 98.0 98.2 95.7 94.0 96.5 QDepth-VLA (Li et al., 2025b) 97.6 96.6 95.2 90.0 94.9 LingBot-VA (Li et al., 2026a) 98.5 99.6 97.2 98.5 98.5
+> GeoVLA (Sun et al., 2025) 98.4 99.0 96.6 96.6 97.7 VLA-4D (Zhou et al., 2025) 97.9 98.6 97.8 94.8 97.4 3D-CAVLA (Bhat et al., 2025) 98.2 99.8 98.2 96.1 98.1 Spatial Forcing (PyTorch) (Li et al., 2025a) 98.6 98.4 98.2 95.4 97.6
+> GaussianDream 99.0 99.6 99.0 96.0 98.4
+> Table 1 Success rates (%) on LIBERO (Liu et al., 2023). GaussianDream achieves the best Spatial and Goal performance and a 98.4% average success rate; Spatial Forcing is reported using its PyTorch implementation. Method Pick&Place Doors/Drawers Others Average
+> π0(Black et al., 2024) 13.95 53.1 58.5 42.4
+> π0.5(Physical Intelligence et al., 2025) 36.0 46.5 39.5 40.1 BC-Transformer (Nasiriany et al., 2024) 3.75 46.7 38.0 28.8 GWM (Lu et al., 2025) 14.8 54.3 49.8 39.3 GeoPredict (Qian et al., 2025) 22.7 75.1 62.4 52.4
+> GaussianDream 43.8 65.2 52.0 52.6 Table 2 Success rates (%) on RoboCasa Human-50 (Nasiriany et al., 2024). GaussianDream achieves the best average result and the strongest Pick&Place performance.
+
+and placement are critical. GeoPredict (Qian et al., 2025) performs better on Doors/Drawers and Others, while GaussianDream obtains the best overall performance across categories. 
+
+Real robot. GaussianDream also improves physical execution beyond simulation. As shown in Tab. 3, it raises the average real-robot success rate from 34.4% to 50.0% over π0.5 (Physical Intelligence et al., 2025), with gains across all scenario groups. The improvement is most evident in spatial relation and long-horizon scenarios, where the GaussianDream prefix provides additional geometric context for action generation. 
+
+## 4.3 Qualitative Analysis 
+
+The qualitative results support the central design of GaussianDream: current reconstruction provides spatial grounding, while future prediction captures short-horizon geometric change. Fig. 4 visualizes depth-rendering results for current Gaussian reconstruction and future Gaussian prediction. The predicted depth renderings preserve object layout in the current frame and remain temporally coherent across future steps, suggesting that GaussianDream learns structured spatial-temporal cues from robot videos. Additional RGB rendering results and qualitative examples are provided in the appendix. 
+
+## 4.4 Ablation Studies 
+
+Component analysis. The ablation confirms that GaussianDream benefits from both its modeling com-ponents and dense supervision design. As shown in Tab. 4, current Gaussian reconstruction alone achieves 97.0%, indicating that explicitly reconstructing the current observation into a Gaussian state provides a strong spatial prior for action generation. Adding future Gaussian prediction improves performance to 97.5%, showing that short-horizon state-change supervision contributes information beyond current-frame grounding. This validates the main design of GaussianDream: the static head builds the spatial template, while the dynamic head learns interaction-induced changes from robot videos. 
+
+Supervision analysis. Rendering and depth supervision explain how GaussianDream converts video trajectories into dense learning signals. Rendering improves the reconstruction-only variant from 97.0% to 8Method Scene-A Scene-B Scene-C Scene-D Average           
+
+> π0.542.5 50.0 25.0 20.0 34.4
+> GaussianDream 55.0 70.0 35.0 40.0 50.0
+
+Table 3 Real-robot success rates (%). GaussianDream improves physical execution from 34.4% to 50.0%. Current Reconstruction ✓ ✓ ✓ ✓ ✓                    
+
+> Future Prediction ✗✗✓✓✓
+> Rendering Branch ✗✓✗✓✓
+> Depth Branch ✗✓✓✗✓
+> Avg. on LIBERO (Liu et al., 2023) 97.0 97.3 97.5 97.2 98.4
+
+Table 4 Ablation on LIBERO (Liu et al., 2023). Recon-struction, prediction, rendering, and depth supervision provide complementary gains. 
+
+97.3%, suggesting that image-level consistency helps align predicted Gaussians with observations. When future prediction and rendering are retained but depth is removed, performance drops to 97.2%, indicating that RGB consistency alone cannot fully constrain metric geometry. The full model reaches 98.4%, confirming the complementary roles of reconstruction, prediction, rendering, and depth. 
+
+# 5 Conclusion 
+
+We presented GaussianDream , a unified feed-forward 3D Gaussian world-model plug-in for language-conditioned robotic manipulation. GaussianDream addresses three VLA limitations by grounding actions in reconstructed 3D Gaussian states, mining dense RGB/depth/scene-flow supervision from robot trajectories, and learning horizon-conditioned future prediction for short-horizon environment emulation. Its asymmetric design uses full Gaussian reconstruction and prediction as training supervision, but discards all auxiliary decoding heads at deployment and retains only a compact GaussianDream prefix for action generation. Experiments on LIBERO, RoboCasa Human-50, and real-robot tasks demonstrate strong performance, while ablations validate the complementary roles of reconstruction, prediction, rendering, and depth supervision. Overall, GaussianDream shows that structured 3D Gaussian reconstruction and future emulation provide dense training-time supervision for physically grounded policies without sacrificing efficient closed-loop inference. 9References 
+
+Ali Abouzeid, Malak Mansour, Zezhou Sun, and Dezhen Song. GeoAware-VLA: Implicit geometry aware vision-language-action model. CoRR , abs/2509.14117, 2025. URL https://arxiv.org/abs/2509.14117 .Vineet Bhat, Yu-Hsiang Lan, Prashanth Krishnamurthy, Ramesh Karri, and Farshad Khorrami. 3d cavla: Leveraging depth and 3d context to generalize vision language action models for unseen tasks. arXiv preprint arXiv:2505.05800 ,2025. Hongzhe Bi, Hengkai Tan, Shenghao Xie, Zeyuan Wang, Shuhe Huang, Haitian Liu, Ruowen Zhao, Yao Feng, Chendong Xiang, Yinze Rong, Hongyan Zhao, Hanyu Liu, Zhizhong Su, Lei Ma, Hang Su, and Jun Zhu. Motus: A unified latent action world model. CoRR , abs/2512.13030, 2025. URL https://arxiv.org/abs/2512.13030 .Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom, Karol Hausman, Brian Ichter, Szymon Jakubczak, Tim Jones, Liyiming Ke, Sergey Levine, Adrian Li-Bell, Mohith Mothukuri, Suraj Nair, Karl Pertsch, Lucy Xiaoyang Shi, James Tanner, Quan Vuong, Anna Walling, Haohuan Wang, and Ury Zhilinsky. π0: A vision-language-action flow model for general robot control. CoRR , abs/2410.24164, 2024. URL https://arxiv.org/abs/2410.24164 .Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, et al. RT-1: Robotics transformer for real-world control at scale. CoRR , abs/2212.06817, 2022. URL https://arxiv.org/abs/2212.06817 .Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, et al. RT-2: Vision-language-action models transfer web knowledge to robotic control. CoRR , abs/2307.15818, 2023. URL https://arxiv.org/abs/2307.15818 .Jun Cen, Chaohui Yu, Hangjie Yuan, Yuming Jiang, Siteng Huang, Jiayan Guo, Xin Li, Yibing Song, Hao Luo, Fan Wang, et al. Worldvla: Towards autoregressive action world model. arXiv preprint arXiv:2506.21539 , 2025. Shengliang Deng, Mi Yan, Yixin Zheng, Jiayi Su, Wenhao Zhang, Xiaoguang Zhao, Heming Cui, Zhizheng Zhang, and He Wang. StereoVLA: Enhancing vision-language-action models with stereo vision. CoRR , abs/2512.21970, 2025. URL https://arxiv.org/abs/2512.21970 .Xianzhe Fan, Shengliang Deng, Xiaoyang Wu, Yuxiang Lu, Zhuoling Li, Mi Yan, Yujia Zhang, Zhizheng Zhang, He Wang, and Hengshuang Zhao. Any3d-vla: Enhancing vla robustness via diverse point clouds. arXiv preprint arXiv:2602.00807 , 2026. Bernhard Kerbl, Georgios Kopanas, Thomas Leimkühler, George Drettakis, et al. 3d gaussian splatting for real-time radiance field rendering. ACM Trans. Graph. , 42(4):139–1, 2023. Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan Foster, Grace Lam, Pannag Sanketi, Quan Vuong, Thomas Kollar, Benjamin Burchfiel, Russ Tedrake, Dorsa Sadigh, Sergey Levine, Percy Liang, and Chelsea Finn. OpenVLA: An open-source vision-language-action model. CoRR ,abs/2406.09246, 2024. URL https://arxiv.org/abs/2406.09246 .Moo Jin Kim, Yihuai Gao, Tsung-Yi Lin, Yen-Chen Lin, Yunhao Ge, Grace Lam, Percy Liang, Shuran Song, Ming-Yu Liu, Chelsea Finn, and Jinwei Gu. Cosmos Policy: Fine-tuning video models for visuomotor control and planning. 
+
+CoRR , abs/2601.16163, 2026. URL https://arxiv.org/abs/2601.16163 .Fuhao Li, Wenxuan Song, Han Zhao, Jingbo Wang, Pengxiang Ding, Donglin Wang, Long Zeng, and Haoang Li. Spatial forcing: Implicit spatial representation alignment for vision-language-action model. CoRR , abs/2510.12276, 2025a. URL https://arxiv.org/abs/2510.12276 .Lin Li, Qihang Zhang, Yiming Luo, Shuai Yang, Ruilin Wang, Fei Han, Mingrui Yu, Zelin Gao, Nan Xue, Xing Zhu, Yujun Shen, and Yinghao Xu. Causal world modeling for robot control. CoRR , abs/2601.21998, 2026a. URL 
+
+https://arxiv.org/abs/2601.21998 .Peiyan Li, Yixiang Chen, Hongtao Wu, Xiao Ma, Xiangnan Wu, Yan Huang, Liang Wang, Tao Kong, and Tieniu Tan. Bridgevla: Input-output alignment for efficient 3d manipulation learning with vision-language models. Advances in Neural Information Processing Systems , 38:63635–63673, 2026b. Yixuan Li, Yuhui Chen, Mingcai Zhou, Haoran Li, Zhengtao Zhang, and Dongbin Zhao. QDepth-VLA: Quantized depth prediction as auxiliary supervision for vision-language-action models. CoRR , abs/2510.14836, 2025b. URL 
+
+https://arxiv.org/abs/2510.14836 .Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qiang Liu, Yuke Zhu, and Peter Stone. Libero: Benchmarking knowledge transfer for lifelong robot learning. Advances in Neural Information Processing Systems , 36:44776–44791, 2023. 
+
+10 Guanxing Lu, Shiyi Zhang, Ziwei Wang, Changliu Liu, Jiwen Lu, and Yansong Tang. Manigaussian: Dynamic gaussian splatting for multi-task robotic manipulation. In European Conference on Computer Vision , pp. 349–366. Springer, 2024. Guanxing Lu, Baoxiong Jia, Puhao Li, Yixin Chen, Ziwei Wang, Yansong Tang, and Siyuan Huang. GWM: Towards scalable gaussian world models for robotic manipulation. In ICCV , pp. 9263–9274, 2025. URL https://openaccess.thecvf.com/content/ICCV2025/html/Lu_GWM_Towards_Scalable_Gaussian_ World_Models_for_Robotic_Manipulation_ICCV_2025_paper.html .Soroush Nasiriany, Abhiram Maddukuri, Lance Zhang, Adeet Parikh, Aaron Lo, Abhishek Joshi, Ajay Mandlekar, and Yuke Zhu. Robocasa: Large-scale simulation of everyday tasks for generalist robots. arXiv preprint arXiv:2406.02523 ,2024. Chaojun Ni, Cheng Chen, Xiaofeng Wang, Zheng Zhu, Wenzhao Zheng, Boyuan Wang, Tianrun Chen, Guosheng Zhao, Haoyun Li, Zhehao Dong, Qiang Zhang, Yun Ye, Yang Wang, Guan Huang, and Wenjun Mei. SwiftVLA: Unlocking spatiotemporal dynamics for lightweight vla models at minimal overhead. CoRR , abs/2512.00903, 2025. URL https://arxiv.org/abs/2512.00903 .Octo Model Team, Dibya Ghosh, Homer Walke, Karl Pertsch, Kevin Black, Oier Mees, et al. Octo: An open-source generalist robot policy. CoRR , abs/2405.12213, 2024. URL https://arxiv.org/abs/2405.12213 .Karl Pertsch, Kyle Stachowicz, Brian Ichter, Danny Driess, Suraj Nair, Quan Vuong, Oier Mees, Chelsea Finn, and Sergey Levine. FAST: Efficient action tokenization for vision-language-action models. CoRR , abs/2501.09747, 2025. URL https://arxiv.org/abs/2501.09747 .Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Manuel Y. Galliker, Dibya Ghosh, Lachy Groom, Karol Hausman, Brian Ichter, Szymon Jakubczak, Tim Jones, Liyiming Ke, Devin LeBlanc, Sergey Levine, Adrian Li-Bell, Mohith Mothukuri, Suraj Nair, Karl Pertsch, et al. π0.5: A vision-language-action model with open-world generalization. 
+
+CoRR , abs/2504.16054, 2025. URL https://arxiv.org/abs/2504.16054 .Jingjing Qian, Boyao Han, Chen Shi, Lei Xiao, Long Yang, Shaoshuai Shi, and Li Jiang. GeoPredict: Leveraging predictive kinematics and 3d gaussian geometry for precise vla manipulation. CoRR , abs/2512.16811, 2025. URL 
+
+https://arxiv.org/abs/2512.16811 .Mustafa Shukor, Dana Aubakirova, Francesco Capuano, Pepijn Kooijmans, Steven Palma, Adil Zouitine, Michel Aractingi, Caroline Pascal, Martino Russi, Andres Marafioti, Simon Alibert, Matthieu Cord, Thomas Wolf, and Remi Cadene. Smolvla: A vision-language-action model for affordable and efficient robotics. CoRR , abs/2506.01844, 2025. URL https://arxiv.org/abs/2506.01844 .Zijian Song, Qichang Li, Jiawei Zhou, Zhenlong Yuan, Tianshui Chen, Liang Lin, and Guangrun Wang. Robotic manipulation is vision-to-geometry mapping ( f (v) → g): Vision-geometry backbones over language and video models. 
+
+CoRR , abs/2604.12908, 2026. URL https://arxiv.org/abs/2604.12908 .Lin Sun, Bin Xie, Yingfei Liu, Hao Shi, Tiancai Wang, and Jiale Cao. GeoVLA: Empowering 3d representations in vision-language-action models. CoRR , abs/2508.09071, 2025. URL https://arxiv.org/abs/2508.09071 .Zachary Teed and Jia Deng. Raft: Recurrent all-pairs field transforms for optical flow. In European conference on computer vision , pp. 402–419. Springer, 2020. Jianyuan Wang, Minghao Chen, Nikita Karaev, Andrea Vedaldi, Christian Rupprecht, and David Novotny. Vggt: Visual geometry grounded transformer. In Proceedings of the Computer Vision and Pattern Recognition Conference ,pp. 5294–5306, 2025. Junjie Wen, Yichen Zhu, Jinming Li, Minjie Zhu, Kun Wu, Zhiyuan Xu, Ning Liu, Ran Cheng, Chaomin Shen, Yaxin Peng, Feifei Feng, and Jian Tang. Tinyvla: Towards fast, data-efficient vision-language-action models for robotic manipulation. CoRR , abs/2409.12514, 2024. URL https://arxiv.org/abs/2409.12514 .Zhenyu Wu, Yuheng Zhou, Xiuwei Xu, Ziwei Wang, and Haibin Yan. Momanipvla: Transferring vision-language-action models for general mobile manipulation. In Proceedings of the Computer Vision and Pattern Recognition Conference ,pp. 1714–1723, 2025. Lihe Yang, Bingyi Kang, Zilong Huang, Zhen Zhao, Xiaogang Xu, Jiashi Feng, and Hengshuang Zhao. Depth anything v2. Advances in Neural Information Processing Systems , 37:21875–21911, 2024. Seonghyeon Ye, Yunhao Ge, Kaiyuan Zheng, Shenyuan Gao, Sihyun Yu, George Kurian, Suneel Indupuru, You Liang Tan, Chuning Zhu, Jiannan Xiang, Ayaan Malik, Kyungmin Lee, William Liang, Nadun Ranawaka, Jiasheng Gu, 
+
+11 Yinzhen Xu, Guanzhi Wang, Fengyuan Hu, Avnish Narayan, Johan Bjorck, Jing Wang, Gwanghyun Kim, Dantong Niu, Ruijie Zheng, Yuqi Xie, Jimmy Wu, Qi Wang, Ryan Julian, Danfei Xu, Yilun Du, Yevgen Chebotar, Scott Reed, Yuke Zhu, Linxi Fan, and Joel Jang. World Action Models are Zero-shot Policies. CoRR , abs/2602.15922, 2026. URL https://arxiv.org/abs/2602.15922 .Jiawen Yu, Hairuo Liu, Qiaojun Yu, Jieji Ren, Ce Hao, Haitong Ding, Guangyu Huang, Guofan Huang, Yan Song, Panpan Cai, et al. Forcevla: Enhancing vla models with a force-aware moe for contact-rich manipulation. Advances in Neural Information Processing Systems , 38:93409–93439, 2026. Tianyuan Yuan, Zibin Dong, Yicheng Liu, and Hang Zhao. Fast-wam: Do world action models need test-time future imagination? arXiv preprint arXiv:2603.16666 , 2026. Wei Zhao, Pengxiang Ding, Zhang Min, Zhefei Gong, Shuanghao Bai, Han Zhao, and Donglin Wang. Vlas: Vision-language-action model with speech instructions for customized robot manipulation. In International conference on learning representations , volume 2025, pp. 51676–51693, 2025. Hanyu Zhou, Chuanhao Ma, and Gim Hee Lee. VLA-4D: Embedding 4d awareness into vision-language-action models for spatiotemporally coherent robotic manipulation. CoRR , abs/2511.17199, 2025. URL https://arxiv.org/abs/ 2511.17199 .
+
+12 Appendix 
+
+## A. Notation Summary 
+
+Symbol Name Meaning 
+
+ot, ot−K:t Observations Current multi-view RGB observation and temporal observation window. 
+
+l, st, at Language, state, action Language instruction, robot state, and predicted action chunk. 
+
+πθ Action policy Base continuous-action policy conditioned on the GaussianDream prefix. 
+
+ZGD  
+
+> t
+
+GaussianDream prefix Learned prefix tokens used for current reconstruction, future pre-diction, and action conditioning. 
+
+QGD , Fω GaussianDream queries/encoder Learnable queries and temporal encoder used to build ZGD  
+
+> t
+
+from multi-frame visual evidence. TGE Module Temporal Gaussian Evolution Module Module that aggregates multi-frame 3D-aware visual tokens and GaussianDream queries. 
+
+BG Gaussian decoder backbone Decoder backbone that maps ZGD  
+
+> t
+
+to dense Gaussian feature maps. 
+
+FG 
+
+> t
+
+Gaussian feature map Shared dense feature map produced by the Gaussian decoder. 
+
+Rϕ Reconstruction decoder Auxiliary decoder for current Gaussian reconstruction. 
+
+Dψ Prediction decoder Auxiliary decoder for future Gaussian prediction. 
+
+Gt Current Gaussian state Reconstructed current 3D Gaussian state. 
+
+ˆGt+∆ Future Gaussian state Predicted Gaussian state at future horizon ∆.
+
+Dt, Θt Depth / attributes Current depth map and Gaussian attribute map. 
+
+Θgeo  
+
+> t
+
+, Θapp  
+
+> t
+
+Geometry / appearance attributes Gaussian geometry attributes and spherical-harmonics appearance coefficients. 
+
+μti , θti Gaussian primitive Center and non-positional attributes of the i-th current Gaussian. 
+
+ˆμ t+∆  
+
+> i
+
+Future center Predicted future center of the i-th Gaussian. 
+
+ν(∆)  
+
+> t
+
+, ∆X(∆)  
+
+> t
+
+Motion prediction Horizon-conditioned velocity and center displacement. 
+
+e∆, α∆ Horizon terms Horizon embedding and time-scale factor. 
+
+Table 5 Core notation for GaussianDream and its Gaussian reconstruction/prediction modules. Symbol Name Meaning 
+
+H, w∆ Horizons Future horizon set and horizon-specific loss weight. 
+
+Lcur Current loss Current depth and rendering reconstruction loss. 
+
+Lfut Future loss Future depth, rendering, and pseudo scene-flow supervision loss. 
+
+LGD GaussianDream objective Combined current reconstruction and future prediction objective. 
+
+ct Policy context Action-conditioning context with visual observation, language, robot state, and GaussianDream prefix. 
+
+τ , ϵ Flow variables Flow-matching time and Gaussian noise. 
+
+vθ Flow field Policy-predicted velocity field in the action objective. 
+
+Lact Action loss Flow-matching action loss from the base π0.5 policy. 
+
+Table 6 Training notation used in the GaussianDream and action objectives. 
+
+## B. Architecture Details 
+
+This section provides implementation details for the GaussianDream plug-in described in Sec. 3. The architecture is designed to keep the online policy lightweight while enabling training-time 3D reconstruction and future emulation. Concretely, the GaussianDream token path extracts temporal 3D-aware evidence into a compact prefix, and the Gaussian decoder uses this prefix only during training to produce current and future Gaussian states for dense supervision. The GaussianDream token path uses a dense 32 ×32 query grid, corresponding to 1024 learnable GaussianDream 13 queries. Each query is first projected to 512 channels and processed by the TGE Module. Each TGE Module block performs self-attention over the joint query–patch tokens within each frame, followed by temporal attention over the same token slot across frames. We use 8 attention heads and a 4 × expansion MLP. The temporal visual tokens are obtained from VGGT (Wang et al., 2025) feature taps using 32 ×32 adaptive average pooling and linear projection to 512 channels. The TGE Module output at the latest frame is projected back to the VLM width and appended to the multimodal prefix as the GaussianDream token segment. After VLM prefix processing, this segment becomes ZGD  
+
+> t
+
+.The Gaussian decoder reshapes ZGD  
+
+> t
+
+into a canonical 32 ×32 token grid and applies a shared token-to-feature backbone. The backbone uses three transposed-convolution upsampling blocks with kernel size 4, stride 2, and padding 1, progressively lifting the token grid to a 256 ×256 feature map while reducing channels from the VLM width to 512, 256, and finally 128. Each upsampling block contains GroupNorm, GELU, a 3×3 convolution, and a bilinear residual skip. The resulting 128-channel feature map is further refined by DPT-style feature fusion blocks with 3 ×3 and 1 ×1 convolutions and residual connections from intermediate resolutions. The current reconstruction head operates on the shared 256 ×256 feature map. Its geometry branch predicts 8 channels with a 3 ×3 convolution: quaternion rotation (4), scale (3), and opacity (1). A separate depth branch uses two 3 ×3 convolutional layers with GroupNorm and GELU, followed by a final 3 ×3 convolution to predict one depth channel. The appearance branch optionally fuses the RGB image through a 7 ×7 convolution and predicts 9 spherical-harmonic appearance channels with a 3 ×3 convolution. Depth is unprojected with camera intrinsics to form Gaussian centers, while the remaining channels provide Gaussian attributes. The future prediction head reuses the same shared 256 ×256 feature map. A horizon embedding is added after a 3 ×3 projection to 128 channels, followed by a residual block with two 3 ×3 convolutions and GroupNorm. The velocity output head then applies a 3 ×3 convolution, GroupNorm, GELU, and a final 1 ×1 convolution to predict a 3-channel center-velocity map. The velocity is passed through tanh and scaled, then multiplied by the horizon time factor to update only Gaussian centers; scale, opacity, appearance, and rotation are copied from the current Gaussian template. This design concentrates future prediction on short-horizon geometric change while preserving the stability of the reconstructed current Gaussian state. 
+
+## C. Pseudo Depth and Scene-Flow Preparation 
+
+GaussianDream uses pseudo geometric supervision to train current Gaussian reconstruction and future Gaussian prediction. For each demonstration frame, we first generate a dense pseudo depth map from the RGB observation using Depth Anything V2 (Yang et al., 2024). The predicted depth is resized back to the original image resolution and stored together with the episode data. For LIBERO (Liu et al., 2023), both the agent-view and wrist-view images are processed. For RoboCasa (Nasiriany et al., 2024), we use the provided depth stream when available and convert simulator-normalized depth to metric depth using the camera near/far parameters. These pseudo geometric targets are used only during training. They allow GaussianDream to transform ordinary demonstration videos into dense spatial-temporal supervision, instead of relying solely on sparse action labels. To supervise future prediction, we construct pseudo 3D scene-flow sidecars from temporally adjacent frames. Given two consecutive RGB observations (ot, ot+1 ), we estimate a dense 2D optical flow field ft→t+1 using a RAFT (Teed & Deng, 2020) backend by default, with Farneback flow as a lightweight fallback. The 2D flow warps each pixel (u, v ) in frame t to (u′, v ′) in frame t+1 :
+
+(u′, v ′) = ( u, v ) + ft→t+1 (u, v ). (12) We then bilinearly sample the future depth map at (u′, v ′) and back-project both frames with the camera intrinsics K:
+
+xt = Π −1(u, v, Dt(u, v ); K), xt+1 = Π −1(u′, v ′, Dt+1 (u′, v ′); K). (13) The pseudo 3D flow target is the difference between the two back-projected points: 
+
+F3Dt→t+1 (u, v ) = xt+1 − xt. (14) 14 Figure 5 Visualization of pseudo depth and scene-flow preparation on LIBERO (Liu et al., 2023) and Robo-Casa (Nasiriany et al., 2024) demonstrations. The first two rows show LIBERO depth maps and flow fields, while the last two rows show RoboCasa depth maps and flow fields. These visualizations illustrate the pseudo geometric supervision used to construct 3D scene-flow targets for future Gaussian prediction. 
+
+We also compute a validity mask that removes correspondences warped outside the image, pixels with invalid depth, and pixels outside the configured depth range. Invalid flow vectors are set to zero and excluded from the future prediction loss. Each sidecar stores the 2D flow, pseudo 3D flow, validity mask, camera intrinsics, camera name, and metadata such as episode and task indices. 
+
+## D. Loss Details 
+
+The GaussianDream objective consists of current reconstruction and future prediction losses. The current loss supervises the reconstructed Gaussians with depth and RGB rendering: 
+
+Lcur = λdepth cur Ldepth cur + λrender cur Lrender cur . (15) The depth term aligns the predicted depth with pseudo or simulator-provided depth, while the rendering term aligns rendered RGB observations with demonstration frames. The future loss applies depth, rendering, and pseudo 3D scene-flow supervision over the horizon set H:
+
+Lfut = X
+
+> ∆∈H
+
+w∆
+
+
+
+λdepth L(∆) depth + λrender L(∆) render + λflow L(∆) flow 
+
+
+
+. (16) The future depth and rendering losses keep predicted future Gaussians geometrically and visually aligned with future observations, while the flow term directly supervises predicted Gaussian center displacements. With a validity mask, the flow loss is written as 
+
+L(∆) flow =
+
+P 
+
+> i
+
+M(∆)  
+
+> i
+
+∆x(∆)  
+
+> i
+
+− F3D, (∆)  
+
+> i1
+
+P 
+
+> i
+
+M(∆)  
+
+> i
+
++ ϵ , (17) 15 Figure 6 Real-robot hardware setup. The evaluation platform uses a policy-controlled follower arm mounted on a mobile base, together with an agent-view camera and a wrist-mounted camera for visual observation. During teleoperation-based demonstration collection, a separate leader arm is manually operated by the user, and its motions are transferred to the follower arm. During autonomous evaluation, GaussianDream directly controls the follower arm from language instructions and visual observations. 
+
+where M(∆)  
+
+> i
+
+is the validity mask and F3D, (∆)  
+
+> i
+
+is the pseudo 3D scene-flow target sampled at the corresponding Gaussian/pixel location. The full GaussianDream objective is 
+
+LGD = Lcur + Lfut . (18) During policy learning, GaussianDream combines the action objective with the reconstruction and prediction objective: 
+
+L = Lact + λGD LGD . (19) This training design allows dense spatial-temporal supervision to shape the GaussianDream prefix while preserving the base action-learning objective. 
+
+## E. Real-Robot Hardware Setup 
+
+Our real-robot platform contains two robot arms with distinct roles. The leader arm is used only during teleoperation-based data collection, where a human operator manually controls the arm to generate demon-strations. The follower arm is the execution arm: it follows the leader arm during demonstration collection and is controlled by the learned policy during autonomous evaluation. This leader–follower design separates demonstration acquisition from policy execution and allows us to evaluate the learned controller on the same physical embodiment used for data collection. The policy receives language instructions, robot state, and visual observations from two RGB cameras. The agent-view camera captures the overall workspace, object arrangement, and spatial relations, while the wrist-mounted camera provides close-range observations around the gripper. During evaluation, GaussianDream encodes the temporal visual buffer into GaussianDream prefix tokens and conditions the action policy on this prefix. The auxiliary rendering, depth, and velocity heads used during training are removed, so the deployed policy directly outputs action chunks for the follower arm without test-time rendering or future video rollout. 16 Figure 7 Real-robot visual observations from the agent-view and wrist-mounted cameras. The agent-view camera provides a global view of the workspace and object layout, while the wrist-mounted camera provides local visual feedback near the end effector. These complementary views are used by GaussianDream during physical robot evaluation. 
+
+## F. Real-Robot Supplementary Results    
+
+> Figure 8 Real-robot inference visualization. Compared with the π0.5(Physical Intelligence et al., 2025) baseline, GaussianDream produces smoother execution trajectories by conditioning action generation on the learned Gaus-sianDream prefix.
+
+We provide additional real-robot analysis to com-plement the physical success rates reported in the main paper. Fig. 8 visualizes real-robot execution trajectories under the same language-conditioned ma-nipulation setting. Compared with the π0.5 (Physical Intelligence et al., 2025) baseline, GaussianDream produces smoother joint trajectories, suggesting that the learned GaussianDream prefix provides useful spatial context for action generation. 
+
+## G. Additional Qualitative Visualization 
+
+These visualizations complement the quantitative results in the main paper. The current reconstruc-tion branch recovers coarse object layout and depth structure from the observed frame, showing that the GaussianDream prefix can be decoded into a spatially grounded 3D representation. The future prediction branch produces temporally coherent short-horizon Gaussian changes, indicating that the model learns how the reconstructed Gaussian state evolves across nearby future frames. This qualitative behavior sup-ports the central motivation of GaussianDream: cur-rent reconstruction mitigates spatial/geometric un-derspecification, future prediction introduces short-horizon environment emulation, and depth/rendering supervision converts robot videos into dense spatial-temporal learning signals. 17 Figure 9 Additional qualitative visualization of current Gaussian reconstruction and future Gaussian prediction. Each example compares the observed frame and pseudo depth target with the reconstructed current geometry and predicted future Gaussian states. The visualization illustrates that GaussianDream captures both current scene layout and short-horizon geometric changes. 
+
+18
