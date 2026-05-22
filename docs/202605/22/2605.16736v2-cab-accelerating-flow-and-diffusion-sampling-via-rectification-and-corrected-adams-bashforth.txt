@@ -1,0 +1,1691 @@
+Title: CAB: Accelerating Flow and Diffusion Sampling via Rectification and Corrected Adams-Bashforth
+
+URL Source: https://arxiv.org/pdf/2605.16736v2
+
+Published Time: Wed, 20 May 2026 01:09:46 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# CAB: Accelerating Flow and Diffusion Sampling via Rectification and Corrected Adams-Bashforth 
+
+Anuska Roy Pravin Nair 
+
+Department of Electrical Engineering Indian Institute of Technology Madras, Chennai, India 
+
+ee25s070@smail.iitm.ac.in, pravinnair@ee.iitm.ac.in 
+
+## Abstract 
+
+Flow and diffusion models achieve high-fidelity, high-resolution image synthesis, but often require many function evaluations (NFEs) at sampling time. Existing acceleration methods either require additional training through distillation or rely on training-free high-order solvers, and both can degrade sample quality at low NFE budgets. We propose CAB (Corrected Adams-Bashforth), a training-free sampler that accelerates both flow and diffusion models. CAB first transforms the sampling dynamics to a common rectified coordinate system, and then applies a multistep Adams–Bashforth predictor augmented with a simple correction term based on past velocity evaluations and therefore incurs no additional NFEs. The resulting method is simple, has the same algorithmic form across model classes, and has at least third-order local truncation error and second-order global error. Experiments on pretrained flow and diffusion models, including class-conditional and large-scale text-to-image benchmarks, show that CAB improves quality–NFE trade-offs in the low-step regime of 6–20 NFEs. It also remains competitive with strong training-free samplers at higher step counts across most tested models. The official implementation is available at https://github.com/Anuska-Roy/CAB .
+
+## 1 Introduction 
+
+Flow and diffusion models have become the dominant choice for high-fidelity image and video generation [ 1– 3], and they increasingly serve as backbones for editing and restoration pipelines [ 4– 8]. Despite their impressive quality, sampling from these models remains computationally expensive because generation often involves numerically integrating a learned reverse-time ordinary differential equation over many neural network evaluations [ 2, 9, 10 ]. This cost is particularly limiting in practical deployment, where latency and throughput matter, motivating continued interest in training-free few-step samplers that improve the quality-compute trade-off without any additional training [ 10 – 12 ]. The most important regime is often the low-NFE setting, where only 6 to 20 network evaluations are affordable, but it is also the most challenging, since discretization errors accumulate rapidly and visibly degrade sample fidelity [10, 12]. Training-free ODE solvers have greatly accelerated flow and diffusion sampling, but each family comes with its own limitations. First-order methods such as DDIM are simple and robust, yet typically require many function evaluations for high-quality generation [ 13 ]. Multistep methods such as PNDM improve over first-order baselines, but the low-NFE regime remains challenging [ 12 , 14 ]. Dedicated high-order diffusion solvers such as DEIS and DPM-Solver exploit the semi-linear structure of diffusion ODEs, though prior fast high-order samplers can become unstable under large guidance scales, motivating stabilized variants such as DPM-Solver++ [ 15 , 10 , 13 ]. UniPC improves few-step accuracy over DPM-Solver++, but satisfactory sampling below 10 steps remains difficult in general [ 12 ]. DPM-Solver-v3 improves low-NFE quality by introducing empirical model statistics computed on the pretrained model, which yields a more model-adaptive solver requiring 
+
+> Preprint.
+> arXiv:2605.16736v2 [cs.CV] 19 May 2026
+
+Euler / DDIM DPM-Solver++ STORK CAB-2      
+
+> Prompt 1: “A green bus with signage on a city street.” CAB-2 produces a sharper and detail-enhanced sample at 6 NFEs, while existing samplers either retain strong noise artifacts or oversmooth the sample.
+> Prompt 2: “The tennis player looks solemn holding his racket.” CAB-2 preserves facial structure, pose, and racket details better at 6 NFEs, while competing solvers show grain and distortion.
+> Class-conditional generation: CAB-2 produces a more realistic sample with clearer global structure, while competing samplers show oversmoothing, artifacts, or distorted texture at 8 NFEs.
+
+Figure 1: Qualitative comparison of training-free samplers on QWEN-Image 1024 × 1024 flow generation [18] and DiT 256 × 256 VP diffusion generation [19]. additional model-dependent estimation [ 16 ]. STORK reduces the cost of stabilized Runge–Kutta sampling through virtual NFEs based on Taylor approximation, improving efficiency at the expense of added approximation and solver simplicity [ 17 ]. Consequently, existing samplers still face a practical trade-off among accuracy, stability, generality, and simplicity in the low-NFE regime [ 12 , 13 , 17 ]. Figure 1 illustrates this low-NFE trade-off, where existing training-free samplers can exhibit noise, oversmoothing, or structural distortions at low NFE budget. 
+
+Contribution: In this work, we propose Corrected Adams–Bashforth (CAB) , a simple framework for constructing explicit multistep samplers for flow and diffusion models via an appropriate rectifica-tion of the reverse-time ODE. CAB augments Adams–Bashforth (AB) updates with a lightweight correction term that improves low-NFE stability while retaining the key efficiency advantage of a single network evaluation per iteration. Unlike UniPC, which is formulated in log-SNR diffusion coordinates, CAB applies a noise-to-signal rectification to obtain a common explicit learned-field ODE for both diffusion and flow models. We also prove that the corrected schemes preserve the convergence order of the underlying AB solvers. Empirically, CAB improves quality–NFE trade-offs across academic benchmarks and large-scale text-to-image/video models. For example, CAB produces sharper and more coherent samples in the low-NFE settings illustrated in Figure 1. 
+
+## 2 Background and Related Work 
+
+Let x0 ∈ Rd denote a data sample drawn from an unknown distribution p0. Flow and diffusion models define a family of intermediate marginals {pt}t∈[0 ,T ] that transport p0 to a tractable reference distribution pT , typically chosen as N (0, I) [1 , 9 , 20 , 21 ]. We use the forward direction t : 0 → T to 2describe the corruption process, while sampling integrates the corresponding reverse-time dynamics from t = T to t = 0 starting from the simple prior pT . Since p0 is unknown, the intermediate marginals are specified through a forward transition kernel p0t(xt | x0) [1, 2], which induces 
+
+pt(x) = Ex0∼p0 [p0t(x | x0)] .
+
+A useful unifying viewpoint is that many widely used constructions, including VP/DDPM-type diffusion models [ 1, 9], VE/EDM-type parameterizations [ 9 , 22 ], and rectified-flow paths [ 23 ], admit the affine-Gaussian forward form 
+
+xt = stx0 + σtϵ, ϵ ∼ N (0, I), (1) or equivalently, 
+
+p0t(xt | x0) = N (stx0, σ 2 
+
+> t
+
+I).
+
+Different model families correspond to different choices of nonnegative scalar schedules st, σ t ≥ 0
+
+[1, 9, 22 , 23 ]. On intervals where st > 0, we define the noise-to-signal ratio ρt := σt/s t. For all the commonly used schedules in [ 1, 9, 22 , 23 , 2], ρt is differentiable and strictly increasing. Under this regularity condition, the affine path (1) can be equivalently realized by a linear forward stochastic differential equation (SDE) initialized at x0 ∼ p0, [24, 10], 
+
+dxt = f (t)xt dt + g(t) dwt, f (t) = ˙st
+
+st
+
+, g(t)2 = 2 σt
+
+
+
+˙σt − ˙st
+
+st
+
+σt
+
+
+
+, (2) where wt denotes a standard Wiener process. In particular, the monotonicity condition ˙ρt ≥ 0
+
+ensures that the diffusion coefficient g(t) is real-valued and nonnegative. This monotonicity condition is also required for the noise-to-signal rectification used to derive the proposed solver in Section 3. Given the forward SDE in (2) , there exists a corresponding reverse-time generative process [ 9]. Start-ing from the prior xT ∼ N (0, I), samples from the data distribution can be generated by integrating the associated reverse-time ODE from t = T to t = 0 . In the noise-prediction parameterization commonly used in diffusion models, the reverse-time ODE is, 
+
+dxt
+
+dt = f (t)xt + g(t)2
+
+2σt
+
+ϵθ (xt, t ), t ∈ [0 , T ], (3) with initialization xT ∼ pT [ 9, 13 , 12 , 17 ]. Here, ϵθ (xt, t ) denotes a neural network trained to predict the noise component ϵ from xt in the forward path (1) . Equivalent parameterizations are also common. In particular, the data prediction model ˆxθ (xt, t ) can directly predict x0 from xt, where its relation with ϵθ (xt, t ) is given as, 
+
+ˆxθ (xt, t ) = xt − σtϵθ (xt, t )
+
+st
+
+,
+
+while the reverse-time velocity field in (3) may be learned directly as 
+
+vθ (xt, t ) = ˙ st ˆxθ (xt, t ) + ˙ σt ϵθ (xt, t )
+
+as in rectified flow [ 2, 23 ]. Thus, noise prediction, clean-sample prediction, and direct velocity prediction are equivalent parameterizations of the same reverse-time dynamics. 
+
+Fast solvers: One class of existing fast solvers accelerates generation through additional training, including progressive distillation, consistency-style models, and one-step diffusion models [ 25 –31 ]. In contrast, training-free samplers [ 11 , 14 , 15 , 10 , 13 , 12 , 32 , 33 , 16 , 34 , 35 , 17 ] retain the pretrained model and accelerate generation through improved inference-time solver design. Among these, the most widely used methods solve the reverse-time ODE in (3) . Early training-free samplers such as DDIM discretize (3) using a first-order update, while PNDM combines Runge–Kutta startup with linear multistep integration [ 11 , 14 ]. DPM-Solver reparameterizes (3) using the log-SNR variable 
+
+λt = log st 
+
+> σt
+
+and, under noise prediction, rewrites the ODE (3) in a semi-linear form that admits high-order exponential-integrator updates [ 10 ]. DPM-Solver++ [ 13 ] retains the same log-SNR reparameterization but replaces noise prediction with data-prediction, yielding improved guided sampling and stabilized multistep variants. UniPC develops a unified predictor–corrector framework for the same reverse dynamics, yielding arbitrary-order samplers with zero-extra-NFE correction and improved low-NFE performance [ 12 ]. DPM-Solver-v3 further improves low-NFE quality by incorporating empirical model statistics computed on the pretrained model [ 16 ]. When the reverse-time velocity field is learned directly in (3) , as in flow matching and rectified flow, generation is performed by standard ODE solvers, with Euler, Heun, and related Runge–Kutta schemes being the most common choices [ 2 , 23 ]. More recently, STORK introduced stabilized Taylor–Runge–Kutta solvers that address both stiffness and dependence on semi-linear diffusion structure, extending naturally beyond classical diffusion ODEs to flow-matching models [17]. 33 Corrected Adams-Bashforth Solver 
+
+In this section, we develop a training-free sampler by reparameterizing the ODE in (3) to noise-signal coordinates, and designing a corrected Adams-Bashforth method for flow and diffusion sampling. 
+
+3.1 Rectification of the reverse-time ODE in noise-to-signal coordinates 
+
+Our key observation is that the reverse-time ODE in (3) admits a particularly simple form after an appropriate change of state and time variables. Specifically, by rescaling the state as yt = xt/s t
+
+and reparameterizing time using the noise-to-signal ratio ρt = σt/s t, the linear drift induced by the schedules (st, σ t) is removed. In the resulting coordinates, the reverse dynamics reduce to a rectified ODE whose right-hand side is given directly by the learned noise field as shown in Lemma 3.1. 
+
+Lemma 3.1 (Rectified form in noise-to-signal coordinates) . Assume s : [0 , T ] → R>0 and σ :[0 , T ] → R>0 are C1. Define the noise-to-signal ratio ρt := σt/s t, and assume that ρ : [0 , T ] →
+
+R>0 is strictly increasing, so that the inverse map t = t(ρ) exists. Consider the reverse-time ODE in 
+
+(3) . Define the rescaled state and its parametrization in ρ space as 
+
+yt = xt
+
+st
+
+, ˆyρ = yt(ρ).
+
+Then the ρ-reparameterized trajectory satisfies 
+
+dˆyρ
+
+dρ = ϵθ
+
+ st(ρ) ˆyρ, t (ρ). (4) The proof is given in Appendix A.1. As in (3) , the noise-prediction model in (4) can be replaced by equivalent neural parameterizations. In particular, 
+
+ϵθ
+
+ st(ρ) ˆyρ, t (ρ) = ˆyρ − ˆxθ
+
+ st(ρ) ˆyρ, t (ρ)
+
+ρ = vθ
+
+ st(ρ) ˆyρ, t (ρ) − ˙st(ρ) ˆyρ
+
+st(ρ) ˙ρt(ρ)
+
+, (5) where recall that ˆxθ denotes the data-prediction model and vθ the reverse-time velocity field. The assumption required in Lemma 3.1 that ρt = σt/s t is strictly increasing, i.e., ˙ρt > 0, is precisely the condition under which the affine-Gaussian path (1) is generated by the linear SDE in Section 2. 
+
+3.2 Proposed solver 
+
+We develop our sampler by numerically integrating the rectified reverse-time ODE in (4) . Although the underlying time variable t is typically discretized uniformly, the induced noise-to-signal variable 
+
+ρt = σt/s t is in general non-uniformly spaced; accordingly, our solver is formulated directly on the 
+
+ρ-grid. Since (4) has the learned nonlinear field as the right-hand side of the ODE, we can directly apply explicit linear multistep predictors directly on the ρ-grid [ 36 , 37 ]. However, linear-multistep methods such as Adams–Bashforth (AB) may become inaccurate at large step sizes required for low-NFE sampling [ 36 , 37 ]. Classical predictor–corrector and defect-correction ideas address this issue by using an additional correction stage [ 36 , 38 – 40 ]. Inspired by this perspective, we correct the Adams-Bashforth prediction using an extrapolation defect, the discrepancy between the current learned velocity and its linear Lagrange extrapolation from previous steps. We now derive the resulting update on the nonuniform ρ-grid induced by a reverse-time discretization. Specifically, sampling integrates the rectified ODE in (4) from t = T to t = 0 using grid points 
+
+T = t0 > t 1 > · · · > t N = 0 .
+
+For any i ≥ 2, we next derive the update from yti to yti+1 . Let 
+
+ϵi := ϵθ (sti yti , t i), ϵi−1 := ϵθ (sti−1 yti−1 , t i−1), ϵi−2 := ϵθ (sti−2 yti−2 , t i−2)
+
+denote the learned noise predictions at timesteps ti, ti−1 and ti−2. Further, let step sizes be 
+
+hi := ρti+1 − ρti , hi−1 := ρti − ρti−1 , hi−2 := ρti−1 − ρti−2 ,
+
+and the step ratios be defined as 
+
+ri := hi
+
+hi−1
+
+, ri−1 := hi−1
+
+hi−2
+
+.
+
+4Algorithm 1 CAB-p sampling ( p = 2 or 3)
+
+Require: Prior sample xt0 ∼ N (0, I) with t0 = T ;reverse grid {ti}Ni=0 ; schedules st, σ t; corrector weights {γi}Ni=2 ; noise prediction model ϵθ (xt, t ).
+
+Ensure: Generated sample xtN . 
+
+> 1:
+
+ϵ0 ← ϵθ (xt0 , t 0), yt0 ← xt0 /s t0 
+
+> 2:
+
+ρ0 ← σt0 /s t0 , ρ1 ← σt1 /s t1 , h0 ← ρ1 − ρ0 
+
+> 3:
+
+yt1 ← yt0 + h0ϵ0 
+
+> 4:
+
+for i = 1 to N − 1 do  
+
+> 5:
+
+ϵi ← ϵθ (xti , t i), yti ← xti /s ti 
+
+> 6:
+
+ρi ← σti /s ti , ρi+1 ← σti+1 /s ti+1  
+
+> 7:
+
+hi ← ρi+1 − ρi, ri ← hi/h i−1 
+
+> 8:
+
+if i = 1 then  
+
+> 9:
+
+ri ← hi/h i−1 
+
+> 10:
+
+yt2 ← yt1 + hi
+
+  1 + ri
+
+> 2
+
+ ϵi − ri 
+
+> 2
+
+ϵi−1
+
+ 
+
+> 11:
+
+else  
+
+> 12:
+
+ypred  
+
+> ti+1
+
+← ABPredictor( p, i ) 
+
+> 13:
+
+ϵext  
+
+> i
+
+← (1 + ri−1)ϵi−1 − ri−1ϵi−2 
+
+> 14:
+
+yti+1 ← ypred  
+
+> ti+1
+
++ γihi(ϵi − ϵext  
+
+> i
+
+) 
+
+> 15:
+
+end if  
+
+> 16:
+
+xti+1 ← sti+1 yti+1  
+
+> 17:
+
+end for  
+
+> 18:
+
+return xtN
+
+AB predictors used in Algorithm 1. Order p = 2 :
+
+ABPredictor(2 , i )= yti + hi
+
+h 
+
+1 + ri
+
+2
+
+
+
+ϵi − ri
+
+2 ϵi−1
+
+i
+
+.
+
+Order p = 3 :
+
+ABPredictor(3 , i )= yti + hi (β0ϵi + β1ϵi−1 + β2ϵi−2) ,
+
+where 
+
+β0 = 1 + ri(2 ri−1 + 1) 2( ri−1 + 1) + ri−1r2
+
+> i
+
+3( ri−1 + 1) ,β1 = − ri
+
+6 (2 ri−1ri + 3 ri−1 + 3) ,β2 = r2
+
+> i−1
+
+ri(2 ri + 3) 6( ri−1 + 1) .
+
+Then the CAB-2 update from yti to yti+1 is given by the AB2 predictor 
+
+y pred  
+
+> ti+1
+
+= yti + hi
+
+h 
+
+1 + ri
+
+2
+
+
+
+ϵi − ri
+
+2 ϵi−1
+
+i
+
+, (6) followed by the correction 
+
+yti+1 = y pred  
+
+> ti+1
+
++ γihi
+
+ ϵi − ϵ ext 
+
+> i
+
+ , (7) where 
+
+ϵ ext  
+
+> i
+
+= (1 + ri−1)ϵi−1 − ri−1ϵi−2. (8) is the linear Lagrange extrapolation of the velocity at ρti from the two previous steps ρti−1 and ρti−2 ,and γi ≥ 0 is the corrector weight. The CAB correction is an extrapolation-defect term, which measures how far the current learned velocity deviates from its linear extrapolation using previous velocities, and feeds this error back into the update with weight γi. Thus, the correction vanishes when the learned field varies linearly across steps, and becomes active when the learned field has high non-linear variation, which is exactly when Adams–Bashforth becomes error-prone (refer Appendix. A.6). In particular, the correction is designed to refine the Adams–Bashforth prediction while keeping the solver explicit, lightweight, and single-evaluation per step. The complete CAB procedures with two-step AB2 and three-step AB3 predictors, denoted CAB-2 and CAB-3 respectively, are given in Algorithm 1. We next show that the proposed CAB schemes retain the formal order of accuracy of the underlying Adams–Bashforth methods [36, 37] despite the added correction. 
+
+Theorem 3.2 (Accuracy of CAB-2 and CAB-3) . Consider the rectified ODE (4) , and let the numerical approximations {yti }Ni=0 be generated by Algorithm 1 on the induced grid ρt0 > ρ t1 > · · · > ρ tN .
+
+Assume that the rectified velocity field ϵθ in (4) is Lipschitz in y uniformly in ρ, the exact solution 
+
+ˆy(ρ) is sufficiently smooth, the variable-step ratios are uniformly bounded away from 0 and ∞, the corrector weights are uniformly bounded, and the starting values are accurate to the target global order. Then the corrected variable-step CAB schemes satisfy 
+
+max  
+
+> 0≤i≤N
+
+∥yti − ˆy(ρti )∥ ≤ 
+
+(C2 h2max , for CAB-2 ,C3 h3max , for CAB-3 if γi = O(hi), (9) 
+
+where hmax := max i |ρti+1 − ρti | and the constants C2 and C3 are independent of the step sizes 
+
+{hi}. If used with a constant corrector weight γi = O(1) , CAB-3 is second-order globally. Moreover, the local truncation errors are O(h3 
+
+> i
+
+) for CAB-2 and O(h4 
+
+> i
+
+) for CAB-3 when γi = O(hi).
+
+5We defer the proof to Appendix A.4, where we present a unified analysis in which CAB-2 and CAB-3 arise as special cases. Thus, CAB retains the standard convergence behavior of explicit multistep integration while improving low-NFE generation quality in practice, as shown in Section 4. 
+
+Comparison with existing fast solvers. CAB differs from prior training-free solvers in both its coordinate system and correction mechanism. DPM-Solver [ 10 ] and DPM-Solver++ [ 13 ] derive high-order updates by exploiting semi-linear diffusion ODEs under log-SNR parameterizations, whereas CAB rewrites both flow and diffusion dynamics in a common noise-to-signal coordinate. UniPC [ 15 ] also uses a zero-extra-NFE predictor–corrector view, but its correction is diffusion-specific. In contrast, CAB is a variable-step Adams–Bashforth method whose correction estimates the AB extrapolation defect using already available velocity evaluations. STORK [ 17 ] improves stability using stabilized Taylor–Runge–Kutta updates with Taylor-approximated virtual stages, while CAB uses a standard explicit multistep update with a lightweight extrapolation-defect correction. 
+
+Implementation details. Since CAB is a multistep method, the initial updates are handled sepa-rately as in Algorithm. 1, where we use an Euler step for i = 0 and an AB2 step for i = 1 . Though Algorithm 1 is written in terms of a noise-prediction field, when the pretrained network uses data prediction, as in DPM-Solver++ [ 13 ], or direct velocity prediction, as in rectified flow [ 23 ], we use the equivalent noise-field expressions in (5) . Because sampling proceeds from t = T to t = 0 , the induced noise-to-signal coordinate ρt = σt/s t can produce a numerically negligible terminal step. We therefore merge the last two ρ-steps in our implementation. This affects only the grid construction; all reported NFEs are counted by the number of network evaluations, not by the number of grid intervals. Finally, Theorem 3.2 shows that CAB-3 preserves third-order global accuracy when the corrector weight is γi = O(hi). In practice, however, a constant weight γi = γ gives better low-NFE sample quality. We therefore select a single model-specific γ ∈ (0 , 1.5) and keep it fixed across all sampling steps and generated samples for both CAB-2 and CAB-3.   
+
+> (a) VP schedule on CIFAR-10. (b) VE schedule on CIFAR-10. (c) VP schedule on ImageNet.
+
+Figure 2: FID versus NFE for CIFAR-10 with VP/VE schedules and ImageNet with the VP schedule. CAB-2 and CAB-3 consistently improve over the corresponding AB baselines in the low-NFE regime. They remain competitive with, and often outperform, strong training-free fast samplers. 
+
+## 4 Experiments 
+
+In this section, we compare CAB with fast training-free flow and diffusion samplers such as DPM-Solver++, UniPC, and STORK, across multiple generation settings. We also provide ablations on the roles of rectification and correction, the effect of the corrector weight γ on distributional and perceptual quality, runtime, and memory cost. Additional results, such as empirical verification of Theorem 3.2, additional comparisons, and limitations, are deferred to the Appendix. 
+
+Unconditional image generation on CIFAR-10 ( 32 × 32 ) and ImageNet ( 64 × 64 ) We evaluate CAB on three pixel-space EDM models from [ 22 ]: CIFAR-10 with VP and VE schedules, and ImageNet with VP schedule. For each sampler, we generate 50 K images and report Fréchet Inception Distance (FID) as a function of NFE in Figure 2. In the low-NFE regime, CAB-2 and CAB-3 consistently improve over their uncorrected Adams-Bashforth counterparts with γ = 0 .9, demon-strating that the proposed correction improves finite-step sampling accuracy. CAB remains effective across both VP and VE parameterizations and often outperforms strong training-free baselines such as UniPC and STORK at small NFE budgets. As the number of NFEs increases, CAB remains competitive while retaining a simple one-network-evaluation-per-step update. 6(a) DDIM (b) DPM++ (c) STORK (d) CAB-2 
+
+DiT at 8 NFEs. CAB-2 retains the cauliflower structure with sharper boundaries and no texture artifacts. Other samplers show oversmoothing, high-frequency artifacts, or distorted local texture.    
+
+> (e) DDIM (f) DPM++ (g) STORK (h) CAB-2
+
+DiT at 10 NFEs. CAB-2 preserves sharper facial detail and more coherent structure, DDIM and STORK are noticeably blurred, while DPM-Solver++ introduces stronger texture artifacts. Figure 3: Comparison of training-free samplers on 256 × 256 class-conditional ImageNet generation. Table 1: FID comparison on DiT/ImageNet 256 × 256 , where lower is better. Sampler-O3 denotes the corresponding third-order variant using three past velocity evaluations, analogous to CAB-3.                                                                                  
+
+> NFE Euler DPM++-O3 DPM++ STORK-O3 STORK AB2 AB3 CAB-2 CAB-3
+> 4120 .83 106 .64 75 .26 127 .99 116 .97 116 .99 116 .77 88 .04 87 .82 673 .20 96 .38 26 .64 100 .23 51 .52 51 .52 46 .44 15 .13 14 .81
+> 839 .71 144 .08 24 .90 78 .00 20 .70 20 .70 16 .75 9.21 9.72 10 24 .22 141 .58 22 .76 57 .62 12 .39 12 .39 10 .35 7.99 8.79 20 9.94 40 .38 12 .19 17 .98 7.44 7.44 7.21 6.86 7.08 30 8.21 15 .06 9.34 11 .49 7.09 7.09 7.05 6.86 6.93 40 7.63 9.59 8.42 9.44 7.00 7.01 6.98 6.91 6.97 50 7.40 8.02 7.99 8.53 6.97 6.98 6.97 6.95 7.01
+
+Conditional ImageNet 256 × 256 generation with DiT. We next evaluate CAB on DiT for class-conditional ImageNet 256 × 256 generation. Table 1 reports FID using 10 K generated samples across NFE budgets with classifier guidance scale 1.25 . For UniPC, DPM-Solver++, and STORK, we report the best-performing settings together with higher-order variants; in this setting, aggressive multi-evaluation corrections can overcorrect and degrade FID (also shown visually in Figure. 10 in Appendix). CAB uses a more controlled correction and achieves the strongest low-NFE performance: CAB-3 is best at 6 NFEs, while setting γ = 0 .9 in CAB-2, it obtains the best FID from 8 to 50 NFEs. Figure 1 and Figure 3 provide qualitative comparisons using classifier guidance scale 4. CAB-2 with 
+
+γ = 0 .5 produces sharper and more coherent samples, and baselines often exhibit oversmoothing or high-frequency texture artifacts, consistent with the quantitative trends in Figure 2 and Table 1. 
+
+High-Resolution ( 1024 × 1024 ) Text-to-Image Generation (QWEN-Image) We evaluate CAB for high-resolution text-to-image synthesis using the recent QWEN-Image model [ 18 ]. Table 2 reports ImageReward [ 41 ], a learned human-preference score, averaged over 200 prompts. CAB-3 achieves the best ImageReward score at N = 4 , 6, 8, and 10 , while CAB-2 is best at N = 20 . Both CAB variants with γ = 0 .2 substantially improve over the uncorrected AB2 baseline, highlighting the contribution of the correction term. As NFE increases, the gap narrows, and strong baselines such as STORK and DPM-Solver++ marginally outperform CAB. The qualitative results in Figures 1 7(a) Euler (b) DPM++ (c) STORK (d) CAB-2 
+
+Prompt : “Stuffed animals looking a pictures of other animals in a book.” At 8 NFEs, CAB-2 preserves the context ’ animals in book’, while other outputs contain blur, noise, or semantic loss. 
+
+(e) Euler (f) DPM++ (g) STORK (h) CAB-2 
+
+Prompt : “Two kids in pink and purple jackets standing by a fence.” At 8 NFEs, CAB-2 generates sharper details and preserves ’fence’, while competing samplers show blur, noise, or missing structure. Figure 4: Comparison of training-free samplers on QWEN-Image 1024 × 1024 flow generation [ 18 ]. Table 2: ImageReward Comparison on Qwen-Image in the low-NFE regime. CAB-3 (with γ = 0 .2)is strongest at 4−10 NFEs, while CAB-2 remains highly competitive and achieves the best score at 
+
+N = 20 ; at larger NFEs, the gap to the strongest baseline becomes small.                                                                         
+
+> NFE Euler Heun STORK DPM-Solver++ AB2 AB3 CAB-2 CAB-3
+> 4−0.7949 −1.1742 −0.5147 −1.3069 −0.6547 −0.6414 −0.3544 −0.3474
+> 6−0.1279 −0.2009 0.1306 0.0455 0.0637 0.0975 0.3393 0.3798
+> 80.3439 0.1499 0.5512 0.5866 0.4996 0.5183 0.6561 0.6760
+> 10 0.6499 0.4081 0.7734 0.8069 0.7482 0.7662 0.8689 0.8856
+> 20 1.1545 1.0057 1.1756 1.1912 1.1686 1.1768 1.2026 1.1921 30 1.2644 1.1344 1.2855 1.2729 1.2809 1.2843 1.2655 1.2584 40 1.2806 1.2543 1.2654 1.2669 1.2838 1.2852 1.2707 1.2746 50 1.2824 1.2738 1.2934 1.2840 1.2818 1.2844 1.2866 1.2920
+
+and 4 are consistent with the ImageReward trends, where, CAB-2 produces sharper samples with fewer noise artifacts, less oversmoothing, and better preservation of prompt-relevant objects such as the bus, racket, book, and fence at 6–8 NFEs. In contrast, competing samplers often exhibit grainy textures, blurred structure, or partial semantic loss. 
+
+Text-to-video generation with HunyuanVideo. We evaluate CAB on HunyuanVideo, a text-to-video generator trained with flow matching [ 42 ]. Table 6 reports low-NFE results averaged over 200 
+
+EvalCrafter prompts [ 43 ], where 20 -frame videos at 512 × 320 resolution are generated. We evaluate visual quality, temporal consistency, and text–video alignment, where alignment combines CLIP similarity [ 44 ] with BLIP-BLEU [ 45 ]. CAB-2 ( γ = 0 .9) achieves the best final score for most NFE budgets, despite variation in individual metrics. It is particularly strong in text–video alignment at 
+
+4 and 6 NFEs, while matching strong baselines in visual quality and temporal consistency. These results suggest that CAB improves low-NFE sampling for video generation, beyond image settings. 
+
+Ablation studies Figure 6 studies the effect of the CAB correction weight γ on DiT/ImageNet model. Nonzero correction substantially improves low-NFE performance over the uncorrected case γ = 0 , especially in the aggressive 4-10 NFE regime. This supports the interpretation of the correction as an extrapolation-defect adjustment. The best value of γ is however metric-dependent. 8Table 3: HunyuanVideo evaluation. CAB-2 gives the best overall final score across most step budgets.                                                                                                     
+
+> Metric Method NFE Metric Method NFE 46810 20 46810 20 Visual
+> DPM++ 45.07 44.88 45.78 47.35 51.74
+> Align.
+> DPM++ 30.87 36.88 40.13 41.04 42.50 STORK 45.18 47.44 49.35 50.47 53.09 STORK 35.30 37.61 40.00 40.53 42.06 CAB-2 46.08 47.70 49.03 50.54 52.71 CAB-2 37.92 39.80 40.97 42.12 43.17
+> CAB-3 46.03 47.05 47.88 49.33 51.53 CAB-3 37.72 39.67 41.41 42.34 42.73
+> Temp.
+> DPM++ 62.22 62.88 63.04 63.13 63.13 Final
+> DPM++ 138 146 149 152 157 STORK 63.71 63.47 63.22 63.30 63.03 STORK 144 149 152 154 158 CAB-2 62.84 62.72 62.78 63.04 62.86 CAB-2 147 150 153 156 159
+> CAB-3 62.73 62.42 62.45 62.73 62.72 CAB-3 146 149 151 154 157
+
+(a) DiT on ImageNet 256 × 256 . (b) FID–NIQE trade-off. 
+
+Figure 6: Ablation of the CAB correction weight γ on DiT/ImageNet 256 × 256 . Stronger correction improves low-NFE FID, while moderate correction yields better NIQE. Table 4: Runtime (in sec) and maximum GPU memory allo-cated (in GB) across samplers for QWEN-Image.               
+
+> Sampler Time GPU Mem.
+> STORK 9.9620 57 .949
+> DPM++ 9.9679 57 .940
+> AB2 9.9539 57 .941
+> AB3 9.9710 57 .942
+> CAB-2 9.9556 57 .942
+> CAB-3 9.9731 57 .942
+
+Table 5: Transition-wise variation of the learned ODE field before and after noise-to-signal rectifica-tion. Entries report normalized change per grid interval, with consecutive field change in parentheses.                                                                 
+
+> NFE Grid 2→33→44→55→6
+> 6t-space 541 .03 (90 .17) 470 .22 (78 .37) 482 .09 (80 .35) 646 .12 (107 .69)
+> ρ-space 12 .79 (38 .37 )39 .61 (39 .61 )103 .56 (51 .78 )280 .98 (84 .29 )
+> NFE Grid 2→33→44→55→66→77→8
+> 8t-space 981 .57 (122 .70) 929 .34 (116 .17) 687 .91 (85 .99) 588 .78 (73 .60) 587 .45 (73 .43) 838 .06 (104 .76)
+> ρ-space 8.83 (35 .33 )32 .98 (43 .98 )62 .86 (41 .90 )119 .28 (47 .71 )212 .67 (56 .71 )486 .83 (92 .73 )
+
+Stronger correction, e.g., γ = 1 .0, can improve FID suggesting better agreement with dataset-level distributional statistics under this metric. In our NIQE evaluations, moderate correction γ = 0 .5 is frequently preferred, indicating a trade-off between distributional metrics and perceptual metrics. Table 5 quantifies the effect of noise-to-signal rectification on field variation along QWEN-Image sampling trajectories, averaged over 10 prompts. In the original coordinates, ODE uses the learned velocity field, whereas after rectification the right-hand side becomes the learned noise field in Lemma. A.1. The rectified ρ-space dynamics exhibit substantially smaller, more structured transition-wise changes at 6 and 10 NFEs, indicating a smoother field for multistep updates and supporting the role of rectification on improved low-NFE behavior of CAB (refer Appendix. A.6 for more details). We compare runtime and memory on an A100 GPU for QWEN-Image 1024 × 1024 generation at 10 NFEs, averaged over 10 prompts with batch size 1 and torch.bfloat16 . CAB has the same cost range as other samplers, with negligible memory overhead from storing one additional past evaluation. 
+
+## 5 Conclusion 
+
+We introduced CAB, a simple training-free framework for accelerating flow and diffusion sampling by rectifying the reverse-time ODE associated with affine-Gaussian paths. In the resulting noise-to-signal coordinates, CAB applies corrected Adams–Bashforth updates with one network evaluation per step while preserving the second- or third-order accuracy of the underlying predictors. Across our evaluated image and video settings, CAB provides a favorable low-NFE trade-off, often improving perceptual quality or distributional metrics over strong training-free baselines. 9Acknowledgments and Disclosure of Funding 
+
+This work was supported by the Anusandhan National Research Foundation (ANRF), Gov-ernment of India, under the Prime Minister Early Career Research Grant (PM-ECRG), Grant No. ANRF/ECRG/2024/001835/ENS .
+
+Broader impact. CAB reduces the inference cost of flow and diffusion generation by improving sample quality at low NFE budgets. This can lower latency, energy use, and hardware requirements, making generative models more accessible in resource-constrained settings. However, faster sampling can also increase the scale at which synthetic or misleading visual content is generated. Deployment should therefore be accompanied by watermarking or misuse-detection mechanisms. 
+
+## References 
+
+[1] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Proc. Advances in neural information processing systems , 33:6840–6851, 2020. [2] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. Proc. International Conference on Learning Representations ,2023. [3] Jonathan Ho, Tim Salimans, Alexey Gritsenko, William Chan, Mohammad Norouzi, and David J. Fleet. Video diffusion models. Proc. Advances in neural information processing systems , 35:8633–8646, 2022. [4] Yi Huang, Jiancheng Huang, Yifan Liu, Mingfu Yan, Jiaxi Lv, Jianzhuang Liu, Wei Xiong, He Zhang, Shifeng Chen, and Liangliang Cao. Diffusion model-based image editing: A survey. 
+
+IEEE Transactions on Pattern Analysis and Machine Intelligence , 47(6):4409–4437, 2025. [5] Chitwan Saharia, William Chan, Huiwen Chang, Chris A. Lee, Jonathan Ho, Tim Salimans, David J. Fleet, and Mohammad Norouzi. Palette: Image-to-image diffusion models. NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications , 2021. [6] Andreas Lugmayr, Martin Danelljan, Andrés Romero, Fisher Yu, Radu Timofte, and Luc Van Gool. Repaint: Inpainting using denoising diffusion probabilistic models. Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2022. [7] Xin Li, Yulin Ren, Xin Jin, Cuiling Lan, Xingrui Wang, Wenjun Zeng, Xinchao Wang, and Zhibo Chen. Diffusion models for image restoration and enhancement: A comprehensive survey. 
+
+International Journal of Computer Vision , 133(11):8078–8108, 2025. [8] Yimu Wang, Xuye Liu, Wei Pang, Li Ma, Shuai Yuan, Paul Debevec, and Ning Yu. Survey of video diffusion models: Foundations, implementations, and applications. Transactions on Machine Learning Research , 2025. ISSN 2835-8856. [9] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. Proc. International Conference on Learning Representations , 2021. [10] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Proc. Advances in neural information processing systems , 35:5775–5787, 2022. [11] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. Proc. International Conference on Learning Representations , 2021. [12] Wenliang Zhao, Lujia Bai, Yongming Rao, Jie Zhou, and Jiwen Lu. Unipc: A unified predictor-corrector framework for fast sampling of diffusion models. Proc. Advances in Neural Informa-tion Processing Systems , 36:49842–49869, 2023. [13] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver++: Fast solver for guided sampling of diffusion probabilistic models. Machine Intelligence Re-search , pages 1–22, 2025. 10 [14] Luping Liu, Yi Ren, Zhijie Lin, and Zhou Zhao. Pseudo numerical methods for diffusion models on manifolds. Proc. International Conference on Learning Representations , 2022. [15] Qinsheng Zhang and Yongxin Chen. Fast sampling of diffusion models with exponential integrator. Proc. International Conference on Learning Representations , 2023. [16] Kaiwen Zheng, Cheng Lu, Jianfei Chen, and Jun Zhu. Dpm-solver-v3: Improved diffusion ode solver with empirical model statistics. Proc. Advances in Neural Information Processing Systems , 36:55502–55542, 2023. [17] Zheng Tan, Weizhen Wang, Andrea L. Bertozzi, and Ernest K. Ryu. STORK: Faster diffusion and flow matching sampling by resolving both stiffness and structure-dependence. Proc. International Conference on Learning Representations , 2026. [18] Chenfei Wu, Jiahao Li, Jingren Zhou, Junyang Lin, Kaiyuan Gao, Kun Yan, Sheng-ming Yin, Shuai Bai, Xiao Xu, Yilei Chen, et al. Qwen-image technical report. arXiv preprint arXiv:2508.02324 , 2025. [19] William Peebles and Saining Xie. Scalable diffusion models with transformers. Proc. IEEE/CVF International Conference on Computer Vision , pages 4195–4205, 2023. [20] Ricky TQ Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ordinary differential equations. Proc. Advances in Neural Information Processing Systems , 31, 2018. [21] Will Grathwohl, Ricky T. Q. Chen, Jesse Bettencourt, and David Duvenaud. Ffjord: Free-form continuous dynamics for scalable reversible generative models. Proc. International Conference on Learning Representations , 2019. [22] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based generative models. Proc. Advances in neural information processing systems ,35:26565–26577, 2022. [23] Xingchao Liu, Chengyue Gong, and qiang liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. Proc. International Conference on Learning Representations ,2023. [24] Diederik Kingma, Tim Salimans, Ben Poole, and Jonathan Ho. Variational diffusion models. 
+
+Proc. Advances in neural information processing systems , 34:21696–21707, 2021. [25] Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. 
+
+Proc. International Conference on Learning Representations , 2022. [26] Nikita Starodubcev, Ilya Drobyshevskiy, Denis Kuznedelev, Artem Babenko, and Dmitry Baranchuk. Scale-wise distillation of diffusion models. Proc. International Conference on Learning Representations , 2026. [27] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. Proc. International Conference on Machine Learning , pages 32211–32252, 2023. [28] Cheng Lu and Yang Song. Simplifying, stabilizing and scaling continuous-time consistency models. Proc. International Conference on Learning Representations , 2025. [29] Xingchao Liu, Xiwen Zhang, Jianzhu Ma, Jian Peng, and Qiang liu. Instaflow: One step is enough for high-quality diffusion-based text-to-image generation. Proc. International Confer-ence on Learning Representations , 2024. [30] Tianwei Yin, Michaël Gharbi, Richard Zhang, Eli Shechtman, Frédo Durand, William T. Freeman, and Taesung Park. One-step diffusion with distribution matching distillation. Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 6613–6623, 2024. [31] Junsong Chen, Shuchen Xue, Yuyang Zhao, Jincheng Yu, Sayak Paul, Junyu Chen, Han Cai, Song Han, and Enze Xie. Sana-sprint: One-step diffusion with continuous-time consistency distillation. Proc. IEEE/CVF International Conference on Computer Vision , pages 16185–16195, 2025. 11 [32] Shuchen Xue, Mingyang Yi, Weijian Luo, Shifeng Zhang, Jiacheng Sun, Zhenguo Li, and Zhi-Ming Ma. Sa-solver: Stochastic adams solver for fast sampling of diffusion models. Proc. Advances in Neural Information Processing Systems , 36:77632–77674, 2023. [33] Yilun Xu, Mingyang Deng, Xiang Cheng, Yonglong Tian, Ziming Liu, and Tommi Jaakkola. Restart sampling for improving generative processes. Proc. Advances in Neural Information Processing Systems , 36:76806–76838, 2023. [34] Neta Shaul, Juan Perez, Ricky T. Q. Chen, Ali Thabet, Albert Pumarola, and Yaron Lipman. Bespoke solvers for generative flow models. Proc. International Conference on Learning Representations , 2024. [35] Eric Frankel, Sitan Chen, Jerry Li, Pang Wei Koh, Lillian J. Ratliff, and Sewoong Oh. S4s: Solving for a fast diffusion model solver. Proc. International Conference on Machine Learning ,2025. [36] Ernst Hairer, Syvert P. Nørsett, and Gerhard Wanner. Solving Ordinary Differential Equations I: Nonstiff Problems . Springer, 2 edition, 1993. [37] J. C. Butcher. Numerical methods for ordinary differential equations in the 20th century. Journal of Computational and Applied Mathematics , 125(1–2):1–29, 2000. [38] Uri M. Ascher and Linda R. Petzold. Computer Methods for Ordinary Differential Equations and Differential-Algebraic Equations . SIAM, 1998. [39] C. Böhm and H. J. Stetter. The defect correction approach. Computing , 32(1):3–22, 1984. [40] Benjamin W. Ong and Raymond J. Spiteri. Deferred correction methods for ordinary differential equations. International Journal of Computer Mathematics , 97(1–2):378–398, 2020. [41] Jiazheng Xu, Xiao Liu, Yuchen Wu, Yuxuan Tong, Qinkai Li, Ming Ding, Jie Tang, and Yuxiao Dong. Imagereward: Learning and evaluating human preferences for text-to-image generation. 
+
+Proc. Advances in Neural Information Processing Systems , 36:15903–15935, 2023. [42] Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. [43] Yaofang Liu, Xiaodong Cun, Xuebo Liu, Xintao Wang, Yong Zhang, Haoxin Chen, Yang Liu, Tieyong Zeng, Raymond Chan, and Ying Shan. Evalcrafter: Benchmarking and evaluating large video generation models. Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 22139–22149, 2024. [44] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervision. Proc. International Conference on Machine Learning , pages 8748–8763, 2021. [45] Junnan Li, Dongxu Li, Caiming Xiong, and Steven Hoi. Blip: Bootstrapping language-image pre-training for unified vision-language understanding and generation. Proc. International Conference on Machine Learning , pages 12888–12900, 2022. [46] Jan Verschelde. Variable step methods, 2022. Lecture notes for MCS 471, University of Illinois Chicago. 
+
+## A Theoretical results and additional experiments 
+
+A.1 Proof of Lemma A.1 
+
+Starting from the reverse-time ODE in (3), 
+
+dxt
+
+dt = ˙st
+
+st
+
+xt +
+
+
+
+˙σt − ˙st
+
+st
+
+σt
+
+
+
+ϵθ (xt, t ). (10) 12 Consider the rescaled state. 
+
+yt := xt
+
+st
+
+, so that xt = styt.
+
+Differentiating xt = styt with respect to t gives 
+
+dxt
+
+dt = ˙ st yt + st
+
+dyt
+
+dt .
+
+Substituting this into (10), we obtain 
+
+˙st yt + st
+
+dyt
+
+dt = ˙st
+
+st
+
+(styt) + 
+
+
+
+˙σt − ˙st
+
+st
+
+σt
+
+
+
+ϵθ (styt, t ).
+
+Canceling out common terms and rearranging gives, 
+
+dyt
+
+dt = 1
+
+st
+
+
+
+˙σt − ˙st
+
+st
+
+σt
+
+
+
+ϵθ (styt, t ). (11) The noise-to-signal ratio is defined as 
+
+ρt := σt
+
+st
+
+.
+
+Differentiating ρt with respect to t,
+
+˙ρt = ˙σtst − σt ˙st
+
+s2
+
+> t
+
+= 1
+
+st
+
+
+
+˙σt − ˙st
+
+st
+
+σt
+
+
+
+. (12) Using this identity in (11), we get 
+
+dyt
+
+dt = ˙ ρt ϵθ (styt, t ). (13) By assumption, ρ : [0 , T ] → R>0 is strictly increasing, so the inverse map t = t(ρ) exists. The 
+
+ρ-reparameterized trajectory is defined as 
+
+ˆyρ := yt(ρ).
+
+Applying the chain rule, 
+
+dˆyρ
+
+dρ = dyt
+
+dt t=t(ρ)
+
+· dt dρ .
+
+Since dt dρ = 1˙ρt(ρ) , we get 
+
+dˆyρ
+
+dρ = 1˙ρt(ρ)
+
+dyt
+
+dt t=t(ρ)
+
+.
+
+Using (13) evaluated at t = t(ρ),
+
+dyt
+
+dt t=t(ρ)
+
+= ˙ ρt(ρ) ϵθ
+
+ st(ρ)yt(ρ), t (ρ).
+
+Substituting the above, 
+
+dˆyρ
+
+dρ = 1˙ρt(ρ)
+
+˙ρt(ρ)ϵθ
+
+ st(ρ)yt(ρ), t (ρ) = ϵθ
+
+ st(ρ)yt(ρ), t (ρ) = ϵθ
+
+ st(ρ) ˆyρ, t (ρ),
+
+which proves the lemma. 
+
+A.2 Relation between noise/data/velocity parameterizations (5) in rectified coordinates 
+
+From the standard data-prediction parameterization, we have 
+
+ϵθ (xt, t ) = xt − st ˆxθ (xt, t )
+
+σt
+
+.
+
+Now substituting xt = st(ρ) ˆyρ and using ρ = σt(ρ) 
+
+> st(ρ)
+
+, gives 
+
+ϵθ (st(ρ) ˆyρ, t (ρ)) = st(ρ) ˆyρ − st(ρ) ˆxθ (st(ρ) ˆyρ, t (ρ)) 
+
+σt(ρ)
+
+= ˆyρ − ˆxθ (st(ρ) ˆyρ, t (ρ)) 
+
+ρ .
+
+13 Similarly, starting from 
+
+vθ (xt, t ) = ˙ st ˆxθ (xt, t ) + ˙ σt ϵθ (xt, t ),
+
+we substitute xt = st(ρ) ˆyρ and ˆxθ (st(ρ) ˆyρ, t (ρ)) = ˆ yρ − ρ ϵ θ (st(ρ) ˆyρ, t (ρ)) to obtain 
+
+vθ (st(ρ) ˆyρ, t (ρ)) = ˙ st(ρ) ˆxθ (st(ρ) ˆyρ, t (ρ)) + ˙ σt(ρ) ϵθ (st(ρ) ˆyρ, t (ρ)) = ˙ st(ρ)
+
+ ˆyρ − ρ ϵ θ (st(ρ) ˆyρ, t (ρ))  + ˙ σt(ρ) ϵθ (st(ρ) ˆyρ, t (ρ)) = ˙ st(ρ) ˆyρ + ( ˙ σt(ρ) − ˙st(ρ)ρ)ϵθ (st(ρ) ˆyρ, t (ρ)) = ˙ st(ρ) ˆyρ + st(ρ) ˙ρt(ρ) ϵθ (st(ρ) ˆyρ, t (ρ)) ,
+
+The last equality is obtained from the form of ˙ρt(ρ) in (12). Rearranging terms, we get, 
+
+ϵθ (st(ρ) ˆyρ, t (ρ)) = vθ (st(ρ) ˆyρ, t (ρ)) − ˙st(ρ) ˆyρ
+
+st(ρ) ˙ρt(ρ)
+
+.
+
+A.3 Derivation of CAB-2 and CAB-3 updates 
+
+The CAB-2 prediction step corresponds to the standard variable-step AB2 formula, whose derivation can be found, for example, in [ 46 ]. Likewise, the CAB-3 prediction step follows the standard variable-step AB3 construction; see [ 36 ]. For completeness, we present below the derivations of the CAB-2 predictor, the CAB-3 predictor, and the proposed correction term. 
+
+Prediction step for CAB-2. To derive the CAB-2 predictor, we approximate the velocity in (4) over the interval [ρti , ρ ti+1 ] by the degree-1 Lagrange interpolant through the two most recent points 
+
+(ρti , ϵ i) and (ρti−1 , ϵ i−1), namely 
+
+L1(ρ) = ρ − ρti−1
+
+ρti − ρti−1
+
+ϵi + ρ − ρti
+
+ρti−1 − ρti
+
+ϵi−1.
+
+Integrating the rectified ODE (4) with this approximation gives 
+
+yti+1 ≈ yti +
+
+Z ρti+1 
+
+> ρti
+
+L1(ρ) dρ. 
+
+Since 
+
+ρti − ρti−1 = hi−1, ρti+1 − ρti = hi, ri = hi
+
+hi−1
+
+,
+
+we obtain 
+
+Z ρti+1 
+
+> ρti
+
+L1(ρ) dρ =
+
+Z ρti+1 
+
+> ρti
+
+ρ − ρti−1
+
+hi−1
+
+dρ 
+
+!
+
+ϵi −
+
+Z ρti+1 
+
+> ρti
+
+ρ − ρti
+
+hi−1
+
+dρ 
+
+!
+
+ϵi−1
+
+=
+
+
+
+hi + h2
+
+> i
+
+2hi−1
+
+
+
+ϵi − h2
+
+> i
+
+2hi−1
+
+ϵi−1
+
+= hi
+
+h 
+
+1 + ri
+
+2
+
+
+
+ϵi − ri
+
+2 ϵi−1
+
+i
+
+.
+
+This is exactly the standard non-uniform Adams–Bashforth prediction as derived in [46]. 
+
+Prediction step for CAB-3. Similarly, CAB-3 is obtained by approximating the velocity in (4) over the interval [ρti , ρ ti+1 ] by the degree-2 Lagrange interpolant through the three most recent points 
+
+(ρti , ϵ i), (ρti−1 , ϵ i−1), and (ρti−2 , ϵ i−2), namely 
+
+L2(ρ) = ℓi(ρ)ϵi + ℓi−1(ρ)ϵi−1 + ℓi−2(ρ)ϵi−2,
+
+where 
+
+ℓi(ρ) = (ρ − ρti−1 )( ρ − ρti−2 )(ρti − ρti−1 )( ρti − ρti−2 ) ,ℓi−1(ρ) = (ρ − ρti )( ρ − ρti−2 )(ρti−1 − ρti )( ρti−1 − ρti−2 ) , ℓi−2(ρ) = (ρ − ρti )( ρ − ρti−1 )(ρti−2 − ρti )( ρti−2 − ρti−1 ) .
+
+14 Integrating the rectified ODE (4) with this approximation gives 
+
+yti+1 ≈ yti +
+
+Z ρti+1 
+
+> ρti
+
+L2(ρ) dρ. 
+
+Using 
+
+hi = ρti+1 − ρti , hi−1 = ρti − ρti−1 , hi−2 = ρti−1 − ρti−2 ,
+
+The integral can be written as 
+
+Z ρti+1 
+
+> ρti
+
+L2(ρ) dρ = hi (β0ϵi + β1ϵi−1 + β2ϵi−2) ,
+
+where 
+
+β0 = 
+
+> h2
+> i
+> 3
+
++ hi 
+
+> 2
+
+(2 hi−1 + hi−2) + hi−1(hi−1 + hi−2)
+
+hi−1(hi−1 + hi−2) ,β1 = − hi(2 hi + 3 hi−1 + 3 hi−2)6hi−1hi−2
+
+, β2 = hi(2 hi + 3 hi−1)6hi−2(hi−1 + hi−2) .
+
+Equivalently, in terms of the step ratios 
+
+ri := hi
+
+hi−1
+
+, ri−1 := hi−1
+
+hi−2
+
+,
+
+These coefficients become 
+
+β0 = 1 + ri(2 ri−1 + 1) 2( ri−1 + 1) + ri−1r2
+
+> i
+
+3( ri−1 + 1) ,β1 = − ri
+
+6 (2 ri−1ri + 3 ri−1 + 3) , β2 = r2
+
+> i−1
+
+ri(2 ri + 3) 6( ri−1 + 1) .
+
+This yields the explicit variable-step AB3 predictor. The derivation follows the standard variable-step Adams construction on non-uniform grids, obtained by integrating the quadratic Lagrange interpolant of past drift evaluations; we include the resulting closed-form coefficients here for completeness and refer to [36] for the general derivation. 
+
+Correction step. To derive the correction term, we approximate the velocity at the current point 
+
+ρti by the degree-1 Lagrange extrapolant built from the two previous evaluations (ρti−1 , ϵ i−1) and 
+
+(ρti−2 , ϵ i−2). This extrapolant is 
+
+Lext 1 (ρ) = ρ − ρti−2
+
+ρti−1 − ρti−2
+
+ϵi−1 + ρ − ρti−1
+
+ρti−2 − ρti−1
+
+ϵi−2.
+
+Evaluating at ρ = ρti gives 
+
+ϵext  
+
+> i
+
+= Lext 1 (ρti ) = ρti − ρti−2
+
+ρti−1 − ρti−2
+
+ϵi−1 − ρti − ρti−1
+
+ρti−1 − ρti−2
+
+ϵi−2.
+
+Using 
+
+ρti − ρti−1 = hi−1, ρti−1 − ρti−2 = hi−2, ρti − ρti−2 = hi−1 + hi−2,
+
+we obtain 
+
+ϵext  
+
+> i
+
+=
+
+
+
+1 + hi−1
+
+hi−2
+
+
+
+ϵi−1 − hi−1
+
+hi−2
+
+ϵi−2 = (1 + ri−1)ϵi−1 − ri−1ϵi−2, ri−1 = hi−1
+
+hi−2
+
+.
+
+The correction is then defined by the extrapolation error, 
+
+ϵi − ϵext  
+
+> i
+
+,
+
+scaled by the current step size hi.15 A.4 Proof of Theorem 3.2 
+
+We use a unified argument for CAB-2 and CAB-3. Let 
+
+zi := ˆ y(ρti ), ui := ˆ y′(ρti ), ei := yti − zi.
+
+The update in in Algorithm 1 of the form 
+
+yti+1 = yti + hi
+
+> 2
+
+X
+
+> m=0
+
+am,i ϵi−m, (14) where CAB-2 and CAB-3 have different coefficients am,i . The corresponding exact-solution error is 
+
+τi+1 := zi+1 − zi − hiqX
+
+> m=0
+
+am,i ui−m. (15) For CAB-2, the coefficients are 
+
+a0,i = 1 + ri
+
+2 + γi, a1,i = −
+
+ ri
+
+2 + (1 + ri−1)γi
+
+
+
+, a2,i = ri−1γi, (16) where 
+
+ri = hi
+
+hi−1
+
+, ri−1 = hi−1
+
+hi−2
+
+.
+
+For CAB-3, letting β0,i , β 1,i , β 2,i denote the variable-step AB3 coefficients in the companion predictor box of Algorithm 1, the corrected coefficients are 
+
+a0,i = β0,i + γi, a1,i = β1,i − (1 + ri−1)γi, a2,i = β2,i + ri−1γi. (17) 
+
+Step 1: local truncation error. Expand the exact increment about ρti using Taylor series: 
+
+zi+1 − zi = hiz′ 
+
+> i
+
++ h2
+
+> i
+
+2 z′′  
+
+> i
+
++ h3
+
+> i
+
+6 z′′′  
+
+> i
+
++ h4
+
+> i
+
+24 z′′′′  
+
+> i
+
++ O(h5 
+
+> i
+
+). (18) where p = 2 for CAB-2 and p = 3 for CAB-3. Next expand the past velocities ui−1 and ui−2 about 
+
+ρti . Since 
+
+ρti−1 − ρti = − hi
+
+ri
+
+, ρti−2 − ρti = − hi(1 + ri−1)
+
+riri−1
+
+,
+
+we obtain 
+
+ui−1 = ui − hi
+
+ri
+
+z′′  
+
+> i
+
++ h2
+
+> i
+
+2r2
+
+> i
+
+z′′′  
+
+> i
+
+− h3
+
+> i
+
+6r3
+
+> i
+
+z′′′′  
+
+> i
+
++ O(h4 
+
+> i
+
+), (19) 
+
+ui−2 = ui − hi(1 + ri−1)
+
+riri−1
+
+z′′  
+
+> i
+
++ h2 
+
+> i
+
+(1 + ri−1)2
+
+2r2 
+
+> i
+
+r2
+
+> i−1
+
+z′′′  
+
+> i
+
+− h3 
+
+> i
+
+(1 + ri−1)3
+
+6r3 
+
+> i
+
+r3
+
+> i−1
+
+z′′′′  
+
+> i
+
++ O(h4 
+
+> i
+
+). (20) Substituting (19)–(20) into (15) yields 
+
+τi+1 = hi
+
+h
+
+1 −
+
+> 2
+
+X
+
+> m=0
+
+am,i 
+
+i
+
+z′ 
+
+> i
+
++ h2
+
+> i
+
+ 12 + a1,i 
+
+ri
+
++ a2,i (1 + ri−1)
+
+riri−1
+
+
+
+z′′ 
+
+> i
+
++ h3
+
+> i
+
+ 16 − a1,i 
+
+2r2
+
+> i
+
+− a2,i (1 + ri−1)2
+
+2r2 
+
+> i
+
+r2
+
+> i−1
+
+
+
+z′′′  
+
+> i
+
++ h4
+
+> i
+
+ 124 + a1,i 
+
+6r3
+
+> i
+
++ a2,i (1 + ri−1)3
+
+6r3 
+
+> i
+
+r3
+
+> i−1
+
+
+
+z′′′′  
+
+> i
+
++ O(h5 
+
+> i
+
+)
+
+(21) 
+
+CAB-2. Using (16), we can verify that 
+
+a0,i + a1,i + a2,i = 1 ,
+
+and a1,i 
+
+ri
+
++ a2,i (1 + ri−1)
+
+riri−1
+
+= − 12 .
+
+16 Hence the O(hi) and O(h2 
+
+> i
+
+) terms in (21) cancel, leaving 
+
+τi+1 = O(h3 
+
+> i
+
+).
+
+Thus, CAB-2 has local truncation order 3.
+
+CAB-3. For the variable-step AB3 predictor coefficients β0,i , β 1,i , β 2,i , the third-order consistency conditions hold: 
+
+β0,i + β1,i + β2,i = 1 ,β1,i 
+
+ri
+
++ β2,i (1 + ri−1)
+
+riri−1
+
+= − 12 ,β1,i 
+
+2r2
+
+> i
+
++ β2,i (1 + ri−1)2
+
+2r2 
+
+> i
+
+r2
+
+> i−1
+
+= − 16 .
+
+The correction modifies the AB3 coefficients according to 
+
+a0,i = β0,i + γi, a1,i = β1,i − (1 + ri−1)γi, a2,i = β2,i + ri−1γi.O(hi) and O(h2 
+
+> i
+
+) terms still cancel since the additional terms satisfy 
+
+γi − (1 + ri−1)γi + ri−1γi = 0 ,
+
+−(1 + ri−1)γi
+
+ri
+
++ ri−1γi(1 + ri−1)
+
+riri−1
+
+= 0 
+
+Substituting a1,i , a 2,i into the coefficient of h3 
+
+> i
+
+z′′′  
+
+> i
+
+in (21), we obtain 
+
+16 − a1,i 
+
+2r2
+
+> i
+
+− a2,i (1 + ri−1)2
+
+2r2 
+
+> i
+
+r2
+
+> i−1
+
+= −γi
+
+1 + ri−1
+
+2r2 
+
+> i
+
+ri−1
+
+.
+
+Therefore, 
+
+τi+1 = γi h3 
+
+> i
+
+κi z′′′  
+
+> i
+
++ O(h4 
+
+> i
+
+), κi := − 1 + ri−1
+
+2r2 
+
+> i
+
+ri−1
+
+. (22) Since the step ratios are uniformly bounded away from 0 and ∞, κi is uniformly bounded. Con-sequently, if γi = O(1) , then τi+1 = O(h3 
+
+> i
+
+), whereas if γi = O(hi), then τi+1 = O(h4 
+
+> i
+
+). Hence CAB-3 has local truncation order 4 under the condition γi = O(hi).
+
+Step 2: global error. The exact solution satisfies 
+
+zi+1 = zi + hi
+
+> 2
+
+X
+
+> m=0
+
+am,i ui−m + τi+1 ,
+
+while the numerical scheme satisfies 
+
+yti+1 = yti + hi
+
+> 2
+
+X
+
+> m=0
+
+am,i ϵi−m.
+
+Subtracting gives 
+
+ei+1 = ei + hi
+
+> 2
+
+X
+
+> m=0
+
+am,i ∆i−m − τi+1 , (23) where 
+
+∆j := ϵθ (stj ytj , t j ) − ϵθ (stj zj , t j ).
+
+By the Lipschitz assumption, 
+
+∥∆j ∥ ≤ L∥ej ∥.
+
+Since the step ratios are uniformly bounded and the corrector weights are bounded, the coefficients 
+
+am,i are uniformly bounded. Thus there exists B > 0 such that 
+
+> 2
+
+X
+
+> m=0
+
+|am,i | ≤ B. 
+
+17 Taking norms in (23), we obtain 
+
+∥ei+1 ∥ ≤ ∥ ei∥ + BLh i max {∥ ei∥, ∥ei−1∥, ∥ei−2∥} + ∥τi+1 ∥.
+
+Define 
+
+Ei := max  
+
+> 0≤j≤i
+
+∥ej ∥.
+
+Then 
+
+Ei+1 ≤ (1 + BLh i)Ei + ∥τi+1 ∥.
+
+Iterating this recurrence and using 1 + x ≤ ex to form 
+
+> n−1
+
+Y
+
+> j=k+1
+
+(1 + BLh j ) ≤ exp  BL (ρt0 − ρtN ),
+
+yields a discrete Grönwall bound of the form 
+
+En ≤ CG E2 +
+
+> n−1
+
+X
+
+> k=2
+
+∥τk+1 ∥
+
+!
+
+. (24) 
+
+CAB-2. For CAB-2, the local truncation bound is 
+
+∥τk+1 ∥ ≤ Cτ h3
+
+> k
+
+.
+
+Substituting this into (24) gives 
+
+En ≤ CGE2 + CGCτn−1X
+
+> k=2
+
+h3
+
+> k
+
+.
+
+Since hk ≤ hmax , n−1X
+
+> k=2
+
+h3 
+
+> k
+
+≤ h2max 
+
+> n−1
+
+X
+
+> k=2
+
+hk ≤ h2max (ρtN − ρt0 ).
+
+By assumption, the starting iterates satisfy the target global-order bound, so we get 
+
+En ≤ Ch 2max ,
+
+for some constant C > 0 independent of step sizes {hi}.
+
+CAB-3. For CAB-3, under the condition γi = O(hi), the local truncation bound is 
+
+∥τk+1 ∥ ≤ Cτ h4
+
+> k
+
+.
+
+Similar to CAB-2, using hk ≤ hmax ,
+
+> n−1
+
+X
+
+> k=2
+
+h4 
+
+> k
+
+≤ h3max 
+
+> n−1
+
+X
+
+> k=2
+
+hk ≤ h3max (ρtN − ρt0 ).
+
+and since the starting iterates are assumed accurate to the target global order, we get 
+
+En ≤ Ch 3max ,
+
+for some constant C > 0 independent of step sizes {hi}.
+
+A.5 Empirical demonstration of Theorem 3.2 
+
+We next verify the theoretical convergence results in Theorem 3.2 on two representative nonlinear test problems. Specifically, we apply CAB-2 and CAB-3 to the initial-value problem 
+
+dy dρ = v(y, ρ ), y(ρ0) = y0, (25) 18 (a) Trajectory for velocity field v1. (b) Global max error versus step size.   
+
+> (c) Trajectory for velocity field v2.(d) Global max error versus step size.
+
+Figure 7: Empirical verification of the accuracy results in Theorem 3.2 on two representative nonlinear velocity fields. (a) and (c) show sample trajectories and normalized velocity fields, while (b) and (d) plot the global maximum error against the maximum step size hmax on non-uniform ρ-grids. In both examples, the observed slopes match the theoretical predictions; CAB-2 exhibits second-order global accuracy, whereas CAB-3 exhibits third-order global accuracy . using the two velocity fields shown in Figure. 7(a) and Figure. 7(c). The first field is 
+
+v1(y, ρ ) = 
+
+ −1.5 y1 + 0 .9 y2 + 0 .2 y1y2 + 0 .15 sin(3 ρ)
+
+−1.0 y2 − 0.7 y1 + 0 .1 y21 − 0.08 y22 + 0 .1 cos(2 ρ)
+
+
+
+, (26) and the second is 
+
+v2(y, ρ ) = 
+
+−(0 .3 + 0 .4( y21 + y22 )) y1 − (3 .0 + 0 .2 sin ρ) y2
+
+(3 .0 + 0 .2 sin ρ) y1 − (0 .3 + 0 .4( y21 + y22 )) y2
+
+
+
+. (27) As the reference solution, we use a high-accuracy adaptive DOP853 integrator with stringent error tolerances from scipy library. Figures 7(b) and 7(d) plot the maximum pointwise trajectory error over the time steps as a function of the maximum step size hmax . For CAB-2, we use γ = 0 .75 , while for CAB-3 we consider two choices: a constant parameter γ = 0 .25 and a step-dependent parameter 
+
+γ = 0 .75 hi. In both settings, the empirical convergence behavior is consistent with the theory: the global error scales as O(h2max ) for CAB-2 and for CAB-3 with constant γ, whereas it improves to 
+
+O(h3max ) for CAB-3 when γ = O(hi).19 (a) Trajectory comparison for Example 1. (b) Trajectory comparison for Example 2.  
+
+> (c) Trajectory error for Example 1. (d) Trajectory error for Example 2.
+
+Figure 8: Comparison of AB2/AB3 and the proposed CAB-2/CAB-3 on two representative nonlinear rectified ODEs with a small sampling budget ( N = 8 ). The top row shows the numerical trajectories overlaid on the corresponding velocity fields, and the bottom row shows the trajectory error ∥ˆyρ −
+
+ˆyref (ρ)∥2 as a function of ρ. These visualizations highlight the benefit of the proposed correction in improving low-step integration accuracy to match the exact output. 
+
+A.6 Effect of rectification and correction. 
+
+CAB’s gains come from both rectification and correction. Table 5 shows that the noise-to-signal coordinate yields a smoother learned field, supporting the role of rectification in making multistep extrapolation easier. The AB baselines in Tables 1–4 isolate the correction effect: CAB improves over the corresponding AB solver at the same NFE and under the same sampling setup, showing that the gains are not merely due to Adams–Bashforth history. The γ ablation further shows that correction strength controls the FID–NIQE trade-off, with moderate values giving robust perceptual behavior. Thus, rectification improves the integration geometry, while CAB’s extrapolation-defect correction provides an additional zero-extra-NFE improvement. Figure 8 compares AB2/AB3 and the proposed CAB-2/CAB-3 on two nonlinear rectified ODEs, both using ( N = 8 ). The top row visualizes the trajectories and the underlying velocity fields, while the bottom row plots the trajectory errors ∥ˆyρ − ˆyref (ρ)∥2 across the steps. In both examples, the corrected schemes track the reference trajectory more faithfully than their uncorrected AB counterparts. In particular, CAB-2 and CAB-3 attain lower final solution errors than AB2 and AB3, respectively. These plots illustrate the practical effect of the correction term: it suppresses the error accumulation visible in AB2/AB3 and provides near-exact output in the low-NFE regime. 20 A.7 Additional Experiments 
+
+In this section, we provide additional qualitative comparisons to complement the main results. The examples show that CAB often produces sharper and more coherent samples than competing tr aining-free solvers, especially in the low-NFE regime where visual artifacts are more pronounced. We also include Figure 10, which illustrates that aggressive higher-order corrections based on previous velocity evaluations can become unstable for strong baseline solvers, in contrast to the controlled correction used by CAB. For DPM-Solver++, UniPC, and STORK, we use implementations from the 
+
+diffusers library whenever available; otherwise, we use the official code released by the authors, with only minimal changes required to match our evaluation protocol.       
+
+> DPM++ DPM++ (O3) STORK
+> STORK (O2) AB2 AB3
+> DDIM CAB-2 CAB-3
+
+Figure 9: Qualitative comparison of samplers in the 8-NFE regime for DiT. Increasing the solver order of DPM++ and STORK can lead to over-correction of the predictor trajectory, producing amplified artifacts and structural distortions in the Grey Fox image, consistent with the quantitative trends in Table 1. AB predictor algorithms generate images that oversmooth, whereas CAB-based methods maintain improved visual consistency and cleaner structural fidelity under the same sampling budget. 21 NFE-8 NFE-10 NFE-12 Euler UniPC STORK CAB-2 
+
+Figure 10: Unconditional generation on CIFAR-10 using EDM model. 22 (a) DDIM (b) DPM++ (c) STORK (d) CAB-3 
+
+10 NFEs. CAB-3 produces the most faithful reconstruction with sharper beak structure, consistent texture, and reduced oversmoothing in just 10 NFEs.    
+
+> (e) DDIM (f) DPM++ (g) STORK (h) CAB-2
+
+8 NFEs. CAB-2 best preserves texture, shape, and color, while DDIM/STORK oversmooth and DPM++ introduces artifacts.    
+
+> (i) DDIM (j) DPM++ (k) STORK (l) CAB-3
+
+10 NFEs. DDIM oversmooths, DPM++ is noisy and over-sharpened, STORK generated image is blurred, while CAB-3 gives the most natural image.    
+
+> (m) DDIM (n) DPM++ (o) STORK (p) CAB-3
+
+10 NFEs. DDIM oversmooths and loses detail, DPM++ introduces noise and distorted text, STORK remains blurry, while CAB-3 preserves sharp structure, clean edges, and readable text. Figure 11: Comparison of samplers on class-conditional ImageNet ( 256 × 256 ) generation using DiT. 23 (a) Euler (b) DPM++ (c) STORK (d) CAB-2 
+
+6 NFEs. “Two men standing side by side and smiling.” CAB-2 better preserves facial detail and natural color, while the baselines show noise, oversmoothing, or loss of detail.    
+
+> (e) Euler (f) DPM++ (g) STORK (h) CAB-2
+
+6 NFEs. “A black bear walks down a hill away from a tree.” CAB-2 gives clearer bear structure and surrounding scene content, while competing samplers show haze, noise, or oversmoothing.    
+
+> (i) Euler (j) DPM++ (k) STORK (l) CAB-2
+
+8 NFEs. “Four men playing frisbee in a fenced park.” CAB-2 better preserves human structure, color, and scene coherence, while baselines exhibit color shifts, artifacts, or oversmoothing.    
+
+> (m) Euler (n) DPM++ (o) STORK (p) CAB-2
+
+8 NFEs. “A person riding a bicycle on a deserted street.” CAB-2 recovers sharper subject structure and road geometry, while baselines remain noisy, blurred, or overly smooth. Figure 12: Comparison of training-free samplers on QWEN-Image 1024 × 1024 text-to-image generation. 24 Frame 1 Frame 2 Frame 3 Frame 4 DPM++ STORK CAB-2 
+
+Figure 13: Prompt: “light wind, feathers moving, she moves her gaze, 4k.” Temporal comparison of training-free samplers on HunyuanVideo-1.5 over four frames from the same generated video. CAB-2 better preserves appearance consistency and smoother motion progression, while DPM++ and STORK show stronger temporal drift and frame-to-frame variation. 
+
+Frame 1 Frame 2 Frame 3 Frame 4 DPM++ STORK CAB-2 
+
+Figure 14: Prompt: “A fluffy grey and white cat is lazily stretched out on a sunny window sill, enjoying a nap after a long day of lounging.” Temporal comparison of training-free samplers on HunyuanVideo-1.5 over four frames from the same generated video. CAB-2 preserves sharper fur texture, clearer facial structure, and more consistent window-side lighting, while DPM++ and STORK appear blurrier and show weaker appearance consistency across frames. 25 Frame 1 Frame 2 Frame 3 Frame 4 DPM++ STORK CAB-2 
+
+Figure 15: Prompt: “a giraffe eating an apple.” Temporal comparison of training-free samplers on HunyuanVideo-1.5 over four frames from the same generated video. CAB-2 preserves cleaner appearance and more coherent scene context across frames, while DPM++ and STORK show weaker texture consistency and less stable background structure. Table 6: Extension of Table. 6 including AB2 and AB3                                                                                                                                                 
+
+> Metric Method NFE Metric Method NFE 46810 20 46810 20 Visual
+> DPM++ 45.07 44.88 45.78 47.35 51.74
+> Align.
+> DPM++ 30.87 36.88 40.13 41.04 42.50 STORK 45.18 47.44 49.35 50.47 53.09 STORK 35.30 37.61 40.00 40.53 42.06 AB2 45.32 47.43 49.44 50.52 53.15 AB2 34.93 37.65 39.61 40.40 42.48 AB3 45.27 47.45 49.20 50.30 53.01 AB3 34.78 37.37 40.11 40.27 42.19 CAB-2 46.08 47.70 49.03 50.54 52.71 CAB-2 37.92 39.80 40.97 42.12 43.17
+> CAB-3 46.03 47.05 47.88 49.33 51.53 CAB-3 37.72 39.67 41.41 42.34 42.73
+> Temp.
+> DPM++ 62.22 62.88 63.04 63.13 63.13 Final
+> DPM++ 138 146 149 152 157 STORK 63.71 63.47 63.22 63.30 63.03 STORK 144 149 152 154 158 AB2 63.09 62.91 62.89 62.87 62.67 AB2 143 148 151 154 158 AB3 63.14 62.95 62.92 62.91 62.61 AB3 143 148 152 153 158 CAB-2 62.84 62.72 62.78 63.04 62.86 CAB-2 147 150 153 156 159
+> CAB-3 62.73 62.42 62.45 62.73 62.72 CAB-3 146 149 151 154 157
+
+A.8 Limitations 
+
+As illustrated in Figure 16, although CAB-2 and CAB-3 perform well in flow and diffusion sampling settings after appropriate rectification, their behavior can degrade in strongly curved or poorly conditioned dynamical regimes, especially at very small step budgets. In particular, similar to AB2 and AB3, when the number of sampling steps is extremely limited (e.g., N = 6 ), both methods may produce wayward trajectories that deviate substantially from the reference path, indicating that the correction term does not fully prevent geometric mis-tracking caused by aggressive multistep extrapolation. These observations suggest that the proposed corrections improve robustness but do not completely eliminate failure modes associated with rapidly varying dynamics, large curvature, or stiffness-like effects. Developing more reliable adaptive corrections for such challenging low-step regimes remains an important direction for future work. 26 (a) N = 6 (b) N = 20 (c) N = 50 
+
+Figure 16: Trajectories produced by AB2, AB3, CAB-2, and CAB-3, compared with the reference solution, for different sampling budgets. At very low step counts, particularly N = 6 , the numerical trajectories can deviate substantially from the reference path, revealing geometric mis-tracking in challenging regions of the velocity field. As the number of sampling steps increases, the trajectories become better aligned with the reference. 27

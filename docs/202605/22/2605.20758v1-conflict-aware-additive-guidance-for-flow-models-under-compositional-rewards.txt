@@ -1,0 +1,2406 @@
+Title: Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards
+
+URL Source: https://arxiv.org/pdf/2605.20758v1
+
+Published Time: Thu, 21 May 2026 00:51:17 GMT
+
+Number of Pages: 38
+
+Markdown Content:
+# Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Xuehui Yu 1 Fucheng Cai 2 Meiyi Wang 3 Xiaopeng Fan 2 Harold Soh 1 3 
+
+Abstract 
+
+Inference-time guided sampling steers state-of-the-art diffusion and flow models without fine-tuning by interpreting the generation process as a controllable trajectory. This provides a sim-ple and flexible way to inject external constraints (e.g., cost functions or pre-trained verifiers) for controlled generation. However, existing methods often fail when composing multiple constraints simultaneously, which leads to deviations from the true data manifold. In this work, we iden-tify root causes of this off-manifold drift and find that the approximation error scales severely with gradient misalignment. Building on these find-ings, we propose Conflict-Aware Additive Guid-ance ( gcar ), a lightweight and learnable method, which actively rectifies off-manifold drift by dy-namically detecting and resolving gradient con-flicts. We validate gcar across diverse domains, ranging from synthetic datasets and image edit-ing to generative decision-making for planning and control. Our results demonstrate that gcar ef-fectively rectifies off-manifold drift, surpassing baselines in generation fidelity while using light compute. Code is available at github.com/ yuxuehui/CAR-guidance .
+
+1. Introduction 
+
+Continuous-time flow models, such as Rectified Flow (Liu et al., 2023a), Flow Matching (Lipman et al., 2023; Tong et al., 2024a), and Stochastic Interpolants (Albergo et al., 2023), have emerged as a simple yet highly effective gener-ative modeling paradigm. Through data-driven training at 
+
+> 1
+
+Smart Systems Institute, National University of Singapore, Singapore 2Faculty of Computing, Harbin Institute of Technol-ogy, Harbin, China 3School of Computing, National University of Singapore, Singapore. Correspondence to: Xuehui Yu <yuxue-hui@nus.edu.sg >.
+
+Proceedings of the 43 rd International Conference on Machine Learning , Seoul, South Korea. PMLR 306, 2026. Copyright 2026 by the author(s). (a) Base generation process                         
+
+> 𝑝 1
+> base (𝑥 1)
+> 𝑝 0
+> base (𝑥 0)
+> (c) Single reward: 𝑝 1
+> ′𝑥 1∝𝑝 1
+> base (𝑥 1)𝑒 𝑟 dog
+> (b) Single reward: 𝑝 1
+> ′𝑥 1∝𝑝 1
+> base (𝑥 1)𝑒 𝑟 red
+> (d) Compositional: 𝑝 1
+> ′𝑥 1∝𝑝 1
+> base 𝑥 1𝑒 𝑟 dog +𝑟 red
+> 𝑝 0
+> ′(𝑥 0)𝑝 0
+> ′(𝑥 0)
+> 𝑝 0
+> ′(𝑥 0)
+> 𝑝 1
+> ′(𝑥 1)
+> 𝑝 1
+> ′(𝑥 1)
+> 𝑝 1
+> ′(𝑥 1)
+
+Figure 1. At inference time, our goal is to sample from the tilted target p′
+
+> 1
+
+(x1) ∝ pbase  
+
+> 1
+
+(x1)er(x1). (b-c) A single reward reweights the distribution towards specific attributes (“red” or “dog”). (d) Under compositional rewards (“red” and “dog”), the ideal samples lie at the intersection of high-reward regions ( ⋆, ); however, existing methods often suffer from off-manifold drift (i.e., the distorted image, •, ). 
+
+scale, these models acquire a robust generative prior capable of generalizing across a wide spectrum of applications. In this work, we study the problem of steering powerful generative priors to satisfy multiple, potentially compet-ing objectives simultaneously, a setting commonly referred to as the compositional reward problem (Du & Kael-bling, 2024). This challenge is central to the real-world deployment of large-scale generative flow models, where inference-time samples are required to satisfy a diverse and often heterogeneous set of runtime constraints. For exam-ple, in generative decision-making, generated trajectories must respect heterogeneous requirements, including safety constraints (Eiras et al., 2022), trajectory smoothness (Urain et al., 2023), and dynamic consistency with learned world models (Du & Song, 2025). Similarly, in text-guided im-age manipulation, one often seeks to exploit large vision– language models such as CLIP (Radford et al., 2021) to modify images according to natural language prompts (Yu et al., 2023). Inference-time alignment methods (Lipman et al., 2023) 1
+
+> arXiv:2605.20758v1 [cs.AI] 20 May 2026
+
+Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 𝑝 0                                 
+
+> 𝑏𝑎𝑠𝑒 (𝑥 0)𝑝 1
+> 𝑏𝑎𝑠𝑒 (𝑥 1)𝑝 0
+> 𝑏𝑎𝑠𝑒 (𝑥 0)𝑝 1
+> ′(𝑥 1)𝑝 0
+> 𝑏𝑎𝑠𝑒 (𝑥 0)𝑝 1
+> ′(𝑥 1)𝑝 0
+> 𝑏𝑎𝑠𝑒 (𝑥 0)𝑝 1
+> ′(𝑥 1)
+> Inference trajectory
+> (a) Base flow models (b) Guided sampling 𝑝 1
+> ′(𝑥 1)∝𝑒 𝑉 1𝑝 𝑏𝑎𝑠𝑒 (𝑥 1)(d) CAR guidance 𝑔 𝑐𝑎𝑟
+> ∇𝑥 𝑡 𝑉 1𝑥 𝑡
+> ∇𝑥 𝑡 𝑉 2𝑥 𝑡
+> 𝑔 𝑐𝑎𝑟
+> (c) Guided sampling 𝑝 1
+> ′(𝑥 1)∝𝑒 𝑉 1+𝑉 2𝑝 𝑏𝑎𝑠𝑒 (𝑥 1)
+> gradient misalign
+> off -manifold
+> xt
+> xt
+> xt
+
+Figure 2. (a) The base sampling trajectories. (b) Guided sampling adds guidance to inference trajectories and with a fixed source pbase (x0);this forces the trajectories to curve significantly to satisfy the constraint, resulting in unnecessarily long and high-curvature paths. (c) Gradient misalignment (between → and →) aggravates local curvature, yielding incorrect and unstable guidance that pushes the trajectory off-manifold ( •) into low-density regions (i.e., the “vanishing energy” traps visualised in Figure 4). (d) Under gradient conflict, gcar 
+
+rectifies the misaligned gradient via learned guidance ( →) that points directly to the target x1, recovering straight and on-manifold trajectories. 
+
+address these challenges by encoding task requirements as reward functions and steering the sampling process directly at inference time, without retraining or fine-tuning the under-lying generative prior. Among these, inference-time guided sampling (or guidance) offers a lightweight and flexible interface for adapting pretrained generative models to com-plex and heterogeneous constraints by directly injecting re-ward signals during generation, which has been successfully applied to enforce a wide range of runtime constraints (Lip-man et al., 2023; Pokle et al., 2024). In particular, their compute-efficient approximate forms even enable control over objectives unseen during training through heuristic guidance terms (Feng et al., 2025). However, these approximate guidance methods often push samples into low-density regions where the pretrained vector field is poorly calibrated, causing systematic deviations from the true data distribution. This failure mode, commonly re-ferred to as off-manifold drift , becomes particularly severe in compositional reward settings (Figure 1), where compet-ing objectives induce conflicting gradients that collectively drive samples away from the data manifold. While exact guidance methods (Feng et al., 2025) can mitigate this is-sue and achieve high-fidelity alignment, they are typically computationally expensive and lack the flexibility required to efficiently adapt across diverse reward functions. In this paper, we develop a theoretical analysis that estab-lishes an upper bound on the approximation error of guided sampling, decomposing it into three terms: coupling shift ,
+
+gradient misalignment , and localized approximation error. Our analysis reveals that, in compositional reward settings, 
+
+approximation error grows sharply with gradient mis-alignment (1 − cos ϕ) and the number of reward func-tions G, where ϕ denotes the average angular divergence between guidance channels (Figure 2(c); see Section 4). Motivated by this insight, we propose Conflict-Awa ReAdditive Guidance ( CAR guidance , denoted gcar ), alightweight guided sampling strategy that actively mitigates off-manifold drift by detecting and correcting gradient mis-alignment. CAR guidance introduces a conflict-aware gat-ing mechanism that selectively activates learnable correc-tions in regions of significant gradient conflict. We empirically evaluate gcar across a broad range of do-mains, including 2D synthetic benchmarks, pixel-space im-age editing, and generative decision-making tasks span-ning state-based planning and 3D point-cloud manipula-tion. Across all settings, gcar consistently outperforms state-of-the-art baselines in challenging compositional reward settings, achieving stronger alignment with on-the-fly con-straints while preserving high sample fidelity. gcar improves identity preservation by 25 .4% in image editing, and in-creases planning success rates by 38 .75% . On robot manip-ulation tasks, where na ¨ıve inference-time guidance is partic-ularly prone to drifting off-manifold and producing out-of-distribution trajectories, gcar cuts violation rates by 78% and lifts success from 9% to 61% , enabling reactive obstacle avoidance. Code, data, and pretrained checkpoints are avail-able at github.com/yuxuehui/CAR-guidance .
+
+Conflict of Interest Disclosure. The authors declare no financial conflicts of interest related to this work. 
+
+2. Preliminaries 
+
+2.1. Flow matching and conditional flow matching 
+
+Flow Matching (FM) (Lipman et al., 2023) is a simulation-free method for training continuous normalizing flows, which learns a time-dependent vector field vt(xt, t ) to trans-port a source distribution p0 to a target distribution p1. A vector field vt is said to generate a probability density path 
+
+pt if its flow ϕt : [0 , 1] : Rd → Rd satisfies the continuity equation ∂tpt + ∇ · (ptvt) = 0 with boundary conditions 2Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+matching the source and target distributions at t = 0 and 
+
+t = 1 , respectively. Given a target probability density path 
+
+pt and a corresponding target vector field vt, which gener-ates pt, the FM objective is: 
+
+Et∼U (0 ,1) , x t∼pt
+
+∥vθ (xt, t ) − vt(xt, t )∥2, (1) where θ denotes learnable parameters of the vector field vθ .To make training tractable, Conditional Flow Matching (CFM) (Lipman et al., 2023) introduces a latent variable 
+
+z distributed according to a coupling measure π(z), and defines conditional probability paths pt(xt|z) together with corresponding conditional vector fields ut(xt, t |z). The CFM objective is given by: 
+
+Et∼U (0 ,1) 
+
+> z∼π(z)
+
+Ext∼pt(·| z)
+
+∥vθ (xt, t ) − vt(xt, t |z)∥2. (2) For arbitrary choices of the latent variable z and coupling measure π(z), minimizing the conditional flow matching loss in (2) is equivalent to minimizing the marginal flow matching objective in (1) , and yields the optimal marginal vector field vt(xt, t ) = Ez∼π(z|xt)[vt(xt, t |z)] (Tong et al., 2024b). In the general formulation, the latent variable is defined as the coupling pair z = ( x0, x 1), and the coupling measure π(z) = π(x0, x 1) represents the joint coupling between the source and target distributions. 
+
+2.2. Guided sampling 
+
+At inference time, our goal is to alter the base vector field vt(xt, t ), which generates the base target distribu-tion p1(x1), into a new vector field v′
+
+> t
+
+(xt, t ) that generates samples from a reweighted target distribution p′
+
+> 1
+
+(x1) ∝
+
+p1(x1)er(x1). Here, r(x1) = PGj=1 rj (x1) is a composi-tion of measurable reward functions rj : Rd → R to be maximized. Inference-time guided sampling steers the generation pro-cess by injecting an additive term gt(xt, t ) into the base vector field (Pokle et al., 2024; Feng et al., 2025): 
+
+v′
+
+> t
+
+(xt, t ) = vt(xt, t ) + gt(xt, t ), (3) while still initializing trajectories from the fixed source dis-tribution p0, as illustrated in Figure 2 (b,c). Recall that the modified vector field v′
+
+> t
+
+(xt, t ) preserves the pretrained prior; that is, the conditional vector field v′
+
+> t
+
+(xt, t |z) = vt(xt, t |z)
+
+and the conditional probability path p′
+
+> t
+
+(xt|z) = pt(xt|z) re-main invariant. Consequently, guided sampling is formally equivalent to reweighting the coupling measure π(z) over the latent coupling paths. The modified marginal probability path and vector field are given by: 
+
+p′
+
+> t
+
+(xt) = 
+
+Z
+
+pt(xt|z) π′(z) dz, (4) 
+
+v′
+
+> t
+
+(xt, t ) = 
+
+Z
+
+vt(xt, t |z) π′(z|xt) dz, (5) with π′(z) = 1 
+
+> Z
+
+P(z)π(z)er(x1). Here, P(z) ≜ π′(x0|x1)
+
+> π(x0|x1)
+
+is the coupling ratio, which captures the shift in the cou-pling measure: from a coupling perspective, constraining the target to the reweighted distribution p′
+
+> 1
+
+(x1) inherently changes the optimal coupling between source and target. And the coupling shift term P(z) ensures that the source 
+
+p0(x0) remains unchanged under the guidance operation. 
+
+Z = RR π(x0, x 1)er(x1) dx 0 dx 1 is the normalizing con-stant, and r(x1) is the reward function evaluated at the terminal state of the path z.By Equations (3) and (5) , Feng et al. (2025) gave a closed-form guidance term: 
+
+gt(xt, t ) = 
+
+Z  P(z)er(x1)
+
+Zt(xt) − 1
+
+
+
+vt(xt, t |z) π(z|xt) dz. 
+
+(6) where Zt(xt) = R P(z)er(x1)π(z | xt)dz is the normalizer. Existing guided sampling methods (Pokle et al., 2024; Yu et al., 2023; Patel et al., 2025) typically assume P(z) ≈ 1
+
+and approximate the reward function via a first-order Taylor expansion ˆx1(xt) ≜ Ez∼π(z|xt)[x1]. Then, the approximate guidance term: 
+
+gapprox  
+
+> t
+
+(xt, t ) ≈ Cov π(z|xt)
+
+ vt(· | z), x 1
+
+∇ˆx1 r(ˆ x1). (7) In practice, this covariance matrix is often further simplified to a hyperparameter or a time-dependent scalar value. 
+
+3. Related works 
+
+Inference-time guided sampling methods aim to estimate the additive guidance gt(xt, t ), which can be broadly cate-gorized into approximate guidance and exact guidance. 
+
+Approximate Guidance. Lots of works use gradient 
+
+∇xt r(ˆ x1) as defined in Equation (7) as guidance, and im-plicitly assume the coupling ratio P(z) ≈ 1. For example, in diffusion models, it is widely adopted by DPS (Chung et al., 2023) and LGD (Song et al., 2023b). In flow models, FlowDPS (Pokle et al., 2024) applies this approximation to the OT-ODE (guiding trajectories via ∇xt log p(y|ˆx1)), and FlowChef (Patel et al., 2025) derives similar guidance under assumptions of a locally linear vector field and a constant Jacobian. Both approaches converge to the form 
+
+∇xt r(ˆ x1), which we refer to as gcov-G following the nota-tion of Feng et al. (2025). These approximate methods are simple, compute-light, and flexible. Particularly for recti-fied flows (Liu et al., 2023a), straight paths enable efficient terminal prediction via a single Euler step. However, these methods often result in off-manifold drift. 
+
+Exact Guidance. Exact guidance methods explicitly learn the ground-truth guidance, falling into two sub-categories. 
+
+Training-based methods regress to the ground-truth guid-ance (Equation (6) ). For example, Guidance Matching 3Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+(GM) (Feng et al., 2025) directly learns the guidance by regressing to vt(xt|x1) = ( x1 − xt)/(1 − t), where x1 is sampled from the unnormalized target distribution p′
+
+> 1
+
+(x1).Although GM achieves high fidelity, it is often impractical: ground-truth samples x1 are inaccessible in tasks such as image editing, and training a guidance network per reward function is computationally expensive and introduces addi-tional confounding errors from a learned network. Sample-based, training-free methods instead estimate gt(xt) via SDE or ODE sampling (Feng et al., 2025; Holderrieth et al., 2026). The recent GLASS-FKS (Holderrieth et al., 2026), which steers GLASS flows via Feynman-Kac sampling, im-proves sampling efficiency over prior particle methods, but still still inherits the high variance and heavy per-sample compute cost characteristic of this family. Positioned between these two categories, we aim to improve compute-light approximate guidance by adding a fraction of extra compute to correct the approximation error (see Appendix A for further discussion). 
+
+4. Approximation errors of guided sampling 
+
+In this section, we analyze approximation errors within the framework of measure transport. Guided sampling targets a tilted terminal distribution 
+
+p⋆
+
+> 1
+
+(x1) ∝ p1(x1)er(x1). Consistent with this objective, the guided marginal density at any intermediate time t can be expressed as p⋆t (xt) ∝ pt(xt)eV (xt,t ), where the value func-tion V (xt, t ) is defined as the log-expected exponentiated future reward: 
+
+V (xt, t ) ≜ log Ex1∼p(·| xt)
+
+h
+
+er(x1)i
+
+(8) 
+
+= log Ez∼π(·| xt)
+
+h
+
+eR(z)i
+
+, (9) where the second equality holds due to the deterministic mapping from latent space to data space, i.e., x1 = Ψ 1(z)
+
+(where Ψt is the flow map at time t), inherent in flow models. This enables evaluating the reward directly on the latent variable z via R(z) ≜ r(Ψ 1(z)) .The optimal coupling measure is defined as: 
+
+π⋆(z) = 1
+
+Z P(z)eR(z)π(z), (10) where π(z) is the base prior, eR(z) is the trajectory reward, and P(z) is the coupling shift ratio. From exact to the approximate guidance, we follow the approximation process 
+
+π⋆(z) Coupling-Invariant 
+
+−−−−−−−−−→ 
+
+> P(z)≈1
+
+πCI (z) Localize 
+
+−−−−→ 
+
+> ˆV(xt)
+
+πapprox (z), (11) with a fixed source p0. We can then attribute the approxi-mation error to two approximation steps: First, by defining the shift ratio as P(z) ≜ dπ ⋆ 
+
+> dπ CI
+
+(z) and assuming P(z) ≡ 1,we have πCI (z) ∝ eR(z)π(z) which ignores the coupling shift in the optimal transport, i.e., optimal coupling is in-variant. Second, the intractable value gradient ∇xt V (xt)
+
+is locally approximated via a two-step proxy: (i) In dif-fusion models, a common simplification is to move the expectation inside the log-exponential via Jensen’s inequal-ity, yielding ∇ log Ez|xt [eR(z)] ≈ ∇ Ez|xt [R(z)] . (ii) We approximate the expected reward using a first-order Tay-lor expansion around the mean, E[R(z)] ≈ r(ˆ x1), with 
+
+ˆx1 = E[x1|xt]. Then, we have a surrogate ˆV (xt) ≜
+
+PGj=1 rj (ˆ x1), which drives the guidance through the ag-gregated gradients PGj=1 ∇rj (ˆ x1).To set the stage for our error analysis, we first introduce the gradient misalignment between rewards. 
+
+Definition 4.1 (Gradient Misalignment) . Let gk(xt) ≜
+
+∇xt rk(ˆ x1) denote the guidance contributed by the k-th reward, evaluated at the predicted terminal state ˆx1 =
+
+E[x1|xt]. Let ϕjk be the angle between gj and gk. The gradients are defined as misaligned when they are not per-fectly collinear, i.e., 1 − cos ϕjk > 0.For simplicity, we define the average pairwise cosine similar-ity as cos ϕ := 2
+
+> G(G−1)
+
+P 
+
+> j<k
+
+cos ϕjk . Broadly, gradient misalignment is quantified by 1 − cos ϕ > 0.
+
+Theorem 4.2 (Upper Bound of Approximation Error) . The approximation error E ≜ W 22 (p⋆
+
+> 1
+
+, ˆp1) between the exact and realized target distributions admits the three-term de-composition: 
+
+E ≲ CCI 
+
+Z 10
+
+EEπCI 
+
+(P(z) − 1) 2 dt 
+
+| {z }
+
+> (A) coupling shift error
+
++ G(G − 1) μ2
+
+Z 10
+
+E[1 − cos ϕt(xt)] dt 
+
+| {z }
+
+> (B) gradient misalignment error
+
++ G
+
+Z 10
+
+E
+
+" λh σ1 der(ˆ x1)
+
+2
+
+(C1 + C2)
+
+#
+
+dt 
+
+| {z }
+
+> (C) localized approximation error (Feng et al., 2025)
+
+(12) 
+
+where μ := ∥gCI  
+
+> j
+
+∥ is the per-reward gradient norm, CCI 
+
+only depends on base velocity field, λh is the spectral norm of the Hessian of er , G is the number of rewards, (1 −cos ϕt)
+
+is the gradient misalignment, σ1(t) measures posterior un-certainty, and C1, C 2 are constants depending on the base velocity field. We provide an intuitive interpretation in Ap-pendix B and a more detailed proof in Appendix C. 
+
+Theorem 4.2 provides an error bound and offers a theoretical roadmap, identifying the key design space for optimizing guided sampling: 4Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 𝑥 𝑡              
+
+> 𝑥 1
+> 𝜙
+> 𝑔 𝜓
+> 𝑔 𝑡
+> approx
+> ∇𝑥 𝑡 𝑉 1𝑥 𝑡
+> ∇𝑥 𝑡 𝑉 2𝑥 𝑡
+> (a)
+> 𝑥 1
+> 𝑥 𝑡
+> 𝑔 𝑡
+> approx
+> ∇𝑥 𝑡 𝑉 2𝑥 𝑡
+> ∇𝑥 𝑡 𝑉 1𝑥 𝑡
+> (b) 𝑔 car ≈𝑔 𝜓 𝑔 car ≈𝑔 𝑡
+> approx
+
+Figure 3. (a) When gradients are misaligned (large ϕ), the approxi-mate guidance gapprox (→), the vector sum of → and →, points off-manifold; the conflict-aware weight wt ≈ 1, so gcar ≈ gψ (xt, t )
+
+(→) corrects the trajectory toward the true target x1 (⋆). (b) When gradients align ( ϕ ≈ 0), gapprox is already accurate; wt ≈ 0, so 
+
+gcar ≈ gapprox (→). 
+
+1. the error scales with the number of reward functions G
+
+and gradient misalignment (1 − cos ϕ);2. the error is small when the coupling shift is negligible (P(z) ≈ 1), which is reasonable in many practical flow matching methods with dependent couplings, such as mini-batch OT-FM (Tong et al., 2024a), but can be problematic in OT-FM (Onken et al., 2021); 3. the error is small when the reward landscape is smooth, i.e., small λh = ∥∇ 2er ∥2;4. the error is small when the predicted endpoint ˆx1 =
+
+E[x1|xt] lies in a high-reward region (large r(ˆ x1)); 5. the error decreases as σ1 shrinks (e.g., t → 1). 
+
+5. Conflict-aware additive guidance 
+
+We improve the compute-light approximate guidance by adding extra compute to correct the approximation error: 
+
+Definition 5.1 (Conflict-Aware Additive Guidance) . Let 
+
+M = ( vt, p 0, p 1) be a base flow model. Given a target distribution p′
+
+> 1
+
+(x1) ∝ p1(x1)er(x1) with rewards r(x1) = 
+
+PGj=1 rj (x1), the conflict-aware additive guidance ( gcar )transforms the base velocity vt into a guided velocity v′ 
+
+> t
+
+via: 
+
+v′
+
+> t
+
+(xt, t ) = vbase  
+
+> t
+
+(xt, t ) + gcar (xt, t ), (13) 
+
+gcar (xt, t ) = (1 − wt) gapprox + wt gψ (xt, t ), (14) where the guidance is a composition of a fast approximation 
+
+gapprox and a learnable guidance gψ , which is controlled by a conflict-aware weight 
+
+wraw (xt) = 1 − 2
+
+G(G − 1) 
+
+X
+
+> j<k
+
+⟨gj , g k⟩∥gj ∥∥ gk∥ + ε , (15) The raw conflict score wraw (xt) ∈ [0 , 2] is then mapped to 
+
+w(xt) ∈ (0 , 1) . The ε ensures numerical stability. Finally, 
+
+gψ is trained to approximate the exact guidance by data (see Section 5.1 for details). As illustrated in Figure 3, in regions of gradient misalign-ment, our gcar leverages a learned lightweight guidance gψ to correct the systematic errors inherent in approximate meth-ods, thereby effectively rectifying off-manifold drift. This design positions gcar effectively between approximate and exact approaches, delivering near-exact performance with significantly lighter compute compared to exact guidance. 
+
+5.1. Value gradient 
+
+To bypass the intractability of the closed-form target in Eq. (6) , we seek to learn the exact guidance gψ directly from data. By viewing the flow generation process as determinis-tic ODE dynamics, we evaluate V (xt, t ) as the cumulative return of a trajectory induced by the current policy v′ 
+
+> t
+
+de-fined in Eq. (13) . Mathematically, V (xt, t ) serves as the fixed point of the Bellman backup operator T v′
+
+. Details can be found in Appendix D. 
+
+Proposition 5.2 (Fitted Value Evaluation) . Let F denote the function class (e.g., neural networks) used to approxi-mate the value function. We collect a dataset of transitions 
+
+D = {(x, t, r, x ′, t ′)} generated under the current guided dynamics, where t′ = t + ∆ t and r is the reward. The value function can be estimated empirically by minimizing a least-squares Bellman residual: 
+
+ˆVk+1 = arg min   
+
+> V∈F
+
+ED
+
+h r + γ ˆVk(x′, t ′) − V (x, t )2i
+
+.
+
+(16) 
+
+subject to the boundary condition ˆVk(x, 1) ≡ r(x) for termi-nal states. Here, γ ∈ (0 , 1] is the discount factor, and ˆVk is the target from the previous iteration 1. Equation (16) empir-ically approximates the Bellman backup operator T v′
+
+using finite data and a function class F. Upon convergence, the learnable guidance is the gradient of the estimated value: 
+
+g(xt, t ) ≜ ∇x ˆV (xt, t ), (17) 
+
+which is a Markovian surrogate for the exact guidance. 
+
+Fitted Value Evaluation can diverge due to the deadly triad, the instability arising from the interplay of function approx-imation, off-policy data, and bootstrapping (Proposition D.2, Appendix D). Leveraging the deterministic dynamics and terminal-only rewards of flow matching, we propose Terminal Value Regression (TVR). By regressing directly against the terminal reward r(x1), TVR eliminates the need for bootstrapping, effectively breaking the deadly triad and ensuring stable convergence. 
+
+Proposition 5.3 (Terminal Value Regression) . Let F de-note a function class used to approximate the value function. We collect a dataset of terminal rollouts D = {(xt, t, x 1)},where x1 is the terminal state reached from xt by integrat-ing the current guided dynamics. The value function is estimated by minimizing the following regression objective: 
+
+ˆV = arg min   
+
+> V∈F
+
+E(xt,t,x 1)∼D 
+
+h r(x1) − V (xt, t )2i
+
+. (18) 
+
+> 1
+
+For pure terminal optimization, r = 0 and γ = 1 .
+
+5Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards (a) S ampling dynamics                                                            
+
+> of base FM at 𝑡 =1
+> (b) Ground truth posterior
+> 𝑝 𝑥 𝑐 =1,0
+> (c) Samples from
+> 𝑔 𝑐𝑜𝑣 −𝐺 guided sampling
+> (𝑡 =1,𝑐 =1,0)
+> (e) Guided s ampling
+> dynamics of 𝑔 𝑐𝑜𝑣 −𝐺
+> (𝑡 =1,𝑐 =1,0)
+> (d) Energy landscape of
+> 𝑔 𝑐𝑜𝑣 −𝐺 (𝑡 =1,𝑐 =1,0)(h) Guided s ampling
+> dynamics of 𝑔 𝑐𝑎𝑟
+> (𝑡 =1,𝑐 =1,0)
+> (g) Energy landscape of
+> 𝑔 𝑐𝑎𝑟 (𝑡 =1,𝑐 =1,0)
+> (f) Samples from
+> 𝑔 𝑐𝑎𝑟 guided sampling
+> (𝑡 =1,𝑐 =1,0)
+
+Figure 4. Visualization results on the synthetic dataset under [1 , 0] constraints. (c–e) gcov-G shows significant off-manifold drift due to an “energy trap” (highlighted by the red circle), where conflicting gradients lead to erratic sampling trajectories. (f–h) Our gcar restores the accurate reward landscape, thereby rectifying the off-manifold drift. An intuitive interpretation of the “energy trap” caused by gradient misalignment can be found in Appendix B. 
+
+Unlike the bootstrapped target in Eq. (16) , the terminal reward r(x1) serves as a stable, unbiased regression target, which is enabled by the deterministic nature of the flow. 
+
+We parameterize the scalar value function V (xt, t ), then define the guidance as gψ (xt, t ) ≜ ∇xt Vψ (xt, t ). Building on Proposition 5.3, we optimize ψ by minimizing a masked regression loss against the terminal reward: 
+
+L(ψ) = E(xt,t,x 1)∼D 
+
+h
+
+It ·  r(x1) − Vψ (xt, t )2i
+
+, (19) where x1 is the terminal state obtained from online roll-outs. We allocate compute budget efficiently by using 
+
+It ≜ 1(w(xt) > τ ), which ensures the guidance gψ is updated solely in regions showing high gradient conflict. While directly parameterizing the vector field ∇V (xt, t )
+
+is common in diffusion models (Song & Kingma, 2021), unconstrained neural vector fields are not guaranteed to be conservative (i.e., curl-free) (Balcerak et al., 2025). See Appendix E.1 for further discussion. 
+
+6. Experiments 
+
+Our experiments are designed to answer two core questions: (1) Can gcar effectively rectify off-manifold drift under com-positional reward settings? (2) Is the gcar compute light? 
+
+6.1. Experimental setup Baselines. Our baselines span the full spectrum of inference-time guidance methods, letting us probe whether each ex-hibits off-manifold drift: (1) approximate guidance ( gcov-G ), which is compute-light but susceptible to off-manifold drift; and (2) exact guidance, including the sample-based 
+
+GLASS-FKS (Holderrieth et al., 2026) and the training-based GM (Feng et al., 2025). Since GM requires ground-truth samples x1 that satisfy all constraints, its use is limited to synthetic datasets where such samples are accessible by construction. Task-specific SOTA baselines are also in-cluded, detailed in the following sections. Our gcar corrects 
+
+Table 1. Comparison with baselines on the Synthetic dataset. Each number is evaluated over 10 k generated samples. Here [ · , · ]
+
+denotes the target labels of two classifiers, where [1 , 0] represents the gradient conflict scenario. For GLASS-FKS, we report K=16 ;For gcar , τ = 0 .50 . Full results are in Appendix E.4.3. Bold text 
+
+is the best performance.                                                                                                                     
+
+> Posterior Coverage (PC) (%) ↑Constraint Satisfaction (CS) (%) ↑
+> Method [0 ,0] [1 ,0] [1 ,1] Avg. [0 ,0] [1 ,0] [1 ,1] Avg.
+> gcov-G 94.00 71.70 89.00 84.90 100.00 89.56 99.87 96.48 PCGrad 94.05 75.20 89.15 86.13 100.00 92.45 99.88 97.44 GM 82.30 84.50 86.20 84.33 99.93 99.99 99.92 99.95 GLASS-FKS 88.80 90.80 88.60 89.40 100.00 99.71 100.00 99.90
+> gcar (ours) 94.60 93.80 88.70 92.37 100.00 100.00 99.87 99.96
+> Inference Time (ms / sample) ↓Data Usage ( ×10 3)↓
+> Method [0 ,0] [1 ,0] [1 ,1] Avg. [0 ,0] [1 ,0] [1 ,1] Avg.
+> gcov-G 0.36 0.38 0.36 0.37 ––––PCGrad 0.37 0.42 0.38 0.39 ––––GM 2.81 2.81 3.11 2.91 10240 10240 10240 10240 GLASS-FKS 298 296 302 299 ––––
+> gcar (ours) 0.46 4.20 0.27 1.65 74.75 1573.89 0549.55
+
+off-manifold drift by adding only a fraction of extra compute. We include PCGrad (Yu et al., 2020), a gradient conflict res-olution method from multi-objective optimisation, to show that our conflict-aware mechanism rectifies off-manifold drift more effectively than projection-based deconfliction. See details and additional results in Appendix E. 
+
+6.2. Synthetic dataset Tasks. We begin with a 2-dimensional Mixture of Gaus-sians (see Appendix E.4 for details), where the ground-truth density pt is known, allowing for precise quantitative eval-uation. We train a flow matching model (Lipman et al., 2024) to transport a standard Gaussian source to a Mix-ture of Gaussians target. We steer the generation using two pre-trained classifiers that impose differing label constraints on the target samples. These constraints are specifically configured to induce severe gradient conflicts, thereby creat-ing a “stress test” to benchmark the robustness of different guidance methods against off-manifold drift. 6Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Table 2. Comparison with baselines on Maze2D. Compositional reward settings: (1) static obstacle: two random static obstacles; (2) static goal: two random goals; (3) dynamic obstacle: two random dynamic agents; (4) hybrid composition: one static and one dynamic obstacles. Metrics include Inference Time (ms/sample), Safe (collision-free rate %), Violation (mean constraint violations #), Success (success rate %), and Steps (#). Results are averaged over 100 samples with conflict threshold τ = 0 .20 . Note that we do not use inpainting, which allows us to better observe the capability of inference-time alignment methods in preserving the base model prior. Furthermore, comparing the success rates reveals that directly applying GLASS-FKS, MPPI, gcov-G , and their PCGrad or gcar corrections as inference-time techniques to the base flow to satisfy constraints compromises prior preservation. The gcar method requires an online training period of 10 .2 ± 0.1 min (mean ± std across 5 random seeds) for 4 training steps prior to being used for inference.                                                                                                                                                                                                                                     
+
+> (1) static obstacles (2) static goal (3) dynamic obstacles (4) hybrid composition Method Time ↓Safety ↑Viol. ↓Succ. ↑Steps ↓Safety ↑Viol. ↓Succ. ↑Steps ↓Safety ↑Viol. ↓Succ. ↑Steps ↓Safety ↑Viol. ↓Succ. ↑Steps ↓
+> GLASS-FKS 532.7 78 0.3 100 -56 0.6 100 -71 0.4 100 -68 0.5 100 -
+> ±53.2 ±3.2 ±0.1 ±0.0 ±4.5 ±0.2 ±0.0 ±3.8 ±0.1 ±0.0 ±4.1 ±0.2 ±0.0 MPPI 242.4 100 0.0 41 30 62 1.5 69 30 58 0.5 63 30 47 0.4 69 30
+> ±12.5 ±0.0 ±0.0 ±2.4 ±3.5 ±0.3 ±3.1 ±2.8 ±0.2 ±2.9 ±3.1 ±0.2 ±3.4 MPPI + gcar (ours) 265.8 100 0.0 98 ↑57 30 100 ↑38 0.0 ↓1.596 ↑27 30 96 ↑38 0.1 ↓0.494 ↑31 30 95 ↑48 0.2 ↓0.292 ↑23 30
+> ±14.2 ±0.0 ±0.0 ±1.2 ±0.0 ±0.0 ±1.5 ±1.4 ±0.0 ±1.8 ±1.6 ±0.1 ±2.1
+> gcov-G 150.0 39 0.3 16 -41 1.7 23 -39 0.9 42 -34 1.1 12 -
+> ±5.4 ±2.1 ±0.1 ±1.4 ±2.4 ±0.3 ±1.8 ±2.2 ±0.2 ±2.5 ±1.9 ±0.2 ±1.1 PCGrad 175.2 44 ↑50.2 ↓0.127 ↑11 -47 ↑61.5 ↓0.232 ↑9-41 ↑20.7 ↓0.246 ↑4-35 ↑10.9 ↓0.218 ↑6-
+> ±18.0 ±2.3 ±0.1 ±1.7 ±2.6 ±0.3 ±2.1 ±2.1 ±0.1 ±2.8 ±1.8 ±0.2 ±1.5
+> gcar (ours) 168.4 74 ↑35 0.0 ↓0.379 ↑63 463 ↑22 0.8 ↓0.972 ↑49 449 ↑10 0.2 ↓0.761 ↑19 443 ↑90.3 ↓0.836 ↑24 4
+> ±8.6 ±1.5 ±0.0 ±1.8 ±2.2 ±0.1 ±1.9 ±1.7 ±0.1 ±2.0 ±1.8 ±0.1 ±1.6
+> Note: Bold text indicates the best performance. Rows with gray backgrounds indicate methods that use our gcar for conflict correction. Purple superscripts show the performance change of gcar over gcov-G , and teal superscripts show the change of PCGrad over gcov-G , where ↑denotes improvement and ↓denotes degradation. For all metrics, we report the mean (top row) and standard deviation across 5 random seeds (bottom row).
+
+Evaluation metrics. We present intuitive visualizations, and also designed four quantitative metrics: (i) posterior coverage (higher is better on data manifold); (ii) inference time (lower is better speed); (iii) data usage (lower indicates better training data efficiency); (iv) constraint satisfaction (higher indicates better recovery of ground-truth posterior). 
+
+Results. We first visualize the failure modes of the stan-dard approximation guidance gcov-G in Figure 4. Notably, 
+
+gcov-G generates off-manifold samples (highlighted by the red circle in Figure 4c). By analyzing the underlying en-ergy landscape (Figure 4d), we observe an “energy trap”, a spurious artifact arising from gradient conflict. This trap captures the sampling process (Figure 4e), forcing trajec-tories to ultimately diverge from the data manifold. Our 
+
+gcar rectifies the vanishing energy by learning a residual guidance within these conflict regions, thereby eliminating off-manifold drift. Quantitative results in Table 1 show, under the conflict constraint [1 , 0] , gcov-G drifts off-manifold for nearly 30% of samples (only 71.70% PC), and PCGrad provides only marginal correction (75.20% PC, ↑3.5), confirming that generic projection-based deconfliction is insufficient at in-ference time. Our gcar reduces off-manifold drift to 6.2% 
+
+(93.80% PC), incurring only a small compute overhead over 
+
+gcov-G (1.65 vs. 0.37 ms/sample). The exact baselines come with their own trade-offs: GM requires roughly 20 × more training data than gcar and shows higher variance, while GLASS-FKS avoids off-manifold drift but suffers from high computational cost and is sensitive to the particle count. 
+
+6.3. Generative decision-making as planners Tasks. We conduct experiments on generative decision mak-ing tasks where generative models have been used as plan-ners. We focus on the Maze2D (Luo et al., 2024), involving a point-robot with state s ∈ R4 (position and velocity) and action a ∈ R2 (force). We aim to steer a base planner pre-trained on expert demonstrations, where the maze layout, start and goal are randomly generated. Following Luo et al. (2024), we collect a diverse set of collision-free demonstra-tions via BIT ∗ to train the base CFM model (Tong et al., 2024a). The model serves as a learned prior, generating tra-jectories x = ( s0: H−1, a 0: H−1) ∈ R6H conditioned on the maze layout, start, and goal. The r(x1) includes: (i) static obstacle avoidance for unseen environments; (ii) goal reach-ing (e.g., object grasping); (iii) dynamic collision avoidance against agents with random linear trajectories (R ¨omer et al., 2024; Bouvier et al., 2025). 
+
+Baselines and metrics. Besides the baselines introduced in Section 6.1, we include MPPI (Williams et al., 2017), a classical optimization-based planner effective for con-strained trajectory problems, and its gcar -augmented variant MPPI+ gcar . We report five metrics: (i) safety rate: the per-centage of trajectories that are collision-free with respect to the static maze layout, which reflects the prior preser-7Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Table 3. Comparison on the ManiSkill2 StackCube task. (1) static obstacles: two random static obstacles; (2) hybrid composition: two random static obstacles and trajectory smoothness. Full results, including PickCube, are in Table 8.                                              
+
+> (1) static obstacles (2) hybrid composition Method Time ↓Violation ↓Success ↑Violation ↓Success ↑
+> GLASS-FKS 493.7 0.6 32 1.1 24
+> gcov-G 185.0 1.2 12 1.8 9PCGrad 201.4 1.5 ↓0.30↓12 2.2 ↓0.40↓9
+> gcar (ours) 203.2 0.1 ↑1.172 ↑60 0.4 ↑1.461 ↑52
+> Note: Bold text indicates the best performance. Rows with gray backgrounds indicate methods that utilize our gcar for conflict correction. Purple superscripts show the performance change of gcar over gcov-G , and teal superscripts show the change of PCGrad over gcov-G , where ↑denotes improvement and ↓denotes degradation.
+
+vation. (ii) violations: average number of inference-time constraint violations (e.g., collisions with new obstacles or missed goals) per trajectory. (iii) success rate: the percent-age of trajectories that successfully reach the task goals. (iv) steps: the number of iterations required to train the learnable guidance (for gcar ) or optimize the action sequence via im-portance sampling (for MPPI). (v) time: wall-clock training and inference time per sample. 
+
+Results. Under the four compositional reward settings in Table 2, gcov-G generates hallucinated paths, trajectories that jump across obstacles or have sharp kinks (see Figure 16 for visualisations). Our gcar rectifies these failures, with average gains of 19 .0% safety, 38 .75% success, and 0.68 
+
+fewer violations per trajectory, at only 4 training iterations; PCGrad provides only marginal correction. GLASS-FKS, while strong overall, reaches 100% success at the cost of non-zero violations and ∼ 3.2× slower inference ( 533 vs. 
+
+168 ms). MPPI alone is a strong planning method, collision-free on static obstacles ( 100 safety, 0.0 violations), but its success drops to 63 –69% in dynamic and hybrid settings. MPPI+ gcar outperforms vanilla MPPI and achieves the best performance, lifting average safety to 97 .75% and success to 95% , including the previously hard static-goal setting (100 safety, 96 success). We further evaluate robustness by increasing the number of clustered static obstacles from 2 to 6 (Figure 15, Ap-pendix E.5): gcov-G ’s success rate collapses to 12% , while our method maintains 34% in the most complex setting. 
+
+6.4. Generative Decision-Making as Policies Tasks. We evaluate our method on high-dimensional manip-ulation tasks (PickCube and StackCube) in ManiSkill2 (Gu et al., 2023), where the policy predicts action chunks of horizon T from 3D point cloud observations. We aim to test the capability to reactively steer a general-purpose base pol-icy to satisfy on-the-fly requirements. The action is defined as at = ∆p, ∆r, g  ∈ R7, representing delta translation, (1) static  obstacle  (2) hybrid composition   
+
+> 𝑔 cov −G
+> 𝑔 car
+> (ours)
+> base
+> CFM
+> GLASS -
+> FKS
+> PCGrad
+> Collide with
+> 1 obstacle .
+> OOD. Fail.
+> OOD. OOD.
+> Struggle to stably and precisely
+> place one cube onto another.
+
+Figure 5. Visualization on ManiSkill2 StackCube with τ = 0 .20 .OOD: the trajectory leaves the data manifold, producing physically incoherent motions (e.g., erratic spinning or tangled paths); Fail:the trajectory stays on the manifold but fails the task (e.g., does not reach the goal). 
+
+rotation, and gripper state. We train a base CFM model solely on unconstrained demonstrations. Reward functions 
+
+r(x) include: (i) static obstacles; (ii) trajectory smoothness costs. 
+
+Evaluation metrics. We evaluate violations, success rate, training steps and time, following the definitions in Sec-tion 6.3. 
+
+Results. The base CFM model achieves a 100% success rate on both training and test sets (Appendix E.6). Na ¨ıve inference-time guidance tends to drift off-manifold and pro-duce out-of-distribution behavior: gcov-G generates hallu-cinated paths and fails to complete the tasks, and PCGrad even drives success to 0% on both StackCube settings; only 
+
+gcar rectifies these failures (Figures 5 and 19). Quantitatively (Table 3), under hybrid constraints, gcar reduces the base-line’s violation rate from 1.8 to 0.4 and boosts the success rate from 9% to 61% , with only ∼10% inference overhead over gcov-G (203 vs. 185 ms). GLASS-FKS struggles on StackCube ( 24 –32% ), which requires stably and precisely placing one cube onto another, due to its high sampling variance. 8Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Table 4. Comparison with baselines on CelebA-HQ. We evaluate composed prompts including sad + angry , sad + happy , and sad + curly hair . We report results with τ = 0 .20 . Full results are in Table 10.                                                   
+
+> Method LPIPS ↓ID ↑CLIP ↑BLIP-ITM ↑VQAScore ↑
+> FlowGrad 0.203 0.677 0.274 0.326 0.596 GLASS-FKS 0.313 0.329 0.253 0.082 0.311
+> gcov-G 0.217 0.543 0.290 0.525 0.751 PCGrad 0.219 ↓0.002 0.602 ↑0.059 0.276 ↓0.014 0.444 ↓0.081 0.578 ↓0.173
+> gcar (ours) 0.226 ↓0.009 0.681 ↑0.138 0.291 ↑0.001 0.597 ↑0.072 0.755 ↑0.004
+> Note: Bold text indicates the best performance. Rows with gray backgrounds indicate methods that use our gcar for conflict correction. Purple superscripts show the performance change of gcar over gcov-G , and teal superscripts show the change of PCGrad over gcov-G , where ↑denotes improvement and ↓denotes degradation. reference
+> 𝑔 cov −𝐺
+> FlowGrad
+> 𝑔 car (ours)
+> angry + sad
+> GLASS -FKS
+> PCGrad
+
+Figure 6. Visualization of text-guided generated faces. 
+
+6.5. Text-guided Image Manipulation Tasks. To evaluate the scalability of gcar in high-dimensional pixel spaces, we conduct text-guided image manipulation on CelebA-HQ. Following Liu et al. (2023b), we use a pre-trained Rectified Flow model as the genera-tive prior and steer it toward compositional text guidance 
+
+{sad + angry , sad + happy , sad + curly hair }, which target different facial expressions or traits. Following the same setup as Liu et al. (2023b), given an image x1, the reward for alignment with the text prompt is evaluated by the CLIP model (Radford et al., 2021), which is used to score the similarity between arbitrary image-text pairs. Experiment details are in Appendix E.7. 
+
+Baselines and metrics. Besides the baselines from Sec-tion 6.1, we additionally compare against the SOTA image editing method FlowGrad (Liu et al., 2023b). We report metrics in three groups: (i) Text-image alignment (higher is better): CLIP (Radford et al., 2021), plus two stronger perceptual measures, BLIP-ITM (Li et al., 2022) (a strict binary image-text matcher) and VQAScore (Lin et al., 2024) (compositional reasoning via LLaVA-1.5); (ii) Image qual-ity : LPIPS (lower is better preservation of the reference), ID similarity (higher is better identity preservation), and CLIP-IQA (Wang et al., 2023) (higher is fewer visual artifacts); (iii) Efficiency : training time and per-sample inference time. 
+
+Results. Visual comparisons (Figure 6) and quantitative metrics (Table 4) reveal that gcov-G is prone to off-manifold drift and produces hallucinated generations, with CLIP-IQA score only 0.535 . PCGrad cannot recover from off-manifold drift and struggles to balance multiple constraints, leaving some targets unfulfilled (e.g., failing to generate an “angry” expression, with BLIP-ITM P1=0 .650 vs. P2=0 .337 ; see Table 10). FlowGrad similarly lacks the ability to balance multiple constraints. GLASS-FKS fails to preserve the refer-ence image due to its high sampling variance, with the worst LPIPS ( 0.313 ) and ID ( 0.329 ). Our gcar finds a sweet spot between text-image alignment and image quality, achieving the highest ID ( 0.681 ), CLIP-IQA ( 0.543 ), and alignment scores (CLIP 0.291 , BLIP-ITM 0.597 , VQAScore 0.755 ); it effectively rectifies the off-manifold drift observed in gcov-G 
+
+and generates faces with minimal distortion. 
+
+7. Conclusions, Limitations, and Future Work 
+
+In this paper, we proposed Conflict-Aware Additive Guid-ance ( gcar ), a lightweight guided sampling method that in-corporates a conflict-aware gating mechanism to actively detect and rectify trajectory deviations. Experimental re-sults showed that flow models equipped with gcar achieved state-of-the-art steerability at inference time across diverse domains, including text-guided image editing, robotic plan-ning, and manipulation. A remaining challenge lies in convergence under complex re-ward landscapes. In high-dimensional tasks like text-guided image editing, the CLIP reward signal is non-smooth, pro-ducing adversarial artifacts that maximize the score with-out semantic improvement, making gψ hard to train sta-bly. Lighter alternatives to gψ , richer reward compositions, and more structured latent representations (Yu et al., 2024; Dunion et al., 2023) replacing the CLIP reward to yield smoother landscapes are all promising directions for future work. 9Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Acknowledgment 
+
+This research is supported by the RIE2025 Industry Align-ment Fund – Industry Collaboration Projects (IAF-ICP) (Grant No. I2501E0041), administered by A*STAR, as well as supported by Schaeffler (Singapore) PTE. LTD. and NTU Singapore through Schaeffler-NTU Corporate Lab: Intelli-gent Mechatronics Hub. 
+
+Impact Statement 
+
+This work improves the reliability of inference-time guid-ance for generative models under multiple, potentially conflicting objectives. By identifying gradient misalign-ment as a key source of off-manifold drift and proposing a lightweight correction mechanism, our method enables more faithful and stable generation without retraining large pretrained models. These advances support safer and more robust deployment of generative models in applications such as planning, control, and interactive content generation, where adherence to heterogeneous constraints is critical. 
+
+References 
+
+Albergo, M. S., Boffi, N. M., and Vanden-Eijnden, E. Stochastic interpolants: A unifying frame-work for flows and diffusions. arXiv preprint arXiv:2303.08797 , 2023. URL https://doi.org/ 10.48550/arXiv.2303.08797 .Balcerak, M., Amiranashvili, T., Shit, S., Terpin, A., Kaltenbach, S., Koumoutsakos, P., and Menze, B. H. Energy matching: Unifying flow matching and energy-based models for generative modeling. arXiv preprint arXiv:2504.10612 , 2025. URL https://doi.org/ 10.48550/arXiv.2504.10612 .Ben-Hamu, H., Puny, O., Gat, I., Karrer, B., Singer, U., and Lipman, Y. D-flow: Differentiating through flows for controlled generation. In International Conference on Machine Learning , 2024. Bouvier, J., Ryu, K., Nagpal, K., Liao, Q., Sreenath, K., and Mehr, N. DDAT: diffusion policies enforcing dy-namically admissible robot trajectories. arXiv preprint arXiv:2502.15043 , 2025. URL https://doi.org/ 10.48550/arXiv.2502.15043 .Chisari, E., Heppert, N., Argus, M., Welschehold, T., Brox, T., and Valada, A. Learning robotic manip-ulation policies from point clouds with conditional flow matching. In Conference on Robot Learning ,2024. URL https://proceedings.mlr.press/ v270/chisari25a.html .Chung, H., Kim, J., McCann, M. T., Klasky, M. L., and Ye, J. C. Diffusion posterior sampling for general noisy in-verse problems. In International Conference on Learning Representations , 2023. Domingo-Enrich, C., Drozdzal, M., Karrer, B., and Chen, R. T. Q. Adjoint matching: Fine-tuning flow and diffusion generative models with memoryless stochastic optimal control. In International Conference on Learning Repre-sentations , 2025. Du, M. and Song, S. Dynaguide: Steering diffusion po-lices with active dynamic guidance. arXiv preprint arXiv:2506.13922 , 2025. URL https://doi.org/ 10.48550/arXiv.2506.13922 .Du, Y. and Kaelbling, L. P. Compositional generative mod-eling: A single model is not all you need. arXiv preprint arXiv:2402.01103 , 2024. URL https://doi.org/ 10.48550/arXiv.2402.01103 .Dunion, M., McInroe, T., Luck, K. S., Hanna, J., and Al-brecht, S. V. Conditional mutual information for dis-entangled representations in reinforcement learning. In 
+
+Conference on Neural Information Processing Systems ,2023. Eiras, F., Hawasly, M., Albrecht, S. V., and Ramamoorthy, S. A two-stage optimization-based motion planner for safe urban driving. IEEE Transactions on Robotics , 38 (2):822–834, 2022. doi: 10.1109/TRO.2021.3088009. Feng, R., Yu, C., Deng, W., Hu, P., and Wu, T. On the guidance of flow matching. In International Conference on Machine Learning , 2025. Gu, J., Xiang, F., Li, X., Ling, Z., Liu, X., Mu, T., Tang, Y., Tao, S., Wei, X., Yao, Y., Yuan, X., Xie, P., Huang, Z., Chen, R., and Su, H. ManiSkill2: A unified benchmark for generalizable manipulation skills. In International Conference on Learning Representations , 2023. Holderrieth, P., Singer, U., Jaakkola, T., Chen, R. T. Q., Lipman, Y., and Karrer, B. GLASS flows: Transition sampling for alignment of flow and diffusion models. In 
+
+The Fourteenth International Conference on Learning Representations , 2026. Li, J., Li, D., Xiong, C., and Hoi, S. BLIP: Bootstrapping language-image pre-training for unified vision-language understanding and generation. In Proceedings of the 39th International Conference on Machine Learning , 2022. Lin, Z., Pathak, D., Li, B., Li, J., Xia, X., Neubig, G., Zhang, P., and Ramanan, D. Evaluating text-to-visual generation with image-to-text generation. In European Conference on Computer Vision (ECCV) , pp. 366–384, 2024. Lipman, Y., Chen, R. T. Q., Ben-Hamu, H., Nickel, M., and Le, M. Flow matching for generative modeling. In 10 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+International Conference on Learning Representations ,2023. Lipman, Y., Havasi, M., Holderrieth, P., Shaul, N., Le, M., Karrer, B., Chen, R. T. Q., Lopez-Paz, D., Ben-Hamu, H., and Gat, I. Flow matching guide and code. arXiv preprint arXiv:2412.06264 , 2024. URL https://doi.org/ 10.48550/arXiv.2412.06264 .Liu, J., Liu, G., Liang, J., Li, Y., Liu, J., Wang, X., Wan, P., Zhang, D., and Ouyang, W. Flow-GRPO: Training flow matching models via online RL. arXiv preprint arXiv:2505.05470 , 2025a. Liu, X., Gong, C., and Liu, Q. Flow straight and fast: Learning to generate and transfer data with rectified flow. In International Conference on Learning Representations ,2023a. Liu, X., Wu, L., Zhang, S., Gong, C., Ping, W., and Liu, Q. FlowGrad: Controlling the output of generative odes with gradients. In IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2023b. URL https://doi. org/10.1109/CVPR52729.2023.02331 .Liu, Z., Xiao, T. Z., Domingo-Enrich, C., Liu, W., and Zhang, D. Value gradient guidance for flow matching alignment. In The Thirty-ninth Annual Con-ference on Neural Information Processing Systems ,2025b. URL https://openreview.net/forum? id=6MmOy2Ji8V .Lu, C., Chen, H., Chen, J., Su, H., Li, C., and Zhu, J. Contrastive energy prediction for exact energy-guided diffusion sampling in offline reinforcement learning. In 
+
+International Conference on Machine Learning , 2023. Luo, Y., Sun, C., Tenenbaum, J. B., and Du, Y. Poten-tial based diffusion motion planning. In International Conference on Machine Learning , 2024. Onken, D., Fung, S. W., Li, X., and Ruthotto, L. Ot-flow: Fast and accurate continuous normalizing flows via op-timal transport. In AAAI Conference on Artificial Intel-ligence , 2021. URL https://doi.org/10.1609/ aaai.v35i10.17113 .Patel, M., Wen, S., Metaxas, D. N., and Yang, Y. FlowChef: Steering of rectified flow models for controlled genera-tions. In Proceedings of the IEEE/CVF International Con-ference on Computer Vision (ICCV) , pp. 15308–15318, October 2025. Pokle, A., Muckley, M. J., Chen, R. T. Q., and Karrer, B. Training-free linear image inverses via flows. Transactions on Machine Learning Research ,2024. URL https://openreview.net/forum? id=PLIt3a4yTm .Radford, A., Kim, J. W., Hallacy, C., Ramesh, A., Goh, G., Agarwal, S., Sastry, G., Askell, A., Mishkin, P., Clark, J., Krueger, G., and Sutskever, I. Learning transferable visual models from natural language supervision. In 
+
+International Conference on Machine Learning , 2021. R ¨omer, R., von Rohr, A., and Schoellig, A. P. Diffu-sion predictive control with constraints. arXiv preprint arXiv:2412.09342 , 2024. URL https://doi.org/ 10.48550/arXiv.2412.09342 .Singh, J. and Zheng, L. Divide, evaluate, and refine: Evaluat-ing and improving text-to-image alignment with iterative vqa feedback. In Thirty-seventh Conference on Neural Information Processing Systems , 2023. Song, J., Vahdat, A., Mardani, M., and Kautz, J. Pseudoinverse-guided diffusion models for inverse prob-lems. In The Eleventh International Conference on Learning Representations , 2023a. URL https:// openreview.net/forum?id=9_gsMA8MRKQ .Song, J., Zhang, Q., Yin, H., Mardani, M., Liu, M., Kautz, J., Chen, Y., and Vahdat, A. Loss-guided diffusion models for plug-and-play controllable generation. In Interna-tional Conference on Machine Learning , 2023b. Song, Y. and Kingma, D. P. How to train your energy-based models. arXiv preprint arXiv:2101.03288 , 2021. URL 
+
+https://arxiv.org/abs/2101.03288 .Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Er-mon, S., and Poole, B. Score-based generative modeling through stochastic differential equations. In International Conference on Learning Representations , 2021. Tong, A., Fatras, K., Malkin, N., Huguet, G., Zhang, Y., Rector-Brooks, J., Wolf, G., and Bengio, Y. Improving and generalizing flow-based generative models with mini-batch optimal transport. Transactions on Machine Learn-ing Research , 2024a. URL https://openreview. net/forum?id=CD9Snc73AW .Tong, A., Malkin, N., Fatras, K., Atanackovic, L., Zhang, Y., Huguet, G., Wolf, G., and Bengio, Y. Simulation-free Schr ¨odinger bridges via score and flow matching. In International Conference on Artificial Intelligence and Statistics , 2024b. URL https://proceedings. mlr.press/v238/y-tong24a.html .Urain, J., Funk, N., Peters, J., and Chalvatzaki, G. Se(3)-diffusionfields: Learning smooth cost functions for joint grasp and motion optimization through diffusion. In 
+
+IEEE International Conference on Robotics and Automa-tion , 2023. URL https://doi.org/10.1109/ ICRA48891.2023.10161569 .11 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Villani, C. et al. Optimal transport: old and new , volume 338. Springer, 2009. Wallace, B., Dang, M., Rafailov, R., Zhou, L., Lou, A., Purushwalkam, S., Ermon, S., Xiong, C., Joty, S., and Naik, N. Diffusion model alignment using direct pref-erence optimization. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition ,pp. 8228–8238, 2024. Wang, J., Chan, K. C., and Loy, C. C. Exploring CLIP for assessing the look and feel of images. In AAAI , 2023. Wang, Z., Harting, A., Barreau, M., Zavlanos, M. M., and Johansson, K. H. Source-guided flow matching. arXiv preprint arXiv:2508.14807 , 2025. Williams, G., Wagener, N., Goldfain, B., Drews, P., Rehg, J. M., Boots, B., and Theodorou, E. A. Information the-oretic MPC for model-based reinforcement learning. In 
+
+IEEE International Conference on Robotics and Automa-tion , 2017. URL https://doi.org/10.1109/ ICRA.2017.7989202 .Yu, J., Wang, Y., Zhao, C., Ghanem, B., and Zhang, J. Free-DoM: Training-free energy-guided conditional diffusion model. Proceedings of the IEEE/CVF International Con-ference on Computer Vision (ICCV) , 2023. Yu, T., Kumar, S., Gupta, A., Levine, S., Hausman, K., and Finn, C. Gradient surgery for multi-task learning. In Advances in Neural Information Processing Systems ,2020. Yu, X., Dunion, M., Li, X., and Albrecht, S. V. Skill-aware mutual information optimisation for zero-shot general-isation in reinforcement learning. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL https://openreview.net/ forum?id=GtbwJ6mruI .12 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards approximate guidance    
+
+> computation
+> exact guidance
+> correct off -manifold drift
+> 𝒈 𝒄𝒂𝒓
+> e.g., Guidance Matching (training -based),
+> CLASS -FKS (sample -based), …
+> e.g., 𝑔 𝑐𝑜𝑣 −𝐺 , …
+
+Figure 7. Inference-time guidance methods arranged by computational cost. Approximate guidance methods (e.g., gcov-G ) are lightweight but accumulate local approximation error, leading to off-manifold drift. Exact guidance methods (e.g., Guidance Matching, sample-based guidance) are exact but require substantially more compute. This work ( gcar ), which sits in the middle, aims to improve the compute-light approximate guidance by adding extra compute. 
+
+A. Extended related works 
+
+A.1. Inference-time alignment 
+
+Inference-time alignment methods for flow matching models refer to steering the generated samples toward some constraints, e.g., sampling from a distribution weighted with some objective function (Lu et al., 2023) or conditioned on class labels (Song et al., 2021), and all constraints can be framed as reward functions r : Rd → R. Approaches to inference-time reward alignment for flow models can be divided into three broad paradigms: 
+
+Inference-time guidance. Inference-time guidance addresses the reward-tilted sampling problem by adding a guidance vector field gt(xt) to the pretrained velocity vθ (xt, t ) during ODE integration, leaving the pretrained model unchanged. A unified theoretical framework for this family was established by Feng et al. (2025), who derive the exact guidance vector field for general flow matching: 
+
+gt(xt) = Ez∼p(z|xt)
+
+h er(x1) 
+
+> Zt(xt)
+
+− 1
+
+
+
+vt|z (xt|z)
+
+i
+
+,
+
+where Zt(xt) = Ez∼p(z|xt)[er(x1)] is an intractable normalising constant. Methods in this family differ in how they approximate gt.
+
+Approximate guidance replaces the intractable posterior average with a point estimate via Tweedie’s formula, adapting well-studied diffusion guidance methods including DPS (Chung et al., 2023), ΠGDM (Song et al., 2023a), and LGD (Song et al., 2023b) to the flow matching setting; Feng et al. (2025) unify these under the flow-matching extension gcov-G . These methods are computationally lightweight but incur an approximation error, as we show in Section 4; see also Feng et al. (2025). 
+
+Exact guidance methods avoid this bias at the cost of additional computation. On the training-free side, Monte Carlo guidance ( gMC , Feng et al., 2025) estimates gt by drawing N samples from the prior p(z) and self-normalising; it is asymptotically exact but suffers from high variance, especially in high-dimensional spaces. GLASS-FKS (Holderrieth et al., 2026), which steers GLASS flows via Feynman-Kac sampling, improves sampling efficiency but still inherits the high variance. On the training-based side, Guidance Matching (Feng et al., 2025) learns a network gψ to directly approximate gt
+
+via tractable surrogate losses, which however require ground-truth samples sastify all constraints. 
+
+Optimization-based controlled generation. A second paradigm frames controlled generation as a direct optimization problem: given a differentiable objective (cost or reward), one searches for an initial noise, latent trajectory, or auxiliary variable that, after running the generative ODE/SDE, produces a sample of high reward. Representative methods differentiate through the entire sampling ODE to back-propagate reward gradients into the input space, including D-Flow (Ben-Hamu et al., 2024), FlowGrad (Liu et al., 2023b), and source-guided flow matching (Wang et al., 2025). These methods pursue a fundamentally different objective from the guidance framework we adopt: rather than sampling from the reward-tilted distribution p′
+
+> 1
+
+(x1) ∝ pbase  
+
+> 1
+
+(x1) er(x1), they solve an optimization problem. 
+
+Reward fine-tuning. A third paradigm modifies the pretrained model weights to maximize the reward, based on GRPO (Liu et al., 2025a), stochastic optimal control (Domingo-Enrich et al., 2025), DPO (Wallace et al., 2024), or other reinforcement learning approaches. They differ in how this optimization problem is solved; for example, VGG-Flow (Liu 13 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+et al., 2025b) fine-tunes the velocity field via a reward-importance-weighted flow matching loss, whereas Adjoint Matching (Domingo-Enrich et al., 2025) back-propagates through the entire ODE trajectory using the continuous adjoint equations. Many fine-tuning methods require DDPM/SDE sampling for exploration during training (Liu et al., 2025a; Domingo-Enrich et al., 2025), which is significantly less efficient than ODE sampling and couples the method to a specific reward at training time; adapting to a new reward requires retraining from scratch. We instead focus on exploring how to best leverage the pretrained flow model at inference time, without any fine-tuning. 
+
+A.2. Value gradient guidance 
+
+A related line of work defines the guidance signal as the gradient of a learned value function g(xt, t ) ≜ ∇xt V (xt, t ), with 
+
+V (xt, t ) ≈ E[r(x1) | xt]. VGG-Flow (Liu et al., 2025b) instantiates this idea by co-training a value-gradient network with the fine-tuned velocity via an HJB consistency loss. As a fine-tuning method, however, VGG-Flow couples the model to a single fixed reward at training time and targets a different problem from the one we tackle. In contrast, gcar focuses on off-manifold drift at inference time, redirecting trajectories back onto the data manifold via value-gradient guidance without modifying pretrained weights, and can be applied on top of any approximate guidance. 14 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards (a) Energy landscape  𝐸 1 (b) Energy landscape  𝐸 2 (c) Energy landscape  𝐸 1 + 𝐸 2 (d)  1 − cos 𝜙   
+
+> Spurious Local
+> Minimum 𝒙 †
+> Global
+> Minimum 𝒙 ⋆
+
+Figure 8. Spurious local minimum from gradient misalignment. (a, b) Individual energy landscapes for two multi-modal reward functions, Ej = −rj , each with two global minima (stars). One mode at (8 , −8) is shared, i.e., the x⋆ 
+
+> 1
+
+. (c) The compositional energy landscape E = E1 + E2 = −(r1 + r2) has a spurious local minimum x† (top): x†̸ = x⋆ 
+
+> 1
+
+, and x† maximizes neither any individual reward rj nor their sum. (d) The spurious local minimum coincides with the region of maximum gradient conflict (dark red, where 
+
+∇E1 ≈ −∇ E2), where energy dissipation traps nearby trajectories rather than steering them to x⋆ 
+
+> 1
+
+.
+
+B. Geometric interpretation: “energy trap” under gradient misalignment 
+
+Before the formal analysis in Appendix C, we provide a geometric interpretation of why gradient misalignment creates an “energy trap” in the guidance field. 
+
+Global optimum and spurious local minimum. Consider a compositional reward problem with G reward functions 
+
+{rj }Gj=1 . The global optimum is expected to maximize all rewards: 
+
+x⋆ 
+
+> 1
+
+= arg max 
+
+> x1
+> G
+
+X
+
+> j=1
+
+rj (x1). (20) From the energy-guided sampling perspective, the compositional energy landscape on the predicted terminal state ˆx1 =
+
+E[x1 | xt] is E(ˆ x1) ≜ − PGj=1 rj (ˆ x1), with per-reward guidance gj (xt) ≜ ∇xt rj (ˆ x1) and compositional guidance 
+
+gt(xt) ≜ PGj=1 gj (xt). The guided trajectory evolves as ˙xt = vbase  
+
+> t
+
+(xt) + gt(xt), and the sampler’s terminal states lie in the set of stable equilibria of E,
+
+S ≜
+
+n
+
+x : ∇E(x) = 0 , Hess E(x) ≻ 0
+
+o
+
+. (21) By construction, x⋆ 
+
+> 1
+
+∈ S : the global optimum is a stable equilibrium. In general, however, {x⋆
+
+> 1
+
+} ⊊ S, formally: 
+
+Definition B.1 (Spurious local minimum) . A point x† is a spurious local minimum of the compositional energy E if it is a stable equilibrium that is not the global optimum: 
+
+x† ∈ S \ { x⋆
+
+> 1
+
+}, i.e., ∇E(x†) = 0 , Hess E(x†) ≻ 0, and x†̸ = x⋆
+
+> 1
+
+. (22) By construction, the compositional guidance vanishes at x† (PGj=1 gj (x†) = 0 ), but x† maximizes neither any individual reward rj nor their sum; the vanishing arises through destructive interference between non-zero reward gradients (Yu et al., 2020) rather than through reward maximization. 2
+
+As the trajectory approaches the basin of any x†, it drifts off-manifold. 
+
+Energy dissipation under gradient misalignment. To characterize the mechanism that drives trajectories off-manifold, we quantify the effective driving force of the compositional guidance via its squared norm. Expanding ∥gt(xt)∥2 at any 
+
+> 2
+
+From a probabilistic perspective, the log-density landscape P 
+
+> j
+
+rj corresponds to a Product of Experts (PoE) formulation. A well-documented theoretical pathology of PoE and energy-based models is their propensity to generate spurious modes — unintended attractors that emerge between the unaligned peaks of the constituent distributions. In the optimization literature, these are formally referred to as spurious local minima .
+
+15 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards (a)  𝜙 𝑗𝑘 = 0 perfectly collinear  (b)  0 < 𝜙 𝑗𝑘 < 90 ° (c)  𝜙 𝑗𝑘 > 90°  destructive interference                                            
+
+> Δ𝐸 𝑥 𝑡 =0
+> PCGrad no action (aligned)
+> GCAR no action (aligned)
+> Δ𝐸 𝑥 𝑡 >0
+> PCGrad ✗no action ( 𝑐𝑜𝑠 𝜙 𝑗𝑘 > 0)
+> GCAR ✓corrects via 𝑔 𝜓
+> Δ𝐸 𝑥 𝑡 >0
+> PCGrad: ✓projects ( 𝑐𝑜𝑠 𝜙 𝑗𝑘 < 0)
+> GCAR: ✓corrects via 𝑔 𝜓
+> 𝑥 1𝑥 𝑡
+> 𝑔 𝑗 +𝑔 𝑘 𝑔 𝑗
+> 𝑔 𝑘
+> 𝑥 𝑡
+> 𝑥 1
+> 𝜙 𝑗𝑘 𝑔 1+𝑔 2
+> 𝑔 𝑘
+> 𝑔 𝑗
+> 𝑥 1
+> 𝑥 𝑡
+> 𝜙 𝑗𝑘
+> 𝑔 𝑘
+> 𝑔 𝑗 𝑔 1+𝑔 2
+> (d) energy dissipation ∝𝑔 𝑗 𝑔 𝑘 1−𝑐𝑜𝑠 𝜙 𝑗𝑘
+
+Figure 9. Energy dissipation under gradient misalignment. (a) When ϕjk = 0 ◦, reward gradients are perfectly collinear, ∆E(xt) = 0 ,and no correction is needed. (b) When 0◦ < ϕ jk < 90 ◦, gradients are misaligned but remain in the same half-space. PCGrad detects no conflict ( cos ϕjk > 0) and takes no action, yet ∆E(xt) > 0; our gcar identifies this misalignment and corrects it. (c) When ϕjk > 90 ◦,gradients undergo destructive interference. PCGrad intervenes via projection, whereas gcar corrects the trajectory via learned residual guidance. (d) Energy dissipation ∆E ∝ ∥ gj ∥∥ gk ∥(1 − cos ϕjk ) scales with the gradient angle. 
+
+state xt: GX
+
+> j=1
+
+gj (xt) 2
+
+= X
+
+> j
+
+∥gj (xt)∥2
+
+| {z }
+
+> self-energy
+
++ 2 X
+
+> j<k
+
+∥gj (xt)∥ ∥ gk(xt)∥ cos ϕjk (xt)
+
+| {z }
+
+> cross-energy
+
+, (23) where ϕjk (xt) denotes the angle between gj (xt) and gk(xt). By the triangle inequality, the maximum compositional guidance is   P  
+
+> j
+
+∥gj (xt)∥2, realized if and only if all gradients are perfectly collinear ( cos ϕjk (xt) = 1 for all j < k ). We define the deficit between this collinear capacity and the realized compositional guidance as the energy dissipation: 
+
+Definition B.2 (Energy dissipation under gradient misalignment) . For any state xt, the energy dissipation of the composi-tional guidance is 
+
+∆E(xt) ≜
+
+ X 
+
+> j
+
+∥gj (xt)∥
+
+2
+
+− X
+
+> j
+
+gj (xt) 2
+
+= 2 X
+
+> j<k
+
+∥gj (xt)∥ ∥ gk(xt)∥  1 − cos ϕjk (xt) ≥ 0. (24) 
+
+∆E(xt) ≥ 0, with equality if and only if all reward gradients are perfectly aligned at xt (cos ϕjk (xt) ≡ 1). As pairwise gradient misalignment grows, the compositional guidance energy structurally dissipates: the trajectory loses its driving force and becomes trapped at a spurious local minimum of the energy landscape (as visualised in Figure 9(d)). At the terminal time step, the trajectory enters the basin of a spurious local minimum x† ∈ S \ { x⋆
+
+> 1
+
+}, where P 
+
+> j
+
+gj (x†) = 0 
+
+and the dissipated energy is ∆E(x†) = 2 P 
+
+> j<k
+
+∥gj (x†)∥ ∥ gk(x†)∥  1 − cos ϕjk (x†).
+
+PCGrad and its structural limitations. PCGrad (Yu et al., 2020) is a widely adopted gradient-conflict resolution method for multi-objective optimisation, but it addresses only destructive interference ( cos ϕjk < 0) and resolves it via gradient surgery, projecting the conflicting component of each gradient onto the normal plane of the other. In standard multi-task optimisation, with smooth losses and thousands of accumulated optimiser steps, a transiently weakened gradient update is easily recovered in subsequent iterations, and the composite gradient reliably descends the loss landscape. In inference-time guided sampling, however, this logic breaks down. The guidance signal gt(xt) must steer the trajectory toward x1 at every timestep, and there are no future updates at a fixed state to recover the dissipated guidance energy. Whenever pairwise misalignment 1 − cos ϕjk > 0, trajectory loses driving force and drifts toward a spurious equilibrium x†.16 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+C. Guided sampling and approximation error 
+
+In this section, we analyze approximation errors utilizing the optimal coupling formulation and provide a detailed proof of the approximation error bound. 
+
+C.1. Optimal coupling and triad decomposition 
+
+Optimal guided sampling modifies the generation process by reweighting the latent coupling π(z) to target a tilted distribution p⋆
+
+> 1
+
+(x1) ∝ p1(x1)er(x1). In the context of the transport problem, a change in the target marginal p⋆
+
+> 1
+
+(x1) implies a modification of the optimal transport plan. To quantify this discrepancy, we consider the measures π and π⋆ on the latent space. Assuming absolute continuity of the tilted coupling π⋆(· | x1) with respect to the base coupling π(· | x1) (i.e., 
+
+π⋆ ≪ π), the Radon-Nikodym derivative exists and we term this derivative the coupling shift: 
+
+P(z) ≜ dπ ⋆(· | x1)
+
+dπ (· | x1) (z). (25) Formally, conditioned on a fixed terminal state x1, P(z) measures the relative density shift between the conditional distribution of the true optimal transport plan π⋆(· | x1) and the pre-trained base coupling π(· | x1). If we were to simply perform Bayesian reweighting (as in standard classifier guidance), P(z) ≡ 1. However, enforcing optimality in the transport cost introduces a shift P(z)̸ = 1 .Recall the definition of the conditional probability π(z) = π(x0 | x1)p1(x1). Substituting the target marginal p⋆
+
+> 1
+
+(x1) ∝
+
+p1(x1)er(x1) and the coupling shift P(z) = π⋆(x0|x1) 
+
+> π(x0|x1)
+
+, we derive the triad decomposition (Equation (10) in main text) as follows: 
+
+π⋆(z) = π⋆(x0 | x1) p⋆
+
+> 1
+
+(x1)= [ P(z) · π(x0 | x1)] ·
+
+ 1
+
+Z⋆ p1(x1)er(x1)
+
+
+
+= 1
+
+Z⋆ · P (z)
+
+| {z } 
+
+> Coupling
+
+· eR(z)
+
+| {z } 
+
+> Reward
+
+· π(z)
+
+|{z} 
+
+> Base Prior
+
+, (26) where R(z) ≜ r(Ψ 1(z)) denotes the trajectory-level reward, and π(z) = π(x0 | x1)p1(x1). Note that, in a guided transport problem, the source distribution must remain anchored to the pre-defined prior (e.g., standard Gaussian) to ensure tractable inference; Thus, P(z) acts as a structural correction term: it represents the necessary re-organization of the transport plan, specifically the shift in the conditional π(x0 | x1), necessary to satisfy the new target boundary p⋆ 
+
+> 1
+
+while simultaneously preserving the fixed source marginal p0.
+
+Two-stage approximation. As outlined in the main text, practical guided sampling simplifies Equation (26) via two approximations. 
+
+π⋆ Coupling-Invariant 
+
+−−−−−−−−−→ 
+
+> P(z)≈1
+
+πCI Local Approx. 
+
+−−−−−−−→ 
+
+> ˆV(xt)
+
+πapprox .
+
+First, we have the Coupling-Invariant Approximation (CIA) , which assumes the conditional transport π(x0|x1) remains unchanged, i.e., P(z) ≡ 1:
+
+πCI (z) = eR(z)
+
+ZCI π(z), ZCI = Eπ(z)[eR(z)]. (27) The coupling shift P(z) is required to anchor the transport to the fixed prior p0. By assuming P(z) ≡ 1, the Coupling-Invariant Approximation theoretically shifts the optimal source to a reweighted density pbias  
+
+> 0
+
+(x0) ∝ p0(x0)E[er(x1)|x0].Since inference restricts sampling to p0 rather than pbias  
+
+> 0
+
+, a boundary mismatch arises. This discrepancy leads to off-manifold drift and error accumulation. Second, to make the guidance realizable at any time step t, we apply a Localized Approximation . We approximate the trajectory reward V (z) using a first-order Taylor expansion around the expected future state ˆx1 = E[x1|xt]: ˆV (z) ≈
+
+V (xt) + ∇V (xt)⊤(x1 − ˆx1). Since the constant terms cancel out during normalization, this results in the realizable coupling measure driven by the gradient: 
+
+πapprox (z) = e ˆV (z)
+
+ˆZ π(z), ˆZ = Eπ(z)[e ˆV (z)]. (28) 17 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+The effective guidance is thus determined solely by the gradient direction ∇V (xt).3
+
+Equation (26) explicitly demonstrates that the optimal coupling is governed by a triad of factors: the structural coupling shift (P(z)), the trajectory reward ( eR(z)), and the base prior ( π(z)). We formally derive the upper bound of the approximation error shortly. Before doing so, we revisit the two-stage approximation to clarify how it specifically targets these components: the coupling shift ( P) is neglected via the Coupling-Invariant assumption, and the trajectory reward ( eR(z)) is estimated via the Localized Approximation. 
+
+C.2. Approximation error via the Benamou–Brenier theorem 
+
+Flow models construct probabilistic transport plans that move mass from a source measure p0 to a target measure p1, and the squared Wasserstein distance W 22 (p0, p 1) quantifies the minimal kinetic energy required for this transport. By the Benamou–Brenier theorem: 
+
+W 22 (p0, p ⋆
+
+> 1
+
+) = inf  
+
+> (pt, v t): p0
+> vt
+
+−→p⋆
+
+> 1
+
+Z 10
+
+Ext∼pt
+
+∥vt(xt)∥2 dt =
+
+Z 10
+
+E∥vbase  
+
+> t
+
++ g⋆t ∥2 dt, (29) where g⋆t is the optimal guidance field that steers mass toward the reward-tilted target p⋆
+
+> 1
+
+. Under the two-stage approximation (CIA + Localized Approximation) for compositional rewards R = P 
+
+> j
+
+rj , g⋆t is replaced by the realized guidance gapprox  
+
+> t
+
+=
+
+P 
+
+> j
+
+gapprox  
+
+> j
+
+, where each gapprox  
+
+> j
+
+= ∇xt rj (ˆ x1) with ˆx1 = E[x1 | xt]. The realized field ˆvt = vbase  
+
+> t
+
++ gapprox  
+
+> t
+
+therefore only transports p0 to ˆp1̸ = p⋆
+
+> 1
+
+.We quantify the resulting approximation error E ≜ W 22 (ˆ p1, p ⋆
+
+> 1
+
+) using the stability of the continuity equation (Villani et al., 2009), which bounds the terminal distributional discrepancy by the time-integrated squared velocity field difference along the optimal path p⋆t :
+
+E ≜ W 22 (ˆ p1, p ⋆
+
+> 1
+
+) ≤
+
+Z 10
+
+Ext∼p⋆t
+
+∥v⋆t (xt) − ˆvt(xt)∥2 dt =
+
+Z 10
+
+Ext∼p⋆t
+
+∥g⋆t − gapprox  
+
+> t
+
+∥2 dt. (30) Since compositional guided sampling sums per-reward gradients directly, gapprox  
+
+> t
+
+= P 
+
+> j
+
+gapprox  
+
+> j
+
+, the P 
+
+> j
+
+gCI  
+
+> j
+
+(distinct from 
+
+gCI  
+
+> t
+
+for R) sits naturally between gCI  
+
+> t
+
+and gapprox  
+
+> t
+
+. Young’s inequality ∥a + b∥2 ≤ 2∥a∥2 + 2 ∥b∥2 along the chain 
+
+g⋆t → gCI  
+
+> t
+
+→ P 
+
+> j
+
+gCI  
+
+> j
+
+→ gapprox  
+
+> t
+
+,
+
+yields three terms: the CIA step (first arrow), the Localized step (third), and an analytical decomposition (middle) specific to the compositional setting: 
+
+E ≤ 
+
+Z 10
+
+Ext∼p⋆t
+
+∥g⋆t − gapprox  
+
+> t
+
+∥2 dt 
+
+≤
+
+Z 10
+
+Ext∼p⋆t
+
+"
+
+2∥g⋆t − gCI  
+
+> t
+
+∥2 + 2 gCI  
+
+> t
+
+− P 
+
+> j
+
+gCI 
+
+> j
+> 2
+
++ 2 P 
+
+> j
+
+gCI  
+
+> j
+
+− gapprox 
+
+> t
+> 2
+
+#
+
+dt 
+
+≲ CCI 
+
+Z 10
+
+EEπCI 
+
+(P(z) − 1) 2 dt 
+
+| {z }
+
+> (A) Coupling shift error
+
++ Kdeficit 
+
+| {z } 
+
+> (B) gradient misalignment error
+
++ G
+
+Z 10
+
+E
+
+" λhσ1der(ˆ x1)
+
+2
+
+(C1 + C2)
+
+#
+
+dt 
+
+| {z } 
+
+> (C) Localized approximation error (Feng et al., 2025), scaled by G
+
+. (31) Each term corresponds to one step in the approximation chain. We detail each component below. 
+
+(A) Coupling shift error. Term (A) arises from replacing g⋆t with gCI  
+
+> t
+
+under the Coupling-Invariant Approximation, 
+
+P(z) := dπ ⋆(·| x1) 
+
+> dπ (·| x1)
+
+(z) ≈ 1, i.e., assuming the conditional transport plan requires no reorganisation when the target shifts 
+
+> 3
+
+Formally, let Ct ≜ V (xt) − ∇ V (xt)⊤ ˆx1 denote the terms constant with respect to z. The normalization implies: πapprox (z | xt) =        
+
+> eCt+∇V(xt)⊤x1π(z|xt)
+> ReCt+∇V(xt)⊤x1π(z|xt)dz
+
+= eCt e∇V (xt)⊤x1 π(z|xt)      
+
+> eCtRe∇V(xt)⊤x1π(z|xt)dz
+
+= eCt
+
+eCt  
+
+> e∇V(xt)⊤x1
+> ˆZ
+
+π(z | xt). This derivation shows that the guidance is driven purely by the gradient component ∇V (xt)⊤x1, rendering the absolute magnitude of the value V (xt) irrelevant. 
+
+18 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+from p1 to p⋆
+
+> 1
+
+. By Cauchy–Schwarz: 
+
+∥g⋆t (xt) − gCI  
+
+> t
+
+(xt)∥22 = Ez∼πCI (·| xt)
+
+(P(z) − 1) vt|z (xt|z) 22
+
+≤ Ez∼πCI (·| xt)
+
+(P(z) − 1) 2 · Ez∼πCI (·| xt)
+
+∥vt|z (xt|z)∥22
+
+. (32) Term (A) is small when the coupling shift is negligible ( P(z) ≈ 1), which holds for flow matching methods with dependent couplings such as mini-batch OT-FM (Tong et al., 2024a), but not for vanilla OT-FM (Onken et al., 2021). 
+
+(B) Gradient misalignment error. We analyze Term (B) in two cases: (B1) When G = 1 or cos ϕjk = 1 for all pairs, Term (B) = 0 . (B2) When G > 1 and cos ϕjk < 1 for some pair, Term (B) > 0.In case (B2), we further quantify Term (B) by showing how the pointwise energy dissipation accumulates along the sampling trajectory, ultimately trapping it at a spurious local minimum at the terminal time step (Definition B.1). 
+
+Proposition C.1 (Trajectory-level energy dissipation) . For G ≥ 2, let cos ϕt(xt) := 2
+
+> G(G−1)
+
+P 
+
+> j<k
+
+cos ϕjk (xt) denote the average pairwise cosine similarity at state xt. Under the assumption ∥gCI  
+
+> j
+
+∥ ≈ μ for all j, the trajectory-level energy deficit is 
+
+Kdeficit ≜
+
+Z 10
+
+Ext∼p⋆t [∆ E(xt)] dt = G(G − 1) μ2
+
+Z 10
+
+Ext∼p⋆t [1 − cos ϕt(xt)] dt ≥ 0. (33) 
+
+Kdeficit = 0 iff cos ϕt ≡ 1 almost everywhere, recovering case (B1). As conflict grows ( cos ϕt → − 1), Kdeficit increases linearly in (1 − cos ϕt) and quadratically in G through G(G − 1) μ2. This dissipated energy is structurally unavoidable under additive guidance and must be explicitly supplied by a corrective field gψ to escape the basins of spurious local minima (Definition B.1). 
+
+Note that the squared discrepancy ∥gCI  
+
+> t
+
+− P 
+
+> j
+
+gCI  
+
+> j
+
+∥2 arises solely from gradient misalignment 4. Hence, Term (B) in Eq. (31) is bounded by the energy deficit: 
+
+2
+
+Z 10
+
+E
+
+
+
+gCI  
+
+> t
+
+− P 
+
+> j
+
+gCI 
+
+> j
+> 2
+
+
+
+dt ≲ Kdeficit , (34) where absolute constants are absorbed into the ≲ symbol. In case (B1), Kdeficit = 0 .
+
+(C) Localized approximation error. The third term arises from replacing each gCI  
+
+> j
+
+with its first-order Taylor estimate 
+
+gapprox  
+
+> j
+
+around ˆx1. This linearization error has been analysed in detail by Feng et al. (2025) for the single-reward setting. For the compositional setting, Cauchy–Schwarz across the G rewards yields 
+
+X
+
+> j
+
+gCI  
+
+> j
+
+− gapprox 
+
+> t
+> 2
+
+≤ G X
+
+> j
+
+∥δg j ∥2 ≲ G
+
+ λh σ1 der(ˆ x1)
+
+2
+
+(C1 + C2), (35) i.e., Feng et al. (2025)’s per-reward bound scaled linearly by G. Term (C) decreases when the reward is smooth (small λh), near t → 1 (small σ1), or ˆx1 lies in a high-reward region (large er(ˆ x1)). 
+
+Put it together. Theorem C.2 (Upper bound of Approximation Error in Compositional Reward Setting) . Let v⋆t be the exact guided velocity field and ˆvt be the realized field under the Coupling-Invariant Approximation and Localized Approximation. The total 
+
+> 4
+
+Expanding directly: ∥gCI  
+
+> t
+
+− P 
+
+> j
+
+gCI  
+
+> j
+
+∥2 = ∥gCI  
+
+> t
+
+∥2 − 2⟨gCI  
+
+> t
+
+, P 
+
+> j
+
+gCI  
+
+> j
+
+⟩ + ∥ P 
+
+> j
+
+gCI  
+
+> j
+
+∥2. Under the structural assumptions (i) ∥gCI  
+
+> t
+
+∥2 =(P 
+
+> j
+
+∥gCI  
+
+> j
+
+∥)2 (aligned-ideal magnitude) and (ii) ⟨gCI  
+
+> t
+
+, P 
+
+> j
+
+gCI  
+
+> j
+
+⟩ = ∥ P 
+
+> j
+
+gCI  
+
+> j
+
+∥2 (full projection onto the sum direction), the self-terms 
+
+P 
+
+> j
+
+∥gCI  
+
+> j
+
+∥2 cancel, leaving ∥gCI  
+
+> t
+
+− P 
+
+> j
+
+gCI  
+
+> j
+
+∥2 = 2 P 
+
+> j<k
+
+∥gCI  
+
+> j
+
+∥∥ gCI  
+
+> k
+
+∥(1 − cos ϕjk ) = ∆ E(xt).
+
+19 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+approximation error E ≜ W 22 (ˆ p1, p ⋆
+
+> 1
+
+) satisfies: 
+
+E ≲ CCI 
+
+Z 10
+
+EEπCI 
+
+(P(z) − 1) 2 dt 
+
+| {z }
+
+> (A) coupling shift error
+
++ G(G − 1) μ2
+
+Z 10
+
+E[1 − cos ϕt(xt)] dt 
+
+| {z }
+
+> (B) gradient misalignment error (Proposition C.1)
+
++ G
+
+Z 10
+
+E
+
+" λh σ1 der(ˆ x1)
+
+2
+
+(C1 + C2)
+
+#
+
+dt 
+
+| {z }
+
+> (C) localized approximation error (Feng et al., 2025)
+
+, (36) 
+
+where CCI := sup t∈[0 ,1] EπCI [∥vt|z ∥22] only depends on the base velocity field, cos ϕt(xt) := 2
+
+> G(G−1)
+
+P 
+
+> j<k
+
+cos ϕjk is the average pairwise cosine similarity at (xt, t ), μ := ∥gCI  
+
+> j
+
+∥ is the per-reward CI guidance magnitude. Following Feng et al. (2025), λh is the spectral norm of the Hessian of er , σ1 is the spectral norm of the conditional covariance Σ1|t, and C1, C 2
+
+are constants depend on base flow. The error bound provides four key insights into the realized guidance ˆgt:1. The error is small when the reward landscape is smooth , i.e., small λh = ∥∇ 2er ∥2. A flat reward landscape without sharp peaks or valleys implies less aggressive curvature, thereby minimizing the linearization error in Term (C). 2. The error is small when σ1 is small , i.e., the conditional covariance Σ1|t has small spectral norm, meaning that at the current state xt the uncertainty about the terminal point x1 is low. This is the case when the flow time t → 1 (and 
+
+σt → 0), where xt reliably predicts x1.3. The magnitude of er(ˆ x1) reflects how well the predicted endpoint ˆx1 = E[x1|xt] matches the reward objective. If ˆx1
+
+lies inside the region where r is large, the approximate guidance is more accurate, as the optimization is conducted locally and the gradient reflects the landscape well. If er(ˆ x1) is small, the gradient explores the sample space almost randomly, producing larger approximation error. 4. The error scales with the number of reward functions G and gradient misalignment (1 − cos ϕ).
+
+20 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+D. Guided sampling through the lens of fitted value evaluation 
+
+Unlike diffusion models, Flow models are governed by deterministic ODE processes. By leveraging this deterministic coupling and applying Jensen’s inequality (or assuming the reward variance over the posterior is small), we approximate the soft value function with the expected return: V (xt, t ) ≈ Ez∼π(z|xt)[r(x1)] . This simplification avoids the computational instability of the log-sum-exp operation while preserving the guidance direction. However, a central challenge remains: the optimal guidance depends on the future endpoint x1 ∼ p(x1 | xt), making analytical evaluation computationally prohibitive. We address this by introducing a value (reward-to-go) function V (x, t ) to summarize the expected terminal reward, modeled via the Bellman backup operator induced by the guided velocity field. 
+
+Proposition D.1 (Fitted Value Evaluation) . Let F denote the function class (e.g., neural networks) used to approximate the value function. We collect a dataset of transitions D = {(x, t, r, x ′, t ′)} generated under the current guided dynamics, where t′ = t + ∆ t and r is the reward. The value function can be estimated empirically by minimizing a least-squares Bellman residual: 
+
+ˆVk+1 = arg min   
+
+> V∈F
+
+ED
+
+h r + γ ˆVk(x′, t ′) − V (x, t )2i
+
+. (37) 
+
+subject to the boundary condition ˆVk(x, 1) ≡ r(x) for terminal states. Here, γ ∈ (0 , 1] is the discount factor, and ˆVk is the target from the previous iteration 5. Equation (37) empirically approximates the Bellman backup operator T v′
+
+using finite data and a function class F. Upon convergence, the learnable guidance is derived as the gradient of the estimated value: 
+
+g(xt, t ) ≜ ∇x ˆV (xt, t ), (38) 
+
+which provides a Markovian surrogate for the computationally expensive exact guidance (Equation (6) ). 
+
+Notice that the definition g(xt, t ) ≜ ∇x ˆV (xt, t ) has also appeared in prior work (Liu et al., 2025b), where it is motivated from an optimal control perspective in the context of controlled generation via differentiating through the ODE sampling process. Recall that our goal here is to estimate the Bellman backup operator T v′
+
+(i.e., the generative dynamic from an intermediate state xt to the terminal state x1). So we do not rely on g⋆ to quantify the optimality of the guidance term; instead, we use it purely as a tractable surrogate for the dependence of guidance on future states. Below, we provide a simple proof to justify this construction. 
+
+Proof. We view the generative dynamics as a Markov process whose policy is given by the guided velocity v′(x, t ) = 
+
+vbase (x, t ) + g(x, t ). Under this policy, we define a value (reward-to-go) function that summarizes the expected future reward induced by the guided dynamics. Specifically, the value function is required to satisfy Bellman consistency 
+
+V (x, t ) = E[r + γ V (x′, t ′) | x] , x′ ∼ T v′
+
+(· | x), (39) where T v′
+
+denotes the transition operator induced by the guided velocity field (stepping from t to t′) and γ ∈ (0 , 1] is a discount factor. In the generative setting considered here, the reward is sparse: r = 0 for all t ∈ [0 , 1) , and reward is accrued only at the terminal state x1.The value function V v′
+
+is thus characterized as a fixed point of the Bellman operator T v′
+
+, i.e., V v′
+
+= T v′
+
+V v′
+
+. One possible approach is to compute the Bellman backup operator T v′
+
+by exhaustive bootstrapping. However, in high-dimensional state spaces, it is infeasible to enumerate or traverse all states. We therefore approximate the Bellman operator by data and function approximation, implemented via Fitted Value Evaluation (FVE). Let F denote a function class used to approximate the value function, and let D = {(x(i), t (i), r (i), x ′(i), t ′(i))}Ni=1 be a dataset of one-step transitions collected from rollouts under the guided dynamics. We define the empirical Bellman backup 
+
+bT v′
+
+V (x, t ) ≜ r + γV (x′, t ′), (x, t, r, x ′, t ′) ∼ D . (40) Using this empirical operator, we perform fitted value evaluation (FVE) by iteratively projecting the Bellman backup onto 
+
+F:
+
+Vk+1 = arg min   
+
+> V∈F
+
+ED
+
+h r + γV k(x′, t ′) − V (x, t )2i
+
+. (41)      
+
+> 5For pure terminal optimization, r= 0 and γ= 1 .
+
+21 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+This procedure yields an empirical approximation V that is Bellman-consistent in expectation with respect to the guided dynamics. When F is large (or infinite) and V is parameterized as Vθ ∈ F , Equation (41) is typically solved by stochastic optimization. In particular, treating the bootstrap target y = r + γV θk (x′, t ′) as fixed, we minimize the squared regression error via a semi-gradient update: 
+
+θ ← θ − α ∇θ
+
+
+
+Vθ (x, t ) − r + γV θk (x′, t ′)2
+
+, (42) where α > 0 is the learning rate. Repeating Equation (41) (or its stochastic variant Equation (42) ) yields a Bellman-consistent value approximation for the guided dynamics. The Bellman-consistent value function V (x, t ) summarizes the expected terminal reward attainable from the current state under the guided dynamics. Indeed, ∇xV (x, t ) points in the direction of steepest increase of the expected future reward, and therefore represents the locally optimal infinitesimal adjustment to the dynamics. This observation provides a principled bridge between value estimation and guidance construction: rather than explicitly conditioning on future endpoints x1,guidance can be implemented as a local ascent direction induced by the value function gradient. Once a Bellman-consistent value function ˆV is obtained, we define the guidance vector field as 
+
+g(x, t ) ≜ ∇x ˆV (x, t ), (43) which induces a local ascent direction in state space that maximally increases the expected terminal reward. This construction yields a Markovian and tractable surrogate for the otherwise future-dependent guidance implied by exact importance weighting. This transformation effectively converts the intractable integral in Term (C) (localized approximation error) of Theorem 4.2 into a differentiable, Markovian vector field. However, Fitted Value Evaluation (FVE) can diverge even when theoretical conditions are met. 
+
+Proposition D.2 (Divergence of Fitted Value Evaluation) . Fitted value evaluation (FVE) can diverge even when all of the following conditions hold: 1. The dataset is infinite, i.e., |D| = ∞;2. The Bellman residual minimization is solved exactly at each iteration; 3. The function class F is simple enough to be estimated, e.g., a one-dimensional linear function class fθ (x) = θ⊤ϕ(x);4. The realizability assumption holds, i.e., the true value function satisfies V ∈ F .
+
+This phenomenon is commonly referred to as the deadly triad in empirical deep reinforcement learning, which arises from the interaction of function approximation, off-policy data, and bootstrapping. In the flow matching setting, however, the dynamics are deterministic and rewards are sparse (evaluated at terminal state x1). We exploit this property to propose Terminal Value Regression, a method that directly fits the terminal reward. By removing the need for bootstrapping, this approach effectively breaks the deadly triad and ensures stable convergence. 
+
+Proposition D.3 (Terminal Value Regression) . Let F denote a function class used to approximate the value function. We collect a dataset of terminal rollouts D = {(xt, t, x 1)}, where x1 is the terminal state reached from xt by integrating the current guided dynamics. The value function is estimated by minimizing the following regression objective: 
+
+ˆV = arg min   
+
+> V∈F
+
+E(xt,t,x 1)∼D 
+
+h r(x1) − V (xt, t )2i
+
+. (44) 
+
+Unlike the bootstrapped target in Equation (37) , the terminal reward r(x1) serves as a stable, unbiased regression target, which is enabled by the deterministic nature of the flow. 
+
+Unlike fitted value evaluation, Equation (44) does not rely on bootstrapping and therefore avoids the instability associated with the deadly triad. Since the flow matching dynamics are deterministic, the terminal reward r(x1) serves as an unbiased Monte Carlo target for value estimation, yielding a stable procedure tailored to flow matching models. 22 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+E. Experimental details 
+
+E.1. Parameterization: value function vs. vector field 
+
+While directly parameterizing the vector field is common in diffusion models (Song & Kingma, 2021), unconstrained neural vector fields are not guaranteed to be conservative (i.e., curl-free) (Balcerak et al., 2025). Therefore, in Equation (19) , we explicitly parameterize the scalar value function V (xt, t ) and derive the guidance via automatic differentiation ∇xt Vψ (xt),ensuring that the learned guidance corresponds to the gradient of a valid scalar reward landscape. Crucially, as shown in Figure 10 (c-e), simply parameterizing ∇V (xt, t ) fails to rectify the off-manifold drift. (a) S ampling dynamics                                                                             
+
+> of base FM at 𝑡 =1
+> (b) Ground truth posterior
+> 𝑝 𝑥 𝑐 =1,0
+> (c) Samples from
+> 𝑔 𝑐𝑜𝑣 −𝐺 guided sampling
+> (𝑡 =1,𝑐 =1,0),
+> parameterizing ∇𝑉 𝑥 𝑡 ,𝑡
+> (e) Guided s ampling
+> dynamics of 𝑔 𝑐𝑜𝑣 −𝐺
+> (𝑡 =1,𝑐 =1,0),
+> parameterizing ∇𝑉 𝑥 𝑡 ,𝑡
+> (d) Energy landscape of
+> 𝑔 𝑐𝑜𝑣 −𝐺 (𝑡 =1,𝑐 =1,0),
+> parameterizing ∇𝑉 𝑥 𝑡 ,𝑡
+> (h) Guided s ampling
+> dynamics of 𝑔 𝑐𝑎𝑟
+> (𝑡 =1,𝑐 =1,0),
+> parameterizing 𝑉 𝑥 𝑡 ,𝑡
+> (g) Energy landscape of
+> 𝑔 𝑐𝑎𝑟 (𝑡 =1,𝑐 =1,0),
+> parameterizing 𝑉 𝑥 𝑡 ,𝑡
+> (f) Samples from
+> 𝑔 𝑐𝑎𝑟 guided sampling
+> (𝑡 =1,𝑐 =1,0),
+> parameterizing 𝑉 𝑥 𝑡 ,𝑡
+
+Figure 10. Comparative empirical results on parameterization strategies. We compare two architectures for learning the residual guidance: (Left: c–e) Directly parameterizing the unconstrained vector field (denoted as ∇V ). As shown in (d), this lack of structural constraint leads to a non-conservative field with a distorted, incoherent energy landscape, causing the “energy trap” and off-manifold drift in (e). (Right: f–h) Explicitly parameterizing the scalar value function V . By taking the gradient of a learned scalar V , we enforce the field to be curl-free by construction. This results in the smooth, globally consistent energy landscape in (g), effectively rectifying the drift as shown in (h). 
+
+Finally, to stabilize optimization when backpropagating through the parameterized value function V (xt, t ), we apply gradient clipping to the derived gradients ∇Vψ (xt, t ). This prevents exploding gradients, particularly in regions where the learned energy surface becomes steep or singular. 
+
+E.2. Ablation: hard gate It and conflict threshold τ
+
+The τ controls the hard gate It in the training loss: 
+
+L(ψ) = E(xt,t,x 1)∼D 
+
+h
+
+It ·  r(x1) − Vψ (xt, t )2i
+
+and serves two purposes: (1) reducing unnecessary computation by skipping low-conflict regions, and (2) preserving gapprox 
+
+in those regions, where the approximate guidance is already accurate and adding a learned correction would introduce spurious perturbations. If τ is too small, neither purpose is met, as the gate activates almost everywhere. Conversely, too large a τ skips too many training steps, leaving gψ under-trained. We suggest that the threshold τ can be tuned according to the specific domain, and we empirically find that τ = 0 .2 is a robust sweet spot for most of our evaluated tasks (Maze2D, CelebA-HQ image editing, and ManiSkill2). For the synthetic benchmark, we use τ = 0 .5, which works better under its different conflict distribution. Therefore, we report experimental results using τ = 0 .2 for real-world domains and τ = 0 .5 for the synthetic benchmark. We show the ablation results of the conflict threshold τ in Figure 11. A threshold that is too small (e.g., τ = 0 .0) introduces spurious guidance in non-conflict regions (where approximation guidance gapprox is already good enough), degrading performance (e.g., in the synthetic experiment, CS drops to 68 .4% vs. ∼94% for τ ∈ [0 .2, 0.5] ). Conversely, excessively high thresholds (e.g., τ = 0 .8) skip too many updates, leaving gψ under-trained. 
+
+E.3. Ablation: learned correction gψ and conflict-aware weight wt
+
+Our method gcar integrates a learned correction gψ (xt, t ) and a conflict-aware weight wt into the guided velocity field: 
+
+v′
+
+t(xt, t ) = vbase 
+
+t (xt, t ) + gcar (xt, t ),gcar (xt, t ) = (1 − wt) gapprox + wt gψ (xt, t ).
+
+23 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards (a) Synthetic dataset 
+
+> CS
+> (b) Text -guided image manipulation
+> LPIPS
+> (c) Text -guided image manipulation
+> CLIP
+> (d) Maze2D
+> Safety
+> (e) Maze2D
+> Success
+
+Figure 11. Ablation results on the conflict threshold τ .
+
+To understand the contribution of each component, we ablate gψ and wt independently. Table 5 summarizes the three ablation studies, and Figure 12 reports the quantitative results on the synthetic benchmark. Figure 12 reports results across three domains. Adding gψ without the gate to gcov-G yields modest gains (synthetic CS +0 .5pp, CelebA-HQ LPIPS −0.014 , Maze2D success +5 ), confirming that the learned correction provides a useful residual signal to maximize rewards. Constraining the correction gψ to conflict regions via adding wt gives much larger improvements (synthetic CS +9 .8pp, PC +3 .5pp; CelebA-HQ LPIPS −0.021 , CLIP +0 .011 ; Maze2D safety +15 , success 
+
++9 ), demonstrating that the conflict-aware weight is the more critical component. Training loss curves in Figure 12(c,f,i) confirm stable convergence across all settings. 
+
+Table 5. Ablation study design for learned correction gψ and conflict-aware weight wt. All configurations share the same pretrained base velocity field vbase and same approximation guidance gapprox (i.e., gcov-G ). # Guidance gapprox gψ wt gate Question to answer (1) gcov-G ✓ ✗ ✗ Baseline (2) gapprox + gψ ✓ ✓ ✗ How much does the learned correction gψ contribute? (3) gcar (ours) ✓ ✓ ✓ How much does the conflict-aware weight wt contribute? 
+
+24 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Figure 12. Component ablation on the synthetic benchmark. (a) Mode Coverage (CS) and (b) Prior Preservation (PC). The baseline gcov-G 
+
+suffers from severe gradient conflicts. Applying the learned correction without the conflict gate ( gapprox + gψ ) improves PC but hurts CS due to spurious updates in low-conflict regions. Our full method gcar leverages the gate wt to restrict corrections strictly to high-conflict states, achieving optimal performance in both metrics. 
+
+25 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+E.4. Synthetic dataset 
+
+We consider a 2-dimensional Mixture of Gaussians toy example (see Figure 13), where the ground-truth density pt
+
+is known analytically, allowing for precise quantitative evaluation. The source distribution π0 is a standard Gaussian 
+
+π0(x) = N (x | μ0, Σ0), where μ0 = [0 .0, 0.0] and Σ0 = I. The target distribution π1 is a Mixture of Gaussians consisting of K = 3 modes, i.e., π1(x) = 13
+
+P3 
+
+> k=1
+
+N (x | μk, Σ1), where each component shares the covariance Σ1 = I. We use a fixed configuration with centers located at μ1 = [8 .0, 8.0] , μ2 = [8 .0, −8.0] , and μ3 = [0 .0, 10 .0] , corresponding to the base posterior visualized in Figure 13 (b). (a) S ampling dynamics                     
+
+> of base FM at 𝑡 =1
+> (b) Base posterior
+> 𝑝 𝑏𝑎𝑠𝑒 (𝑥 1)
+> (c) Ground truth posterior
+> 𝑝 𝑥 𝑐 =0,0
+> (d) Ground truth posterior
+> 𝑝 𝑥 𝑐 =1,0
+> (e) Ground truth posterior
+> 𝑝 𝑥 𝑐 =1,1
+
+Figure 13. Visualization of synthetic experiments. (a) The sampling dynamics of the base Rectified Flow model at t = 1 . (b) The base posterior distribution pbase (x1) consisting of three Gaussian modes. (c)–(e) Ground-truth posteriors under different classifier constraints (c = [0 , 0] , [1 , 0] , and [1 , 1] ), estimated via rejection sampling with 10k samples. 
+
+E.4.1. I NFERENCE -TIME CONSTRAINTS 
+
+To evaluate the system under conflicting guidance, we employ two pre-trained binary classifiers, C1 and C2, which act as independent reward signals. Each classifier assigns a label y ∈ { 0, 1} to the generated samples. The classifier labels for the three target modes are designed to create varying degrees of gradient alignment. We visualize the ground-truth posteriors under these different compositional rewards in Figure 13 (c–e), generated via rejection sampling. Specifically, the constraint 
+
+c = [1 , 0] (shown in Figure 13 (d)) represents a scenario with significant gradient conflict (or misalignment), serving as a primary stress test for off-manifold drift. E.4.2. E VALUATION METRICS 
+
+(1) Posterior Coverage (PC) ( ↑). Fraction of generated samples residing within the 2σ boundary of ground-truth target mixture components, measured by anisotropic Mahalanobis distance: PC = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+I
+
+
+
+min 
+
+> k∈K target
+
+d(xi, μ k) ≤ 2
+
+
+
+, (45) where Ktarget is the set of cluster indices satisfying the target labels. Unlike soft classifier probabilities (CS), PC is a strict geometric oracle: a sample is valid only if it physically resides within the correct high-density mode. A drop in PC indicates off-manifold drift or biased sampling. (2) Constraint satisfaction (CS) ( ↑). The average probability assigned to the target label y by the guidance classifiers. CS = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+pϕ(y|xi). (46) High CS indicates the guidance successfully optimizes the reward, potentially including adversarial examples that satisfy the classifier but fail PC. 
+
+(3) Inference Time ( ↓). Wall-clock time per generated sample, aggregating: (i) trajectory generation (if applicable), (ii) learnable guidance training, and (iii) forward ODE solving. Note that GM collects data offline (highly parallelized), whereas 
+
+gcar relies on much slower online rollouts. 26 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Table 6. Quantitative comparison on the synthetic benchmark. (1) Posterior Coverage (PC): lower values indicate off-manifold drift or biased sampling. (2) Constraint Satisfaction (CS): average classifier probability for the target labels. (3) Time ( ↓): wall-clock time per sample (ms). (4) Data Usage ( ×10 3, ↓): total training samples consumed, reported in units of 10 3. All results use conflict threshold 
+
+τ =0 .50 ; ϵ denotes the early-stopping threshold. Each number is evaluated with 10 k generated samples. Data Usage of gcar reports the total number of training samples consumed before the fraction of conflict samples drops below ϵ (see early-stopping criterion in Appendix E.4.3). 
+
+Single Guidance Composed Guidance Metric Method [0 , ∅] [1 , ∅] [∅, 0] [∅, 1] Avg [0 , 0] [1 , 0] [1 , 1] Avg 
+
+> PC (%)  ↑
+
+gcov-G 95.10 ±0.02 91.50 ±0.03 90.80 ±0.02 89.90 ±0.04 91.83 ±0.03 94.00 ±0.03 71.70 ±0.04 89.00 ±0.03 84.90 ±0.03 
+
+PCGrad 95.10 ±0.02 91.50 ±0.03 90.80 ±0.02 89.90 ±0.04 91.83 ±0.03 94.05 ±0.04 75.20 ±0.08 89.15 ±0.05 86.13 ±0.06 
+
+GM 87.40 ±0.12 82.00 ±0.15 85.30 ±0.11 88.70 ±0.14 85.85 ±0.13 82.30 ±0.22 84.50 ±0.38 86.20 ±0.18 84.33 ±0.26 
+
+GLASS-FKS ( K=4 ) 85.20 ±0.80 86.20 ±3.60 86.20 ±2.40 80.00 ±7.10 84.40 ±3.40 84.20 ±2.30 78.60 ±3.00 79.80 ±1.60 80.90 ±2.30 
+
+GLASS-FKS ( K=16 ) 87.80 ±4.40 87.80 ±3.30 88.80 ±4.60 87.20 ±5.20 87.90 ±4.30 88.80 ±3.30 90.80 ±1.60 88.60 ±3.60 89.40 ±2.80 
+
+gcar (ϵ=0 .10 ) 95.10 ±0.02 91.50 ±0.04 91.00 ±0.03 89.70 ±0.05 91.83 ±0.03 93.90 ±0.04 83.70 ±0.06 88.80 ±0.03 88.80 ±0.04 
+
+gcar (ϵ=0 .05 ) 95.00 ±0.03 91.50 ±0.02 91.00 ±0.02 89.60 ±0.04 91.78 ±0.03 94.60 ±0.03 93.80 ±0.05 88.70 ±0.04 92.37 ±0.04 
+
+gcar (ϵ=0 .00 ) 95.10 ±0.01 91.50 ±0.01 90.90 ±0.02 89.70 ±0.03 91.80 ±0.02 96.80 ±0.02 94.40 ±0.04 94.10 ±0.03 95.10 ±0.03 
+
+> CS (%)  ↑
+
+gcov-G 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 99.87 ±0.01 99.97 ±0.00 100.00 ±0.00 89.56 ±0.03 99.87 ±0.01 96.48 ±0.01 
+
+PCGrad 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 99.87 ±0.01 99.97 ±0.00 100.00 ±0.00 92.45 ±0.12 99.88 ±0.02 97.44 ±0.05 
+
+GM 99.91 ±0.08 99.91 ±0.09 99.95 ±0.05 100.00 ±0.01 99.94 ±0.05 99.93 ±0.07 99.99 ±0.01 99.92 ±0.08 99.95 ±0.05 
+
+GLASS-FKS ( K=4 ) 92.64 ±2.44 99.80 ±0.45 99.80 ±0.45 90.00 ±2.55 95.56 ±1.47 93.70 ±1.48 90.31 ±1.76 90.90 ±2.74 91.64 ±1.99 
+
+GLASS-FKS ( K=16 ) 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 99.71 ±0.27 100.00 ±0.00 99.90 ±0.09 
+
+gcar (ϵ=0 .10 ) 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 99.86 ±0.02 99.97 ±0.00 100.00 ±0.00 99.34 ±0.04 99.87 ±0.01 99.74 ±0.01 
+
+gcar (ϵ=0 .05 ) 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 99.86 ±0.01 99.97 ±0.00 100.00 ±0.00 100.00 ±0.00 99.87 ±0.02 99.96 ±0.00 
+
+gcar (ϵ=0 .00 ) 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 99.87 ±0.01 99.97 ±0.00 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 100.00 ±0.00 
+
+> Time ↓
+
+gcov-G 0.35 ±0.01 0.37 ±0.01 0.35 ±0.01 0.35 ±0.01 0.36 ±0.01 0.36 ±0.01 0.38 ±0.01 0.36 ±0.01 0.37 ±0.01 
+
+PCGrad 0.35 ±0.01 0.37 ±0.01 0.35 ±0.01 0.35 ±0.01 0.36 ±0.01 0.37 ±0.01 0.42 ±0.02 0.38 ±0.01 0.39 ±0.01 
+
+GM 3.09 ±0.12 3.02 ±0.14 2.96 ±0.11 2.96 ±0.13 3.01 ±0.12 2.81 ±0.15 2.81 ±0.16 3.11 ±0.12 2.91 ±0.14 
+
+GLASS-FKS ( K=4 ) 293.00 ±37.00 293.00 ±36.00 295.00 ±36.00 294.00 ±34.00 294.00 ±35.00 295.00 ±36.00 297.00 ±33.00 292.00 ±36.00 295.00 ±35.00 
+
+GLASS-FKS ( K=16 ) 299.00 ±40.00 301.00 ±34.00 295.00 ±35.00 294.00 ±35.00 297.00 ±36.00 298.00 ±34.00 296.00 ±36.00 302.00 ±36.00 299.00 ±35.00 
+
+gcar (ϵ=0 .10 ) 0.25 ±0.01 0.25 ±0.01 0.25 ±0.01 0.25 ±0.01 0.25 ±0.01 0.27 ±0.02 0.72 ±0.03 0.27 ±0.02 0.42 ±0.02 
+
+gcar (ϵ=0 .05 ) 0.25 ±0.01 0.25 ±0.01 0.25 ±0.01 0.25 ±0.01 0.25 ±0.01 0.46 ±0.02 4.20 ±0.05 0.27 ±0.01 1.65 ±0.03 
+
+gcar (ϵ=0 .00 ) 0.30 ±0.02 0.18 ±0.01 0.22 ±0.01 0.21 ±0.01 0.23 ±0.01 25.81 ±0.12 25.81 ±0.15 26.01 ±0.11 25.88 ±0.12 
+
+> Data ↓
+
+gcov-G – – – – – – – – –PCGrad – – – – – – – – –GM 10240.00 10240.00 10240.00 10240.00 10240.00 10240.00 10240.00 10240.00 10240.00 GLASS-FKS – – – – – – – – –
+
+gcar (ϵ=0 .10 ) 0 0 0 0 0 0 180.22 ±15.45 0 60.07 ±5.15 
+
+gcar (ϵ=0 .05 ) 0 0 0 0 0 74.75 ±6.33 1573.89 ±85.30 0 549.55 ±30.54 
+
+gcar (ϵ=0 .00 ) 0 0 0 0 0 10240.00 10240.00 10240.00 10240.00 
+
+Note: Bold indicates best performance. The [1 , 0] column highlights the gradient conflict scenario. Mean ±std are reported over 5 random seeds. 
+
+(4) Data Usage ( ↓) denotes the total number of training trajectories (from x0 to x1) required to learn the learnable guidance; lower is more data-efficient. E.4.3. E XPERIMENTAL RESULTS 
+
+We present comprehensive quantitative results in Table 6, evaluated with 10 k generated samples per setting. The evaluation covers all valid constraint configurations: (i) Single Guidance: [0 , ∅], [1 , ∅], [∅, 0] , and [∅, 1] ; (ii) Composed Guidance: 
+
+[0 , 0] , [1 , 0] , and [1 , 1] . Note that no data samples satisfy [0 , 1] .
+
+gcar resolves off-manifold drift efficiently. Under single guidance, all methods achieve competitive Posterior Coverage (PC, >85% ) and Constraint Satisfaction (CS, >99% ). However, in the compositional reward setting—especially the [1 , 0] 
+
+gradient conflict scenario in Table 6—significant performance gaps emerge. With ϵ=0 .05 , gcar achieves 93 .80% ± 0.05 PC and a perfect 100 .00% ± 0.00 CS on the [1 , 0] , outperforming GLASS-FKS ( K=16 ) by 3.0 PC points while operating at a 
+
+70 × lower inference cost ( 4.20 ± 0.05 vs. ≈ 296 ms/sample). Employing a tighter threshold ( ϵ=0 .00 ) further maximizes composed guidance fidelity (averaging 95 .10% ± 0.03 PC) at the expense of maximum training data usage, whereas ϵ=0 .10 
+
+provides highly competitive composed performance ( 88 .80% ± 0.04 PC average) with near-zero transition data requirements. 27 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Key observations are: • gcov-G collapses under gradient conflict. gcov-G degrades sharply to 71 .70% ± 0.04 PC on [1 , 0] .• GLASS-FKS (sample-based) avoids off-manifold drift but is computationally costly and is highly sensitive to the particle count K. As shown in Table 6, GLASS-FKS maintains consistent Constraint Satisfaction (CS) scores across all compositional scenarios (i.e., [0 , 0] , [1 , 0] , and [1 , 1] ), and does not have a severe performance drop under the conflicting 
+
+[1 , 0] setting. However, when the number of particles is restricted (e.g., K=4 ), the variance increases. • Guidance Matching suffers from confounding errors inherent in learning a guidance network from scratch, yielding a lower average PC of 84.33%. Moreover, GM requires over 10 7 training samples per compositional reward (approx. 
+
+20 × more than gcar ). • PCGrad didn’t manage to correct off-manifold drift. • Our gcar efficiently corrects off-manifold drift while remaining compute-light. 
+
+Data efficiency via early stopping. To evaluate the impact of the conflict-aware module on data efficiency , we introduce an early-stopping mechanism parameterized by ϵ. Training is halted when the proportion of generated samples with conflict score exceeding τ drops below ϵ, i.e., P (score > τ ) < ϵ . This criterion indicates that x1 has sufficiently resolved gradient conflicts. Table 6 reports gcar under ϵ ∈ { 0.10 , 0.05 , 0.00 }; the training dynamics are visualized in Figure 14. As shown, the conflict score decreases stably across all settings, demonstrating that gcar reliably learns to minimize gradient conflicts and rectify off-manifold drift over time. (a) Constraint 𝑐 = 0,0 (b) Constraint 𝑐 = 1,0 (c) Constraint 𝑐 = 1,1
+
+Figure 14. Convergence of conflict scores of gcar . The figure tracks the fraction of online samples with a conflict score larger than the early-stopping threshold ϵ. This metric serves as an indicator for training stability. Results are shown for targets (a) c = [0 , 0] , (b) 
+
+c = [1 , 0] , and (c) c = [1 , 1] across three early-stopping threshold ( ϵ = 0 .00 , 0.05 and 0.10 ), with a conflict threshold τ = 0 .50 . The downward trend indicates that the conflict scores of online samples progressively decrease, demonstrating that gcar effectively learns to minimize gradient conflicts and rectify off-manifold drift. Shaded areas represent the standard error across 5 random seeds. 
+
+28 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+E.5. Generative decision-making as planners 
+
+E.5.1. I NFERENCE -TIME CONSTRAINTS 
+
+Static obstacle rewards. We formulate static obstacle avoidance as a differentiable, energy-based reward function rstatic (x),following (Luo et al., 2024), which provides a smooth, bounded penalty landscape, thereby stabilizing the gradient-based guidance ∇xrstatic (x) at inference time. Formally, the obstacles are defined as a set of K centers {ck}Kk=1 . The compositional static obstacle reward at state x is defined as: 
+
+rstatic (x) = −
+
+> K
+
+X
+
+> k=1
+
+exp 
+
+
+
+− ∥x − ck∥2
+
+σ2
+
+
+
+(47) where σ determines the spatial decay rate of the repulsive potential, i.e., the influence diminishes as the distance from the center increases. We set σ = 2 .0, with the remaining settings unchanged. 
+
+Static goal rewards. We consider instruction-following scenarios (e.g., “fetch an apple”), where the objective is to reach specific spatial locations. We formulate the guidance for reaching these goals using the same differentiable, energy-based formulation as Equation (47). Formally, we define the goals as a set of K centers {gk}Kk=1 . The compositional static goal reward at state x is defined as: 
+
+rgoal (x) = 
+
+> K
+
+X
+
+> k=1
+
+exp 
+
+
+
+− ∥x − gk∥2
+
+σ2
+
+
+
+(48) where σ is the spatial decay rate. 
+
+Dynamic obstacle rewards. We consider the dynamic agent avoidance task, where obstacles follow randomly generated linear trajectories. Formally, we define a set of K dynamic obstacles. The generated robot trajectory is τ = {x1, . . . , xH } over a planning horizon H. Each obstacle k moves over a horizon of N steps ( N ≤ H; i.e., its position ck(t) updates for the first N steps) and remains stationary thereafter (i.e., ck(t) = ck(N ) for t > N ). The compositional reward for the entire trajectory τ is defined as: 
+
+rdynamic (τ ) = −
+
+> H
+
+X
+
+> t=1
+> K
+
+X
+
+> k=1
+
+exp 
+
+
+
+− ∥xt − ck(t)∥2
+
+σ2
+
+
+
+(49) where xt denotes the agent state at time step t, and σ is the spatial decay rate. We set the trajectory horizon H = 48 and the obstacle trajectory horizon N = 3 .
+
+Trajectory smoothness rewards. We set the trajectory smoothness cost (Urain et al., 2023). Formally, given a trajectory 
+
+τ = {x0, . . . , xT }, the smoothness reward is defined as: 
+
+rsmooth (τ ) = − 
+
+> T−1
+
+X
+
+> t=0
+
+∥xt+1 − xt∥2 (50) as the minimization of the relative distance between the neighbour points in the trajectory. This reward can be thought as a spring making all the point in the trajectory be attracted between each other. E.5.2. H YPERPARAMETER 
+
+We provide the detailed hyperparameters used for the Maze2D experiments in Table 7. E.5.3. E XPERIMENTAL RESULTS 
+
+We report all experimental results in Table 2, the key observations are: 29 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Table 7. Hyperparameters for gcar used in Maze2D. Hyperparameter Value Euler discretization steps (training) N = 100 
+
+Euler discretization steps (inference) N = 100 
+
+Guidance training Steps M = 4 
+
+Trajectory horizon H 48 
+
+ODE inference steps 100 
+
+Guidance scale 1.0
+
+1. Inference-time guidance applied to pre-trained generative policy models is prone to off-manifold drift, leading to poor prior preservation (e.g., failing to reach the end point) and constraint violations (e.g., colliding with obstacles or maze walls), as shown for gcov-G in Figure 16. 2. PCGrad cannot recover from off-manifold drift. 3. GLASS-FKS performs well on robot planning tasks. 4. gcar consistently corrects off-manifold drift across all settings, improving success rate and reducing constraint violations. 5. MPPI is a strong planning baseline that refines generated paths from the base CFM model to satisfy runtime constraints. Sometimes, it still suffers from prior preservation issues under compositional constraints. When gcar is applied on top of MPPI, MPPI + gcar achieves the best overall performance, correcting off-manifold drift while satisfying constraints. We further evaluate robustness to clutter by varying the number of static obstacles from 2 to 6 (Figure 15). gcov-G degrades sharply as the environment becomes more cluttered, with its success rate collapsing to 12% at 6 obstacles, whereas gcar 
+
+maintains 34% in the same setting. 
+
+Figure 15. Robustness to clustered environments on Maze2D. We evaluate the safety and success rates by varying the number of static obstacles from 2 to 6. Our gcar (red) exhibits robustness even with 6 obstacles, whereas gcov-G suffers degradation. 
+
+30 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards (a) Static 
+
+obstacle 
+
+Base CFM  𝑔 cov −G 𝒈 𝒄𝒂𝒓 (ours)  MPPI PCGrad  MPPI + 𝒈 𝒄𝒂𝒓 (ours) GLASS -FKS 
+
+(b) Static 
+
+goal 
+
+Collided with 1 obstacle.  Did not reach end 
+
+point, i.e., poor prior 
+
+preservation 
+
+(success rate ↓). 
+
+Corrected 
+
+off -manifold drift. 
+
+Did not reach end 
+
+point, i.e., poor prior 
+
+preservation 
+
+(success rate ↓). 
+
+Did not reach end point 
+
+and collided with maze, 
+
+i.e., poor prior 
+
+preservation. 
+
+Corrected 
+
+off -manifold drift. 
+
+Did not achieve goals; 
+
+constraints violated 
+
+(violation ↑). 
+
+Satisfied 2 
+
+constraints. 
+
+Did not achieve goals; 
+
+constraints violated 
+
+(violation ↑). 
+
+Failed to correct 
+
+off -manifold drift .
+
+Satisfied 2 
+
+constraints. 
+
+(c) Dynamic 
+
+obstacle 
+
+(d) Hybrid 
+
+Composition 
+
+Collided with dynamic 
+
+obstacle (violation ↑); 
+
+curved path. 
+
+Did not reach end 
+
+point, i.e., poor prior 
+
+preservation 
+
+(success rate ↓). 
+
+Corrected 
+
+off -manifold drift. 
+
+Collided with maze, i.e., 
+
+poor prior preservation. 
+
+Did not reach end point 
+
+and collided with maze, 
+
+i.e., poor prior 
+
+preservation. 
+
+Corrected 
+
+off -manifold drift. 
+
+We do not use inpainting , enabling better observation of inference -time alignment methods ’ ability to preserve the base model prior (the base CFM is trained 
+
+to generate collision -free paths conditioned on maze layout, start, and end points); Comparing success rates reveals that direct ly applying GLASS -FKS, MPPI, 
+
+𝑔 cov −G, and their PCGrad or 𝒈 𝒄𝒂𝒓 corrections as inference -time techniques compromises prior preservation. 
+
+Highlights failure cases. 
+
+Figure 16. Visualisation of guided trajectory generation under compositional constraints in Maze2D. (1) static obstacles, (2) goal reachability, (3) dynamic obstacles, and (4) hybrid composition. Observe that gcov-G produces erratic, off-manifold trajectories, while gcar 
+
+yields smooth, feasible trajectories. 
+
+31 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards (a) Static  obstacle 
+
+> (2 obstacles)
+> (b) Static  obstacle
+> (3 obstacles)
+> (c) Static  obstacle
+> (4 obstacles)
+> (d) Static  obstacle
+> (5 obstacles)
+> (e) Static  obstacle
+> (6 obstacles)
+> Base CFM  𝑔 cov −G 𝑔 car  (ours) Base CFM  𝑔 cov −G 𝑔 car  (ours) Base CFM  𝑔 cov −G 𝑔 car  (ours)
+> Example 1  Example 2  Example 3
+> Figure 17.  Visual comparison of guided generation under increasing environmental complexity.  We scale the number of static obstacles to evaluate the solver’s ability to handle dense constraints. As shown, traditional planning baselines like MPPI struggle with high-dimensional constraint landscapes, often failing to find feasible paths. In contrast,
+> gcar  effectively navigates through dense clutter, generating smooth, collision-free trajectories that match the quality of those in simpler environments, highlighting its superior constraint-satisfaction capabilities.
+
+32 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+E.6. Generative decision-making as policies Base CFM                   
+
+> PolicyModel
+> Noise
+> GoalState
+> (TargetPlacement
+> Coordinates)
+> RobotState
+> Time
+> ActionChunks
+> (HorizonT)
+> ConditioningContext
+> PointCloud
+> Observation
+> (4096pointsw/colour(multi-view:
+> right,leftandgripper))
+> Encoder
+> (PointNetBackbone)
+> Trainedfromscratch
+
+Figure 18. Architecture of the Base CFM Policy. The conditioning context includes the goal state (e.g., target placement coordinates), the point cloud observation, and the robot state. The observation (4096 colored points) is compressed via an encoder using a PointNet backbone trained from scratch. The model outputs action chunks of horizon T generated from noise. 
+
+E.6.1. B ASE CFM POLICY 
+
+We implement a base Conditional Flow Matching (CFM) policy by adapting the PointFlowMatch architecture (Chisari et al., 2024) for goal-conditioned manipulation. Specifically, we incorporate explicit goal conditioning, and improve success rates. The detailed architecture is illustrated in Figure 18. 
+
+Conditioning. The policy is conditioned on a multimodal context vector c, constructed as follows: 1. Observation: Raw 3D point clouds ( N = 4096 ) with RGB features are fused from multi-view cameras (left, right, and gripper). These are processed by a PointNet backbone to extract a dense feature vector. 2. Proprio State: A vector containing the robot’s joint angles and gripper status. 3. Goal: The 3D coordinates representing the target placement location (e.g., the stacking position). These components are concatenated to form the conditioning c.
+
+Output. The model predicts action chunks of horizon T . The generative component is a Conditional 1D U-Net that predicts the time-dependent velocity field vθ (xt, t | c). Here, the flow state xt ∈ RT ×7 represents the flattened action chunk sequence (translation, rotation, and gripper action). Trajectories are generated by integrating the learned ODE from a standard Gaussian distribution at t = 0 to the target action distribution at t = 1 .
+
+Training Objective. Given an expert action chunk Agt ∈ RT ×7 (denoted as x1) and a random initial sample x0 ∼ N (0 , I ),we sample t ∼ U (0 , 1) and interpolate xt = (1 −t)x0 +tx 1. The model is trained to regress the target velocity vgt = x1 −x0
+
+via mean-squared error. 
+
+Dataset and evaluation. For each task (PickCube and StackCube), we collect 100 expert demonstrations to train the base CFM model. The trained policy achieves 100% success rate on both training and test sets (100 episodes with unseen random seeds), confirming strong generalization. The base CFM policy is lightweight yet sufficient to complete the manipulation tasks without constraints. Our focus is on whether inference-time guidance can satisfy runtime constraints while preserving the base flow prior and staying on the data manifold. 33 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Table 8. Comparison on ManiSkill2 StackCube and PickCub tasks. Compositional reward settings: (1) static obstacle: two random static obstacles; (2) hybrid composition: two random static obstacles and trajectory smoothness. Metrics include Inference Time (ms/sample), Violation (mean constraint violations #), Success (success rate %), and Steps (#). Results are averaged over 100 samples with conflict threshold τ = 0 .20 . Note that we do not use inpainting, which allows us to better observe the capability of inference-time alignment methods in preserving the base model prior. For GLASS-FKS, we use K = 8 particles with a convergence coefficient ρ = 0 .95 , involving 24 internal steps per inference. The gcar method requires an online training period of 20 .4 ± 0.4 min for 8 training steps prior to inference. StackCube PickCube (1) static obstacles (2) hybrid composition (1) static obstacles (2) static goal Method Time ↓ Viol. ↓ Succ. ↑ Steps ↓ Viol. ↓ Succ. ↑ Steps ↓ Time ↓ Viol. ↓ Succ. ↑ Steps ↓ Viol. ↓ Succ. ↑ Steps ↓
+
+GLASS-FKS 493.7 0.6 32 24 1.1 24 24 485.2 0.2 90 24 0.5 82 24          
+
+> ±29.2 ±0.4 ±9.8 ±0.7 ±12.5 ±45.2 ±0.2 ±5.2 ±0.3 ±6.4
+
+gcov-G 185.0 1.2 12 – 1.8 9 – 180.0 0.4 58 – 0.8 46 –         
+
+> ±9.3 ±0.5 ±4.1 ±0.8 ±3.2 ±6.4 ±0.1 ±4.2 ±0.2 ±3.5
+
+PCGrad 201.4 1.5 ↓0.3 0↓12 – 2.2 ↓0.4 0↓9 – 194.8 0.8 ↓0.4 10 ↓48 – 1.3 ↓0.5 7↓39 –         
+
+> ±12.5 ±0.6 ±0.0 ±0.9 ±0.0 ±11.2 ±0.3 ±2.4 ±0.4 ±1.8
+
+gcar (ours) 203.2 0.1 ↑1.1 72 ↑60 8 0.4 ↑1.4 61 ↑52 8 205.6 0.0 ↑0.4 100 ↑42 8 0.1 ↑0.7 94 ↑48 8         
+
+> ±8.2 ±0.1 ±8.2 ±0.2 ±9.6 ±10.8 ±0.0 ±0.0 ±0.1 ±2.4
+
+Note: Bold text indicates the best performance. Rows with gray backgrounds indicate methods that utilize our gcar for conflict correction. Purple superscripts show the performance change of gcar over gcov-G , and teal superscripts show the change of PCGrad over 
+
+gcov-G , where ↑ denotes improvement and ↓ denotes degradation. For all metrics except Steps, we report the mean (top row) and standard deviation across 5 random seeds (bottom row). 
+
+E.6.2. E XPERIMENTAL RESULTS 
+
+Table 8 presents the comparative results under constrained settings. In the challenging StackCube task, gcar reduces the violation rate from 1.2 to 0.1 (static obstacles) and from 1.8 to 0.4 (hybrid composition), while boosting the success rate from 12% to 72% and from 9% to 61% respectively. In the PickCube task, gcar achieves perfect safety ( 0.0 violations) in static environments and boosts the success rate from 46% to 94% in the static goal setting. Notably, PCGrad degrades performance relative to gcov-G across both tasks (e.g., StackCube success drops to 0% ), confirming that gradient surgery cannot handle high-precision manipulation tasks under compositional constraints. gcar achieves these gains efficiently, consistently converging in just 8 steps. Key observations are: 1. Adding inference-time guidance to pre-trained generative policy models is prone to OOD, and often fails to finish tasks, e.g., the failure shown in Figure 19 of gcov-G .2. PCGrad cannot recover from off-manifold drift. 3. GLASS-FKS generally performs well, but struggles in high-precision tasks such as StackCube (i.e., stably and precisely placing one cube onto another), due to its high transition variance. On tasks such as conditional generation (e.g., decision-making tasks), as long as the condition often appears in the dataset, GLASS-FKS performs well because it is easier to obtain an accurate estimation of gt.4. gcar corrects off-manifold drift (success rate ↑) and shows decreased violation rate. 34 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards (1) static  obstacle  (2) hybrid composition 
+
+> 𝑔 cov −G
+> 𝑔 car
+> (ours)
+> base
+> GLASS -
+> FKS
+> PCGrad
+> OOD. Fail.
+> OOD. OOD.
+
+Figure 19. Visualization on ManiSkill2 PickCube task with conflict threshold τ = 0 .20 . OOD: the trajectory leaves the data manifold, producing physically incoherent motions (e.g., erratic spinning or tangled paths); Fail:the trajectory stays on the manifold but fails the task (e.g., does not reach the goal). 
+
+35 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+E.7. Text-guided image manipulation 
+
+E.7.1. E XPERIMENTAL DETAILS 
+
+To ensure fair comparisons, all text-guided image manipulation experiments, including the training of the online guidance network and the inference latency measurements, were conducted on a dedicated local workstation. The hardware specifications include an AMD EPYC 7543 Processor and a single NVIDIA RTX A5000 GPU (24GB VRAM). All algorithms and neural network architectures were implemented using the PyTorch framework with CUDA acceleration.              
+
+> Table 9. Hyperparameter of gcar in image editing.
+> Hyperparameter Value
+> Euler discretization steps (training) N= 10
+> Euler discretization steps (inference) N= 100
+> Guidance training Steps M= 30
+> Cutouts 150
+> Guidance scale 30
+> Batch size 30
+
+E.7.2. I NFERENCE -TIME CONSTRAINTS 
+
+In our text-to-image generation experiment, we adopted the pipeline presented in Liu et al. (2023b), utilizing the generative prior from Liu et al. (2023a). The terminal reward function is: 
+
+r(x1) = CLIP( x1, T ), (51) Baseline configurations were aligned with those reported in Liu et al. (2023b), and the complete results presented in Table 10 reflect the same experimental conditions. For quantitative comparison, we used the CelebA-HQ dataset, randomly sampling 1,000 images, which were manipulated based on standard single text guidance (i.e., sad , angry , happy , smiling , curly hair )and composed text guidance (i.e., sad + angry , sad + happy , sad + curly hair ). E.7.3. E VALUATION METRIC 
+
+We evaluate our method using six quantitative metrics across two categories: 
+
+Text-Image Alignment: We first use (1) CLIP (Higher is better), which measures basic text-image alignment by calculating image and text embeddings separately and measuring the distance between them. Because fine-grained misalignments are often left undetected by standard multi-modal models like CLIP (Singh & Zheng, 2023), we also report (2) BLIP-ITM 
+
+(Li et al., 2022) (Higher is better). BLIP-ITM utilizes cross-attention between a ViT image encoder and a BERT-base text processor to act as a strict binary classifier, predicting whether an image and prompt are an exact match. Finally, we use (3) 
+
+VQAScore (Lin et al., 2024) (Higher is better) to evaluate complex compositional reasoning by reframing image evaluation as a visual question answering task using LLaVA-1.5. 
+
+Image Quality and Preservation: To evaluate visual fidelity, we use (1) CLIP-IQA (Wang et al., 2023) (Higher is better) to assess intrinsic visual quality and penalize blurry or artifact-heavy generations. To evaluate how well the original inputs are maintained, we report (2) LPIPS (Lower is better) for the preservation of overall image content, and (3) ID (Higher is better) for the preservation of subject identity. E.7.4. E XPERIMENTAL RESULTS 
+
+Table 10 presents a detailed quantitative comparison. We observe that compositional constraints significantly increase the difficulty of maintaining manifold adherence across all baselines, as conflicting objectives lead to higher LPIPS and lower ID scores. FlowGrad achieves LPIPS of 0.203 and ID of 0.677 under composed prompts, and struggles to balance multiple objectives simultaneously (i.e., the uneven text-image alignment between P1 and P2). gcar outperforms gcov-G by a large margin in identity preservation ( 0.681 vs. 0.543 ), proving its ability to rectify off-manifold drift where approximate guidance fails. Furthermore, the large gap between P1 and P2 scores for PCGrad (BLIP-ITM: 0.650 vs. 0.337 ; VQAScore: 
+
+0.785 vs. 0.371 ) means that gradient surgery fails to balance multiple constraints, whereas gcar achieves consistent alignment across both prompts. Visualization results are provided in Figure 20. 36 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards 
+
+Table 10. Comparison of methods on image quality metrics (LPIPS, CLIP-IQA, and ID), text-image alignment metrics (CLIP, BLIP-ITM, and VQAScore), and computational efficiency for text-guided face manipulation on CelebA-HQ. To demonstrate the imbalance issue in multi-objective optimization (i.e., optimizing for two prompts simultaneously), we report the text-image alignment metrics separately for the first prompt ( P1), the second prompt ( P2), and their average (Avg). A significant discrepancy between P1 and P2 indicates a severe optimization imbalance. We report results separately for composed text guidance (i.e., sad + angry , sad + happy , sad + curly hair ). Image Quality Text-Image Alignment Efficiency CLIP ↑ BLIP-ITM ↑ VQAScore ↑                                                                                                                                                     
+
+> Method LPIPS ↓ID ↑CLIP-IQA ↑P1P2Avg P1P2Avg P1P2Avg Train Infer. FlowGrad 0.203 0.677 0.495 0.277 0.272 0.274 0.405 0.246 0.326 0.768 0.424 0.596 –124.5 s
+> ±0.004 ±0.008 ±0.005 ±0.002 ±0.003 ±0.002 ±0.012 ±0.009 ±0.010 ±0.015 ±0.011 ±0.012 ±5.8
+> GLASS-FKS 0.313 0.329 0.586 0.255 0.252 0.253 0.127 0.037 0.082 0.393 0.229 0.311 –635.2 s
+> ±0.018 ±0.025 ±0.019 ±0.012 ±0.014 ±0.013 ±0.022 ±0.018 ±0.020 ±0.031 ±0.028 ±0.029 ±58.4
+> gcov-G 0.217 0.543 0.535 0.288 0.293 0.290 0.521 0.528 0.525 0.748 0.753 0.751 –11.08 s
+> ±0.005 ±0.010 ±0.006 ±0.002 ±0.002 ±0.002 ±0.014 ±0.013 ±0.014 ±0.016 ±0.015 ±0.014 ±0.14
+> PCGrad 0.219 ↓0.002 0.602 ↑0.059 0.535 ↑0.000 0.285 ↓0.003 0.266 ↓0.027 0.276 ↓0.014 0.650 ↑0.129 0.337 ↓0.191 0.444 ↓0.081 0.785 ↑0.037 0.371 ↓0.382 0.578 ↓0.173 –13.45 s
+> ±0.004 ±0.011 ±0.005 ±0.002 ±0.003 ±0.002 ±0.018 ±0.010 ±0.013 ±0.018 ±0.012 ±0.015 ±0.38
+> gcar (ours) 0.226 ↓0.009 0.681 ↑0.138 0.543 ↑0.008 0.290 ↑0.002 0.293 ↑0.000 0.291 ↑0.001 0.592 ↑0.071 0.602 ↑0.074 0.597 ↑0.072 0.751 ↑0.003 0.758 ↑0.005 0.755 ↑0.004 20.4 m 11.26 s
+> ±0.004 ±0.010 ±0.006 ±0.002 ±0.002 ±0.002 ±0.013 ±0.014 ±0.012 ±0.015 ±0.014 ±0.013 ±0.6 ±0.12
+
+Note: Bold text indicates the best performance. Rows with gray backgrounds indicate methods that use our gcar for conflict correction. Purple superscripts show the performance change of gcar over gcov-G , and teal superscripts show the change of PCGrad over gcov-G , where ↑ denotes improvement and ↓ denotes degradation. For all metrics, we report the mean (top row) and standard deviation (bottom row) across 5 random seeds. 
+
+Overall, the key observations are: • gcov −G is prone to off-manifold drift and has hallucinated generation; also it is too sensitive to the guidance scale. • FlowGrad fails to balance multiple constraints. • PCGrad attempts to resolve conflicts via gradient surgery but fails to balance multiple constraints, leaving some targets unfulfilled (e.g., failing to generate an “angry” expression). Furthermore, it cannot recover from off-manifold drift. • GLASS-FKS fails to preserve the reference image. This is largely due to the high variance of sampling (i.e., ODE-based transition sampling) given a limited number of particles. Specifically, estimating gt requires samples from regions where er is significantly higher than average, i.e., images already closely resembling the reference, which is unlikely to be achieved with a limited particle budget. • Our gcar achieves superior compositional reward alignment across multiple prompts, corrects off-manifold drift, and eliminates the hallucinated visual artifacts observed in gcov-G .
+
+More about GLASS-FKS In text-guided image manipulation, GLASS-FKS fails to preserve the reference image. This is largely due to the high variance of sampling (i.e., ODE-based transition sampling) given a limited number of particles. Specifically, estimating gt requires samples from regions where er is significantly higher than average, i.e., images already closely resembling the reference, which is unlikely to be achieved with a limited particle budget. This failure mode is similar to Monte Carlo guidance in Feng et al. (2025), where more advanced sampling techniques help GLASS-FKS preserve more prior than Monte Carlo guidance but do not fully resolve the issue. We also note that GLASS-FKS’s original evaluation uses a stronger base model (FLUX) and a richer reward composition (CLIP, Pick, HPSv2, ImageReward), whereas our setting uses a Rectified Flow trained on CelebA-HQ with CLIP score as the sole reward. Richer reward composition likely provides more informative evaluation for particle steering , which helps explain the strong performance reported in the original paper. 37 Conflict-Aware Additive Guidance for Flow Models under Compositional Rewards reference 
+
+> 𝑔 cov −𝐺
+> FlowGrad
+> 𝑔 car  (ours)
+> angry + sad
+> GLASS -FKS
+> PCGrad
+> happy + sad  curly hair + sad
+> Figure 20.  Additional visualization of text-guided image manipulation.  This figure complements Figure 6 by showing further results of  gcar  on the CelebA-HQ dataset under various composed text prompts.
+
+38

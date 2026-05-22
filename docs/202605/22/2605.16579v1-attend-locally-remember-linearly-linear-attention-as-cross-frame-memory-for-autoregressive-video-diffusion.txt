@@ -1,0 +1,695 @@
+Title: Attend Locally, Remember Linearly: Linear Attention as Cross-Frame Memory for Autoregressive Video Diffusion
+
+URL Source: https://arxiv.org/pdf/2605.16579v1
+
+Published Time: Tue, 19 May 2026 00:19:59 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Attend Locally, Remember Linearly: Linear Attention as Cross-Frame Memory for Autoregressive Video Diffusion 
+
+Kunyang Li Mubarak Shah Yuzhang Shang 
+
+Institute of Artificial Intelligence, University of Central Florida 
+
+Abstract 
+
+Autoregressive (AR) video diffusion is a powerful paradigm for streaming and interactive video generation. However, its reliance on softmax self-attention leads to quadratic compute complexity in sequence length and increasing memory usage due to key-value caching, which fundamentally limits its scalability to long video horizons. Existing remedies (e.g., sparse attention and KV-cache compression) reduce per-step cost but still rely on a linearly growing cache or irreversibly discard past context, and thus fail to simultaneously address linear memory growth and streaming context management. To address this scalability bottleneck, we propose ARL 2 (Attend Locally, Remember Linearly) , a hybrid attention module that re-places quadratic cross-frame attention with a fixed-size recurrent state. Specifically, we decompose self-attention into two branches: an intra-frame softmax branch for spatial detail and local dependencies, and an inter-frame gated recurrent linear branch that maintains a fixed-size state for streaming context. Our key insight is that softmax attention captures fine-grained local interactions, while a recurrent state provides a controllable mechanism for long-range memory. This design achieves linear-time scaling with constant memory while improving temporal consistency over the full-softmax model. To prevent noisy intermediate states from corrupting long-range memory, we update the recurrent state only after the denoised pass. To avoid within-frame information asymmetry, all tokens share the same pre-update state rather than sequential updates. To the best of our knowledge, this is the first work to convert a pretrained AR video diffusion model into a hybrid linear attention architecture, through an efficient two-stage training scheme adapted to the AR video setting. With 75% of layers replaced by hybrid linear attention, the model achieves up to 2.26 × wall-clock speedup and 54% memory reduction, while maintaining comparable quality with improving temporal consistency. 
+
+1 Introduction 
+
+Autoregressive video diffusion has emerged as a powerful paradigm for streaming and interactive video synthesis, owing to its causal, chunk-wise formulation that naturally aligns with the temporal structure of video and enables streaming inference via key-value caching [Chen et al., 2024, Huang et al., 2025, Zhu et al., 2026, Yin et al., 2024, Cui et al., 2025, Liu et al., 2025, 2026, Yang et al., 2025, ai et al., 2025]. However, all these systems employ softmax self-attention [Vaswani et al., 2017] in Diffusion Transformers [Peebles and Xie, 2022], whose O(N 2) compute and O(N ) memory scaling in sequence length N introduces a structural bottleneck that worsens with every generated block [Xu et al., 2026, Lv et al., 2026]. This cost is already severe at second-scale durations: the KV cache of a 5-second 480p video can exceed 34 GB, surpassing the model parameters themselves [Xi et al., 2026]; and attention accounts for ∼75% of total latency after only 14 chunks [Lv et al., 2026], making it the dominant barrier to practical streaming deployment [Yang et al., 2025].               
+
+> Preprint.
+> arXiv:2605.16579v1 [cs.CV] 15 May 2026 (a) Full KV Cache (b) Ours: Attend Locally, Remember Linearly
+> Frame 0 Softmax (Q 1·K ₀T)·V 0
+> KV Cache: Grows Linearly O(N)
+> K, V ₀
+> Frame 1 Softmax (Q 1·[ K₀,₁]T)·[ V₀,₁]K, V ₀|K, V ₁
+> Frame 2 Softmax(Q ₂·[K ₀,₁,₂]T)·[V ₀,₁,₂]K, V ₀|K, V ₁|K, V ₂
+
+⋮                   
+
+> Frame N Softmax(Q N·[K ₀,... N]T)·[V ₀,... N]K, V ₀|K, V ₁|K, V2 |⋯|K, V N
+> Softmax(Q ₀·K ₀T)·V ₀+Q₀·S S₀
+> Softmax(Q ₁·K ₁T)·V ₁+Q₁·S ₀S₁
+> Softmax(Q ₂·K ₂T)·V ₂+Q₂·S ₁S₂
+
+⋮   
+
+> Softmax(Q N·K N
+> T)·V N+QN·S N-1 SN
+> no history yet
+> query state
+> Frame 0
+> Frame 1
+> Frame 2
+> Frame N
+
+⋮ 
+
+> O(1) Memory Intra-Frame Inter-Frame
+> update state cache kv
+
+Figure 1: (a) AR video diffusion relies on softmax self-attention with a growing KV cache, incurring 
+
+O(N ) memory, which limits scalability. (b) Replacing self-attention with our hybrid linear attention, the model maintains a fixed-size recurrent state for streaming context with O(1) memory. Previous efforts have primarily explored sparse attention [Lv et al., 2026, Guo et al., 2026, Huang et al., 2025, Yang et al., 2025, Liu et al., 2025], KV cache quantization and eviction [Xi et al., 2026, Chen et al., 2026a, Samuel et al., 2026, Li et al., 2026] to mitigate this cost. However, these methods have inherent limitations: sparse attention reduces per-step FLOPs but still relies on a linearly growing KV cache; quantization reduces per-entry precision but retains O(N ) storage; and eviction bounds memory usage at the cost of irreversible loss of previous context. Consequently, these methods do not simultaneously address the O(N ) memory scaling and streaming context management. These limitations motivate rethinking the problem from a different modeling perspective. Recent work in language modeling reinterprets linear attention as a form of associative memory [Schlag et al., 2021], with modern variants introducing gating and error-correction mechanisms for more precise and stable updates [Yang et al., 2023, 2024a,b]. Building on this perspective, recent approaches replace partial softmax attention layers with linear attention via distillation or retraining, improving long-context modeling and outperforming either paradigm alone [De et al., 2024, Chen et al., 2026b]. However, directly transferring these advances to AR video diffusion is non-trivial. While linear attention can serve as a recurrent memory for long-range context in LLMs, no prior work has explored how to convert a pretrained AR video diffusion model into such a hybrid architecture. Unlike the ho-mogeneous causal attention used in LLMs, AR video diffusion exhibits an inherently heterogeneous attention structure: intra-frame bidirectional attention captures rich spatial correlations [Fan et al., 2024], while inter-frame causal attention relies on a growing KV cache to maintain temporal consis-tency [ai et al., 2025]. This heterogeneity introduces two key challenges absent in the LLM setting: 
+
+(1) how to design a hybrid attention module that respects the distinct roles of intra- and inter-frame attention; (2) how to maintain a stable recurrent state across frame-level diffusion denoising. We address ❶ challenge with a role-aware decomposition of attention into intra-frame and inter-frame branches. Inter-frame causal attention maintains temporal consistency over a growing context, while intra-frame bidirectional attention models fine-grained spatial structure (Fig. 1). Accordingly, we replace the KV cache with a fixed-size recurrent state via a Gated Delta Network [Yang et al., 2024b] (remember linearly ), whose gated forgetting and delta update rules enable controllable long-range memory management at constant cost, while retaining intra-frame softmax attention to preserve spatial fidelity ( attend locally ; Fig. 2). Since all tokens within a frame are decoded jointly, retaining intra-frame softmax does not introduce additional latency. The ❷ challenge arises from the interaction between recurrent state and frame-level diffusion denoising. Sequential state updates would introduce intra-frame information asymmetry, and repeated exposure to noisy intermediates can corrupt the accumulated memory over long horizons. To address this, we introduce two mechanisms (Fig. 3c): all tokens share a pre-update state to ensure consistent context, and the recurrent state is updated only after the final clean pass to prevent contamination. Ablations (Sec. 4) show that they are critical for maintaining video quality. To realize this design in practice, we propose a progressive two-stage distillation pipeline to efficiently and stably convert a pretrained Causal Forcing model [Zhu et al., 2026] into the hybrid architecture. Stage 1 performs per-layer distillation employing sensitivity-guided layer selection adapted to the AR video setting to minimize performance degradation, while Stage 2 conducts joint distillation to train the hybrid model end-to-end. With 50% of attention layers replaced by the hybrid linear attention, the hybrid model achieves up to 1.57 × wall-clock speedup and 35% memory reduction, 2while maintaining comparable quality and improving temporal consistency with Temporal Flickering and Motion Smoothness , compared to the full-softmax teacher. At 75% replacement, efficiency further improves to 2.26 × speedup and 54% memory reduction. 
+
+2 Related work 
+
+Autoregressive video diffusion. Representative open-source video Diffusion Transformers (DiTs), such as Wan [Wang et al., 2025], CogVideoX [Yang et al., 2024c], and Open-Sora [Zheng et al., 2024], rely on spatiotemporal self-attention, leading to quadratic scaling in compute and memory with video length. To enable streaming generation, a recent line of work reformulates video diffusion as frame-autoregressive (AR): Diffusion Forcing [Chen et al., 2024] assigns independent noise levels per token, bridging AR and full-sequence diffusion; Self-Forcing [Huang et al., 2025] closes the train-test exposure gap by conditioning on self-generated context during training, achieving real-time streaming; and Causal Forcing [Zhu et al., 2026] further improves quality through ODE distillation with an AR teacher. However, all these AR approaches are bottlenecked by linearly growing KV cache. We propose a hybrid attention module for autoregressive video diffusion that replaces inter-frame softmax attention with a fixed-size recurrent state and retains intra-frame bidirectional softmax interactions, achieving O(1) memory per-layer with respect to sequence length. 
+
+Linear attention for video. Existing efforts to incorporating linear attention into video generation can be broadly categorized as follows. Full-architecture retraining. SANA-Video [Chen et al., 2025a] adopts block-linear attention with constant-memory states, while SSM-based models explore alternative sequence modeling paradigms for long-horizon video diffusion and world models [Oshima et al., 2024, Hong et al., 2025, Po et al., 2025]. Although effective, these methods require large-scale retraining. Supplementary branch. SALAD [Fang et al., 2026] introduces a lightweight linear attention branch alongside sparse softmax attention, and VideoSSM [Yu et al., 2025] combines sliding-window softmax with an SSM-based global memory. In both cases, linear-complexity modules serve as auxiliary components, while the primary softmax path and its associated complexity remain. Attention replacement in bidirectional DiTs. Attention Surgery [Ghafoorian et al., 2025] and SLA [Zhang et al., 2025] replace selected attention blocks in pretrained video DiTs with kernel-based or sparse-linear approximations, achieving efficiency gains with minimal fine-tuning. However, they operate within the bidirectional denoising paradigm, where each step processes the full spatiotemporal sequence, so memory and computation still scale with video length and do not support streaming generation. ReHyAt [Ghafoorian and Habibian, 2026] introduces a recurrent hybrid attention formulation for chunk-wise inference with constant memory, but is distilled from bidirectional diffusion models that assume full-sequence availability, leading to a mismatch for causal generation. In contrast , we convert a pretrained AR video diffusion model into a hybrid architecture with gated recurrent linear attention using a Casual Forcing teacher to preserve causal attention behavior. This is the first work to extend hybrid-attention distillation to the AR setting, enabling streaming video generation with constant memory without retraining from scratch. 
+
+3 Method 
+
+We first review the attention mechanism in AR video diffusion and its memory bottleneck (Sec. 3.1). We then introduce ARL 2, a hybrid linear attention module that decomposes self-attention into intra-frame softmax and inter-frame recurrent branches (Sec. 3.2). Next, we describe two state management strategies: frame-level access for consistent history observation and clean-pass-only updates to prevent contamination from noisy intermediates (Sec. 3.3). Finally, we present a lightweight two-stage distillation pipeline that converts a pretrained AR model into the hybrid architecture (Sec. 3.4). 
+
+3.1 Preliminaries 
+
+The autoregressive video diffusion model [Chen et al., 2024, Huang et al., 2025, Zhu et al., 2026] generates video chunk-by-chunk in an autoregressive manner, where each chunk contains one or more contiguous frames. Let xN ∈ RL×d denote the L latent tokens of frame N , where d is the hidden dimension. At each self-attention layer, the model computes queries, keys, and values Q = xW q ,
+
+K = xW k, V = xW v for the current frame, and concatenates keys and values from previous frames 3QN
+
+Intra-Frame 
+
+RoPE  Softmax(Q N·K NT)·V N
+
+Inter-Frame 
+
+φQ RoPE 
+
+φK
+
+φV       
+
+> Query State: OInter
+> = Q 'N· S N-1
+> Update State: SN
+> = α N·SN-1 + β NK'N(V'N-SN-1 K'N)
+
+Gate 
+
++ Proj 
+
+OIntra 
+
+Legend  
+
+> █ Latent Tokens
+> █Intra-frame Branch
+> █ Inter-frame Branch
+> █ Frame-level State
+> █ Output Gate
+
+Memory State S 
+
+RoPE 
+
+⊙
+
+> OInter
+
+KN
+
+VN
+
+> Q'N
+> K'N
+> V'N
+> αN：Control Forget
+> βN：Control Write
+
+y'N
+
+XNFigure 2: ARL 2 attention module (normalization omitted for clarity). Given tokens XN of frame N ,
+
+QN , KN , VN , which are routed to two branches. The intra-frame branch (top) applies bidirectional softmax attention over tokens within the current frame, producing Ointra . The inter-frame branch (bottom) applies recurrent linear attention, where a fixed-size state S maintains and updates long-range memory across frames, and produces Ointer . The state S is updated once per frame. During training, the hybrid module is learned via a progressive two-stage distillation pipeline (See Sec. 3.4). into the KV cache. The attention output over the full context is: 
+
+y = softmax 
+
+ Q K ⊤
+
+√dk
+
++ M
+
+
+
+V, (1) where the causal block mask M permits bidirectional attention within the current frame and causal attention to previous frames. As video length grows, the KV cache accumulates linearly: generating frame N requires storing (N −1) ×L key-value pairs per layer, making memory scale as O(N ).
+
+3.2 ARL 2: Attend Locally, Remember Linearly 
+
+Our key insight stems from the heterogeneous attention structure of autoregressive video diffusion: intra-frame attention is bidirectional, modeling fine-grained spatial correlations, while inter-frame attention is causal and relies on a growing KV cache to maintain temporal consistency. Exploiting this asymmetry, we decompose the original self-attention into two branches (Fig. 2). One branch preserves the original intra-frame softmax attention, reusing the frozen pretrained projections: 
+
+Ointra = Softmax(RoPE( Q), RoPE( K), V ), (2) The other branch replaces the inter-frame KV cache with a recurrent linear state S ∈ RH×D×D .Because the pretrained Q, K, V are optimized for softmax attention, we introduce per-head grouped 
+
+1×1 feature maps ϕq , ϕ k, ϕ v to adapt the representations to the linear recurrence domain: 
+
+Q′ = L2Norm(RoPE( ϕq (Q))) , K′ = L2Norm(RoPE( ϕk(K))) , V ′ = ϕv (V ), (3) We build our linear attention module on the Gated Delta Network [Yang et al., 2024b], whose state update rule is: 
+
+SN = αN SN −1 + βN K′
+
+> N
+> ⊤
+
+(V ′ 
+
+> N
+
+− K′ 
+
+> N
+
+SN −1) , (4) where αN (forget gate) and βN (learning rate) are produced by per-token projections of the hidden state. Eq. 4 uses frame-level notation for brevity; in practice the update is applied sequentially over all L tokens within the frame via an efficient chunkwise kernel [Yang et al., 2023], with per-token gates α(j), β (j) for j ∈ { 1, . . . , L }. When generating frame N , the inter-frame output is obtained by querying the state conditioned on all previous frames: 
+
+Ointer = Q′ 
+
+> N
+
+SN −1, (5) 4200 400 600 800 1000 
+
+> Video frames
+> 0
+> 500
+> 1.0k
+> 1.5k
+> 2.0k
+> 2.5k
+> FLOPs / layer (TFLOPs)
+> 8.9×
+> 13.1×
+> 23.4×
+> 25.4×
+> Softmax (CF)
+> Hybrid (ARL 2)
+
+(a) Theoretical per-layer FLOPs. 200 400 600 800 1000  
+
+> Video frames
+> 0
+> 500
+> 1.0k
+> 1.5k
+> 2.0k
+> Memory / layer (MiB)
+> 1024×
+> 1536×
+> 2815×
+> 3071×
+> 768 KiB (constant)
+> Softmax (CF)
+> Hybrid (ARL 2)
+
+(b) Per-layer memory scaling. Step t = T (Query-Only)           
+
+> Xnoisy Q · S (query)
+> Step t = T−1 (Query-Only)
+> Xnoisy Q · S (query) ⊘skip update
+> Step t = 0 (Query, Update)
+> Xclean Q · S (query)
+> Si+1 =GDN(K,V,α,β,S i)Si+1
+> Si
+> ...
+> Token 1 ... L
+> ⊘skip update
+
+(c) State management. 
+
+Figure 3: (a) Softmax attention scales quadratically with video length, while the hybrid layer scales linearly. (b) The KV cache grows linearly with video length, whereas ours remains constant. (c) The recurrent state S is shared across all tokens within a frame and updated only after the final clean pass. where all tokens in the current frame query the same pre-update state SN −1. Then two branches are combined via a lightweight headwise gate: 
+
+G = σ(x W g ), (6) 
+
+y′ = ( Ointra + G ⊙ Ointer ) Wo. (7) where Wg ∈ Rd×H projects to one scalar per head, σ denotes the sigmoid function, and G ∈ [0 , 1] L×H
+
+is broadcast over the head dimension D before the element-wise product with Ointer ∈ RL×H×D.The fixed-size state S ∈ RH×D×D reduces cumulative per-layer FLOPs from quadratic to linear scaling and keeps per-layer memory constant with respect to the number of generated frames (Fig. 3a, 3b). In practice, replacing 75% of layers yields up to 2.26 × wall-clock speedup and 54% 
+
+memory reduction (Sec. 4.2). 
+
+3.3 Memory state management for AR video diffusion 
+
+Recurrent linear attention in LLMs [Yang et al., 2023, 2024a,b] updates the state at each token sequentially. Directly applying this to AR video diffusion introduces two issues: (1) tokens within a frame should share the same cross-frame context, but token-level updates cause asymmetry; (2) multi-step denoising writes noisy intermediates into the state, corrupting accumulated memory. We address both with two complementary mechanisms (Fig. 3c). 
+
+Frame-level access. All L tokens within a frame query the same pre-update state SN −1, and the state is updated only after the entire frame has been processed: 
+
+O(i)inter ,N = Q′(i) 
+
+> N
+
+SN −1, ∀ i ∈ { 1, . . . , L }. (8) 
+
+Clean-pass update. During the multi-step denoising loop, the model queries S but does not update it. Once a clean frame is produced, its tokens update S via Eq. 4. This also reduces the number of state writes from one per denoising step to one per frame, improving inference efficiency. 
+
+3.4 Training pipeline: Two-stage distillation 
+
+Rather than retraining the full model, we selectively replace a subset of attention layers and distill them in a progressive two-stage pipeline: Stage 1 independently distills each attention layer and select which layers to replace; Stage 2 jointly fine-tunes the hybrid model so that all replaced layers operate coherently. This yields strong performance with modest compute (Sec. 4), consistent with findings on progressive distillation for hybrid LLMs [Chen et al., 2026b, Li et al., 2025]. 
+
+Stage 1: per-layer distillation and selection. We distill all 30 attention layers independently. For each layer ℓ, the teacher attention and student hybrid module run in parallel on the teacher hidden state, and we minimize their output MSE: 
+
+L(ℓ)align = 1
+
+L · d ∥y′
+
+> ℓ
+
+(xt, t, c ) − yℓ(xt, t, c )∥2 
+
+> F
+
+, (9) where yℓ and y′ 
+
+> ℓ
+
+denote the teacher and student outputs, xt is the noisy latent at timestep t, and c
+
+is the text condition. The teacher output is propagated to subsequent layers, ensuring distillation 5SubjCon 
+
+> BgCon
+> MotSmth
+> AesQual
+> ImgQual
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> Attention Recovery Rate
+> 85%
+> 96%
+> 135%
+> 122%
+> 25%
+> HR
+> HS
+
+(a) Per-dimension ARR analysis. 0.015 0.010 0.005 0.000 0.005 0.010 0.015     
+
+> Improve Consistency Hurt Consistency
+> HR (Baseline - Replace)
+> 0.01
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> 0.05
+> HS  (Baseline - Replace)
+> Improve ImgQuality  Hurt ImgQuality
+> L0
+> L1
+> L2
+> L3
+> L4
+> L5
+> L6
+> L7
+> L8
+> L9
+> L10
+> L11
+> L12
+> L13 L14
+> L15
+> L16
+> L17
+> L18
+> L19
+> L20 L21
+> L22
+> L23
+> L24
+> L25
+> L26
+> L27
+> L28
+> L29
+> Keep
+> Replace
+
+(b) HS-protected layer selection. SubjCon      
+
+> BgCon
+> MotSmth
+> AesQual
+> ImgQual
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> VBench Score
+> 0.94 0.94 0.96
+> 0.61
+> 0.70
+> 0.94 0.95 0.97
+> 0.62
+> 0.70
+> Baseline
+> Replace
+
+(c) End-to-end validation. 
+
+Figure 4: (a) Per-dimension ARR averaged across layers. Four Hybrid-Recoverable (HR) dimensions achieve ≥85% recovery, while ImgQual is Hybrid-Sensitive (HS) at ∼25%, motivating HS-aware layer selection to minimize quality degradation. (b) Each point corresponds to one of the 30 layers, plotted by ∆HR (x-axis) and ∆HS (y-axis). Here the 50% lowest-pℓ layers (blue) are selected for replacement. (c) End-to-end validation after Stage 2: the hybrid model matches or exceeds the baseline on all HR dimensions and recovers ImgQual to within ∼1%, indicating that HS-aware selection preserves sensitive dimensions while allowing HR gaps to be closed via joint distillation. under the intact teacher context. Only the state-related parameters are trained, including feature maps ϕq , ϕ k, ϕ v (Eq. 3), the headwise gate Wg (Eq. 6), and the state update projections for αN , β N
+
+(Eq. 4). Training uses text-conditioned inputs with randomly sampled noisy latents. After per-layer distillation, we determine which layers to replace, in three steps: 
+
+(i) Layer analysis. For each layer we evaluate three conditions on our stress-test prompts and measure VBench scores across 5 quality dimensions (indexed by i): (1) Baseline i: original softmax with full KV cache; (2) Replace ℓ,i : layer ℓ alone replaced with its Stage-1 hybrid module; (3) Skip ℓ,i :attention output of layer ℓ zeroed via a modulated skip connection. From these VBench scores we compute the Attention Recovery Rate (ARR) per layer ℓ and quality dimension i:
+
+ARR ℓ,i = Replace ℓ,i − Skip ℓ,i 
+
+Baseline i − Skip ℓ,i 
+
+, (10) where ARR=1 denotes full recovery of the softmax attention’s contribution to dimension i. Aggre-gating ARR across layers (Fig. 4a splits the five dimensions into two groups. Hybrid-Recoverable (HR) : SubjCon, BgCon, MotSmth, AesQual, where hybrid module achieves ≥85% recovery. Hybrid-Sensitive (HS) : ImgQual, where hybrid module recovers only ∼25% of the attention contribution. 
+
+(ii) Layer selection. Motivated by the hypothesis that HS dimensions are intrinsically sensitive to attention replacement, we design layer selection to explicitly safeguard them. Concretely, each layer is scored by its impact on HS, with a small HR penalty acting as a tiebreaker: 
+
+pℓ = ∆HS ℓ + β · max  ∆HR ℓ, 0, (11) where ∆HS ℓ and ∆HR ℓ denote the mean degradation across HS and HR dimensions, respectively. Under a 50% layer replacement setting, we replace the 15 layers with the smallest pℓ (Fig. 4b). Sweeping β ∈ { 0.1, 0.5, 1.0} yields the identical replacement set, so β functions as a boundary-layer tiebreaker rather than a sensitive hyperparameter. 
+
+(iii) End-to-end validation. After Stage 2 joint distillation, the resulting hybrid model matches or exceeds the softmax baseline on all four HR dimensions and recovers ImgQual to within ∼1% on the same stress-test prompts (Fig. 4c). These results indicate that the HS-protected layer selection effectively prevents severe degradation in hybrid-sensitive layers, while allowing residual errors in hybrid-recoverable layers to be compensated during joint training. 
+
+Stage 2: joint distillation. The student is initialized from the teacher checkpoint, the Stage 1 GDN weights are loaded into the selected layers, and the resulting hybrid model is jointly distilled by matching the teacher’s predicted velocity field. Let vθ (xt, t, c ) denote the flow velocity predicted by the diffusion model given noisy latent xt, timestep t, and text condition c. The joint loss is: 
+
+Ljoint = vstudent  
+
+> θ
+
+(xt, t, c ) − vteacher  
+
+> θ
+
+(xt, t, c ) 22 . (12) In this stage, the teacher is frozen, while the student trains the hybrid linear attention module parameters, LoRA adapters on the Q, K, V path, and the FFN of each selected block. 6Table 1: ARL 2 achieves comparable overall performance to representative open-source video models, while improving temporal flickering and background consistency, with O(1) memory complexity. ARL 2 (50%/75%) denotes replacing 50%/75% of attention layers with hybrid linear attention.                                                                                      
+
+> Model #Params Subject Consistency Background Consistency Temporal Flickering Motion Smoothness Aesthetic Quality Imaging Quality
+> Quality Avg. ↑
+> Semantic Avg. ↑
+> Bidirectional Diffusion
+> LTX-Video [HaCohen et al., 2024] 1.9B 87.89 92.00 98.20 97.91 48.08 58.62 80.45 51.32 Wan2.1-T2V [Wang et al., 2025] 1.3B 96.18 98.33 98.33 96.60 65.35 68.64 87.24 63.01
+> Linear Diffusion
+> SANA-Video [Chen et al., 2025a] 2B 97.09 96.95 89.22 95.10 70.48 67.55 86.07 80.76 Autoregressive Diffusion
+> SkyReels-V2 [Chen et al., 2025b] †1.3B 97.78 97.68 97.97 98.50 59.66 62.29 85.65 48.02 MAGI-1 [ai et al., 2025] 4.5B 95.71 97.14 97.69 98.67 62.44 64.84 86.08 72.02
+> Distilled Autoregressive
+> Self Forcing [Huang et al., 2025] 1.3B 95.62 96.40 96.82 95.59 66.75 69.96 86.86 70.71 Causal Forcing [Zhu et al., 2026] 1.3B 96.19 96.44 96.27 94.24 68.80 70.62 87.09 70.97
+> Distilled Linear Autoregressive
+> ARL 2(50%) 1.3B 95.63 96.41 97.26 95.59 68.29 69.87 87.17 70.13 ARL 2(75%) 1.3B 94.85 95.94 96.90 94.24 68.44 69.87 86.71 70.24
+
+4 Experiments 
+
+4.1 Setup Training. We adopt Causal Forcing [Zhu et al., 2026] as base model. In Stage 1, all 30 layers are independently distilled for 6K steps using prompts from VidProM [Wang and Yang, 2024]; then identifies 15 layers (50%) or 23 layers (75%) for replacement. Stage 2 jointly distills the hybrid student against the frozen Causal Forcing teacher for 12K steps on 6K teacher-synthesized videos. The entire pipeline trains fewer than 2% of backbone parameters, consumes ∼156 H100 GPU-hours (∼50 for Stage 1, ∼106 for Stage 2). 
+
+Evaluation. We use VBench [Huang et al., 2023] as the primary benchmark. All models are evalu-ated at 832 ×480 with 81 frames ( †: native resolution 544 ×960 , 97 frames). Layer sensitivity analysis uses a separate set of stress-test prompts designed to probe temporal consistency and visual fidelity under challenging conditions (details in App. B). For efficiency, we evaluate end-to-end generation time, throughput (FPS), and peak GPU memory on a subset of prompts, measured on a single Table 2: ARL 2 achieves consistent efficiency gains with up to 2.26 × speedup and significantly reduced memory, while maintaining competitive or improved video quality.                                                                                                                             
+
+> Efficiency Quality ↑
+> Video Frames Model Gen (s) ↓
+> FPS
+> ↑
+> Mem (GB) ↓
+> Speed-up ↑
+> Qual. Avg Sem. Avg Total 81 Self Forcing 8.70 9.31 23.30 1.00 ×86.79 69.15 83.26 Causal Forcing 8.68 9.33 23.30 1.00 ×86.69 69.11 83.17 ARL 2(50%) 8.70 9.31 20.53 1.00 ×87.81 71.41 84.53
+> ARL 2(75%) 8.67 9.34 19.10 1.00 ×86.00 65.86 81.97 165 Self Forcing 22.27 7.41 29.13 1.00 ×86.01 66.25 82.05 Causal Forcing 22.28 7.41 29.13 1.00 ×85.48 70.55 82.49 ARL 2(50%) 19.90 8.29 23.54 1.12 ×86.32 68.65 82.79
+> ARL 2(75%) 18.63 8.86 20.60 1.20 ×84.36 71.75 81.84 501 Self Forcing 124.24 4.03 54.08 1.00 ×85.14 53.94 78.90 Causal Forcing 124.24 4.03 54.08 1.00 ×83.13 58.96 78.30 ARL 2(50%) 88.52 5.66 37.26 1.40 ×86.04 58.85 80.60
+> ARL 2(75%) 71.54 7.00 28.30 1.74 ×77.00 55.35 72.67 921 Self Forcing 357.74 2.57 87.88 1.00 ×83.37 67.83 80.26
+> Causal Forcing 357.52 2.58 87.88 1.00 ×79.96 58.43 75.66 ARL 2(50%) 227.48 4.05 57.00 1.57 ×84.96 51.62 78.29 ARL 2(75%) 158.16 5.82 40.50 2.26 ×77.34 48.40 71.55
+
+NVIDIA RTX PRO 6000 Blackwell under cold-start conditions, across video lengths from 81 to 921 frames. 
+
+4.2 Results Quality. As shown in Tab. 1, we compare ARL 2 with representative open-source video generation models, including LTX-Video [HaCohen et al., 2024], Wan2.1 [Wang et al., 2025], SANA-Video [Chen et al., 2025a], SkyReels-V2 [Chen et al., 2025b], MAGI-1 [ai et al., 2025]), and Self Forcing [Huang et al., 2025], Causal Forcing [Zhu et al., 2026]). ARL 2 (50%) achieves the higher Qual-ity score among all distilled models (87 .17 ), with improvements in tem-poral flickering ( +0 .99 ) and motion smoothness ( +1 .35 ), suggesting im-proved consistency. ARL 2 achieves comparable quality to the retrained SANA-Video (linear model), while 7matching the much larger MAGI-1 ( 4.5B, 86 .08 ) with 3.5× fewer parameters. Details (App. D) show gains in object recognition ( +1 .10 ) and color fidelity ( +0 .76 ), but weaker performance on spatial relationships and human actions, suggesting limits of a fixed-size state for precise spatial modeling. 
+
+Efficiency. Tab. 2 highlights our computational and memory efficiency through wall-clock time and peak memory across increasing video lengths. Speedup increases with video length, consistent with the linear–quadratic scaling gap in Fig. 3a. ARL 2 (75%) reaches 1.20 ×, 1.74 ×, and 2.26 × at 165, 501, and 921 frames, respectively. Even ARL 2 (50%) achieves 1.57 × at 921 frames, confirming that gains grow as KV-cache overhead dominates. For memory, hybrid layers replace the O(N ) KV-cache with a fixed-size state, reducing per-frame memory from 293 ,MB to 175 ,MB ( 40% ). At 921 frames, ARL 2 (75%) uses 40 .5,GB vs. 87 .9,GB for Casual Forcing ( 54% ). At 1005 frames, Casual Forcing run out of memory ( > 91 ,GB), while ARL 2
+
+completes in 179,s using 43,GB, demonstrating scalability. All results use batch size 1; the memory savings enable higher parallelism and throughput. Beyond efficiency, ARL 2 (50%) maintains strong quality as video length increases. This suggests the recurrent state provides more stable long-range context than the KV-cache, consistent with improved inter-frame consistency in Tab. 1. 
+
+4.3 Ablation study Subj. Bg. Motion. Aes. Img. 
+
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> 1.1
+> VBench Score
+> 0.777
+> 0.864
+> 0.898
+> 0.893
+> 0.872
+> 0.899
+> 0.924
+> 0.919
+> 0.958
+> 0.970
+> 0.973
+> 0.974
+> 0.495
+> 0.572
+> 0.591
+> 0.589
+> 0.565
+> 0.659
+> 0.691
+> 0.709
+> Skip
+> Intra-only
+> Hybrid
+> Baseline
+
+(a) Attention decomposition. L2  
+
+> L4
+> L6
+> L7
+> L8
+> L9
+> L11
+> L13
+> L14
+> L16
+> L23
+> L24
+> L25
+> L27
+> L28
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> gate output  (Wg x) stage 2 (12k steps)
+
+(b) Gate activation. 
+
+Figure 5: (a) Attention decomposition on a representative layer (23), highlighting complementary intra- and inter-frame branch modeling. (b) Gate activation across hybrid layers after Stage 2 training, indicating that both branches remain active and are combined via a content-dependent mixture. We ablate two core design choices us-ing 6 hybrid layers [2 , 4, 7, 8, 23 , 24] 
+
+trained with Stage 1 and Stage 2 ( 3Ksteps each), evaluated on stress-test prompts at 21 frames. 
+
+Branch contribution. To isolate intra- and inter-frame roles, we eval-uate four settings on a single hybrid layer: Skip , Intra-only , Hybrid , and 
+
+Baseline . As shown in Fig. 5a (layer 23 as an example), removing the layer (Skip ) degrades all metrics, indicat-ing replaced layers remain essential. The intra-frame branch alone (( Intra-only )) largely recovers subject and background consistency, highlighting its role in local spatial reasoning. Adding the recurrent branch ( Hybrid ) further improves background consistency and aesthetics, and slightly surpasses the teacher ( Baseline ) on motion smoothness, suggesting com-plementary temporal modeling. Fig. 5b shows the learned gate σ(Wg x) stays in [0 .45 , 0.55] with per-head variation, indicating both branches remain active and form a content-dependent mixture. 
+
+State access granularity. We compare frame-level access (all tokens query the same SN −1)Table 3: Frame-level is superior to token-level access.                         
+
+> Setting SubjCon BgCon MotSmth AesQual ImgQual Avg Causal Forcing 93.7 93.7 96.5 61.3 70.9 83.2 Token-Level 93.2 94.2 96.7 60.6 69.0 82.7
+> Frame-Level 93.6 94.3 97.4 61.1 70.3 83.3
+
+against token-level access (each token sees its own sequentially accumulated state). Frame-level reaches Avg 83 .3, match-ing the full-softmax teacher ( 83 .2), while token-level drops to 82 .7 (Tab. 3). This con-firms that frame-level access is necessary to avoid intra-frame context asymmetry in-troduced by token-level updates. 
+
+Gate granularity. The branch-fusion gate σ(Wg x) can be parameterized as scalar (1.5K params per layer), headwise ( 18 K), or elementwise ( 2.36 M). Elementwise gating is Table 4: Headwise gating achieves the best trade-off between performance and parameter efficiency.                             
+
+> Setting Params SubjCon BgCon MotSmth AesQual ImgQual Avg Elementwise 2.36M 92.6 93.8 96.1 60.0 67.8 82.1 Headwise 18K 93.8 94.5 97.6 61.3 70.3 83.5
+> Scalar 1.5K 93.8 94.4 97.5 61.4 69.6 83.3
+
+strictly worse ( −1.4), due to poor conver-gence under its 130 × larger parameteriza-tion with limited training steps. Scalar and headwise both match or exceed the casual forcing teacher, with headwise achieving the highest Avg ( 83 .5) while providing per-head adaptability at modest cost. 8Frame ID : 0  ID: 16  ID: 32  ID: 48  ID: 64  ID: 80 
+
+> Casual Forcing  ARL 2 (Ours)
+
+Prompt: "A stylish woman wearing a distinctive red striped scarf walks down a cobblestone street lined with autumn trees. She pauses to admire a shop window, then continues 
+
+walking confidently toward the camera. Warm golden afternoon lighting creates long shadows. Fallen leaves scatter around her feet. Medium shot, following the woman from 
+
+behind then alongside." Casual Forcing 
+
+Prompt: "Two puppies, one golden retriever and one black labrador, play together on a sandy beach at sunset. They chase each other in circles, tumble in the sand, and splash 
+
+through shallow waves. Soft warm sunset colors reflect off the wet sand. Medium shot capturing both puppies in dynamic interaction." 
+
+> ARL 2 (Ours) Casual Forcing  ARL 2 (Ours)
+
+Prompt: "A white vintage SUV with a black roof rack drives along a winding mountain road, passes behind a rocky outcropping covered in moss and  briefly disappears, then re-
+
+emerges on the other side  continuing its journey. Tall redwood trees line both sides of the road with sunlight streaming through. Dust kicks up from the tires. Medium shot 
+
+following the vehicle." Prompt: "An extreme close-up of a gray-haired man in his 60s with a beard, deep in thought about the history of the universe as he sits at a Parisian cafe, focuses on people walking 
+
+offscreen, dressed in wool coat suit with button-down shirt, brown beret, and glasses. His professorial appearance is evident, and subtly smiles as if finding the answer to life's 
+
+mysteries. Cinematic lighting with golden light, Parisian streets and city in the background, depth of field, cinematic 35mm film." 
+
+> Casual Forcing  ARL 2 (Ours)
+
+Figure 6: Qualitative comparison. Highlighting strong visual quality and temporal consistency under significant computational and memory efficiency. ARL 2 achieves up to 2.26 × speedup and 54% 
+
+memory reduction with comparable or better quality. In the “white vintage SUV” example, ARL 2
+
+preserves appearance consistency when the car disappears and reappears, while Causal Forcing fails to follow the prompt and produces distortions. 
+
+5 Conclusion 
+
+We presented ARL 2, a hybrid attention architecture for autoregressive video diffusion that preserves bidirectional intra-frame softmax attention for fine-grained intra-frame spatial modeling while replac-ing the growing cross-frame KV cache with a fixed-size gated recurrent state. Two complementary mechanisms, frame-level state access and clean-pass updates, ensure stable streaming memory under iterative diffusion denoising. A lightweight two-stage distillation pipeline, guided by sensitivity-aware layer selection, converts a pretrained softmax model into the hybrid architecture with fewer than 2% trainable parameters and ∼156 H100 GPU-hours. At 50% layer replacement, ARL 2 matches or exceeds the softmax teacher in overall quality while improving temporal consistency, with 1.57 ×
+
+speedup and 35% memory reduction. At 75% replacement, efficiency scales to 2.26 × speedup and 
+
+54% memory savings while maintaining competitive generation quality, enabling long-form video synthesis beyond the memory limits of full-attention baselines. 9References 
+
+Boyuan Chen, Diego Marti Monso, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitzmann. Diffusion forcing: Next-token prediction meets full-sequence diffusion. ArXiv , abs/2407.01392, 2024. URL https://api.semanticscholar.org/CorpusID:270869622 .Xun Huang, Zhengqi Li, Guande He, Mingyuan Zhou, and Eli Shechtman. Self forcing: Bridging the train-test gap in autoregressive video diffusion. ArXiv , abs/2506.08009, 2025. URL https: //api.semanticscholar.org/CorpusID:279251392 .Hongzhou Zhu, Min Zhao, Guande He, Hang Su, Chongxuan Li, and Jun Zhu. Causal forcing: Autoregressive diffusion distillation done right for high-quality real-time interactive video gener-ation. ArXiv , abs/2602.02214, 2026. URL https://api.semanticscholar.org/CorpusID: 285269490 .Tianwei Yin, Qiang Zhang, Richard Zhang, William T. Freeman, Frédo Durand, Eli Shechtman, and Xun Huang. From slow bidirectional to fast autoregressive video diffusion models. 2025 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 22963–22974, 2024. URL https://api.semanticscholar.org/CorpusID:274610175 .Justin Cui, Jie Wu, Ming Li, Tao Yang, Xiaojie Li, Rui Wang, Andrew Bai, Yuanhao Ban, and Cho jui Hsieh. Self-forcing++: Towards minute-scale high-quality video generation. ArXiv ,abs/2510.02283, 2025. URL https://api.semanticscholar.org/CorpusID:281724666 .Kunhao Liu, Wenbo Hu, Jiale Xu, Ying Shan, and Shijian Lu. Rolling forcing: Autoregres-sive long video diffusion in real time. ArXiv , abs/2509.25161, 2025. URL https://api. semanticscholar.org/CorpusID:281676207 .Jinxiu Liu, Xuan Liu, Kangfu Mei, Yandong Wen, Ming-Hsuan Yang, and Weiyang Liu. Stream-ing autoregressive video generation via diagonal distillation. 2026. URL https://api. semanticscholar.org/CorpusID:286428940 .Shuai Yang, Wei Huang, Ruihang Chu, Yicheng Xiao, Yuyang Zhao, Xianbang Wang, Muyang Li, Enze Xie, Ying-Cong Chen, Yao Lu, Song Han, and Yukang Chen. Longlive: Real-time interactive long video generation. ArXiv , abs/2509.22622, 2025. URL https://api.semanticscholar. org/CorpusID:281658815 .Sand. ai, Han Sack Teng, Hong Jia, Lei Sun, Lingzhi Li, Maolin Li, Min Tang, Shu Han, Tianning Zhang, W. Q. Zhang, Weifeng Luo, Xiaoyang Kang, Yuchen Sun, Yue Cao, Yunpeng Huang, Yutong Lin, Yuxin Fang, Zewei Tao, Zheng Zhang, Zhongshu Wang, Zixun Liu, Daiqi Shi, Guoli Su, Hanwen Sun, Hong-Fei Pan, Jie Wang, Jie Sheng, Mingyan Cui, Min Hu, Ming Yan, Shucheng Yin, Si-Hui Zhang, Tingting Liu, Xi Yin, Xiaoyu Yang, Xin Song, Xuan Hu, Yankai Zhang, and Yu-Qian Li. Magi-1: Autoregressive video generation at scale. ArXiv , abs/2505.13211, 2025. URL 
+
+https://api.semanticscholar.org/CorpusID:278768832 .Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Neural Information Processing Systems ,2017. URL https://api.semanticscholar.org/CorpusID:13756489 .William S. Peebles and Saining Xie. Scalable diffusion models with transformers. 2023 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 4172–4182, 2022. URL https: //api.semanticscholar.org/CorpusID:254854389 .Yichun Xu, Navjot K. Khaira, and Tejinder Singh. Kv cache optimization strategies for scalable and efficient llm inference. 2026. URL https://api.semanticscholar.org/CorpusID: 286762310 .Chengtao Lv, Yumeng Shi, Yushi Huang, Ruihao Gong, Shen Ren, and Wenya Wang. Light forcing: Accelerating autoregressive video diffusion via sparse attention. ArXiv , abs/2602.04789, 2026. URL https://api.semanticscholar.org/CorpusID:285286408 .10 Haocheng Xi, Shuo Yang, Yilong Zhao, Muyang Li, Han Cai, Xingyang Li, Yujun Lin, Zhuoyang Zhang, Jintao Zhang, Xiuyu Li, Zhiying Xu, Jun Wu, Chenfeng Xu, Ion Stoica, Song Han, and Kurt Keutzer. Quant videogen: Auto-regressive long video generation via 2-bit kv-cache quanti-zation. ArXiv , abs/2602.02958, 2026. URL https://api.semanticscholar.org/CorpusID: 285275510 .Hang Guo, Zhaoyang Jia, Jiahao Li, Bin Li, Yuanhao Cai, Jiangshan Wang, Yawei Li, and Yan Lu. Efficient autoregressive video diffusion with dummy head. ArXiv , abs/2601.20499, 2026. URL 
+
+https://api.semanticscholar.org/CorpusID:285101812 .Hanmo Chen, Chenghao Xu, Xu Yang, Xuan Chen, and Cheng Deng. Past- and future-informed kv cache policy with salience estimation in autoregressive video diffusion. ArXiv , abs/2601.21896, 2026a. URL https://api.semanticscholar.org/CorpusID:285139913 .Dvir Samuel, Issar Tzachor, Matan Levy, Micah Green, Gal Chechik, and Rami Ben-Ari. Fast autoregressive video diffusion and world models with temporal cache compression and sparse at-tention. ArXiv , abs/2602.01801, 2026. URL https://api.semanticscholar.org/CorpusID: 285271188 .Kunyang Li, Mubarak Shah, and Yuzhang Shang. Packcache: A training-free acceleration method for unified autoregressive video generation via compact kv-cache. ArXiv , abs/2601.04359, 2026. URL https://api.semanticscholar.org/CorpusID:284544089 .Imanol Schlag, Kazuki Irie, and Jürgen Schmidhuber. Linear transformers are secretly fast weight programmers. In International Conference on Machine Learning , 2021. URL https://api. semanticscholar.org/CorpusID:235377069 .Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated linear attention transformers with hardware-efficient training. ArXiv , abs/2312.06635, 2023. URL https://api. semanticscholar.org/CorpusID:266162792 .Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. Parallelizing linear transformers with the delta rule over sequence length. ArXiv , abs/2406.06484, 2024a. URL https://api. semanticscholar.org/CorpusID:270371554 .Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated delta networks: Improving mamba2 with delta rule. ArXiv , abs/2412.06464, 2024b. URL https://api.semanticscholar.org/CorpusID: 274598177 .Soham De, Samuel L. Smith, Anushan Fernando, Aleksandar Botev, George Cristian-Muraru, Albert Gu, Ruba Haroun, Leonard Berrada, Yutian Chen, Srivatsan Srinivasan, Guillaume Desjardins, Arnaud Doucet, David Budden, Yee Whye Teh, Razvan Pascanu, Nando de Freitas, and Caglar Gulcehre. Griffin: Mixing gated linear recurrences with local attention for efficient language models. ArXiv , abs/2402.19427, 2024. URL https://api.semanticscholar.org/CorpusID: 268091246 .Yingfa Chen, Zhen Leng Thai, Zihan Zhou, Zhu Zhang, Xingyu Shen, Shuo Wang, Chaojun Xiao, Xu Han, and Zhiyuan Liu. Hybrid linear attention done right: Efficient distillation and effective architectures for extremely long contexts. ArXiv , abs/2601.22156, 2026b. URL https://api. semanticscholar.org/CorpusID:285140858 .Qihang Fan, Huaibo Huang, and Ran He. Breaking the low-rank dilemma of linear attention. 2025 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 25271–25280, 2024. URL https://api.semanticscholar.org/CorpusID:273969893 .Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, Jianyuan Zeng, Jiayu Wang, Jingfeng Zhang, Jingren Zhou, Jinkai Wang, Jixuan Chen, Kai Zhu, Kang Zhao, Keyu Yan, Lianghua Huang, Xiaofeng Meng, Ningying Zhang, Pandeng Li, Ping Wu, Ruihang Chu, Rui Feng, Shiwei Zhang, Siyang Sun, Tao Fang, Tianxing Wang, Tianyi Gui, Tingyu Weng, Tong Shen, Wei Lin, Wei Wang, Wei Wang, Wen-Chao Zhou, Wente Wang, Wen Shen, Wenyuan Yu, Xianzhong Shi, Xiaomin Huang, Xin Xu, Yan Kou, Yan-Mei Lv, Yifei Li, Yijing Liu, Yiming Wang, Yingya Zhang, Yitong Huang, Yong Li, You Wu, Yu Liu, Yulin Pan, Yun Zheng, Yuntao Hong, Yupeng Shi, Yutong Feng, Zeyinzi Jiang, Zhen Han, 11 Zhigang Wu, and Ziyu Liu. Wan: Open and advanced large-scale video generative models. ArXiv ,abs/2503.20314, 2025. URL https://api.semanticscholar.org/CorpusID:277321639 .Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, Da Yin, Xiaotao Gu, Yuxuan Zhang, Weihan Wang, Yean Cheng, Ting Liu, Bin Xu, Yuxiao Dong, and Jie Tang. Cogvideox: Text-to-video diffusion models with an expert transformer. ArXiv , abs/2408.06072, 2024c. URL https: //api.semanticscholar.org/CorpusID:271855655 .Zangwei Zheng, Xiangyu Peng, Tianji Yang, Chenhui Shen, Shenggui Li, Hongxin Liu, Yukun Zhou, Tianyi Li, and Yang You. Open-sora: Democratizing efficient video production for all. ArXiv ,abs/2412.20404, 2024. URL https://api.semanticscholar.org/CorpusID:275133398 .Junsong Chen, Yuyang Zhao, Jincheng Yu, Ruihang Chu, Junyu Chen, Shuai Yang, Xianbang Wang, Yicheng Pan, Daquan Zhou, Huan Ling, Haozhe Liu, Hongwei Yi, Hao Zhang, Muyang Li, Yukang Chen, Han Cai, Sanja Fidler, Ping Luo, Song Han, and Enze Xie. Sana-video: Efficient video generation with block linear diffusion transformer. ArXiv , abs/2509.24695, 2025a. URL 
+
+https://api.semanticscholar.org/CorpusID:281674126 .Yuta Oshima, Shohei Taniguchi, Masahiro Suzuki, and Yutaka Matsuo. Ssm meets video diffusion models: Efficient long-term video generation with structured state spaces. 2024. URL https: //api.semanticscholar.org/CorpusID:272397789 .Yicong Hong, Long Mai, Yu Yao, and Feng Liu. Pushing the boundaries of state space models for im-age and video generation. ArXiv , abs/2502.00972, 2025. URL https://api.semanticscholar. org/CorpusID:276094439 .Ryan Po, Yotam Nitzan, Richard Zhang, Berlin Chen, Tri Dao, Eli Shechtman, Gordon Wet-zstein, and Xun Huang. Long-context state-space video world models. 2025 IEEE/CVF In-ternational Conference on Computer Vision (ICCV) , pages 8733–8744, 2025. URL https: //api.semanticscholar.org/CorpusID:278911218 .Tongcheng Fang, Hanling Zhang, Rui Xie, Zhu Han, Xin Tao, Tianchen Zhao, Pengfei Wan, Wenbo Ding, Wanli Ouyang, Xuefei Ning, and Yu Wang. Salad: Achieve high-sparsity attention via efficient linear attention tuning for video diffusion transformer. ArXiv , abs/2601.16515, 2026. URL 
+
+https://api.semanticscholar.org/CorpusID:284981782 .Yifei Yu, Xiaoshan Wu, Xinting Hu, Tianxi Hu, Yang-Tian Sun, Xiaoyang Lyu, Bo Wang, Lin Ma, Yuewen Ma, Zhongrui Wang, and Xiaojuan Qi. Videossm: Autoregressive long video generation with hybrid state-space memory. ArXiv , abs/2512.04519, 2025. URL https://api. semanticscholar.org/CorpusID:283557042 .Mohsen Ghafoorian, Denis Korzhenkov, and Amirhossein Habibian. Attention surgery: An efficient recipe to linearize your video diffusion transformer. ArXiv , abs/2509.24899, 2025. URL https: //api.semanticscholar.org/CorpusID:281675646 .Jintao Zhang, Haoxu Wang, Kai Jiang, Shuo Yang, Kaiwen Zheng, Haocheng Xi, Ziteng Wang, Hongzhou Zhu, Min Zhao, Ion Stoica, Joseph E. Gonzalez, Jun Zhu, and Jianfei Chen. Sla: Beyond sparsity in diffusion transformers via fine-tunable sparse-linear attention. ArXiv , abs/2509.24006, 2025. URL https://api.semanticscholar.org/CorpusID:281675722 .Mohsen Ghafoorian and Amirhossein Habibian. Rehyat: Recurrent hybrid attention for video diffusion transformers. ArXiv , abs/2601.04342, 2026. URL https://api.semanticscholar. org/CorpusID:284543807 .Yanhong Li, Songlin Yang, Shawn Tan, Mayank Mishra, Rameswar Panda, Jiawei Zhou, and Yoon Kim. Distilling to hybrid attention models via kl-guided layer selection. ArXiv , abs/2512.20569, 2025. URL https://api.semanticscholar.org/CorpusID:284133045 .Yoav HaCohen, Nisan Chiprut, Benny Brazowski, Daniel Shalem, David-Pur Moshe, Eitan Richard-son, E. I. Levin, Guy Shiran, Nir Zabari, Ori Gordon, Poriya Panet, Sapir Weissbuch, Victor Kulikov, Yaki Bitterman, Zeev Melumian, and Ofir Bibi. Ltx-video: Realtime video latent diffu-sion. ArXiv , abs/2501.00103, 2024. URL https://api.semanticscholar.org/CorpusID: 275212083 .12 Guibin Chen, Dixuan Lin, Jiangping Yang, Chunze Lin, Juncheng Zhu, Mingyuan Fan, Hao Zhang, Sheng Chen, Zhenghao Chen, Chengcheng Ma, Weiming Xiong, Wei Wang, Nuo Pang, Kang Kang, Zhi-Xin Xu, Yuzhe Jin, Yu Liang, Yu-Ning Song, Peng Zhao, Bo Xu, Di Qiu, Debang Li, Zhengcong Fei, Yang Li, and Yahui Zhou. Skyreels-v2: Infinite-length film generative model. ArXiv , abs/2504.13074, 2025b. URL https://api.semanticscholar.org/CorpusID: 277856899 .Wenhao Wang and Yi Yang. Vidprom: A million-scale real prompt-gallery dataset for text-to-video diffusion models. ArXiv , abs/2403.06098, 2024. URL https://api.semanticscholar.org/ CorpusID:269293420 .Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qin Jin, Nattapol Chanpaisit, Yaohui Wang, Xinyuan Chen, Limin Wang, Dahua Lin, Yu Qiao, and Ziwei Liu. Vbench: Comprehensive benchmark suite for video generative models. 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 21807–21818, 2023. URL https://api.semanticscholar.org/CorpusID:265506207 .13 A Inference algorithm 
+
+Algorithm 1 describes our hybrid inference with a fixed-size recurrent state. 
+
+Algorithm 1 ARL 2 hybrid inference (ours) 
+
+Require: text prompt p, number of blocks N , denoising steps T = [ t1, . . . , t m]
+
+Ensure: video frames Y = [ y0, . . . , y N −1] 
+
+> 1:
+
+S ← 0 ∈ RH×D×D ▷ fixed-size GDN state per hybrid layer  
+
+> 2:
+
+for i = 0 to N − 1 do  
+
+> 3:
+
+zi ∼ N (0 , I ) 
+
+> 4:
+
+for t ∈ T do ▷ denoising loop — state is not updated  
+
+> 5:
+
+Q, K, V ← Wq (zi), W k(zi), W v (zi) 
+
+> 6:
+
+Ointra ← Softmax(RoPE( Q), RoPE( K), V ) ▷ intra-block only: L × L 
+
+> 7:
+
+Q′ ← L2Norm(RoPE( ϕq (Q)))  
+
+> 8:
+
+Ointer ← Q′ · S ▷ query fixed state: O(HD 2) 
+
+> 9:
+
+O ← Ointra + G ⊙ Ointer ▷ gated combination  
+
+> 10:
+
+zi ← denoise _step( zi, O, t ) 
+
+> 11:
+
+end for  
+
+> 12:
+
+ˆzi ← clean latent prediction ▷ clean pass — state is updated  
+
+> 13:
+
+K, V ← Wk(ˆ zi), W v (ˆ zi) 
+
+> 14:
+
+K′ ← L2Norm(RoPE( ϕk(K))) , V ′ ← ϕv (V ) 
+
+> 15:
+
+α ← gate _proj(ˆ zi), β ← lr _proj(ˆ zi) ▷ per-token forget/learning gates  
+
+> 16:
+
+S ← GDN _update( S, K ′, V ′, α, β ) ▷ S remains H×D×D 
+
+> 17:
+
+yi ← decode(ˆ zi) 
+
+> 18:
+
+end for  
+
+> 19:
+
+return Y
+
+Algorithm 1 highlights the two key design principles of ARL 2: (1) Frame-level access : during each denoising step, all L tokens in the current block query the same pre-update state S, ensuring consistent history observation (lines 7–8); (2) Clean-pass update : the GDN state is updated only after the final clean pass (line 13), preventing noisy denoising intermediates from contaminating the persistent memory. The state S has a fixed size of H × D × D regardless of the number of generated blocks, reducing per-layer memory from O(N ) to O(1) .
+
+B Evaluation details 
+
+Efficiency evaluation. Efficiency measurements (Table 2 in the main text) are conducted on a single NVIDIA RTX PRO 6000 Blackwell (96 GB). Reported generation time ( gen_s ) measures end-to-end video generation (denoising loop + VAE decode), excluding text encoding and model loading. Memory is torch.cuda.max_memory_allocated() , reset per video. All runs use cold-start conditions (GPU ≤ 50 ◦C) to eliminate thermal throttling bias. Self Forcing is architecturally identical to Causal Forcing (only EMA weights differ), so their latency and memory are equal. 
+
+Stage 1 stress-test evaluation. Layer selection uses a curated set of stress-test prompts (Table 5) designed to maximally expose recurrent state weaknesses across three capability axes: temporal consistency (TC), motion dynamics (DY), and spatial quality (SQ). Each of the 30 layers is evaluated via single-layer replacement on 6 VBench quality dimensions. The resulting per-layer sensitivity scores guide which layers are safe for hybrid replacement. 
+
+C Qualitative comparison across models 
+
+Figure 7 provides a side-by-side qualitative comparison of all evaluated models on the prompt “A 3D model of a 1800s victorian house.” We uniformly sample 6 frames (IDs 0, 16, 32, 48, 64, 80) from each 81-frame generation. LTX-Video loses structural coherence after the first few frames, collapsing into unrecognizable artifacts. Wan2.1-T2V and SANA-Video produce stylistically consistent results but exhibit limited 3D structure. SkyReels-V2 maintains temporal stability but generates a flat, low-detail scene. MAGI-1 renders a detailed Victorian house with strong temporal consistency, benefiting 14 Table 5: Stress-test prompts for sensitivity-guided layer selection. Each prompt targets a specific state weakness axis: TC = temporal consistency, DY = motion dynamics, SQ = spatial quality. 
+
+ID Target Axis Stress Category Prompt (abbreviated) S00 TC Appearance retention Woman with red striped scarf walks down cobblestone street S01 TC Brief occlusion Golden retriever runs behind oak tree and re-emerges S02 TC Long occlusion White SUV passes behind rocky outcropping and re-emerges S03 TC Background stability Ballet dancer performs pirouette on ornate theater stage S04 TC Multi-entity tracking Two puppies (golden retriever + black labrador) play on beach S05 DY Fast motion Hummingbird darts between tropical flowers S06 TC+DY Camera orbit Camera slowly orbits white marble statue in museum gallery S07 SQ Static scene Stop motion of flower growing on windowsill S08 SQ Slow portrait Victoria crowned pigeon close-up with blue plumage S09 DY+TC Natural dynamics Train traveling through Tokyo suburbs with reflections S10 DY Group motion Flock of paper airplanes through dense jungle canopy S11 TC+SQ Reflection + motion Gray-haired man at Parisian café, cinematic lighting 
+
+from its larger 4.5B parameter count. Among the 1.3B-class autoregressive models, Self Forcing and Causal Forcing both produce plausible houses. ARL 2 (50%) achieves visual quality comparable to them, with stable appearance and consistent architectural details throughout the sequence, while running 1.40 × faster and using 31% less memory. ARL 2 (75%) maintains coherent structure and lighting across all frames with an even larger efficiency margin: 2.26 × speedup and 54% memory reduction, laying a strong foundation for streaming video generation. Playable video results are provided in the supplementary zip file. 
+
+D Detailed VBench per-dimension results 
+
+Table 6 reports the detailed VBench scores evaluated on the full 946-prompt official benchmark. All models generate at 832 × 480 , 81 frames unless noted. Table 6: Detailed VBench per-dimension scores. ‡: native resolution 544 ×960, 97 frames. 
+
+Dimension SANA-Video Wan2.1 T2V LTX-Video CF SF ARL 2
+
+(50%) ARL 2
+
+(75%) MAGI-1 † SkyReels ‡
+
+Quality dimensions 
+
+subject_consistency 97.09 96.18 87.89 96.19 95.62 95.63 94.85 95.71 97.78 
+
+background_consistency 96.95 98.33 92.00 96.44 96.40 96.41 95.94 97.14 97.68 temporal_flickering 89.22 98.33 98.20 96.27 96.82 97.26 96.90 97.69 97.97 motion_smoothness 95.10 96.60 97.91 94.24 95.59 95.59 94.24 98.67 98.50 aesthetic_quality 70.48 65.35 48.08 68.80 66.75 68.29 68.44 62.44 59.66 imaging_quality 67.55 68.64 58.62 70.62 69.96 69.87 69.87 64.84 62.29 
+
+Semantic dimensions 
+
+object_class 94.86 75.00 29.30 85.13 84.89 86.23 83.62 85.76 32.03 multiple_objects 81.78 64.12 8.20 64.94 68.29 67.00 68.29 50.00 15.63 human_action 92.00 62.50 62.50 79.00 80.00 77.00 72.00 94.44 50.00 color 88.12 85.71 97.62 90.72 93.98 91.48 91.75 86.46 100.00 
+
+spatial_relationship 77.46 57.92 67.88 83.43 78.45 78.74 78.62 76.24 38.77 scene 73.36 26.48 15.69 34.65 32.79 32.97 36.15 27.03 15.69 appearance_style 76.86 66.98 73.71 66.81 66.77 65.66 67.76 87.12 66.47 temporal_style 67.72 63.40 44.02 66.10 64.43 65.65 66.83 64.38 55.58 overall_consistency 74.70 64.99 62.97 67.98 66.80 66.43 67.16 76.74 58.00 
+
+Quality Avg 86.07 87.24 80.45 87.09 86.86 87.17 86.71 86.08 85.65 
+
+Semantic Avg 80.76 63.01 51.32 70.97 70.71 70.13 70.24 72.02 48.02 
+
+Total 85.00 82.39 74.62 83.87 83.63 83.77 83.41 83.27 78.12 
+
+15 LTX-Video  Wan2.1-T2V  SANA-Video  SkyReels-V2  MAGI-1  Self Forcing  Casual Forcing  ARL 2 (50%)  ARL 2 (75%)      
+
+> Prompt: "A 3D model of a 1800s victorian house."
+> Frame ID : 0 ID: 16 ID: 32 ID: 48 ID: 64 ID: 80
+
+Figure 7: Qualitative comparison across all evaluated models. Six uniformly sampled frames from 81-frame videos generated with the prompt “A 3D model of a 1800s victorian house.” ARL 2 variants maintain consistent appearance and structural detail comparable to the full-softmax baselines while operating with significantly reduced memory and compute. 
+
+E Broader impact 
+
+ARL 2 reduces the computational and memory cost of autoregressive video generation by up to 2.26 ×
+
+and 54% , respectively. This efficiency gain lowers the hardware barrier for long-form video synthesis, potentially democratizing access to high-quality video generation for researchers and practitioners with limited GPU resources. By enabling longer videos on a single consumer-grade GPU, the method may accelerate applications in education, content creation, and accessibility tools. However, as with all generative video models, the technology could be misused to produce misleading or harmful synthetic media. We encourage the community to develop and deploy appropriate watermarking, provenance tracking, and content authentication mechanisms alongside efficient generation methods. 16
