@@ -1,0 +1,934 @@
+Title: Grounding Driving VLA via Inverse Kinematics
+
+URL Source: https://arxiv.org/pdf/2605.21061v1
+
+Published Time: Thu, 21 May 2026 01:03:11 GMT
+
+Number of Pages: 29
+
+Markdown Content:
+# Grounding Driving VLA via Inverse Kinematics 
+
+Junsung Park, Hyunjung Shim 
+
+Korea Advanced Institute of Science and Technology KimJaeChul AI Graduate School 18, Taebong-ro, Seocho-gu, Seoul, South Korea 
+
+{jshackist, kateshim}@kaist.ac.kr 
+
+## Abstract 
+
+Existing Driving VLAs predict trajectories while largely ignoring their visual tokens – a phenomenon we trace not to insufficient training but to a structurally ill-posed task formulation. We show that trajectory recovery, when viewed through the lens of inverse kinematics, requires both a current and a future visual state as boundary conditions; existing VLAs supply only the former, which encourages the model to shortcut through ego status and text commands alone. To address this, we re-design Driving VLA in the style of an inverse kinematics solver. First, a next visual state prediction objective that requires the LLM to predict the future visual scene provides dense visual supervision and suppresses shortcut paths. Second, a separate Inverse Kinematics Network (a cross-attention-based conditional diffusion model) that takes only the current and future visual states as input is designed to suppress reliance on ego status and textual shortcuts during trajectory decoding. With this simple prescription alone, our 0.5B-scale model recovers visual grounding and reaches trajectory planning performance comparable to 7B–8B VLAs more than an order of magnitude larger, on both the closed-loop NAVSIM-v2 and the nuScenes benchmarks. Extensive analysis further shows that this improvement stems from a recovered ability to exploit visual features, with the effect being most pronounced in dynamic driving situations such as turning. 
+
+## 1 Introduction 
+
+In autonomous driving, Vision-Language-Action models (Driving VLA) are rapidly emerging as a unified policy that takes camera images and textual commands as input and directly outputs future driving trajectories [ 17 , 52 ]. Unlike conventional autonomous driving pipelines, which optimize perception, prediction, and planning as separate modules, this approach unifies the three stages into a single end-to-end policy within a VLM backbone, offering benefits in simplicity and scalability. Despite being structurally conditioned on camera input, such Driving VLAs in fact ignore camera images and fall into a blind planning regime in which trajectories are determined solely from ego status and textual commands. As shown in Fig. 1, representative existing Driving VLAs [ 52 , 44 , 2 ] barely change their trajectory even when a vehicle is synthesized in front of the ego vehicle, maintaining the same straight path as before the synthesis, which exemplifies blind planning by definition. A prior study [ 27 ] reported a part of this phenomenon (ego status sticking), but our work extends and quantitatively demonstrates it as a systematic disregard for visual tokens as a whole. We argue that this blind planning originates from the task formulation itself. Drawing an analogy to inverse kinematics – where a trajectory is anchored by both a start and a target configuration – we observe that supplying a future visual state Vt+∆ alongside the current visual state Vt provides the model an explicit reason to ground its trajectory in visual features. However, existing Driving VLAs take only the current visual state as input and directly supervise the trajectory, so the model has no incentive to infer the future visual state and instead learns a shortcut that fits the trajectory using only  
+
+> Preprint.
+> arXiv:2605.21061v1 [cs.CV] 20 May 2026 Ours Open.VLA Imp. -VLA Alpamayo Original Image Stitched Image
+
+Figure 1: Counterfactual obstacle stitching on nuScenes val. Left columns: original front-camera image and the same image with a near-range vehicle sprite stitched in front of the ego. Right columns: BEV trajectories before (green) and after (red) stitching for existing VLAs and our model. While existing VLAs’ trajectory remains nearly invariant to the visual input, whereas our model produces a distinct slowdown/avoidance reaction in response to the stitched obstacle, demonstrating that visual features causally influence its trajectory output. Visual Encoder      
+
+> LLM
+> Current Vis.  Text Inst.
+> Text Output
+> Text Command
+> Image Visual Encoder LLM
+> Current Vis.  Text Inst.
+> Text Output Next Vis.
+> Text Command
+> Image IK Solver
+> Trajectory
+> (a) Existing Driving VLA (b) Our Proposed Architecture
+> Trajectory
+
+Figure 2: Existing Driving VLA (a) vs. our model (b). Existing models decode the trajectory directly from the current visual tokens Vt, ego status E, and text command C. In contrast, ours requires the LLM to predict a future visual state ˆVt+∆ and decodes the trajectory through an IK Network conditioned only on the pair (Vt, ˆVt+∆ ), so that ego status and text commands do not directly enter the trajectory decoder. ego status and text commands. This is a typical shortcut-learning failure in end-to-end training [ 27 ]: when the visual scene is absent from the output space, the model is never rewarded for exploiting it. This task-formulation problem has two faces: on the supervision side, the model is never asked to reason about future visual scenes, and on the architecture side, the trajectory decoder is free to bypass visual tokens entirely and rely on ego status and text commands. We address both at once, as illustrated in Fig. 2(b). First, we separate the trajectory decoder into a dedicated Inverse Kinematics Network (IK Network), a bottleneck conditioned only on the pair of the current visual token Vt and the future visual token ˆVt+∆ predicted by the backbone, so that ego status and text commands do not directly enter the trajectory decoder, narrowing the architecture-side bypass. We use the term “inverse kinematics” in a stylistic sense, following its spirit rather than the strict vehicle-dynamics formulation: a trajectory is regressed from the observed change between two visual states. Second, for this bottleneck to be meaningful, ˆVt+∆ must be explicitly produced by the backbone, so we additionally introduce a next-state prediction objective that places the visual scene back into the output 2space, addressing the supervision-side gap. Through these architectural and training modifications, the primary target of this paper is the recovery of visual grounding in Driving VLA. To this end, we conduct a series of validations including GradCAM, counterfactual obstacle stitching, and per-sample statistical analyses, demonstrating both quantitatively and qualitatively that the model indeed comes to rely on visual features when determining trajectories. The improvement in driving performance follows as a consequence of this recovered visual grounding: our 0.5B model performs on par with VLAs that are more than an order of magnitude larger (7B–8B) on NAVSIM-v2 and nuScenes. More broadly, these results hint at a remedy for a common pitfall in end-to-end learning: models tend to ignore any input modality that is not part of the supervision target. Our contributions are summarized as follows. • Theoretical Diagnosis : We demonstrate via bias–variance decomposition that blind planning 
+
+is a theoretically derived loss-optimal shortcut rather than a training failure, caused by visual-feature penalization in standard trajectory losses. • Architectural Remedies : To restore visual grounding, we introduce a next-state prediction objective and an IK-Network bottleneck that forces the model to process ego-status through visual features. • Superior Efficiency : Through GradCAM, counterfactual obstacle stitching, and per-sample statistical analyses, the proposed design is shown to actually recover visual grounding, and as a result, achieves driving performance on NAVSIM v2 and nuScenes comparable to VLAs more than an order of magnitude larger (7B–8B) using only a 0.5B model. 
+
+## 2 Motivations 
+
+2.1 Formulating of Existing Driving VLA Models 
+
+Existing Driving VLA planners are trained to directly regress trajectories. Let Vt denote the current visual observation (e.g., images or BEV tokens), Et the ego status (velocity, yaw-rate, acceleration, etc.), Ct a text command (route-level intent), and Tt ∈ RH×d the H-step future trajectory (waypoints or controls). The training objective is then defined as: 
+
+ˆTt = fθ (Vt, E t, C t), Ltraj (θ) = E ∥Tt − fθ (Vt, E t, C t)∥22
+
+ , (1) or with text-based next token prediction 
+
+ˆTt = fθ (Vt, E t, C t), Ltraj (θ) = E
+
+"
+
+−
+
+> L
+
+X
+
+> i=1
+
+log pθ
+
+ y⋆t,i | y⋆t,<i , V t, E t, C t
+
+#
+
+. (2) Directly regressing ˆTt = fθ (Vt, E t, C t) (Eq. (2) ) requires the VLA model to obtain a feasible control sequence without an explicit boundary condition. 
+
+2.2 Phenomena due to Formulation of Existing VLA Driving VLA Ignore Visual Informations. When deciding the next action in a driving situation, ego status, command, and visual information all serve as factors. Considering that, in most situations, the next action can be decided based on the current state, and that situations requiring action changes induced by visual information are relatively infrequent, the target trajectory can be decomposed as follows. 
+
+Tt = T0(Et, C t) + It · ∆( Vt, E t, C t) + ξt, (3) where T0 is the dominant behavior driven by ego status and command (e.g., lane-following, cruising, stopping), ∆ is an action correction conditioned on visual features (e.g., obstacle avoidance, yield timing, intersection choice), and ξt is the noise inherent in the data. It ∈ { 0, 1} indicates whether the current situation is vision-critical or not. Substituting the target decomposition (Eq. 3) for Tt and letting ε ≜ P(It = 1) , the loss function for trajectory prediction can be decomposed as follows: 
+
+L(θ) = (1 − ε) L0(θ) + ε L1(θ), (4) where L0 and L1 denote the conditional losses under It = 0 and It = 1 , respectively. 3For each (E, C ), we can write the predictor in non-vision-critical cases ¯fθ (E, C ) and the V -conditional residual ˜fθ (V, E, C ) as: 
+
+¯fθ (E, C ) ≜ E [fθ (V, E, C ) | E, C, I = 0] , ˜fθ (V, E, C ) ≜ fθ (V, E, C ) − ¯fθ (E, C ). (5) By definition, E[ ˜fθ (V, E, C ) | E, C, I = 0] = 0 . Under (E, C, I = 0) , the target trajectory is 
+
+T0(E, C ) + ξ and does not depend on the visual feature V , so the conditional MSE under I = 0 
+
+can be decomposed in bias–variance form as follows (see supp. material Sec. E.1 for the detailed derivation): 
+
+L0(θ) = T0(E, C ) − ¯fθ (E, C ) 22
+
++ E
+
+
+
+˜fθ (V, E, C ) 22
+
+E, C, I=0 
+
+
+
++ E∥ξ∥22
+
+ . (6) The first term is the bias corresponding to the average behavior that can be fit using only (E, C ), and the second term is the component whose output varies with V entering directly as a loss penalty in the majority regime. That is, the majority data weighted by 1 − ε pushes the learning signal toward 
+
+˜fθ → 0, causing the model to ignore visual features. Returning to the mixture loss (4) , the learning signal that drives the model to use visual features comes only from the minority term weighted by 
+
+ε, but in real driving data ε ≪ 1, making it structurally difficult to learn vision-grounded planning. From this, we can interpret that shortcut learning through ego status and text command alone arises. 
+
+2.2.1 An Architectural Remedy without Additional Data. 
+
+To address this issue, we redesign the architecture of Driving VLA to fit the IK problem and physically re-define the task formulation correctly. Through this, we make the visual feature an essential element in optimizing the loss, and optimize the model to perform planning grounded in visual features. Our key concept is to define the current visual feature as the current state and let the VLA predict the next state. Then, using the current/next states, trajectory prediction is performed through a separate inverse-kinematics module (IK module). Here, Vt denotes the 2D image feature obtained from the vision encoder. The LLM decoder wϕ of the VLA and the IK module hψ predict the next state Vt+∆ 
+
+and the trajectory Tt, respectively. Vt+∆ serves as a proxy terminal condition and contributes to forming the IK solution of the VLA. 
+
+ˆVt+∆ = wϕ(Vt, E t, C t), ˆTt = hψ (Vt, ˆVt+∆ ). (7) To this end, the two objectives are jointly trained. 
+
+L(ϕ, ψ ) = λstate E ∥Vt+∆ − wϕ(Vt, E t, C t)∥22
+
+ + λtraj E
+
+h
+
+∥Tt − hψ (Vt, ˆVt+∆ )∥22
+
+i
+
+. (8) With this loss correction, concretely, the gradient with respect to θV is computed as: 
+
+∇θV L = λstate ∇θV Lstate + λtraj ∇θV Ltraj , (9) where ∇θV Lstate does not vanish even in the It = 0 situations that constitute most of the dataset, so that the visual parameters θV continue to receive a learning signal. The new loss obtained by this task formulation correction is intended to suppress shortcut learning induced by ego status and command. (i) Next state prediction provides dense supervision through visual features even in It = 0 situations. (ii) The IK module hψ performs trajectory prediction using only the current/next state (Vt, ˆVt+∆ )
+
+information, without ego status or command, which discourages the optimization from collapsing into a direct shortcut mapping (Et, C t) → Tt.
+
+## 3 Methods 
+
+3.1 Overview 
+
+Our VLA consists of three mechanisms: Next Visual Token Prediction, Question and Answering, and the Inverse Kinematics Network. We extract visual features by feeding front, front-left, and front-right images into a DINOv3 ViT-S/16 [ 39 ] encoder, and pass them through an MLP projector before inputting them to the LLM. The LLM also receives ego status and text instructions encoded through an MLP, as well as questions about the driving scene. As output, it predicts the next BEV state at N seconds ahead, and, when given a question, outputs the answer as text. The current BEV state and the next BEV state are then fed into the Inverse Kinematics Network to perform trajectory prediction. The detailed architecture of our VLA is shown in Fig. 3. 4Noised  Trajectory                                      
+
+> Multi -camera inputs Visual Encoder
+> LLM
+> Current Visual State  Text Instruction
+> Next Visual State
+> Cross Attention
+> Turn right
+> …
+> Is there atraffic
+> control light present
+> in the scene?
+> Yes, there is atraffic light
+> that affects the planning of
+> the ego vehicle in the current
+> scene, and its color is red,
+> indicating that the vehicle
+> should stop and wait.
+> Current Vis. Next Vis.
+> Cross Attention
+> MLP
+> Denoised  Trajectory
+> Text Command & Question QA Answer
+> Ego Status
+> Text Output
+
+Figure 3: Overview of our model. The vision encoder extracts visual tokens Vt from the three front cameras; the LLM consumes (Vt, E, C ) together with the QA prompt and is trained to predict the future visual state ˆVt+∆ (and to answer driving-scene questions). The Inverse Kinematics Network, a cross-attention conditional diffusion model, decodes the trajectory from only the pair (Vt, ˆVt+∆ ),without direct access to ego status E or text command C.
+
+3.2 Next Visual State Prediction 
+
+As its first task, our VLA performs ‘Next Visual State’ prediction. We extract visual features by feeding front, front-left, and front-right images into a DINOv3 ViT-S/16 [ 39 ] encoder, and pass them through an MLP projector before inputting them to the LLM. When fed into the LLM, the features are placed between <scene_start> and <scene_end> , and represented in text form by the placeholder <SCENE> . Unlike prior work [ 52 ], we do not directly emit a trajectory text output here, but instead let the model predict the next BEV state at N seconds ahead. This prediction is trained to be formatted between <next_start> and <next_end> in the same format as the input. Concretely, we read out the LLM hidden states at the predicted <next_start> ... <next_end> positions in the assistant turn, and supervise them with an MSE loss against the ground-truth future visual tokens obtained by passing the next-frame images through the same vision encoder and projector. 
+
+Lvisual = || LLM (Vt) − Vt+∆ t|| 2
+
+3.3 Inverse Kinematics Network 
+
+As mentioned earlier, our method does not perform trajectory prediction directly within the LLM. We design an Inverse Kinematics Network (IK network), which takes only the current visual state seen earlier and the next visual state predicted by the LLM as input, and predicts the next trajectory. Here, the constraint on the input is the key. The IK Network does not take ego status E or text command C as input, and is conditioned only on (Zt, ˆZt+∆ t). This design choice distinguishes our work from existing world-model + policy combinations (e.g., DriveVLA-W0 [ 23 ], LAW [ 22 ]), in which future prediction is used as an auxiliary signal while the trajectory decoder still has access to the full (E, C, Zt). That is, our IK Network does not place the future visual state as an optional auxiliary input but uses the pair of two visual states as its primary condition, thereby suppressing the path along which an ego-status shortcut could otherwise flow. As shown in Fig. 3, the IK network is constructed as a cross-attention-based conditional diffusion model. Specifically, we stack two cross-attention layers in which a noisy trajectory xt ∈ R2×6 serves as the query and the current BEV token Zt ∈ RN ×H and the next BEV token ˆZt+∆ t ∈ RN ×H
+
+predicted by the LLM serve as keys and values, predicting the noise ϵ. The timestep t is added to the query through a sinusoidal embedding. The denoising network ϵθ is then defined as: 
+
+ϵθ (xt, t, Zt, ˆZt+∆ t) = MLP 
+
+
+
+CrossAttn  CrossAttn (xt + TE (t), Zt), ˆZt+∆ t
+
+
+
+This model is trained with a DDPM [10] objective using the cosine β-schedule [32]. 
+
+Lik = Et,x 0,ϵ 
+
+h
+
+ϵ − ϵθ (√¯αtx0 + √1 − ¯αt ϵ, t, Zt, ˆZt+∆ t) 22
+
+i
+
+5At inference, we start from xT ∼ N (0 , I ) and run 50 steps of DDPM sampling to obtain the final trajectory T ∈ R2×6.By using a separate IK Network in this way, we can correct the flawed task formulation that attempts to extract a trajectory without a next state. This addresses the problem in which the LLM, while learning trajectories as text, memorizes them before achieving scene understanding. 
+
+3.4 Question and Answering 
+
+In parallel with the LLM’s next visual state prediction, we train question and answering using scene description datasets such as nuCaption [ 49 ] and NuX [ 6]. By conducting this jointly with next BEV state prediction, we enable the LLM to perform question and answering about the driving scene while simultaneously improving its scene understanding ability. When a question is fed into the LLM, it is placed between <question_start> and <question_end> , and the answer is trained to appear between <answer_start> and <answer_end> in the output. This part is trained with next token prediction, identically to prior work [52]. 
+
+L(θ) = − 1
+
+T
+
+> T
+
+X
+
+> t=1
+
+log Pθ (xt | x1, x 2, . . . , x t−1)
+
+## 4 Experiments 
+
+4.1 Settings Datasets and benchmarks. We train and evaluate our model on two types of autonomous driv-ing benchmarks. NAVSIM [ 5 ] is a challenging closed-loop benchmark, and we evaluate on the 
+
+NAVSIM-v1 and NAVSIM-v2 splits using PDMS and EPDMS, respectively, along with detailed met-rics such as NC, DAC, and TTC. nuScenes [ 1] is a standard open-loop benchmark consisting of 700 (train) / 150 (val) scenes, where trajectory planning is evaluated by Average Displacement Error (ADE) and Collision Rate, and scene-level understanding is evaluated on nu-Caption [ 49 ], nu-X [ 6 ]and nuScenes-QA [33]. 
+
+Architecture. We use Qwen2.5-0.5B-Instruct [ 48 ] as the LLM backbone and DINOv3 ViT-S/16 [ 39 ] as the visual encoder for both datasets, since no pretrained BEV encoder is publicly available for NAVSIM. The IK Network is a cross-attention-based conditional diffusion model trained with a cosine β-schedule [ 32 ] and run for 50 DDPM [ 10 ] sampling steps at inference. Details are provided in the supp. material (Sec. B). 
+
+Training Setup. On NAVSIM, we follow the 2-stage SFT → GRPO [ 37 ] procedure of RecogDrive [ 25 ] on the navtrain split, with a 4 s future frames and 8 output waypoints. On nuScenes, we train for 4 epochs jointly with nuScenes-QA, nu-Caption, and nu-X, using a 3 s frames and 6 waypoints. Details are listed in the supp. material (Sec. C). 
+
+Baselines. On nuScenes, we compare against recent Driving VLAs [ 17 , 41 , 44 , 2], such as Open-DriveVLA [ 52 ]. On NAVSIM, in addition to a NAVSIM-adapted variant of OpenDriveVLA [ 52 ], we include strong 7B–8B-scale VLA models [ 7 , 23 , 25 , 30 , 53 , 4]. Since the original OpenDriveVLA relies on a UniAD BEV encoder trained on nuScenes but no pretrained BEV encoder corresponding to NAVSIM is publicly available, we reimplement OpenDriveVLA for NAVSIM (denoted Open-DriveVLA* in the tables) by unifying the visual encoder with DINOv3 [ 39 ] as in our model and generating the trajectory as a direct text output of the LLM as in the original paper. This baseline shares with our model the visual encoder, LLM backbone (0.5B), training data, optimizer, learning rate schedule, warmup ratio, batch size, gradient clipping, encoder freeze policy, and the SFT →
+
+GRPO 2-stage training procedure used on NAVSIM, and the only difference between the two models is the introduction of the next visual state prediction objective and the IK Network . This guarantees that the improvements reported below stem from our proposed structural changes rather than from differences in model capacity, data, or training schedule. 
+
+4.2 Main Experiments 4.2.1 Experiments on NAVSIM. 
+
+As shown in Table 1, on NAVSIM-v1 our 0.5B model attains a PDMS of 92 .2, an improvement of +19 .0 over the OpenDriveVLA baseline ( 73 .2) with the same backbone. This is on par with or above VLA models that are more than an order of magnitude larger, such as ARTEMIS [ 7] (7B), 6Table 1: PDMS results on the NAVSIM-v1 benchmark. Bold =best, underline =second best. † denotes models trained with the SFT →GRPO schedule. OpenDriveVLA* shares all training hyperparameters, data, and the SFT →GRPO schedule with our model; the only differences are the next visual state prediction objective and the IK Network. 
+
+Method Size Sensors NC ↑ DAC ↑ TTC ↑ C. ↑ EP ↑ PDMS ↑
+
+Human - – 100 100 100 99.9 87.5 94.8 
+
+End-to-End Methods 
+
+UniAD [15] 0.05B C 97.8 91.9 92.9 100.0 78.8 83.4 TransFuser [3] 0.05B C+L 97.7 92.8 92.8 100.0 79.2 84.0 LAW [22] 0.05B C 96.4 95.4 88.7 99.9 81.7 84.6 Hydra-MDP [26] 0.05B C+L 98.3 96.0 94.6 100.0 78.7 86.5 DiffusionDrive [28] 0.05B C+L 98.2 96.2 94.7 100.0 82.2 88.1 WoTE [24] 0.05B C+L 98.5 96.8 94.4 99.9 81.9 88.3 SUPER-AD [35] 0.05B C 98.1 97.0 93.9 99.8 81.5 87.7 
+
+Vision Language Action Methods 
+
+AutoVLA [53] 3B C 98.4 95.6 98.0 99.9 81.9 89.1 DriveVLA-W0 [23] 7B C 98.7 99.1 95.3 99.3 83.3 90.2 AdaThinkDrive [30] 2B C 98.4 97.8 95.2 100 84.4 90.3 ReCogDrive [25] 2B C 98.2 97.8 95.2 99.8 83.5 89.6 DriveFine [4] 8B C 98.8 98.6 96.2 100 86.9 91.8 OpenDriveVLA* [52] 0.5B C 92.2 83.2 91.2 99.9 68.7 73.2 Ours (SFT) 0.5B C 99.1 (+6.9) 96.2 (+13.0) 99.0 (+7.8) 100.0 (+0.1) 83.4 (+14.7) 90.3 (+17.1) 
+
+Ours † 0.5B C 99.1 (+6.9) 97.8 (+14.6) 99.1 (+7.9) 99.9 (+0.0) 85.4 (+16.7) 92.2 (+19.0) 
+
+Table 2: EPDMS results on the NAVSIM-v2 benchmark. Bold =best, underline=second best.                                                                                                                                                
+
+> Method Size NC ↑DAC ↑DDC ↑TLC ↑EP ↑TTC ↑LK ↑C. ↑EC ↑EPDMS ↑
+> Ego-MLP [27] 0.05B 93.1 77.9 92.7 99.6 86.0 91.5 89.4 98.3 85.4 64.0 TransFuser [3] 0.05B 96.9 89.9 97.8 99.7 87.1 95.4 92.7 98.3 87.2 76.7 DriveSuprim [50] 0.05B 97.5 96.5 99.4 99.6 88.4 96.6 95.5 98.3 77.0 83.1 ARTEMIS [7] 7B 98.3 95.1 98.6 99.8 81.5 97.4 96.5 98.3 –83.1 ReCogDrive [25] 2B 98.3 95.2 99.5 99.8 87.1 97.5 96.6 98.3 86.5 83.6 DiffusionDrive [28] 0.05B 98.2 95.9 99.4 99.8 87.5 97.3 96.8 98.3 87.7 84.5 SUPER-AD [35] 0.05B 98.1 97.3 98.7 99.8 86.8 97.3 97.5 98.3 86.1 84.3 DriveVLA-W0 [23] 7B 99.0 98.4 99.3 99.9 87.0 98.1 93.2 97.9 58.9 86.5 DriveFine [4] 8B 98.7 97.3 99.5 99.8 88.7 97.8 97.7 98.4 83.8 89.7 OpenDriveVLA* [52] 0.5B 92.2 83.2 93.8 99.4 89.3 91.2 90.8 98.3 76.8 70.2 Ours (SFT) 0.5B 99.1 (+6.9) 96.2 (+13.0) 99.5 (+5.7) 99.9 (+0.5) 87.7 (-1.6) 99.1 (+7.9) 97.5 (+6.7) 98.2 (-0.1) 84.4 (+7.6) 89.3 (+19.1)
+> Ours †0.5B 99.2 (+7.0) 97.8 (+14.6) 99.5 (+5.7) 99.9 (+0.5) 88.4 (-0.9) 99.2 (+8.0) 97.4 (+6.6) 98.2 (-0.1) 81.3 (+4.5) 90.6 (+20.4)
+
+DriveVLA-W0 [ 23 ] (7B), ReCogDrive [ 25 ] (2B), AdaThinkDrive [ 30 ] (2B), and AutoVLA [ 53 ] (3B), and surpasses the 8B-scale DriveFine [ 4] ( 91 .8) by 0.4 points. In terms of detailed metrics, our model also records No-Collision (NC) 99 .1 and Time-To-Collision (TTC) 99 .1, matching or exceeding the 
+
+14 –16 × larger baselines on both safety metrics, which indicates that the recovered visual grounding goes beyond GT alignment and induces safe driving behavior in closed-loop environments. As shown in Table 2, on the more challenging NAVSIM-v2 benchmark, our 0.5B model also attains EPDMS 90 .6, reaching a level on par with or above the 16 × larger DriveFine-8B ( 89 .7) and the 7B-scale DriveVLA-W0 ( 86 .5), and showing a large gap of +20 .4 over the OpenDriveVLA baseline (70 .2). In detailed metrics, our model achieves NC ( 99 .2), TLC ( 99 .9), TTC ( 99 .2), and Lane Keeping (LK, 97 .4) at levels equal to or above the 7B–8B baselines, demonstrating that on the core elements of closed-loop driving—lane keeping, traffic-light compliance, and collision avoidance—it consistently surpasses the limits of a light model. These results have two implications. First, since the only difference from the OpenDriveVLA* baseline is our next visual state prediction and IK Network, the +19 .0 PDMS and +20 .4 EPDMS gains are attributable entirely to these two components rather than to model size or data. Second, the fact that a 0.5B light model has reached driving performance on par with 7B–8B VLAs suggests that structural changes that force active use of visual features may have a greater impact on trajectory planning accuracy than simply scaling up the LLM. 
+
+4.2.2 Experiments on nuScenes. 
+
+As shown in Table 3, our 0.5B model achieves an ADE of 0.06 , reducing the error by −0.27 relative to the 14 × larger 7B-scale OpenDriveVLA, and also records a collision rate of 0.09 at a level equal to or above it. This means that the 0.5B light model has reached the same trajectory accuracy as the 7B-scale model, suggesting that the visual grounding recovered by the next visual state prediction and IK Network propagates all the way to the trajectory decoding stage. As a side effect of the 7Table 3: Open-Loop planning performance on nuSenes val set . “-” indicates the metric is not reported for that method in the paper’s tables. Bold =best, Underline=second.                                                                                                                                                                                                                                                                                                                                                                                                                     
+
+> Method ST-P3 metrics UniAD metrics LLM Input L2 (m) ↓Collision (%) ↓L2 (m) ↓Collision (%) ↓
+> 1s 2s 3s Avg. 1s 2s 3s Avg. 1s 2s 3s Avg. 1s 2s 3s Avg.
+> None-Autoregressive Methods
+> ST-P3 [13] 1.33 2.11 2.90 2.11 0.23 0.62 1.27 0.71 ---------Visual VAD [19] 0.17 0.34 0.60 0.37 0.07 0.10 0.24 0.14 ---------Visual Ego-MLP [51] 0.46 0.76 1.12 0.78 0.21 0.35 0.58 0.38 ---------Ego UniAD [15] 0.44 0.67 0.96 0.69 0.04 0.08 0.23 0.12 0.48 0.96 1.65 1.03 0.05 0.17 0.71 0.31 -Visual InsightDrive [40] 0.23 0.41 0.68 0.44 0.09 0.10 0.27 0.15 0.30 0.72 1.41 0.81 0.08 0.15 0.84 0.36 -Visual FF [12] --------0.55 1.20 2.54 1.43 0.06 0.17 1.07 0.43 -LiDAR EO [20] --------0.67 1.36 2.78 1.60 0.04 0.09 0.88 0.33 -LiDAR
+> Autoregressive Methods
+> GPVL [21] 0.21 0.39 0.69 0.43 0.07 0.09 0.27 0.14 --------BERT Textual DriveVLM [41] 0.18 0.34 0.68 0.40 0.10 0.22 0.45 0.27 --------Qwen-VL-7B Visual GPT-Driver [31] 0.20 0.40 0.70 0.44 0.04 0.12 0.36 0.17 0.27 0.74 1.52 0.84 0.07 0.15 1.10 0.44 GPT-3.5 Textual RDA-Driver [16] 0.17 0.37 0.69 0.40 0.01 0.05 0.26 0.10 0.23 0.73 1.54 0.80 0.00 0.13 0.83 0.32 LLaVa-7B Visual OminiDrive [42] 0.14 0.29 0.55 0.33 0.00 0.13 0.78 0.30 --------LLaVa-7B Visual EMMA [17] 0.14 0.29 0.54 0.32 ------------Gemini Visual OpenEMMA [45] 1.45 3.21 3.76 2.81 ------------Qwen-VL-7B Visual DME-Driver [9] --------0.45 0.91 1.58 0.98 0.05 0.28 0.55 0.29 LLaVa-7B Visual OpenDriveVLA-0.5B [52] 0.15 0.32 0.57 0.35 0.01 0.06 0.20 0.09 0.21 0.60 1.22 0.68 0.00 0.15 0.63 0.26 Qwen2.5-0.5B Visual OpenDriveVLA-3B [52] 0.14 0.30 0.55 0.33 0.02 0.07 0.22 0.10 0.19 0.58 1.24 0.67 0.02 0.18 0.70 0.30 Qwen2.5-3B Visual OpenDriveVLA-7B [52] 0.15 0.31 0.55 0.33 0.01 0.08 0.21 0.10 0.20 0.58 1.21 0.66 0.00 0.22 0.55 0.25 Qwen2.5-7B Visual Impromptu-VLA-3B [2] 0.13 0.27 0.52 0.30 ------------Qwen2.5-VL-3B Visual Impromptu-VLA-7B [2] 0.13 0.27 0.53 0.30 ------------Qwen2.5-VL-7B Visual Ours-0.5B 0.04 0.06 0.10 0.06 0.07 0.08 0.11 0.09 0.05 0.08 0.25 0.13 0.02 0.03 0.12 0.06 Qwen2.5-0.5B Visual
+
+Table 4: Obstacle stitching experiment. 
+
+Model Decel. Ratio Avg. ∆displ 
+
+Impromptu-VLA 3B [2] 38.8% -0.00m Alpamayo-R1 10B [44] 54.5% -0.12m OpenDriveVLA 0.5B [52] 44.2% -0.06m Ours 0.5B 63.8% -1.04m 
+
+Table 5: Ablation study on nuScenes val .
+
+Method ADE (m) ↓
+
+w/o Next State Prediction (current state pred.) 0.07 
+
+w/o IK Network (direct MLP traj. pred.) 0.31 
+
+w/o Diffusion in IK (cross-attn pooling + MLP) 0.16 Ours 0.06 
+
+recovered visual grounding, our model also shows consistent improvements over OpenDriveVLA on the nu-Caption captioning and nu-X reasoning benchmarks. Detailed results are reported in the supp. material (Secs. M.1 to M.3). 
+
+4.3 Analysis 4.3.1 Counterfactual Stitching. 
+
+We first revisit the counterfactual probe introduced as the opening motivation in Fig. 1 of Sec. 1, where a near-range vehicle sprite is synthesized in front of the ego on nuScenes val while all textual inputs (ego status, command, history) are held fixed. Visually, our model is the only one that bends or shortens the trajectory in response to the stitched obstacle, while the baselines maintain a near-identical path before and after the perturbation. Table 4 quantifies this gap: our 0.5B model decelerates on 63 .8% of perturbed samples with an average 3-second endpoint shortening of −1.04 m, far exceeding OpenDriveVLA-0.5B ( 44 .2% , −0.06 m) and even the much larger Alpamayo-R1-10B ( 54 .5% , −0.12 m). This suggests that, unlike existing Driving VLAs, our model relies on visual features when shaping the trajectory rather than treating them as a largely unused side input. Furthermore, in a paired control where the sprite scale is held fixed and only its position is changed (road horizon vs. sky), 65 .5% of samples show a larger response when the sprite lies on the road (signed paired mean −0.64 m), indicating that the response is genuinely position-aware rather than a generic size-based reaction; full results are in the supp. material (Sec. L). 
+
+4.3.2 Visual Grounding Analysis 
+
+The stitching experiment shows that visual perturbations change the trajectory; we now ask where 
+
+the model attends when producing it. On the nuScenes validation set, we measure how much each model’s GradCAM [ 36 ] overlaps with on-road objects (vehicles and pedestrians). For each sample, we project GT 3D bounding boxes from the front camera onto the 2D image plane to obtain an object mask M , and use the log-probability of the GT trajectory as the backpropagation target to obtain a per-sample saliency map S. We report three complementary metrics: (1) Pointing Mass (PM), the fraction of CAM energy that falls inside M ; (2) Average Precision (AP), a threshold-free ranking score treating M as positives and S as scores; and (3) IoU/F1 @ top-20% , region-level overlap on the top-20% saliency pixels. Full protocol details are deferred to the supp. material (Sec. K). We compare against OpenDriveVLA [52], Alpamayo-R1 [44], and Impromptu-VLA [2]. 8Table 6: Visual grounding via GradCAM–object overlap on nuScenes val set .                    
+
+> Model Pointing Mass ↑Avg. Precision ↑IoU@top20 ↑F1@top20 ↑
+> Impromptu-VLA 3B [2] 0.103 0.109 0.067 0.121 Alpamayo-R1 10B [44] 0.178 0.202 0.093 0.161 OpenDriveVLA 0.5B [52] 0.205 0.243 0.105 0.177 Ours 0.268 0.281 0.145 0.236 Ours OpenDriveVLA Impromptu -VLA Alpamayo Original
+
+Figure 4: Qualitative comparison of GradCAM saliency on nuScenes val set . Each row corresponds to a single driving scene, and each column shows the GradCAM of Alpamayo-R1 [ 44 ], Impromptu-VLA [2], OpenDriveVLA [52], and our model overlaid on the input image for that scene. 
+
+Results. As shown in Table 6, our method achieves the highest object alignment on all three metrics. In Pointing Mass we record 0.268 , +31% over the second-place OpenDriveVLA ( 0.205 ) and up to 
+
++160% over Impromptu-VLA ( 0.103 ); on AP we obtain 0.281 (+16% over OpenDriveVLA), and the 95% bootstrap confidence intervals do not overlap. Fig. 4 confirms this qualitatively: existing models disperse GradCAM over road surface, sky, and background, while ours concentrates it on planning-relevant objects such as front vehicles and pedestrians, consistent with the analysis in Sec. 2. 
+
+4.3.3 Ablation Study 
+
+Together, the stitching and GradCAM results suggest that visual features play a meaningful role in shaping our trajectory output. We finally ask which architectural choices contribute to this behavior; Table 5 summarizes the contribution of each component on nuScenes. Replacing the IK Network with a small MLP head on the LLM’s output hidden state degrades ADE from 0.06 to 0.31 (∼ 5×), suggesting that the input bottleneck of the trajectory decoder plays a substantial role in maintaining visual grounding. Replacing next state prediction with current state reconstruction yields a small average drop ( 0.06 → 0.07 ), but the gap concentrates in dynamic regimes such as turning ( p =1.2 × 10 −14 on ego angular velocity, see supp. material Sec. G). Replacing the diffusion-based IK with a deterministic cross-attention pooling head gives ADE 0.16 , still far better than removing the IK Network and indicating that generative trajectory decoding offers a further refinement on top of the visual-only bottleneck. 
+
+## 5 Conclusion 
+
+In this paper, we have addressed blind planning of existing Driving VLAs. We pointed out that, when trajectory generation is viewed as an inverse kinematics problem, existing VLAs lack a future visual state to anchor the trajectory, and we proposed a next visual state prediction objective that supplies this signal directly as supervision for the LLM, together with an Inverse Kinematics Network that decodes trajectories primarily from the current and future visual states, suppressing reliance on ego-status and text shortcuts. As a result, our 0.5B model recovers visual feature utilization—verified by GradCAM and counterfactual analyses—and reaches state-of-the-art trajectory planning on NAVSIM and nuScenes, matching or exceeding 7B–8B VLAs. 9References 
+
+[1] H. Caesar, V. Bankiti, A. H. Lang, S. Vora, V. E. Liong, Q. Xu, A. Krishnan, Y. Pan, G. Baldan, and O. Beijbom. nuscenes: A multimodal dataset for autonomous driving. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 11621–11631, 2020. [2] H. Chi, H.-a. Gao, Z. Liu, J. Liu, C. Liu, J. Li, K. Yang, Y. Yu, Z. Wang, W. Li, et al. Impromptu vla: Open weights and open data for driving vision-language-action models. arXiv preprint arXiv:2505.23757 , 2025. [3] K. Chitta, A. Prakash, B. Jaeger, Z. Yu, K. Renz, and A. Geiger. Transfuser: Imitation with transformer-based sensor fusion for autonomous driving. IEEE transactions on pattern analysis and machine intelligence , 45(11):12878–12895, 2022. [4] C. Dang, S. Ang, Y. Li, H. Tian, J. Wang, G. Li, H. Ye, J. Ma, L. Chen, and Y. Wang. Drivefine: Refining-augmented masked diffusion vla for precise and robust driving. arXiv preprint arXiv:2602.14577 , 2026. [5] D. Dauner, M. Hallgarten, T. Li, X. Weng, Z. Huang, Z. Yang, H. Li, I. Gilitschenski, B. Ivanovic, M. Pavone, A. Geiger, and K. Chitta. NAVSIM: Data-driven non-reactive autonomous vehicle simulation and benchmarking. In Advances in Neural Information Processing Systems , 2024. [6] K. Ding, B. Chen, Y. Su, H.-a. Gao, B. Jin, C. Sima, W. Zhang, X. Li, P. Barsch, H. Li, et al. Hint-ad: Holistically aligned interpretability in end-to-end autonomous driving. arXiv preprint arXiv:2409.06702 , 2024. [7] R. Feng, N. Xi, D. Chu, R. Wang, Z. Deng, A. Wang, L. Lu, J. Wang, and Y. Huang. Artemis: Autoregressive end-to-end trajectory planning with mixture of experts for autonomous driving. 
+
+IEEE Robotics and Automation Letters , 11(1):226–233, 2025. [8] A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman, A. Mathur, A. Schelten, A. Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 ,2024. [9] W. Han, D. Guo, C.-Z. Xu, and J. Shen. Dme-driver: Integrating human decision logic and 3d scene perception in autonomous driving. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 39, pages 3347–3355, 2025. [10] J. Ho, A. Jain, and P. Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. [11] A. Hu, L. Russell, H. Yeo, Z. Murez, G. Fedoseev, A. Kendall, J. Shotton, and G. Corrado. Gaia-1: A generative world model for autonomous driving. arXiv preprint arXiv:2309.17080 ,2023. [12] P. Hu, A. Huang, J. Dolan, D. Held, and D. Ramanan. Safe local motion planning with self-supervised freespace forecasting. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 12732–12741, 2021. [13] S. Hu, L. Chen, P. Wu, H. Li, J. Yan, and D. Tao. St-p3: End-to-end vision-based autonomous driving via spatial-temporal feature learning. In European Conference on Computer Vision ,pages 533–549. Springer, 2022. [14] T. Hu, X. Liu, S. Wang, Y. Zhu, A. Liang, L. Kong, G. Zhao, Z. Gong, J. Cen, Z. Huang, et al. Vision-language-action models for autonomous driving: Past, present, and future. arXiv preprint arXiv:2512.16760 , 2025. [15] Y. Hu, J. Yang, L. Chen, K. Li, C. Sima, X. Zhu, S. Chai, S. Du, T. Lin, W. Wang, et al. Planning-oriented autonomous driving. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 17853–17862, 2023. [16] Z. Huang, T. Tang, S. Chen, S. Lin, Z. Jie, L. Ma, G. Wang, and X. Liang. Making large language models better planners with reasoning-decision alignment. In European Conference on Computer Vision , pages 73–90. Springer, 2024. 10 [17] J.-J. Hwang, R. Xu, H. Lin, W.-C. Hung, J. Ji, K. Choi, D. Huang, T. He, P. Covington, B. Sapp, et al. Emma: End-to-end multimodal model for autonomous driving. arXiv preprint arXiv:2410.23262 , 2024. [18] X. Jia, Z. Yang, Q. Li, Z. Zhang, and J. Yan. Bench2drive: Towards multi-ability benchmarking of closed-loop end-to-end autonomous driving. Advances in Neural Information Processing Systems , 37:819–844, 2024. [19] B. Jiang, S. Chen, Q. Xu, B. Liao, J. Chen, H. Zhou, Q. Zhang, W. Liu, C. Huang, and X. Wang. Vad: Vectorized scene representation for efficient autonomous driving. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 8340–8350, 2023. [20] T. Khurana, P. Hu, A. Dave, J. Ziglar, D. Held, and D. Ramanan. Differentiable raycasting for self-supervised occupancy forecasting. In European Conference on Computer Vision , pages 353–369. Springer, 2022. [21] T. Li, H. Wang, X. Li, W. Liao, T. He, and P. Peng. Generative planning with 3d-vision language pre-training for end-to-end autonomous driving. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 39, pages 4950–4958, 2025. [22] Y. Li, L. Fan, J. He, Y. Wang, Y. Chen, Z. Zhang, and T. Tan. Enhancing end-to-end autonomous driving with latent world model. arXiv preprint arXiv:2406.08481 , 2024. [23] Y. Li, S. Shang, W. Liu, B. Zhan, H. Wang, Y. Wang, Y. Chen, X. Wang, Y. An, C. Tang, et al. Drivevla-w0: World models amplify data scaling law in autonomous driving. arXiv preprint arXiv:2510.12796 , 2025. [24] Y. Li, Y. Wang, Y. Liu, J. He, L. Fan, and Z. Zhang. End-to-end driving with online trajectory evaluation via bev world model. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 27137–27146, 2025. [25] Y. Li, K. Xiong, X. Guo, F. Li, S. Yan, G. Xu, L. Zhou, L. Chen, H. Sun, B. Wang, et al. Recogdrive: A reinforced cognitive framework for end-to-end autonomous driving. arXiv preprint arXiv:2506.08052 , 2025. [26] Z. Li, K. Li, S. Wang, S. Lan, Z. Yu, Y. Ji, Z. Li, Z. Zhu, J. Kautz, Z. Wu, et al. Hydra-mdp: End-to-end multimodal planning with multi-target hydra-distillation. arXiv preprint arXiv:2406.06978 , 2024. [27] Z. Li, Z. Yu, S. Lan, J. Li, J. Kautz, T. Lu, and J. M. Alvarez. Is ego status all you need for open-loop end-to-end autonomous driving? In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 14864–14873, 2024. [28] B. Liao, S. Chen, H. Yin, B. Jiang, C. Wang, S. Yan, X. Zhang, X. Li, Y. Zhang, Q. Zhang, et al. Diffusiondrive: Truncated diffusion model for end-to-end autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 12037–12047, 2025. [29] I. Loshchilov and F. Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations (ICLR) , 2019. [30] Y. Luo, F. Li, S. Xu, Z. Lai, L. Yang, Q. Chen, Z. Luo, Z. Xie, S. Jiang, J. Liu, et al. Ada-thinkdrive: Adaptive thinking via reinforcement learning for autonomous driving. arXiv preprint arXiv:2509.13769 , 2025. [31] J. Mao, Y. Qian, J. Ye, H. Zhao, and Y. Wang. Gpt-driver: Learning to drive with gpt. arXiv preprint arXiv:2310.01415 , 2023. [32] A. Q. Nichol and P. Dhariwal. Improved denoising diffusion probabilistic models. In Interna-tional conference on machine learning , pages 8162–8171. PMLR, 2021. [33] T. Qian, J. Chen, L. Zhuo, Y. Jiao, and Y.-G. Jiang. Nuscenes-qa: A multi-modal visual question answering benchmark for autonomous driving scenario. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 38, pages 4542–4550, 2024. 11 [34] L. Russell, A. Hu, L. Bertoni, G. Fedoseev, J. Shotton, E. Arani, and G. Corrado. Gaia-2: A controllable multi-view generative world model for autonomous driving. arXiv preprint arXiv:2503.20523 , 2025. [35] W. Ryu, S. Yu, S. Moon, H. Choi, J. Park, J. Kim, and H. Shim. SUPER-AD: Semantic uncertainty-aware planning for end-to-end robust autonomous driving, 2025. URL https: //arxiv.org/abs/2511.22865 .[36] R. R. Selvaraju, M. Cogswell, A. Das, R. Vedantam, D. Parikh, and D. Batra. Grad-cam: visual explanations from deep networks via gradient-based localization. International journal of computer vision , 128(2):336–359, 2020. [37] Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, X. Bi, H. Zhang, M. Zhang, Y. K. Li, Y. Wu, and D. Guo. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. 
+
+arXiv preprint arXiv:2402.03300 , 2024. [38] C. Sima, K. Renz, K. Chitta, L. Chen, H. Zhang, C. Xie, J. Beißwenger, P. Luo, A. Geiger, and H. Li. Drivelm: Driving with graph visual question answering. In European conference on computer vision , pages 256–274. Springer, 2024. [39] O. Siméoni, H. V. Vo, M. Seitzer, F. Baldassarre, M. Oquab, C. Jose, V. Khalidov, M. Szafraniec, S. Yi, M. Ramamonjisoa, et al. Dinov3. arXiv preprint arXiv:2508.10104 , 2025. [40] R. Song, X. Guo, Y. Peng, Q. Wei, H. Wu, and L. Chen. Insightdrive: Insight scene representation for end-to-end autonomous driving. arXiv preprint arXiv:2503.13047 , 2025. [41] X. Tian, J. Gu, B. Li, Y. Liu, Y. Wang, Z. Zhao, K. Zhan, P. Jia, X. Lang, and H. Zhao. Drivevlm: The convergence of autonomous driving and large vision-language models. arXiv preprint arXiv:2402.12289 , 2024. [42] S. Wang, Z. Yu, X. Jiang, S. Lan, M. Shi, N. Chang, J. Kautz, Y. Li, and J. M. Alvarez. Omnidrive: A holistic vision-language dataset for autonomous driving with counterfactual reasoning. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 22442–22452, 2025. [43] Y. Wang, J. He, L. Fan, H. Li, Y. Chen, and Z. Zhang. Driving into the future: Multiview visual forecasting and planning with world model for autonomous driving. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 14749–14759, 2024. [44] Y. Wang, W. Luo, J. Bai, Y. Cao, T. Che, K. Chen, Y. Chen, J. Diamond, Y. Ding, W. Ding, et al. Alpamayo-r1: Bridging reasoning and action prediction for generalizable autonomous driving in the long tail. arXiv preprint arXiv:2511.00088 , 2025. [45] S. Xing, C. Qian, Y. Wang, H. Hua, K. Tian, Y. Zhou, and Z. Tu. Openemma: Open-source multimodal model for end-to-end autonomous driving. In Proceedings of the Winter Conference on Applications of Computer Vision , pages 1001–1009, 2025. [46] Z. Xing, X. Zhang, Y. Hu, B. Jiang, T. He, Q. Zhang, X. Long, and W. Yin. Goalflow: Goal-driven flow matching for multimodal trajectories generation in end-to-end autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 1602–1611, 2025. [47] Z. Xu, Y. Zhang, E. Xie, Z. Zhao, Y. Guo, K.-Y. K. Wong, Z. Li, and H. Zhao. Drivegpt4: Interpretable end-to-end autonomous driving via large language model. IEEE Robotics and Automation Letters , 2024. [48] A. Yang et al. Qwen2.5 technical report, 2024. URL https://arxiv.org/abs/2412.15115 .[49] S. Yang, J. Liu, R. Zhang, M. Pan, Z. Guo, X. Li, Z. Chen, P. Gao, H. Li, Y. Guo, et al. Lidar-llm: Exploring the potential of large language models for 3d lidar understanding. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 39, pages 9247–9255, 2025. 12 [50] W. Yao, Z. Li, S. Lan, Z. Wang, X. Sun, J. M. Alvarez, and Z. Wu. Drivesuprim: Towards precise trajectory selection for end-to-end planning. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pages 11910–11918, 2026. [51] J.-T. Zhai, Z. Feng, J. Du, Y. Mao, J.-J. Liu, Z. Tan, Y. Zhang, X. Ye, and J. Wang. Rethink-ing the open-loop evaluation of end-to-end autonomous driving in nuscenes. arXiv preprint arXiv:2305.10430 , 2023. [52] X. Zhou, X. Han, F. Yang, Y. Ma, V. Tresp, and A. Knoll. Opendrivevla: Towards end-to-end autonomous driving with large vision language action model. arXiv preprint arXiv:2503.23463 ,2025. [53] Z. Zhou, T. Cai, S. Z. Zhao, Y. Zhang, Z. Huang, B. Zhou, and J. Ma. Autovla: A vision-language-action model for end-to-end autonomous driving with adaptive reasoning and reinforcement fine-tuning. arXiv preprint arXiv:2506.13757 , 2025. [54] J. Zou, S. Chen, B. Liao, Z. Zheng, Y. Song, L. Zhang, Q. Zhang, W. Liu, and X. Wang. Diffusiondrivev2: Reinforcement learning-constrained truncated diffusion modeling in end-to-end autonomous driving. arXiv preprint arXiv:2512.07745 , 2025. 
+
+## A Related Works 
+
+A.1 End-to-end Planning 
+
+End-to-end planning models take vehicle information such as the input image and ego status, and predict the trajectory along which the vehicle will proceed. ST-P3 [ 13 ] jointly optimizes percep-tion/prediction/planning in vision-based end-to-end autonomous driving via BEV transformation and spatial-temporal feature learning. VAD [ 19 ] represents the driving scene with a vectorized representa-tion of agents and maps, simultaneously enhancing the efficiency and safety of planning. UniAD [ 15 ]integrates perception–prediction–planning into a single network and strengthens inter-module co-ordination through a planning-oriented design and unified queries. InsightDrive [ 40 ] organizes the attention required for planning through a language-guided scene representation that highlights “re-gions important for driving” in language. Ego-MLP [ 51 ] analyzes how ego status can be a strong shortcut in open-loop planning and shows the possibility of high performance based solely on ego. Building on this, Li et al. [ 27 ] show that a simple MLP using only physical state, without vision/point cloud, can be competitive on existing open-loop metrics, pointing out the loopholes of the evaluation metrics. GenAD [ 21 ] presents a generative E2E paradigm that strengthens planning by predicting future scene/interaction changes from a “generative modeling” perspective. DiffusionDrive [ 28 , 54 ]significantly reduces denoising steps with a truncated diffusion policy using multi-intent anchors and a cascade decoder, improving real-time multimodal trajectory planning performance on NAVSIM. GoalFlow [ 46 ] constrains the generative process with a goal point and combines scene-aware goal scoring with flow matching to efficiently produce high-quality multimodal trajectories with very few generation steps. 
+
+A.2 Driving VLA 
+
+Driving VLA models, like end-to-end planning models, take vehicle information such as input images and ego status, predict the trajectory along which the vehicle will proceed, and additionally perform scene description. GPT-Driver [ 31 ] reformulates motion planning as language modeling and produces trajectories by generating coordinate tokens with a GPT-based model. DriveGPT4 [ 47 ] proposes an interpretable end-to-end driving MLLM that jointly generates control signals and explanations through vision-language instruction tuning. DriveLM [ 38 ] presents data and benchmarks that elicit multi-step reasoning via graph-structured VQA, enhancing the generalization and interactivity of driving decision making. DriveVLM [ 41 ] combines scene description, analysis, and hierarchical planning to strengthen reasoning-based planning in long-tail situations. RDA-Driver [ 16 ] introduces a reasoning-decision alignment constraint to reduce the discrepancy between the chain-of-thought reasoning and the final decision, improving planning reliability. DME-Driver [ 9] separates a VLM-based “Decision Maker” and a 3D-perception-based “Executor” to combine explainable decision making with stable control generation. EMMA [ 17 ] processes camera input in language space with a 13 multimodal LLM, directly mapping it to various driving outputs such as trajectories, objects, and road graphs. OpenEMMA [ 45 ] is a lightweight open-source MLLM that takes ego-history and the front camera as input and predicts speed/curvature via chain-of-thought, integrating them into trajectory planning. OpenDriveVLA [ 52 ] presents a VLA that combines 2D/3D instance-aware tokens, ego state, and language commands to produce spatially grounded driving actions/trajectories. Impromptu VLA [ 2 ] provides large-scale VLA data and open weights focused on corner cases, improving the robustness and open/closed-loop performance of VLAs. GPVL [ 21 ] reduces the gap between perception and language through vision-language pretraining on BEV, and proposes a generative planning approach that autoregressively generates decisions and trajectories. OmniDrive [ 42 ] builds a vision-language dataset that covers 3D driving understanding/planning based on counterfactual reasoning, strengthening VLM alignment and evaluation. All such existing driving VLAs take an image as the initial condition and immediately perform trajectory prediction. We point out that this approach of existing driving VLAs, which lacks a terminal condition, is problematic from an inverse kinematics perspective, and we present a new architecture that addresses this problem. 
+
+A.3 Driving World Models 
+
+Driving World Models enable next state prediction for driving scenes, supporting tasks such as the simulation of driving scenarios. LAW [ 22 ] predicts future latent features in a self-supervised manner conditioned on ego actions/trajectories, strengthening end-to-end driving without label dependence. Drive-WM [ 43 ] is a controllable multiview world model that generates future images for various maneuvers and supports safe planning with image-based rewards. GAIA-1 [ 11 ] presents a token-based generative world model that takes video, text, and action as input and generates controllable driving scenarios. GAIA-2 [ 34 ] proposes a controllable multi-view diffusion world model that simultaneously addresses multi-agent interactions and multi-camera consistency through structured conditioning. Most recently, DriveVLA-W0 [ 23 ] integrates future world prediction as an auxiliary objective for the VLA to enhance data scaling. This line of work may seem similar to ours on the surface in that it combines a world model with a diffusion policy; however, our contribution lies not in combining world prediction with a VLA per se, but in how the future prediction is connected to the trajectory decoder. In DriveVLA-W0, future prediction acts only as an auxiliary loss, and the trajectory decoder still has direct access to the full ego status, text command, and LLM context, so it offers little architectural pressure against the ego-status shortcut during inference. In contrast, our IK Network conditions trajectory decoding on the pair (Zt, ˆZt+∆ t) alone, and ego status and text commands are not provided as inputs to the IK Network, which suppresses the most direct shortcut path. That is, while DriveVLA-W0 leverages future prediction as an auxiliary training signal, we treat it as a boundary condition that the trajectory decoder is required to consume. Meanwhile, stand-alone generative world models such as GAIA-1/GAIA-2 [ 11 , 34 ] are primarily aimed at photorealistic driving scene synthesis and simulation/data augmentation/counterfactual scenario generation, so planning is not a direct task and the target of next-state prediction is closer to pixel-level video synthesis. In contrast, our next visual state prediction operates not in pixel space but in the visual token space on the LLM side, and does not aim to itself become a generative world model; its purpose is to supply the terminal condition the IK Network needs to recover trajectories. In summary, while the GAIA family asks how the next scene may look, our predictor asks which visual state the ego should reach for the trajectory to be uniquely determined, and the two address different task formulations. 
+
+## B Architecture Details 
+
+Visual encoder and LLM input. We extract patch-level visual tokens with DINOv3 ViT-S/16 [ 39 ]from the three front cameras (front, front-left, front-right), pass them through an MLP projector, and inject the resulting tokens into the LLM (Qwen2.5-0.5B-Instruct [48]). On the input side, the visual tokens are placed between the special tokens <scene_start> and <scene_end> , and represented in text form by the placeholder <SCENE> . The LLM additionally receives the ego status and text instruction encoded through an MLP, and (when present) a question about the driving scene wrapped between <question_start> and <question_end> .
+
+LLM output. The LLM is trained to emit the BEV representation of the future scene between 
+
+<scene_start> and <scene_end> in its output, and the next visual state ˆVt+∆ is read out from this 14 region. For QA, the answer appears between <answer_start> and <answer_end> and is supervised with next-token prediction. 
+
+Inverse Kinematics Network. The IK Network is a cross-attention-based conditional diffusion model with hidden dimension dmodel = 256 , 8 attention heads, and 2 cross-attention blocks. The noisy trajectory serves as the query, and the current BEV tokens Zt and the predicted next BEV tokens ˆZt+∆ serve as keys/values; the timestep is added to the query through a sinusoidal embedding. Diffusion training uses the cosine β-schedule [ 32 ] and at inference we run 50 DDPM [ 10 ] sampling steps starting from xT ∼ N (0 , I ).
+
+## C Training Hyperparameters 
+
+Optimization. We use AdamW [ 29 ] with a cosine learning-rate schedule and linear warmup (warmup ratio 0.145 ) and gradient clipping 1.0 on both datasets. Considering the difference in capacity and training stability between the LLM backbone and the IK Network, we apply different learning rates of 1×10 −5 and 1×10 −4, respectively. 
+
+NAVSIM. We follow the 2-stage training procedure proposed by RecogDrive [ 25 ]: (i) supervised fine-tuning (SFT) for 4 epochs on the navtrain split, followed by (ii) GRPO [ 37 ] reinforcement learning on the same split with PDMS-based reward signals. The future prediction horizon is 4 s and the IK Network outputs 8 waypoints. 
+
+nuScenes. The model is trained on the train split for 4 epochs. The trajectory planning loss and the next visual state prediction loss are combined with weight 1.0 each, and nuScenes-QA, nu-Caption, and nu-X are jointly trained as multi-task supervision through the same LLM. The future prediction horizon is 3 s and the IK Network outputs 6 waypoints. 
+
+## D Input Prompt Format 
+
+We follow a Qwen-style ChatML conversation template with two roles, system and user , and condition the LLM on a structured prompt rather than free-form text. This section makes the exact format explicit. 
+
+Special tokens. On top of the base Qwen2.5 vocabulary we add the following additional special tokens , each encoded as a single token: < scene_start >, < scene_end >, < SCENE > (placeholder for the visual tokens Vt); < ego_start >, < ego_end >, < EGO > (placeholder for the projected ego-status feature); < next_start >, < next_end >, < NEXT_STATE > (assistant-side placeholders into which 
+
+ˆVt+∆ is read out); < question_start >, < question_end >, < answer_start >, < answer_end > for QA wrappers; and < trajectory > as the planning-trajectory placeholder. The visual placeholders <SCENE >, < EGO >, and < BEV_STATE > are replaced by the corresponding feature embeddings at the input/output embedding stage rather than by tokenized text. 
+
+System prompt. The system message specifies the role, the locations of the visual and ego place-holders, the coordinate convention, the two tasks (next-BEV prediction and optional QA), and the strict output format: 
+
+> You are Open-DriveVLA, a vision-language driving world model with latent actions. You are given: - Current BEV tokens: <scene_start><SCENE><scene_end> - Ego status: <ego_start><EGO><ego_end> You will be given: - Previous action trajectory. - Optional nuScenes QA question. Coordinate convention (IMPORTANT): - Ego-centric 2D BEV coordinates in meters; x is to the right, y is to the front. Your tasks: 1) Predict the NEXT BEV state (one step ahead). To predict it, you MUST internally infer a feasible ego trajectory; DO NOT output the trajectory –- it is handled by a separate inverse-kinematics model.
+
+15 2) If a QA question is provided, output the QA answer. Output format (STRICT). Output ONLY the blocks below. Block 1 (next BEV state): <bev_start> <BEV_STATE> ... <BEV_STATE> <bev_end> Block 2 (optional QA): <answer_start>SHORT_ANSWER <answer_end> 
+
+The number of < BEV_STATE > placeholders matches the spatial token count of ˆVt+∆ , and the LLM hidden states at those positions are read out as the predicted next visual state. 
+
+User prompt. The user message follows an OpenDriveVLA-style structured layout that we build from the per-sample driving meta-data. Concretely, each user prompt contains the lines below:      
+
+> Ego status: <ego-status string> Historical trajectory (last 2 seconds): [(x1,y1),(x2,y2),(x3,y3),(x4,y4)] Mission goal: {turn right |turn left |keep forward} Previous action: <previous action string> Planning trajectory: <trajectory> <question_start><QA question> <question_end> (optional)
+
+The ego-status string is built from gt_ego_lcf_feat and gt_ego_his_diff fields of the nuScenes info dict and has the form “ - Velocity (vx,vy): ( · ,·) - Heading Angular Velocity (v_yaw): ( ·) - Acceleration (ax,ay): ( ·,·) - Can Bus: ( ·,·) - Heading Speed: (·) - Steering: ( ·)”. The historical trajectory line is filled with 4 recent ego positions in the same (xright , y front ) convention used by the system prompt. The mission goal is a one-of-three textual command derived from gt_ego_fut_cmd .
+
+Assistant output. The assistant turn produces, in order, (i) the BEV block < next_start > <
+
+NEXT_STATE >K ,< next_end >, where K matches the spatial token count of ˆVt+∆ , and (ii) option-ally the answer block < answer_start > < SHORT_ANSWER >,< answer_end > when a QA question was provided. Trajectories are not produced by the LLM; the IK Network consumes the hidden states at the < NEXT_STATE > positions, together with the current visual tokens, and outputs the trajectory through cross-attention diffusion. 
+
+## E Formulation of Next Visual State Prediction and Inverse Kinematics Network 
+
+E.1 Direct Regression Loss Decomposition 
+
+In this section, we provide a detailed derivation of the bias–variance decomposition of the existing direct regression formulation, whose result was only stated in Eq. (6) of Sec. 2, and we make explicit the inductive-bias clue from which the conclusion “ignoring visual features acts as a trivial solution in the majority regime” is drawn. 
+
+Notation. Let Vt denote the output of a frozen visual encoder, E the ego status, C the text command, and I ∈ { 0, 1} the vision-critical indicator. We continue to use the target trajectory decomposition 
+
+Tt = T0(E, C ) + I · ∆( V, E, C ) + ξ (Eq. (3)) and the predictor decomposition 
+
+¯fθ (E, C ) ≜ E[fθ (V, E, C ) | E, C, I=0] , ˜fθ (V, E, C ) ≜ fθ (V, E, C ) − ¯fθ (E, C ). (10) Since ¯fθ (E, C ) is by definition the conditional expectation of fθ given (E, C, I=0) , it is constant given (E, C ), and by linearity of conditional expectation E[ ˜fθ | E, C, I=0] = E[fθ | E, C, I=0] −
+
+¯fθ (E, C ) = 0 , i.e., ˜fθ is the conditional residual relative to that mean. We additionally assume that the noise ξ is zero-mean and (conditionally) independent of (E, C, V ) and ˜fθ .16 Step-by-step derivation of the bias–variance decomposition. Under I = 0, the target is 
+
+T0(E, C ) + ξ, so we expand the conditional MSE as follows: 
+
+L0(θ) = E∥T0(E, C ) + ξ − fθ (V, E, C )∥22 E, C, I=0  (11) 
+
+= E
+
+h
+
+∥ T0(E, C ) − ¯fθ (E, C ) − ˜fθ (V, E, C ) + ξ∥22 E, C, I=0 
+
+i
+
+(12) 
+
+= ∥T0(E, C ) − ¯fθ (E, C )∥22 + E
+
+h
+
+∥ ˜fθ ∥22 E, C, I=0 
+
+i
+
++ E∥ξ∥22
+
+ . (13) (12) is obtained by simply substituting fθ = ¯fθ + ˜fθ (Eq. (10)). In the transition to (13) , the three cross terms that arise are all expanded as inner products and then cancelled as follows: • −2 E
+
+h
+
+⟨T0(E, C ) − ¯fθ (E, C ), ˜fθ ⟩ E, C, I=0 
+
+i
+
+= 0 : because (T0 − ¯fθ ) is constant given 
+
+(E, C ) and E[ ˜fθ | E, C, I=0] = 0 .• 2 E⟨T0(E, C ) − ¯fθ (E, C ), ξ ⟩ E, C, I=0  = 0 : for the same reason, (T0 − ¯fθ ) is con-stant and E[ξ | E, C, I=0] = 0 .• −2 E
+
+h
+
+⟨ ˜fθ , ξ ⟩ E, C, I=0 
+
+i
+
+= 0 : by the assumption that ξ is zero-mean and (conditionally) independent of ˜fθ .This treatment of cross terms is the same as that used in the next-state predictor analysis (Eq. (17)– Eq. (18)) and the IK Network analysis (Eq. (25)) of this section. 
+
+E.2 Next Visual State Prediction 
+
+In this section, we mathematically analyze the mechanism by which the next visual state prediction objective introduced in Sec. 2 prevents visual collapse. Specifically, through a bias–variance decom-position of the next visual state prediction loss Lstate , we show that the state in which visual features are ignored is strictly suboptimal , i.e., that the model is structurally forced to use visual features as training proceeds. 
+
+Notation. For brevity, let Vt ≜ enc( Vt) denote the output of a frozen visual encoder, E the ego status, C the text command, and Vt+∆ the BEV target token ∆ seconds in the future. We denote the LLM’s next-state predictor as wϕ(Vt, E, C ) and the mask indicator as I ∈ { 0, 1} (I = 0 corresponds to a normal training situation in which the visual stream is available). 
+
+Bias–variance decomposition. We define the conditional means and residuals of the predictor and target as follows: 
+
+¯wϕ(E, C ) ≜ Ewϕ(Vt, E, C ) | E, C, I=0 , ˜wϕ ≜ wϕ(Vt, E, C ) − ¯wϕ(E, C ), (14) 
+
+¯V (E, C ) ≜ EVt+∆ | E, C, I=0 , ˜V ≜ Vt+∆ − ¯V (E, C ). (15) By definition, E[ ˜ wϕ | E, C, I=0] = 0 and E[ ˜V | E, C, I=0] = 0 .Using these, the next-state loss Lstate ,0 (the loss defined under I = 0 ) can be expanded as: 
+
+Lstate ,0 = E∥Vt+∆ − wϕ(Vt, E, C )∥22 E, C, I=0  (16) 
+
+= E
+
+h
+
+∥( ¯V − ¯wϕ) + ( ˜V − ˜wϕ)∥22 E, C, I=0 
+
+i
+
+(17) 
+
+= ∥ ¯V (E, C ) − ¯wϕ(E, C )∥22 + E
+
+h
+
+∥ ˜V − ˜wϕ∥22 E, C, I=0 
+
+i
+
+. (18) In (17) we have simply substituted Vt+∆ = ¯V + ˜V and wϕ = ¯ wϕ + ˜ wϕ. In the transition to (18) , the cross term cancels because ( ¯V − ¯wϕ) is constant given (E, C ) and, by construction, both ˜V and ˜wϕ
+
+are residuals relative to their conditional means: E[ ˜V | E, C, I=0] = 0 and E[ ˜ wϕ | E, C, I=0] = 0 .Hence by linearity of conditional expectation, E[ ˜V − ˜wϕ | E, C, I=0] = 0 . That is, the loss neatly splits into a bias term ∥ ¯V − ¯wϕ∥22 and a conditional variance term E[∥ ˜V − ˜wϕ∥22].17 Visual collapse is strictly suboptimal. We now define “visual collapse” as the state in which the LLM does not effectively make use of Vt, i.e., the state in which the output of wϕ is invariant with respect to Vt:
+
+wϕ(Vt, E, C ) ≈ gϕ(E, C ) ∀Vt ⇐⇒ ˜wϕ ≈ 0. (19) We also reflect the fact that, even under the same (E, C ), the future BEV varies due to the inherent diversity of scenes, by defining the data-intrinsic visual diversity as 
+
+σ2 
+
+> V
+
+≜ EE,C 
+
+Var( Vt+∆ | E, C ) > 0. (20) Under these two definitions, when collapse occurs ( ˜wϕ = 0 ) the bias–variance decomposition simplifies as follows: 
+
+Lstate ,0 = ∥ ¯V (E, C ) − ¯wϕ(E, C )∥22 + E
+
+h
+
+∥ ˜V − ˜wϕ∥22 E, C, I=0 
+
+i
+
+(21) 
+
+≥ E
+
+h
+
+∥ ˜V − ˜wϕ∥22 E, C, I=0 
+
+i
+
+(22) 
+
+= E
+
+h
+
+∥ ˜V ∥22 E, C, I=0 
+
+i
+
+(23) 
+
+= Var( Vt+∆ | E, C, I=0) . (24) (22) simply drops the bias term, which is non-negative; (23) is the result of substituting ˜wϕ = 0 
+
+from the collapse definition (19) ; finally, (24) is a direct consequence of ¯V (E, C ) being defined as a conditional mean, expressing the conditional variance. The key here is the last equality. The fact that σ2 
+
+> V
+
+> 0 means that the loss in the collapsed state remains permanently at the level of the data-intrinsic variance. Equivalently, observing Lstate ,0 drop below σ2 
+
+> V
+
+during training certifies that the model is not in a collapsed state, since this bound is unattainable without using Vt. Therefore, the next visual state prediction objective provides persistent gradient pressure that prevents the model from collapsing during training. 
+
+E.3 Inverse Kinematics Formulation 
+
+The above analysis is limited to state prediction ; whether the use of visual features is enforced in the actual final task of trajectory prediction is a separate question. In fact, in existing VLAs, it is possible to minimize the trajectory loss while ignoring visual features, which is precisely the shortcut learning we observed in Sec. 2. In this section, we show that our IK Network architecture forces the use of visual features even at the level of the trajectory loss itself. 
+
+Decomposition of the trajectory loss. Our IK Network hψ decodes the trajectory T taking only the current visual state Vt and the next visual state ˆVt+∆ predicted by the LLM as input. Letting 
+
+T0(E, C ) denote the mean of the “ideal” trajectory determined from (E, C ), and ξ the zero-mean noise inherent in the trajectory, the trajectory loss under I = 0 is decomposed as follows: 
+
+Ltraj ,0(ψ) = E
+
+h
+
+∥T0(E, C ) + ξ − hψ (Vt, ˆVt+∆ )∥22 E, C, I=0 
+
+i
+
+= ∥T0(E, C ) − ¯hψ (E, C )∥22
+
+| {z }
+
+> bias
+
++ E
+
+h
+
+∥˜hψ ∥22 E, C, I=0 
+
+i| {z }
+
+> variance
+
++ E[∥ξ∥22]
+
+| {z }
+
+> irreducible noise
+
+. (25) Here, ¯hψ (E, C ) and ˜hψ are the conditional mean and residual defined in the same manner as for wϕ.While the form of the equation is identical to that of the decomposition obtained for the existing structure, the coupling between the two terms is decisively different. 
+
+Decisive difference between the existing and the proposed structures. In existing VLAs, since the trajectory predictor fθ takes (Vt, E, C ) all directly as input, the conditional mean ¯fθ (E, C ) can be computed using only the (E, C ) token pathway. Hence, even if the model chooses ˜fθ = 0 (ignoring visual features), the learning of ¯fθ is unaffected, and the two terms can be minimized independently ,making it a valid optimal solution to ignore visual features. In contrast, our IK Network hψ does not take (E, C ) directly as input and only takes (Vt, ˆVt+∆ ).Therefore, the only paths through which ¯hψ (E, C ) can be computed are the two visual pathways 18 Vt → hψ and Vt → wϕ → ˆVt+∆ → hψ , which means the very learning of ¯hψ must necessarily go through visual features .This causes the two terms to become coupled as follows: 
+
+˜hψ → 0 ∧ all inputs of hψ are V -dependent =⇒ ¯hψ (E, C ) ≈ const , (26) 
+
+∴ ∥T0(E, C ) − const ∥22 ≫ 0 for varying (E, C ). (27) In other words, reducing ˜hψ (i.e., ignoring visual features) makes the output close to a constant, so the model cannot fit the target T0(E, C ) that varies with (E, C ), and the bias term grows. Conversely, to reduce the bias term, hψ must depend on visual features, so ˜hψ increases. The only path to simultaneously minimize the two terms in (25) is to actively exploit visual features, which is the fundamental reason why our IK Network architecture is robust to visual collapse. In summary, the next visual state prediction objective makes collapse strictly suboptimal at the LLM stage (Eq. (24)), and the IK Network makes the bias term polluted at the trajectory stage when collapse occurs (Eq. (27)). The two components operate independently as loss-level pressure and 
+
+architectural constraint , respectively, and when combined they suppress all paths through which the driving VLA can avoid visual features. 
+
+E.4 Empirical Estimates of ε and σ2 
+
+> V
+
+on nuScenes 
+
+The arguments in Secs. E.1 and E.2 hinge on two scalar quantities that we have so far treated only symbolically. The first is the fraction ε ≜ P(It = 1) of vision-critical samples in the trajectory decomposition Tt = T0(E, C ) + It · ∆( V, E, C ) + ξ (Eq. (3)), which sets the weight of the only term in the mixture loss (Eq. (4)) that pushes the trajectory predictor to depend on V . The second is the data-intrinsic visual diversity σ2 
+
+> V
+
+= EE,C [Var( Vt+∆ | E, C )] > 0 from Eq. (20), the lower bound below which the next-state loss cannot drop without using Vt (Eq. (24)). This section estimates both on the nuScenes validation split using exactly the DINOv3 ViT-S/16 features adopted in our experiments (front-left, front, front-right; 540 tokens of dimension 384 per frame; ∆ = 3 s, equivalently 6
+
+keyframes ahead). 
+
+Estimating ε = P(It = 1) . We follow the operational definition used in our ego-status stratified evaluation (Sec. J): for each validation sample we extrapolate the future trajectory by integrating constant linear velocity and constant yaw rate from gt_ego_lcf_feat , and define the ego-status gap as the 3-second ADE between this kinematic prediction and the GT trajectory. A sample is treated as vision-critical, It = 1 , iff its gap exceeds a threshold τ . The marginal distribution of the gap on the nuScenes val split ( n = 6 ,019 ) has mean 2.230 m, median 1.286 m, 70 th percentile 2.139 m, and 
+
+90 th percentile 4.888 m. Table 7 reports ˆε(τ ) = 1
+
+> n
+
+P 
+
+> i
+
+1[gap i ≥ τ ] for several thresholds. Table 7: Empirical ˆε on the nuScenes val split ( n = 6 ,019 ) at several gap thresholds. The threshold 
+
+τ = 2 .14 m corresponds to the top-30% boundary used in our ego-status stratification (Sec. J).                
+
+> τ(m) 0.50 1.00 1.50 2.00 2.14 3.00 5.00 ˆε0.763 0.584 0.442 0.328 0.300 0.187 0.098
+
+Under our stratification ( τ = 2 .14 m) we obtain ˆε ≈ 0.30 , and at the stricter τ = 5 m only ∼ 10% of the val split is genuinely vision-critical. This is the quantitative form of the “ ε ≪ 1” remark in Sec. 2: under the mixture loss (Eq. (4)), the term that demands visual features carries weight ε ≈ 0.10 –0.30 
+
+while the ego-shortcut-friendly term carries weight 1 − ε ≈ 0.70 –0.90 , so direct trajectory regression has no incentive to break the shortcut. 
+
+Estimating σ2 
+
+> V
+
+= EE,C [Var( Vt+∆ | E, C )] . For each val token t we look up the token ∆ = 6 
+
+keyframes ahead via repeated next traversal of the cached info dict, and accumulate the per-element mean and second moment of the future-frame DINOv3 feature Vt+∆ ∈ R540 ×384 using Welford’s algorithm. Of the 6,019 val tokens, 5,119 have both the current and the +3 s feature cached and are usable for this estimate. Since (E, C ) are continuous and high-dimensional, we use the discrete 
+
+3-way gt_ego_fut_cmd (right / forward / left) as a tractable proxy for C, and report two numbers: the marginal Var( Vt+∆ ), and the conditional proxy EC [Var( Vt+∆ | C)] .19 Table 8: Variance of the future DINOv3 feature Vt+∆ on the nuScenes val split ( n = 5 ,119 ). Reported as ∥ · ∥ 22 form: the sum of entry-wise variances over all 540 × 384 = 207 ,360 feature dimensions, matching the right-hand side of Eq. (24). 
+
+quantity ∥ · ∥ 22 form Marginal Var( Vt+∆ ) 1.162 ×10 4
+
+Conditional EC [Var( Vt+∆ | C)] (σ2 
+
+> V
+
+proxy) 1.158 ×10 4
+
+Between-command variance 34 
+
+The ratio of conditional to marginal variance is 0.997 : conditioning on the discrete route command C
+
+explains essentially none ( ∼ 0.3% ) of the visual variability, so σ2 
+
+> V
+
+≈ Var( Vt+∆ ) ≈ 1.16 × 10 4, or equivalently ∼ 5.6 × 10 −2 per scalar dimension. To check that this floor is actually binding for our trained model rather than vacuous, we compare it against the empirical NSP residual reported in Sec. I: the trained model’s per-element NSP MSE is at most ≈ 2.2 × 10 −2 across all NSP-quartile bins (Table 10, Q4), comfortably below the per-element 
+
+σ2 
+
+> V
+
+floor of ≈ 5.6 × 10 −2 (a ratio of ≈ 0.4). 1 Crossing the floor is unattainable for any predictor that ignores Vt (Eq. (24)), so this gap is direct evidence that the next-state objective in fact pushes the LLM to use Vt during training. 
+
+Joint reading. Combining the two estimates ties back to the structural argument in Sec. E. On the trajectory side, the mixture loss is dominated by the non-vision term ( 1 − ε ≈ 0.70 –0.90 ), which is precisely why direct regression (Sec. E.1) is free to set ˜fθ → 0 and ignore V . On the next-state side, 
+
+σ2 
+
+> V
+
+> 0 is binding rather than vacuous: any predictor wϕ that fails to use Vt is bounded below by σ2
+
+> V
+
+(Eq. (24)), and our trained model attains an NSP residual strictly below this floor (Table 10), so the gap can only be explained by the model actually using Vt. The numerical asymmetry between ε ≪ 1
+
+and σ2 
+
+> V
+
+> 0—weak visual signal on the trajectory side, hard floor on the next-state side—is what lets the architectural remedy in Sec. E.2 restore visual grounding without changing the data distribution. 
+
+## F Note on the OpenDriveVLA* Score in NAVSIM Benchmarks 
+
+In Table 1 and Table 2, OpenDriveVLA* records PDMS/EPDMS of 73 .2/70 .2, which is below the 
+
+83 –90 range of 7B–8B-scale VLAs such as ARTEMIS, DriveVLA-W0, and ReCogDrive. This is not because the baseline reimplementation is weakened, but rather an expected gap stemming from two structural differences. First, OpenDriveVLA* is fixed to a 0.5B Qwen2.5 backbone and a DINOv3 ViT-S/16 encoder for an architectural ablation against our model, so its LLM has 14 –16 × fewer parameters than the 7B–8B baselines, and its visual encoder is also more than an order of magnitude smaller. Second, the 7B–8B baselines additionally introduce trajectory decoding mechanisms beyond simple LLM-text-output, such as anchor-based trajectory tokenization (DriveVLA-W0, AutoVLA), trajectory diffusion heads (ReCogDrive), and action vocabulary expansion (AdaThinkDrive), whereas OpenDriveVLA* preserves the LLM direct text output format from the original paper. Thus, the 
+
++19 .0 PDMS / + 20 .4 EPDMS improvement we report is not a “baseline-weakening effect” but rather a pure gain induced by the structural modifications of next visual state prediction and the IK Network under the same backbone, the same data, and the same schedule. On the two closed-loop benchmarks NAVSIM-v1 and NAVSIM-v2, our method improves over the OpenDriveVLA [ 52 ] baseline with the same 0.5B backbone by a large margin and achieves performance on par with or above 7B–8B VLAs that are 14 –16 × larger, at a light-model scale. 
+
+## G Ablation Study 
+
+To verify the strengths of our methodology, we removed each of the three core components of our model one by one and analyzed their contributions (Table 5).       
+
+> 1The two quantities live in slightly different feature spaces— σ2
+> Vis computed on the raw 384 -D DINOv3 features, whereas NSP MSE is computed on the model’s 896 -D projected hidden representation. We therefore compare per-element rates rather than ∥ · ∥ 22sums, which depend on the ambient dimensionality. The qualitative conclusion—the trained model achieves a residual strictly below the Vt-free lower bound—does not depend on this choice.
+
+20 Effect of Next State Prediction. First, we removed next state prediction , which trains the LLM to predict the future ( ∆t = 3 s) BEV state, and replaced it with current state reconstruction as the training objective. As a result, ADE degraded by +0 .01 , from 0.06 → 0.07 . This small performance gap shows that the largest contribution to the performance improvement itself comes from the structure that forces the LLM to use visual features (the existence of the state prediction objective). However, in additional analyses on scenes where the two models differ, we found that in dynamic driving situations that require more precise use of visual features, such as curve regions, the model trained with next state prediction consistently performs better (Table 9). That is, even if current state reconstruction performs similarly on average, it shows shortcomings in challenging scenes; a detailed analysis is provided in the supp. material (Table 9). 
+
+Effect of the IK Network. Second, we removed the IK Network that takes the current/next visual state as input and decodes the trajectory, and replaced it with a small MLP head applied directly to the LLM’s output hidden state. As a result, ADE degraded by +0 .25 , from 0.06 → 0.31 , i.e., a nearly 
+
+5× larger gap. This suggests that when the trajectory is regressed directly from the LLM hidden state, the model is again exposed to the shortcut learning problem. In contrast, our IK Network separates trajectory generation into a separate module and restricts its inputs only to the visual state , thereby forcing the LLM to learn scene understanding before memorizing trajectories. 
+
+Architecture of the IK Network. Third, to verify the structural design choices of the IK Network itself, we replaced the diffusion-based IK Network with a non-generative variant. Specifically, we changed it to a structure that takes the current/next visual state as keys and values, performs cross-attention pooling with a learnable query, and then directly regresses the trajectory through an MLP regression head. As a result, ADE degraded by +0 .10 , from 0.06 → 0.16 . This suggests two things. First, since this variant still preserves the core design of next state prediction and a visual-only IK module, an ADE of 0.16 is still overwhelmingly better than w/o IK Network (0.31 ). That is, it is reaffirmed that the root cause of our performance improvement comes from the visual-grounded trajectory decoding structure based on next state prediction and the IK module. Second, even within the same structure, implementing the IK module as a generative diffusion rather than a deterministic regression elevates trajectory precision one step further, which is a natural result given that the trajectory distribution is inherently multi-modal and stochastic. The ablation table is presented in the main paper (Table 5). 
+
+## H Comparison between Next State Prediction and Current State Reconstruction 
+
+In Sec. G, when next state prediction is replaced with current state reconstruction, the average ADE difference is small at +0 .01 m. To examine whether this small average difference means that the two models behave nearly identically across all scenes, or that the gap is large in specific scenes but cancels out in others, we quantitatively analyzed per-sample differences between the two models. 
+
+Analysis method. For each sample in the nuScenes validation set, we measure the per-sample 3-second endpoint L2 error of each model and define the difference as 
+
+∆ = L2 
+
+> cur-state
+
+− L2
+
+> next-state
+
+.
+
+Samples with ∆ > 0 are samples on which the next state prediction model is more accurate, and samples with ∆ < 0 are the opposite. To compare the two extremes of this distribution, we separate the top 25% ( ∆ ≥ 0.094 m, n = 1 ,504 ) as the next-beneficial group and the bottom 25% ( ∆ ≤ − 0.055 m, n = 1 ,504 ) as the cur-beneficial group, and compare the driving scene characteristics of each group. The statistical significance of the differences is verified using the 
+
+Mann–Whitney U test , a non-parametric test that does not require a normality assumption on the distribution. 2
+
+We compare the six scene characteristics listed in Table 9. Each characteristic captures a different aspect of the driving situation. Ego angular velocity is the yaw rate of the ego vehicle, indicating the degree of changes in ego pose such as turning and lane changes. Ego speed is the magnitude 
+
+> 2The Mann–Whitney U test is a non-parametric method that tests whether two samples are drawn from the same distribution. Driving variables such as ego speed and angular velocity generally do not follow a normal distribution, so we use this test instead of the t-test, which requires distributional assumptions.
+
+21 Table 9: Per-sample analysis of next state prediction’s benefit on nuScenes val . ∗∗∗ : p < 0.001 , ∗:
+
+p < 0.05 , n.s.: p ≥ 0.05 .Scene characteristic next-benef. cur-benef. p-value sig. 
+
+Ego angular velocity (rad/s) 0.072 0.049 1.2 × 10 −14 ∗∗∗ 
+
+Ego speed (m/s) 6.08 5.91 3.7 × 10 −1 n.s. # front objects 2.01 2.01 4.1 × 10 −1 n.s. Min front distance (m) 21.01 20.63 1.9 × 10 −1 n.s. Nearest obj. relative speed (m/s) 2.87 3.28 1.6 × 10 −2 ∗
+
+Nearest agent turnover (binary) 0.184 0.170 3.3 × 10 −1 n.s. of longitudinal motion; together, the two variables determine the dynamic level of the ego. # front objects quantifies scene complexity as the number of objects located in the front region of the ego, and Min front distance indicates collision risk as the distance to the nearest front object. Nearest obj relative speed is the relative speed of the nearest object with respect to the ego, measuring the intensity of dynamic interactions such as overtaking and merging. Finally, Nearest agent turnover is a binary indicator of whether the “nearest object” has changed to a different instance between the previous frame and the current frame, capturing the volatility of surrounding objects. 
+
+Results and interpretation. As shown in Table 9, among the six scene characteristics, the one that most strongly distinguishes the two groups is ego angular velocity . The mean angular velocity of the next-beneficial group is 0.072 rad/s, about 47% higher than that of the cur-beneficial group (0.049 rad/s), and the difference is statistically very strong with p = 1 .2 × 10 −14 . Nearest obj relative speed also shows a large difference between the two groups ( p = 1 .6 × 10 −2). On the other hand, ego speed, the number of front objects, the minimum front distance, and nearest agent turnover were essentially the same between the two groups (all with p > 0.05 ). This result is intuitively interpretable. At the moment when the ego performs a turn or lane change, the front scene differs significantly from the current frame due to the change in the ego’s own yaw. Next state prediction informs the IK Network of the spatial layout of the scene after the turn in advance, whereas current state reconstruction by definition provides only the view before the turn, so during the turn the IK Network is fed stale visual context. That is, although the average ADE difference is small at +0 .01 m, the gap is concentrated in the specific driving regime of turning, while the two models behave almost equally in straight-line driving. This shows that the effect of an ablation cannot be dismissed simply by looking at average metrics, and supports next state prediction can help maintain driving accuracy in dynamic ego situations. 
+
+## I Per-sample Correlation between Next State Prediction Quality and Trajectory Accuracy 
+
+The ablation in Sec. G showed the architectural contribution of the next visual state prediction (NSP) objective. Complementarily, in this section we verify, on a per-sample basis within a single trained model, whether samples with more accurate NSP also have more accurate trajectories. That is, while the previous section asks “does the objective help or not?”, this section asks “within the same model, how does sample-level NSP quality relate to trajectory quality?” 
+
+Setup. For all 5,869 ego tokens in the nuScenes validation set (every sample for which a next frame exists), we measure the following. NSP MSE is defined as the element-wise mean squared error between the model’s output next BEV latent ˆVt+∆ and Proj( V GT 
+
+> t+∆
+
+), the GT next-frame DINOv3 BEV feature projected into the same hidden space. The projector uses the trained model’s projector as is, so that the two representations are compared in the same space. NSP cosine is the average per-token cosine similarity. Plan L2@ k s is the Euclidean distance between the model’s k s endpoint and the GT. 
+
+Correlation results. As shown in Table 10, the per-sample correlation between NSP quality and plan accuracy is weak and the sign is opposite to intuition. Spearman ρ between NSP MSE and Plan L2@3 s is −0.144 (p = 1 .2 × 10 −28 ), and between NSP cosine and Plan L2@3 s is +0 .166 
+
+(p = 1 .0 × 10 −37 ); both metrics suggest that the better the NSP fit, the slightly larger the plan L2. 22 Table 10: Per-sample correlation between Next State Prediction (NSP) quality and trajectory accuracy on nuScenes val split ( N = 5 ,869 ). NSP MSE is computed in the projected hidden space (896-D); NSP cosine is the mean token-wise cosine similarity. A larger NSP MSE / smaller NSP cosine indicates a worse next-state prediction. ∗∗∗ : p < 0.001 , ∗∗ : p < 0.01 , ∗: p < 0.05 , n.s.: p ≥ 0.05 .NSP metric Plan L2 Pearson r p Spearman ρ p
+
+NSP MSE @1 s −0.013 3.4×10 −1 n.s. −0.092 1.9×10 −12 ∗∗∗ 
+
+@2 s −0.018 1.8×10 −1 n.s. −0.110 3.5×10 −17 ∗∗∗ 
+
+@3 s −0.025 5.3×10 −2 n.s. −0.144 1.2×10 −28 ∗∗∗ 
+
+avg −0.027 4.1×10 −2 ∗ −0.139 1.5×10 −26 ∗∗∗ 
+
+NSP cosine @1 s +0 .034 8.4×10 −3 ∗∗ +0 .108 1.2×10 −16 ∗∗∗ 
+
+@2 s +0 .045 5.4×10 −4 ∗∗∗ +0 .139 1.1×10 −26 ∗∗∗ 
+
+@3 s +0 .061 2.6×10 −6 ∗∗∗ +0.166 1.0×10 −37 ∗∗∗ 
+
+avg +0 .066 4.1×10 −7 ∗∗∗ +0 .165 5.4×10 −37 ∗∗∗ 
+
+Plan L2 (m) averaged within each NSP MSE quartile. Trends are non-monotonic. Quartile NSP MSE L2@1 s L2@2 s L2@3 s L2 avg N
+
+Q1 (best NSP) 0.016 0.115 0.548 1.471 0.711 1,467 
+
+Q2 0.018 0.143 0.463 1.397 0.667 1,467 
+
+Q3 0.019 0.117 0.584 1.461 0.720 1,467 
+
+Q4 (worst NSP) 0.022 0.103 0.400 1.160 0.554 1,468 
+
+With a large sample size of N = 5 ,869 , p values are extremely small, but the effect size is weak with 
+
+|ρ| < 0.17 . Plan L2 by NSP MSE quartile is also non-monotonic (L2@3 s is 1.471 m at Q1, the best NSP, and 1.160 m at Q4, the worst NSP). That is, whether the entire next BEV latent is accurate is not a per-sample determinant of trajectory accuracy. 
+
+Interpretation. This result is naturally explained by the following three structural confounders. First, Plan L2 and NSP MSE measure sample difficulty along different axes. The Plan L2 of a sample is largely determined by how predictable the GT trajectory itself is: for ego-dominated samples such as constant-velocity straight-line driving, the GT trajectory closely matches a simple ego-status extrapolation, so the Plan L2 is small for any reasonable trajectory model regardless of what features it relies on. The same sample, however, need not be trivial from the NSP perspective, since front-vehicle motion, signal changes, and background flow can cause the next BEV to vary substantially. That is, the two variables follow different sample-difficulty distributions. Second, the IK Network uses only a partial subspace of the next BEV. Our IK is a cross-attention diffusion that decodes only the trajectory-relevant subspace of the next BEV ˆVt+∆ into a trajectory. Therefore, even if the global MSE is small, if the trajectory-relevant dimensions are inaccurate, the plan will be wrong, and vice versa. This result does not negate the value of next visual state prediction. As shown in Sec. G, when the NSP objective itself is removed/replaced, ADE changes from 0.06 → 0.07 /0.31 (current-state reconstruction replacement / IK Network removal, respectively), and especially in dynamic regimes such as turning and lane changes, the contribution of NSP is concentrated (Table 9). That is, NSP functions architecturally as a channel that lets visual features flow all the way to the trajectory decoder, and the result of this section shows that this channel is trained to function as a trajectory-relevant subspace rather than a global token-level reconstruction accuracy. 
+
+## J Stratified Evaluation by Ego-Status Difficulty in nuScenes 
+
+The average nuScenes ADE in Table 3 appears to saturate at the level of 0.06 m for our model, but this average does not imply uniform performance across all scenes. Li et al. [27 ] pointed out that a majority of nuScenes samples lie in an ego-dominated regime where trajectories can be extrapolated using only ego status, and that such samples dominate the average metric. In this section, we directly address this critique by stratifying samples according to the degree to which they can be followed using only ego status, and analyzing our model’s performance. 23 Table 11: Stratified evaluation on nuScenes val (n = 6019 ) by ego-status difficulty , following the criterion of Li et al. [ 27 ]. For each sample, we measure the GT-relative ADE of an ego-status-only constant-velocity + constant-yaw-rate extrapolation ( ego-status gap ); the top 30% (≥ 2.14 m, 
+
+n = 1 ,805 ) forms the VisionCritical subset and the bottom 30% (≤ 0.668 m, n = 1 ,805 ) forms the 
+
+EgoDominated subset. We compare three models: the original OpenDriveVLA [ 52 ] ( DriveVLA-orig ), a text-only variant trained with the visual stream architecturally removed ( TextOnly-novis ), and our model ( Ours ). We report UniAD avg. L2 (m) and Collision (%); bold = best per column. DriveVLA-orig TextOnly-novis Ours Subset L2 ↓ Coll. ↓ L2 ↓ Coll. ↓ L2 ↓ Coll. ↓
+
+Full ( n=6 ,019 ) 0.347 0.090 0.308 0.078 0.063 0.044 
+
+EgoDominated ( n=1 ,805 ) 0.166 0.012 0.190 0.003 0.049 0.060 VisionCritical ( n=1 ,805 ) 0.429 0.172 0.371 0.078 0.066 0.011 Stratification method. For each sample, we generate a trajectory by constant-velocity + constant-yaw-rate extrapolation using only ego status (longitudinal velocity vx, lateral velocity vy , yaw rate 
+
+vyaw ), and define its ADE relative to the GT as the ego-status gap. We classify the top 30% of this gap (gap ≥ 2.14 m, n = 1 ,805 ) as the VisionCritical subset and the bottom 30% (gap ≤ 0.668 m, 
+
+n = 1 ,805 ) as the EgoDominated subset. Intuitively, EgoDominated consists of scenes such as constant-velocity straight-line driving in which the trajectory is almost determined by ego status alone, while VisionCritical consists of scenes such as turns, lane changes, and front-vehicle responses for which visual scene understanding is essential. 
+
+Compared models. We compare three models: (i) the baseline OpenDriveVLA [ 52 ], (ii) a variant that architecturally removes the visual stream from the baseline and is trained using only ego status and text commands ( EgoTextOnly ), and (iii) our model ( Ours ). EgoTextOnly serves as the extreme limit baseline of an ego-shortcut that cannot use vision. 
+
+Results. Table 11 yields the following three observations. 
+
+(1) Quantitative validity of the stratification. The more a baseline cannot rely on vision, the larger its ADE degradation on VisionCritical: OpenDriveVLA degrades from 0.166 m on EgoDominated to 
+
+0.429 m on VisionCritical ( +158% ), while our model, which actively exploits vision, only degrades from 0.049 m to 0.066 m ( +34% ). EgoTextOnly ( +95% ) lies between the two models, showing a monotonic pattern of DriveVLA-orig → EgoTextOnly → Ours. This is a sanity check showing that the stratification is actually separating “the necessity of vision”. 
+
+(2) The improvement of Ours is concentrated in VisionCritical. Compared to DriveVLA-orig, the absolute improvement of our model is −0.117 m ( −71% ) on EgoDominated, while on VisionCritical it is −0.363 m ( −85% ), about 3× larger. That is, the overall average ADE of 0.06 m has the effect of compressing the average because both models converge close to the kinematic ceiling on the ego-dominated group, while the true gap between models is clearly revealed on the vision-critical subset at the level of 0.36 m. 
+
+(3) Agreement with collision metrics. The same pattern is also observed in the collision rate, which is independent of trajectory ADE. On the VisionCritical subset, DriveVLA-orig has a collision rate of 
+
+0.172% while our model has 0.011% , about 15 × lower. On EgoDominated, all three models converge to a very low collision rate of less than 0.1% , and this region consists by definition of straight-line, constant-velocity, collision-trivial scenes where the differences between models are not meaningful. Since collision avoidance requires accurate perception of visual obstacles such as pedestrians and vehicles, the large gap on VisionCritical is consistent with the observation in Sec. 4.3.2 that our model’s visual grounding plays a decisive role in collision-critical scenes. 
+
+## K GradCAM Methodology Details 
+
+This section summarizes the detailed measurement protocol for the visual grounding analysis in Sec. 4.3.2. To fairly compare models with different trajectory output forms (autoregressive token decoding, diffusion head, hybrid) within a single framework, we redesigned (i) the backpropagation target, (ii) the hook layer, and (iii) the reporting metric all in an architecture-aware manner. 24 K.1 Metric Definitions 
+
+Given a per-sample saliency map S ∈ RH×W 
+
+> ≥0
+
+and an object mask M ∈ { 0, 1}H×W obtained by projecting GT 3D bounding boxes (categories vehicle.* and human.pedestrian.* , with boxes containing fewer than one LiDAR point excluded) onto the 2D image plane, we report three complementary metrics. 
+
+(1) Pointing Mass is a threshold-free metric measuring how much of the model’s “attention budget” is allocated to actual object regions, defined as the ratio of CAM energy located inside the object mask to the total CAM energy: 
+
+PM =
+
+P 
+
+> (i,j )∈M
+
+Sij 
+
+P 
+
+> (i,j )
+
+Sij 
+
+.
+
+This metric measures only “ where the model is looking ” regardless of the absolute scale of the saliency map. 
+
+(2) Average Precision (AP) is the precision-recall AUC averaged over all thresholds, treating the object mask as positive labels and S as the ranking score. Since no threshold is artificially fixed, it answers the question “are pixels with higher saliency values more likely to actually lie on objects?” 
+
+(3) IoU & F1 @ top-20% treats the top-20% pixels of the saliency map (i.e., pixels above the per-image 80 -percentile p80 ) as binary positives and measures spatial overlap with the object mask in terms of IoU and F1, complementing the “ranking consistency” captured by PM and AP with a region-level agreement. The three metrics are based on different assumptions (energy ratio, threshold-free ranking, hard mask overlap), so a consistent advantage across all metrics indicates an essential improvement in grounding quality rather than single-metric hacking. 
+
+Scale invariance. The raw gradient magnitudes across different architectures cannot be directly compared, so all three metrics above are constructed to be robust to cross-architecture gradient scale differences: (i) PM is a ratio of sums and is therefore invariant to multiplication by a positive constant; (ii) AP is a rank-based score and is invariant to any positive monotonic transformation of 
+
+S; (iii) IoU/F1 @ top-20% uses the per-image 80 -percentile as the threshold, so the binarization is unchanged under multiplication by a positive constant. In addition, all CAMs are min-max normalized per camera per image to the range [0 , 1] before being used in metric computation. 
+
+K.2 Backpropagation Target 
+
+GradCAM uses the gradient of some scalar S with respect to the visual token input as visual saliency, so the choice of S determines the meaning of the measurement. Our principle is to “use the trajectory supervision loss that each model actually used during training as the backprop scalar”. This guarantees that, even when a likelihood form available in one model is not defined in another, we use the most natural scalar internally connected to the trajectory output of each model. 
+
+Ours (CrossAttentionDiffusionIK). Instead of an ELBO or marginal log-likelihood, we evaluate the standard DDPM denoising loss used during training as a single Monte Carlo sample: 
+
+Sours = − ˆϵθ ( xt, t, V t, bVt+∆ ) − ϵ 22, (28) with xt = √¯αt T ⋆ + √1 − ¯αt ϵ, t = T / 2 = 25 (the mid-noise level of the training/inference horizon 
+
+T = 50 ), ϵ ∼ N (0 , I 12 ) with a deterministic seed, and T ⋆ ∈ R12 the GT 6-step ego trajectory normalized by trajectory scale s = 20 . The conditioning of ˆϵθ consists of (a) current BEV tokens 
+
+Vt (DINOv3 cache, 540 × 896 ) and (b) the next BEV latent bVt+∆ predicted by the LLM (1 s/2 s/3 s multi-horizon). Sours is identical to λtraj Ltraj used during training, and the gradient of a single (t, ϵ )
+
+sample is an unbiased estimator of the full training loss gradient. 
+
+Token-output baselines (OpenDriveVLA, Impromptu-VLA). For models in which the LLM emits the trajectory as a text token sequence, we use the token-level cross-entropy loss with respect to the GT trajectory tokens used during training as is: Stok = −CE( LLM logits , GT trajectory tokens ).This matches the native training supervision of those models. 
+
+Diffusion-only baseline (Alpamayo-R1). Alpamayo-R1 architecturally lacks token-level GT tra-jectory supervision and uses only a diffusion action head. In this case, among differentiable scalars 25 Near  Far  Very Far  Sky  Sky Far Original  Near  Far  Very Far  Sky  Sky Far Figure 5: Qualitative examples of the position–size stitching variants on nuScenes val . For each scene, we visualize the predicted trajectory before (green) and after (red) stitching a vehicle sprite at four placements: Near and Far on the road, and Sky and SkyFar in the sky region (Far and SkyFar share the same sprite scale). The trajectory visibly bends or shortens for road-placed sprites, while sky-placed sprites of the same size leave the trajectory essentially unchanged, consistent with the quantitative results in Table 12. over LLM hidden states, we use the logit sum at the <traj_future_start> trigger position closest to the start of trajectory generation as a proxy. This is not a strict log-likelihood, and measures how much visual context affects the LLM’s representation right before trajectory generation. 
+
+K.3 Hook Layer Selection 
+
+For all models, we hook at the same location: the LLM 1st decoder layer pre-hook, i.e., the point where the visual representation has just entered the LLM after the vision encoder (and the projector, when present). This unification ensures that all GradCAM measurements compare gradients at a structurally equivalent stage of the network. 
+
+## L Evaluate Position Awareness in the Stitching Response 
+
+To separate whether the trajectory shortening reported in Sec. 4.3.1 originates from grounding on the positional meaning of the obstacle or merely from a response to the perceptual properties of the sprite, we compare five stitching variants in which the position (road horizon vs. sky) and size (scale 
+
+0.25 ∼ 1.8) of the sprite are independently varied (Table 12). All measurements use paired same-seed sampling (the trajectories before and after stitching share the same DDIM noise), with K = 50 
+
+samples averaged per token, so that ∆ reflects the stitching-induced change rather than sampling stochasticity. The signed mean ∆ scales monotonically with both the realism of the obstacle and its size: Near (road, scale 1.8) yields −1.04 m, Far (road horizon, scale 0.5) yields −0.54 m, while sprites placed in the sky (Sky, scale 0.30 ; SkyFar, scale 0.50 ) have signed means within ±0.10 m and the sample-level reaction is small ( |∆| < 1 m on 77 .6% and 63 .2% of scene frames, respectively). The decisive test is the paired control between Far and SkyFar, which share the same sprite scale ( 0.5) and differ only in position: for the same frame, 65 .5% of samples show a larger response when the sprite lies on the road than when it lies in the sky, with a signed paired mean of ∆Far − ∆SkyFar = −0.64 m. A conditional analysis on the 1,442 scene frames for which Near triggers a strong slowdown ( ∆ < −3 m) further supports this: under the same scene frames, the model essentially ignores the Sky and Very-Far variants ( |∆| < 1 m on 76% and 74% of those tokens), while still reacting on Far ( |∆| < 1 m on only 
+
+35% ). These results indicate that the response is genuinely position-aware rather than a generic size-based reaction: when sprite size is held fixed, the model distinguishes between road and sky, and conditional on a strong on-road reaction it correctly suppresses the response for off-road placements. Fig. 5 illustrates this qualitatively: trajectories visibly bend or shorten in response to road-placed sprites (Near, Far), while sky-placed sprites of the same size (Sky, SkyFar) leave the trajectory essentially unchanged. 26 Table 12: Stitching response on nuScenes val split ( n = 6019 ), decomposed by sprite size and position, measured with paired same-seed sampling (K=50 DDIM mean). ∆ is the signed 3 s endpoint displacement (after − before, in meters); |∆| is its magnitude. Far and SkyFar share sprite scale ( 0.5)and differ only in position (road horizon vs. sky), forming the decisive paired control. Stitching scale position mean ∆ (m) mean |∆| (m) median |∆| (m) |∆| < 1 m (%) Near (Sec. 4.3.1) 1.8 ego front (road) −1.04 2.51 1.95 27 .8
+
+Far 0.5 road horizon −0.54 1.81 1.20 44 .0
+
+Very-Far 0.25 horizon (small) −0.09 0.74 0.43 77 .0
+
+Sky 0.30 sky (small) −0.00 0.72 0.44 77 .6
+
+Sky-Far 0.5 sky +0 .10 1.04 0.70 63 .2
+
+Far vs. SkyFar paired control (n = 6019 , same scale 0.5, position only): 
+
+|∆Far | > |∆SkyFar |: 65 .5% signed paired mean ∆Far − ∆SkyFar = −0.64 m
+
+Table 13: Performance on nu-Caption. 
+
+Bold =best, Underline=second.                                         
+
+> Method BL-1 BL-2 BL-3 BL-4 BERT-S
+> Mini-GPT4 15.0 6.8 3.7 2.6 84.4 Instruct-BLIP 18.7 13.4 7.4 5.2 85.9 LLaVA1.5 20.0 12.1 8.6 5.4 85.0 LLaMA-AdapV2 30.2 17.3 10.4 7.5 86.5 LiDAR-LLM 41.0 30.0 23.4 19.3 91.3 OpenDriveVLA-0.5B 47.2 35.8 29.4 25.2 91.9 Ours-0.5B 51.2 39.0 31.8 26.9 97.6
+
+Table 14: Performance on Nu-X. Bold =best, Underline=second.                                     
+
+> Method CIDEr BLEU-4 METEOR ROUGE-L
+> Hint-UniAD 21.7 4.2 12.7 27.0 Hint-VAD 22.4 4.2 13.2 27.6 GPT-4o 19.0 4.0 10.3 24.9 Gemini 1.5 17.6 3.4 9.3 23.4 Vote2Cap-DETR 15.3 2.6 10.9 24.2 TOD 3Cap 14.5 2.5 10.5 23.5 OpenDriveVLA-0.5B 32.3 5.4 12.5 27.9
+> Ours-0.5B 35.2 5.8 20.2 26.2
+
+## M Question and Answering Performance. 
+
+M.1 Experiments on nu-Caption. 
+
+As shown in Table 13, our method also consistently outperforms the baselines, including Open-DriveVLA, on all metrics in driving scene captioning. Specifically, BLEU-1 through BLEU-4 are recorded as 50 .4, 38 .4, 31 .2, and 26 .4, respectively, showing consistent improvements of +3 .2, +2 .6,
+
++1 .8, and +1 .2 over OpenDriveVLA [ 52 ]. In particular, the BERT-Score, which measures semantic similarity, reaches 97 .6, a large gap of +5 .7 over OpenDriveVLA ( 91 .9), suggesting that beyond mere n-gram matching, the LLM understands and describes the driving scene more accurately at the semantic level. This result supports that our training strategy, which forces attention onto visual tokens through next visual state prediction, recovers not only trajectory planning but also scene understanding ability itself. 
+
+M.2 Experiments on nu-X. 
+
+As shown in Table 14, our method also shows improvements over the baseline on three out of four metrics on the nu-X benchmark, which requires reasoning about driving scenes. On CIDEr, we achieve 35 .1, an improvement of +2 .8 over OpenDriveVLA [ 52 ], and on BLEU-4 we record 5.6,an improvement of +0 .2. In particular, on METEOR we achieve 20 .0, a large gap of +6 .8 over Hint-VAD [ 6] ( 13 .2), which means that our model produces answers that are semantically richer and more aligned with the reference descriptions. On ROUGE-L, we record 26 .1, slightly below OpenDriveVLA ( 27 .9), but considering the large advantage on CIDEr ·METEOR, which together comprehensively reflect overall caption quality, we can confirm that our model performs more meaningful reasoning about driving scenes. 
+
+M.3 Experiments on nuScenes-QA. 
+
+As shown in Table 15, on nuScenes-QA our method shows the second-best performance, slightly below OpenDriveVLA [ 52 ], but the gap is only 1.5%p in overall accuracy ( 58 .4 → 56 .9), which is essentially comaparable to BEVDet+BUTD [ 33 ] ( 57 .0). In detailed categories, we also show nearly the same performance as OpenDriveVLA on Existence (83 .8 vs. 83 .9) and Comparison (67 .8 vs. 
+
+68 .4), and show relatively larger gaps in categories that require fine-grained object identification, such as Counting (−1.5), Object (−3.1), and Status (−2.7). 27 Table 15: Performance on nuScenes-QA. Bold =best, Underline=second.                                                         
+
+> Method Ext Cnt Obj Sts Cmp H0 H1 Acc
+> LLaMA-AdapV2 19.3 2.7 7.6 10.8 1.6 15.1 4.8 9.6 LLaVA1.5 45.8 7.7 7.8 9.0 52.1 25.7 41.5 26.2 LiDAR-LLM 74.5 15.0 37.8 45.9 57.8 --48.6 BEVDet+BUTD 83.7 20.9 48.8 52.0 67.7 --57.0 OpenDriveVLA-0.5B 83.9 22.0 50.2 57.0 68.4 62.3 56.5 58.4
+> Ours-0.5B 83.7 19.5 47.1 52.8 67.3 59.9 54.7 56.4
+
+This performance gap can be explained by the difference in visual representation between our method and OpenDriveVLA. Since OpenDriveVLA leverages a UniAD BEV encoder [ 15 ] pretrained on nuScenes, it operates on top of a top-down representation in which the spatial layout of object instances is explicitly encoded. This is naturally favorable for the Counting/Object/Status categories of nuScenes-QA, which require accurate instance-level identification and spatial relations, such as “how many vehicles are visible? ” or “ what is the status of the object on the right of the ego? ”. In contrast, in order to generalize to environments without a publicly available BEV encoder, such as NAVSIM, our method intentionally adopts a perspective-view feature (DINOv3), and the next state prediction objective is also designed to learn planning-relevant scene dynamics rather than fine-grained object identification. That is, our method pays a slight cost in instance-level perception relative to BEV-based models, but in exchange obtains consistent and large improvements on the essential tasks of a driving VLA, planning and high-level scene understanding. Moreover, the gap on nuScenes-QA (overall −1.5%p) itself stays at the level of BEVDet+BUTD, so our method does not significantly sacrifice perception ability; rather, it shows only a small gap on the instance-level accuracy that BEV pretraining provides. 
+
+## N Inference Speed 
+
+Setup. We measure end-to-end inference latency of our 0.5B model on a single NVIDIA RTX A6000 over the nuScenes val set with three front cameras. Following common practice in VLA latency reporting, we decompose the forward pass into (i) the visual encoder (DINOv3 ViT-S/16 over 3
+
+cameras at 288 ×160 ) and (ii) the LLM together with the IK Network ( 50 -step DDPM sampling). Each stage is timed independently with torch.cuda.synchronize() after 10 – 20 warm-up samples. 
+
+Stage breakdown and end-to-end latency. Table 16 summarises the per-stage latency. The vision encoder takes 20 .7 ms on average and the LLM + IK stage takes 323 .7 ms, giving an end-to-end latency of ∼ 344 ms ( 2.9 FPS) when the camera stream is fed directly to GPU memory (the ∼ 515 ms JPEG disk-load cost in our offline benchmark is an artefact of file I/O and does not appear in a real ISP → GPU pipeline). 
+
+Comparison to other VLAs. It is worth noting that our ∼ 344 ms is achieved on an RTX A6000, a workstation-class GPU that is markedly slower than the data-center A100/H100s used by the baselines below; despite this hardware disadvantage, our model has competitive latency. At the same 0.5Bbackbone, OpenDriveVLA reports 1.36 s on A100 (bf16), so our model is roughly 4× faster while running on the slower GPU. At the VLA category level, mainstream Driving VLAs (DriveVLM, OpenDriveVLA-3B/7B, AutoVLA) sit around 1 – 2 s on A100, and large general-purpose VLMs (Qwen-2.5-VL-7B, LLaMA-3.2-11B/90B, GPT-4o, GPT-5) range from several seconds to tens of seconds even on H100 or larger clusters. Sub-500 ms reports in the VLA literature are rare; ours is one of the few in this range, alongside specialised systems such as VLA-MP ( 125 ms on RTX 3090). This suggests that, on top of the accuracy gains in the main paper, the proposed architecture is also a practical choice for latency-sensitive deployment. The dominant cost is the 50 -step DDPM sampling inside the IK Network, leaving room for further reduction via fewer diffusion steps, distillation, or visual-token pruning. 
+
+## O Limitations and future work. 
+
+Our method shows somewhat lower performance than BEV-based VLAs on a few categories of nuScenes-QA that require instance-level perception (Counting, Object, etc.), which is the result of a 28 Table 16: Inference speed of our 0.5B model on a single NVIDIA RTX A6000, measured on the nuScenes validation set with three front cameras and DDPM 50 -step IK sampling. End-to-end is the GPU-only sum (vision encoder + LLM + IK). For context, we list reported latency of representative Driving VLAs and large VLMs. 
+
+Model / stage Hardware Latency Throughput 
+
+Per-stage breakdown of our model 
+
+Vision encoder (DINOv3 ViT-S/16, 3 cam) A6000 (fp16) 20 .7 ms –LLM (Qwen2.5-0.5B) + IK diffusion ( 50 steps) A6000 (fp16) 323 .7 ms –
+
+End-to-end (vision + LLM + IK) A6000 (fp16) ∼ 344 ms 2.9 FPS 
+
+Reported latency of other Driving VLAs and VLMs 
+
+VLA-MP [14] RTX 3090 125 ms 8.0 FPS OpenDriveVLA-0.5B [52] A100 (bf16) 1.36 s 0.74 FPS OpenDriveVLA-3B [52] A100 (bf16) 1.85 s 0.54 FPS OpenDriveVLA-7B [52] A100 (bf16) 1.74 s 0.57 FPS DriveVLM [41] – ∼ 1.5 s 0.67 FPS AutoVLA [53] – ∼ 1.0 s ∼ 1 FPS Qwen-2.5-VL-7B [48] H100 8.8 s 0.11 FPS LLaMA-3.2-11B [8] H100 7.5 s 0.13 FPS GPT-4o (closed) API 12 .1 s 0.083 FPS trade-off in which we intentionally chose a perspective-view representation in order to generalize to environments where no pretrained BEV encoder is provided (e.g., NAVSIM). In addition, while our paired stitching analysis (Sec. L) shows that the recovered visual grounding is genuinely position-aware (Far vs. SkyFar discrimination at 65 .5% , paired mean −0.64 m), the precision of this grounding still has room to grow—the magnitude of the response also scales with sprite size, and a fraction of off-road placements still elicit non-trivial reactions. A natural direction for sharpening this signal is supervision that explicitly disentangles the position, size, and meaning of obstacles (e.g., using the ego-frame coordinates of synthesized obstacles as auxiliary outputs), and additional research in this direction is needed. Moreover, our experiments are limited to open-loop and short-term closed-loop benchmarks. Valida-tion on long-term closed-loop environments such as Bench2Drive [ 18 ], and extending the inverse-kinematics redefinition of this work to other end-to-end embodied policies beyond autonomous driving, would be interesting follow-up directions. 29

@@ -1,0 +1,624 @@
+Title: DSSP: Diffusion State Space Policy with Full-History Encoding
+
+URL Source: https://arxiv.org/pdf/2605.14598v1
+
+Published Time: Fri, 15 May 2026 00:51:47 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# DSSP: Diffusion State Space Policy with Full-History Encoding 
+
+Zhiyuan Guan ∗ Jianshu Hu ∗ Han Fang Yunpeng Jiang Yize Huang Shujia Li Xiao Li Yutong Ban †
+
+Shanghai Jiao Tong University 
+
+{benjaminguan, hjs1998, han.fang, jyp9961}@sjtu.edu.cn {huangyize, sjtu7264970, sjtu_lixiao, yban}@sjtu.edu.cn 
+
+## Abstract 
+
+Diffusion-based imitation learning has shown strong promise for robot manipula-tion. However, most existing policies condition only on the current observation or a short window of recent observations, limiting their ability to resolve history-dependent ambiguities in long-horizon tasks. To address this, we introduce DSSP, a history-conditioned Diffusion State Space Policy that enables efficient, full-history conditioning for robot manipulation. Leveraging the continuous sequence mod-eling properties of State Space Models (SSMs), our history encoder effectively compresses the entire observation stream into a compact context representation. To ensure this context preserves critical information regarding future state evolu-tion, the encoder is optimized with a dynamics-aware auxiliary training objective. This high-level context representation is then seamlessly fused with recent state observations to form a hierarchical conditioning mechanism for action generation. Furthermore, to maintain architectural consistency and minimize GPU memory overhead, we also instantiate the diffusion backbone itself using an SSM. Extensive experiments across simulation benchmarks and real-world manipulation tasks show that DSSP achieves state-of-the-art performance with a significantly smaller model size, demonstrating superior efficiency of the hierarchical conditioning in capturing crucial information as the history length increases. 
+
+## 1 Introduction 
+
+Deploying robots in complex, unstructured environments requires policies capable of reasoning over multi-step tasks and high-dimensional sensory inputs. Imitation learning [ 31 , 59 , 61 ] has emerged as a central paradigm for acquiring such skills from expert demonstrations. Among recent imitation learning approaches, diffusion policies [ 7] have shown strong potential for modeling complex and multi-modal action distributions. Recent works further improve diffusion-based policies through expressive denoising backbones [ 54 ], multi-modal conditioning representations [ 58 , 35 ], and improved action generation formulations [ 60 , 44 ]. However, most policies still rely on short-context conditioning, predicting future actions from the current observation or a short observation window. This short-context conditioning becomes a critical bottleneck in long-horizon manipulation. In multi-stage tasks, visually similar observations may correspond to different task progress, such as whether an object has already been moved, whether a container has been filled, or which object was previously placed in a buffer location. The desired actions therefore depend not only on local visual details, but also on sparse historical events that reveal task progress and previous interactions. 
+
+> ∗Equal contribution.
+> †Corresponding author. Preprint.
+> arXiv:2605.14598v1 [cs.RO] 14 May 2026
+
+Without access to such history, policies may fail to disambiguate temporally aliased states, leading them to ignore completed subgoals or undo previous actions. Initial tap completed Lose progress and stop prematurely       
+
+> Consistent progress toward task completion
+> Confuse tap
+> count under
+> visual aliasing
+> Use history to
+> track tap count
+> and complete
+> the sequence
+> ✅
+> ❌
+> The Proposed DSSP ( Full History -Encoded)
+> DP3 (History -Blind)
+> Morse Tapping: Tap the target three times and return to the initial position.
+
+Figure 1: The proposed DSSP leverages full-history context to resolve visual aliasing when history-blind baselines lose track of task progress, enabling consistent execution in long-horizon tasks. DSSP achieves superior success rates across both simulation tasks and real-world experiments. Existing methods have attempted to address the limitations of short-context policies by adding temporal context. A direct solution extends the observation horizon or feeds longer observation histories into the policy, but this increases memory and inference cost and may introduce redundant visual inputs or spurious correlations [ 51 , 48 , 62 , 37 ]. Attention-based and multi-frame VLA methods provide more flexible access to past observations, yet remain costly because they explicitly process additional context as the horizon grows [ 32 , 21 , 28 ]. To reduce this overhead, recent works therefore explore more compact memory forms, including keyframes [ 37 , 50 ], visual traces [ 62 ], point tracks [ 5], or recurrent latent states [ 63 ]. However, compactness does not ensure task relevance: compressed memories may discard progress-critical events or focus on nuisance visual changes. These limitations motivate a streaming history mechanism that efficiently compresses long-horizon context while preserving events predictive of future state. To fulfill these requirements, State Space Models (SSMs) offer a well-suited architecture for history encoding. Their recurrent formulation maintains a compact hidden state that is updated online as new observations arrive, enabling linear-time aggregation of long histories without re-encoding the entire past. Moreover, modern selective SSMs such as Mamba [ 13 ] make the state update input-dependent, allowing the model to adaptively decide what to preserve or discard. This content-dependent memory update is particularly suitable for long-horizon manipulation, where visually similar observations may correspond to different task stages and require different actions. Building on this insight, we propose DSSP, a full-history encoding diffusion state-space policy for long-horizon manipulation. Following the use of SSMs in diffusion-based robot policies [ 3 , 22 , 56 ], DSSP instantiates the action denoiser with an SSM backbone, but conditions it on a compact online memory compressed from the full multi-modal observation stream together with immediate state information. A dynamics-aware auxiliary objective encourages this memory to preserve cues predictive of future states. We further decouple task conditioning from diffusion-step modulation by injecting observation-derived conditions as a prefix and timestep information through Adaptive Layer Normalization (AdaLN) [ 39 ]. Our contributions are summarized as follows: • Hierarchically conditioned state space policy. We design a policy framework instantiated with a state space model and a hierarchical conditioning mechanism. Specifically, learned context representations and immediate state representations are fused via prefix conditioning, while the diffusion timestep is decoupled and injected independently through AdaLN. • Full-history context learning. We propose a causal state-space history encoder that maintains a compact context representation by recurrently integrating incoming multi-modal observations. Together with a dynamics-aware auxiliary objective, the encoder summarizes the full observation history while retaining task-relevant events predictive of future states. 2• Comprehensive evaluation. We evaluate DSSP on extensive simulated and real-world long-horizon manipulation tasks, showing improved success rates, effective history summarization, perturbation robustness, and efficient inference with increasing history length. 
+
+## 2 Related Work 
+
+Imitation Learning for Robot Manipulation. Imitation learning enables policies to acquire skills from expert demonstrations. While early behavior cloning methods directly predict actions from observations, recent approaches improve closed-loop consistency by modeling temporally extended or structured actions, such as action chunks [ 61 ] and multimodal action representations [ 43 , 30 ]. Diffusion-based policies further generate continuous action trajectories via conditional denoising [ 7], with 3D Diffusion Policy extending this framework to point-cloud observations [ 58 ]. Recent variants improve diffusion policies in perception [ 35 ], efficiency [ 10 , 44 ], and generation quality [ 54 , 36 ]. Our method follows this paradigm, using conditional denoising for action generation. 
+
+Long-Horizon and History-Aware Policy Learning. Most existing robot policies condition ac-tion prediction on the current observation or a short window of recent observations, which is often sufficient for short-horizon or near-Markovian tasks. In long-horizon manipulation, resolving tem-poral ambiguity requires observation history. However, naively stacking past observations often degrades performance due to redundancy and causal confusion [ 17 , 51 , 52 , 45 ]. Recent methods therefore explore more selective uses of history, such as regularizing long-context policies with past-token prediction [ 48 ], selecting task-relevant keyframes from history [ 37 ], using demonstration trajectories as in-context prompts [ 53 ], or compressing long observation histories into an evolving latent state [ 14 , 63 ]. In contrast, our method learns a compact, dynamics-aware history context that preserves future-relevant information for effective long-horizon policy learning. 
+
+State Space Models for Robot Policies. State space models have recently shown strong potential for sequence modeling by maintaining an evolving latent state over time. Mamba [ 13 , 8 , 29 ] further improves this paradigm with selective state updates and hardware-aware parallel scan, enabling efficient long-sequence modeling. Inspired by these properties, recent robotic learning methods have adopted Mamba as a backbone for imitation learning and diffusion-based action generation [ 38 , 22 , 3,23 ], or as a recurrent encoder for long observation histories in temporally ambiguous tasks [ 49 , 63 ]. These findings demonstrate the effectiveness of Mamba for modeling robot trajectories and temporal dependencies. In this paper, we introduce a unified Mamba-based policy that integrates dynamics-aware history encoding with diffusion-based action generation. 
+
+## 3 Preliminaries 
+
+Problem Formulation. We formulate long-horizon 3D manipulation as a Partially Observable Markov Decision Process (POMDP), defined by the tuple M = ( S, A, T , Ω, O). At any time step 
+
+t, the agent receives an observation ot ∈ Ω generated from the unobserved true state st ∈ S via the observation function O(ot | st) = P (ot | st). The environment evolves according to transition dynamics T (st+1 | st, a t) = P (st+1 | st, a t) given action at ∈ A . Since ot is insufficient to infer st,we define the interaction history as ht = ( o0, a 0, . . . , a t−1, o t) ∈ H , where H denotes the full history space. Our goal is to learn a history-dependent policy πθ (at | ht) imitating an expert policy πE with expert trajectories DE = {ζ1, . . . , ζ N }, where each trajectory is a sequence ζ = ( o0, a 0, . . . , o T ).Due to the page limit, we include a detailed introduction to diffusion policy and SSM in Appendix A. 
+
+Observation Aliasing. A fundamental challenge in long-horizon manipulation is that the mapping O
+
+is often non-injective, resulting in observation aliasing. 
+
+Definition 1 (Observation Aliasing) . Observation aliasing occurs when two distinct histories h1 
+
+> t
+
+, h 2 
+
+> t
+
+∈H yield identical current observations o1 
+
+> t
+
+= o2 
+
+> t
+
+, but require different expert action distributions: 
+
+PE (at | h1 
+
+> t
+
+)̸ = PE (at | h2 
+
+> t
+
+). (1) Under these conditions, a purely reactive policy π(at | ot) collapses distinct contexts into a suboptimal marginal distribution PE (at | ot). By processing the full history sequence using the aforementioned SSM backbone, our policy πθ (at | ht) resolves this ambiguity (see section 4.3 for analysis). 3Causal History Encoding  
+
+> Shared Observation Encoder
+> State Space History Encoder
+> Dynamic -aware Context Learning
+> Apply
+
+ℒ!"# at every timestep 
+
+Hierarchical Context -Conditioned Denoising  
+
+> Context Token Recent Local State Tokens
+> c!
+
+· · ·            
+
+> 𝑍 !#$%&
+> Concatenated Condition Prefix 𝐶 !
+> Noisy Future Action Tokens (length 𝐻 ")
+> State Space Diffusion Block
+> Denoise at timestep 𝜏
+> Predicted Action Sequence
+> State Space Diffusion Block
+> 1
+> 𝑍 !
+> 2
+> 𝑍 "
+> t-1
+> 𝑍 #$!
+> t
+> 𝑍 #
+> 𝑐 &
+
+· · · 𝑐 ' 𝑐 !#& 𝑐 !     
+
+> 𝑐 &
+> Dynamics
+> Predictor
+> 𝑍 "!𝑍 !
+> 𝑎 &𝑐 '
+> Dynamics
+> Predictor
+> 𝑍 ""𝑍 "
+> 𝑎 '𝑐 (-&
+> Dynamics
+> Predictor
+> 𝑍 "#𝑍 #
+> 𝑎 (-&
+
+· · · 
+
+· · · 
+
+· · · 
+
+· · · 
+
+· · · 
+
+· · ·       
+
+> Visual /
+> Point Cloud
+> Proprioception
+> State
+> Representation
+> Context
+> Representation
+> (Training only)
+> 𝑍 !-&𝑍 !#$%&
+
+· · · 
+
+· · ·     
+
+> C𝒕 𝑥 +
+> ,𝑥 &
+> ,𝑥 -!-'
+> ,𝑥 -!-&
+> ,
+
+· · · 𝑎 + 𝑎 -!#'𝑎 & 𝑎 -!#& Action tokens 𝜏 
+
+> Layer Norm
+> Scale, Shift
+> Scale
+> Mamba
+> SSM Module
+> MLP
+> Layer Norm
+> Scale, Shift
+
++
+
+> Mamba
+> SSM Module
+> Scale
+
+++
+
++
+
+𝛼 !
+
+𝛽 ! 𝛾 !
+
+𝛽 " 𝛾 "
+
+𝛼 "
+
+· · · 
+
+× N     
+
+> Context Token State Token Action Token Noisy Action Token Data Flow Supervision
+
+Figure 2: Overview of DSSP. DSSP summarizes past multi-modal observations into a compact context token using a state-space history encoder. A dynamics-aware auxiliary loss encourages this token to retain historical information predictive of future state evolution. The learned context token is then combined with recent state tokens as a hierarchical prefix condition for a state-space diffusion denoiser to generate future actions. 
+
+## 4 Method 
+
+To effectively leverage history information within a robot manipulation policy, we propose diffusion state space policy (DSSP), a full-history conditioned diffusion policy (illustrated in Figure 2). Our approach instantiates the diffusion model with an SSM backbone and a dual-level conditioning mecha-nism that integrates high-level context with low-level state representations. The context representation serves as a compact encoding of historical multi-modal observations. To ensure this representation captures temporal dependencies, we introduce an auxiliary dynamics-aware loss focused on future state prediction. Section 4.1 introduces long-horizon context learning, including causal history encod-ing and dynamics-aware context learning; and Section 4.2 formalizes the hierarchical conditioning mechanism and diffusion-based action generation policy. 
+
+4.1 Long-Horizon Context Learning 
+
+Long-horizon manipulation requires historical context to resolve task-level ambiguities; otherwise, policies may experience perceptual aliasing, such as getting trapped in loops during repetitive wiping tasks. Because existing conditioning approaches like observation stacking or keyframe extraction often suffer from computational redundancy or overlook subtle causal events, we introduce a learnable history encoder that compresses the full history into a compact, task-relevant context representation. To this end, our design is guided by two key principles. First, we employ a causal SSM to efficiently process the streaming observation history and extract a temporally integrated memory representation. Second, to ensure that this representation preserves historical cues useful for future decisions, we shape the latent space with a dynamics-aware auxiliary objective. 
+
+Causal History Encoding. We first introduce how to build the context representation for history encoding. Let ot denote the multi-modal observation at timestep t, comprising visual inputs and robot proprioceptive states. We project this raw observation into a state representation zt:
+
+zt = Eobs (ot), (2) where Eobs contains parallel visual and proprioceptive encoders. To capture long-horizon temporal dependencies, a causal history encoder G processes the sequence of step-wise state representations 4z1: t into the temporally-integrated context representation ˜z1: t:
+
+˜z1: t = Gψ (z1: t). (3) A critical design choice is the architecture of the history encoder G, which must produce a compact yet effective history representation. This design must satisfy two primary criteria: (1) maintaining a scalable computation when processing extended temporal horizons, and (2) distilling a representation that selectively retains salient events rather than passively memorizing the entire observation stream. To meet these requirements, we instantiate the history backbone using a State-Space Model (SSM) and define the context representation ct as the final output token of the encoded sequence: 
+
+ct = ˜ zt. (4) SSMs support streaming histories with linear-time complexity, and we use Mamba as the history encoder for input-dependent selective updates. This allows the encoder to filter redundant observations while preserving sparse task-relevant events, such as object-state transitions, contact changes, or subgoal completion. The resulting context ct serves as a compressed memory for action generation. 
+
+Dynamics-Aware Context Learning. Compressing the observation history into ct does not by itself guarantee that the representation preserves historical information relevant to future decisions. For long-horizon manipulation, the context representation should encode not only past observations, but also history-dependent cues that are predictive of future state evolution. To encourage this property, we introduce a dynamics-aware auxiliary objective applied to the context representation at each timestep. Given the context representation ct and the executed action at at time t, we train a lightweight dynamics predictor gϕ to predict the next state representation: 
+
+zt+1 = Eobs (ot+1 ), ˆzt+1 = gϕ(ct, a t). (5) We supervise this prediction with a cosine similarity loss: 
+
+Ldyn (ψ, ϕ ) = Eζ∼D E ,t ∼[0 ,T −1] [1 − cos ( gϕ(ct, a t), sg( zt+1 ))] , (6) where sg( ·) denotes the stop-gradient operation, and the expectation is taken over expert trajectories 
+
+ζ ∼ D E and trajectory timesteps t. This objective encourages the context representation ct to retain action-relevant historical information by requiring it to support prediction of the next state under the executed action. The learned context representation therefore provides a more informative conditioning signal for downstream action generation. 
+
+4.2 Hierarchical Context-Conditioned Denoising 
+
+Given the learned history representation, the remaining question is how to inject it into a policy. Long-horizon manipulation requires both long-term task-progress information and recent local observations: the former resolves visual ambiguity across task stages, while the latter provides fine-grained control cues. Therefore, we propose a diffusion policy utilizing a hierarchical conditioning mechanism that integrates the context representation with immediate state observations. We organize these signals as a causal prefix to the noisy action sequence, allowing long-term context to contextualize recent observations before being propagated to the action tokens during denoising. For efficiency, we instantiate the diffusion backbone with a compact SSM, yielding a lightweight policy while maintaining a unified SSM-based architecture for both history encoding and action denoising. 
+
+Hierarchical Prefix Conditioning. To preserve long-term progress information and local control cues, we condition the denoising model on a hierarchical prefix. Let x0 = at:t+Ha−1 denote the clean future action trajectory, and let xτ denote its noisy version at diffusion step τ . We construct the condition sequence as 
+
+Ct = [ ct, z t−N +1 , . . . , z t], (7) where ct is the context representation produced by the history encoder, zt−N +1: t are the most recent state tokens, and N is the local observation window size. We prepend Ct to the noisy action sequence as a prefix condition. The resulting sequence is processed by the SSM denoising backbone: 
+
+ˆx0 = fθ (xτ , τ, C t). (8) In this design, ct captures long-horizon progress and zt retains local geometric and proprioceptive details. Thus, the policy leverages historical context without losing manipulation precision. 5Put Bottles Dustbin       
+
+> Stack Bowls Three
+> Place Dual Shoes
+> Button Press Dial Turn Door Close
+> Door Open Drawer Close Faucet Open
+> Coffee Pull Assembly Door Unlock
+> Adroit Door
+> Adroit Hammer
+> Adroit Pen
+> Put Bottles
+> Morse Tapping
+> Object Swap
+
+Figure 3: Overview of Experimental Environments. The figure summarizes representative environments from both simulation and real-world experiments. In each row, the left three panels visualize the RoboTwin tasks, the middle three columns present representative MetaWorld tasks, the next column shows Adroit tasks, and the rightmost column shows our real-world tasks. 
+
+Causal Action Denoising. The hierarchical prefix formulation casts action denoising as a causal prefix-conditioned sequence modeling. Ordering the sequence as [ct, z t−N +1 , . . . , z t, x τ ] allows long-term context to contextualize recent states before propagating information to noisy action tokens. We instantiate fθ with a Mamba backbone, whose recurrent selective state updates naturally match this left-to-right conditioning flow while providing linear scaling for iterative diffusion sampling. 
+
+Timestep-Decoupled Action Denoising. To provide a stable conditioning signal throughout iterative denoising, we decouple timestep modulation from prefix conditioning. Since the diffusion timestep τ
+
+describes the noise level of the action trajectory, we inject the timestep embedding through AdaLN only into the action tokens while keeping the prefix condition unchanged. This keeps Ct as a stable representation of history and local observations throughout the denoising process. Meanwhile, the actions remain aware of the current noise level and can progressively refine the predicted action sequence. This design separates task conditioning from diffusion-step modulation. 
+
+Training. The policy is optimized with two objectives: the diffusion reconstruction loss for action generation and the dynamics-aware auxiliary loss for context learning. For an action window starting at time t, we construct the hierarchical condition Ct causally from observations up to time t and train the denoising model to predict the clean action trajectory: 
+
+Ldiff (θ, ψ ) = Eζ∼D E ,t,τ,ϵ 
+
+h
+
+∥fθ (xτ , τ, C t) − x0∥22
+
+i
+
+, (9) where the expectation is taken over expert trajectories ζ ∼ D E , trajectory timesteps t ∼ U (0 , T −Ha),diffusion steps τ ∼ U (1 , L ), and Gaussian noise ϵ ∼ N (0 , I). Accordingly, the overall objective is: 
+
+L(θ, ψ, ϕ ) = Ldiff (θ, ψ ) + λLdyn (ψ, ϕ ) (10) where λ balances action denoising and context representation learning. 
+
+4.3 Theoretical Analysis 
+
+Here we provide a theoretical analysis of the benefits of history conditioning for imitation learning in partially observable environments. Our goal is to characterize how the integration of temporal context mitigates the information loss inherent in POMDPs. To analyze the impact of information sets on performance, we denote Ldiff (π; Xt) as the expected diffusion loss for a policy π conditioned on variable Xt. With the formalization of POMDP and observation aliasing in section 3, and the imitation objective defined in eq. (9), we present two core propositions. 
+
+Proposition 4.1. The minimum achievable diffusion-based imitation loss for a history-conditioned policy is always less than or equal to that of a reactive policy. That is, 
+
+min  
+
+> θ
+
+Ldiff (πθ ; ht) ≤ min  
+
+> θ
+
+Ldiff (πθ ; ot). (11) 6Table 1: Main Results on RoboTwin 2.0. Tasks are grouped into Short, Mid, and Long horizons. “Obs.” denotes the observation modality, including RGB and point-cloud observations. DSSP achieves the best overall performance with the smallest model size. Method Obs. Success Rate by Horizon ↑ Params ↓                                                   
+
+> Short (18) Mid (15) Long (17) Average ACT (RSS’23) RGB 29.94 26.40 32.47 29.74 80.0M DP (RSS’23) RGB 31.28 26.00 26.41 28.04 96.8M
+> π0(arXiv’24) RGB 44.56 44.07 50.47 46.42 3.3B RDT (ICLR’25) RGB 36.72 32.47 33.94 34.50 1.2B SeedPolicy (arXiv’26) RGB 43.39 36.53 47.59 42.76 147.3M DP3 (RSS’24) P.C. 59.83 52.53 52.76 55.24 264.4M FlowPolicy (AAAI’25) P.C. 54.89 37.40 29.59 41.04 264.4M DSSP (Ours) P.C. 64 .78 57 .33 64 .06 62 .30 44 .3M
+
+Proposition 4.2. In the presence of observation aliasing, history conditioning strictly reduces the minimum achievable imitation loss compared to a reactive policy: 
+
+min  
+
+> θ
+
+Ldiff (πθ ; ht) < min  
+
+> θ
+
+Ldiff (πθ ; ot), whenever IE (at; ht | ot) > 0. (12) 
+
+This condition implies that history resolves state ambiguity by capturing mutual information that is inaccessible to a reactive policy. 
+
+Proposition 4.1 establishes that history conditioning never degrades the theoretical performance limit of the policy, while proposition 4.2 proves that history conditioning strictly improves performance in the presence of observation aliasing. These results demonstrate that history acts as a sufficient statistic for the belief state, allowing the policy to disambiguate latent environmental configurations through the capture of action-relevant mutual information. We summarize the high-level logic here and defer the complete mathematical derivations to the Appendix E. 
+
+## 5 Experiments 
+
+5.1 Experimental Setup Datasets. We evaluate DSSP on diverse simulation benchmarks and real-world memory-dependent manipulation tasks, as shown in Figure 3. For simulation, we use 87 tasks across three benchmarks: 50 bimanual tasks from RoboTwin 2.0 [ 6], 34 single-arm tabletop tasks from MetaWorld [ 57 ], and 3 dexterous in-hand tasks from Adroit [ 42 ]. To analyze performance across task horizons, we group the 50 RoboTwin tasks into short-, mid-, and long-horizon categories based on average episode length. Detailed grouping criteria, task lists, and subset selection are provided in Appendix C.3. For real-world evaluation, we use an AgileX robotic platform equipped with a fixed Intel RealSense L515 camera for point-cloud observations. We design three tabletop tasks that require long-horizon execution or progress tracking: (i) Put Bottles , where the robot sequentially places two bottles into a basket; (ii) Object Swap , where the robot swaps two objects through an intermediate buffer slot; and (iii) Morse Tapping , where the robot taps a target three times before returning to the initial position. 
+
+Baselines. We compare DSSP with representative imitation-learning baselines on each benchmark. DP3 [ 58 ] is the most direct baseline, as it uses the same 3D point-cloud observation and action interfaces as DSSP, while DP [ 7 ] serves as a standard diffusion-policy baseline. On RoboTwin, we include ACT [ 61 ], RDT [ 33 ], and π0 [1 ] from the official benchmark evaluation, together with recent methods SeedPolicy [ 14 ], and FlowPolicy [ 60 ]. On MetaWorld and Adroit, we further compare with recent policy-learning methods, including AdaFlow [19], CP [40], and MP1 [44]. 
+
+Evaluation Metric and Protocol. We use task success rate as the primary metric. For RoboTwin, we evaluate 100 test episodes under the in-distribution demo clean setting, defining success as completion within the maximum horizon. For MetaWorld and Adroit, we evaluate 20 episodes every 200 training epochs and report the average of the top five success rates. For real-world experiments, each method undergoes 20 trials per task with randomized initial configurations based on task-specific criteria. 7Table 2: Results on Adroit and MetaWorld. A comprehensive comparison across 37 tasks using 3 random seeds. Numbers in parentheses indicate the number of tasks in each benchmark.                                                 
+
+> Method Adroit (3) MetaWorld Average Easy (21) Medium (4) Hard (4) Very Hard (5) DP (RSS’23) 21 .0±7.750 .7±6.111 .0±2.55.25 ±2.522 .0±5.035 .2±5.3
+> Adaflow (NeurIPS’24) 30 .0±7.749 .4±6.812 .0±5.05.75 ±4.024 .0±4.835 .6±6.1
+> CP (arXiv’24) 29 .7±6.769 .3±4.221 .2±6.017 .5±3.930 .0±4.950 .1±4.7
+> DP3 (RSS’24) 67 .3±5.087 .3±2.244 .5±8.732 .7±7.739 .4±9.068 .7±4.7
+> FlowPolicy (AAAI’25) 71 .0±2.384 .8±2.258 .2±7.940 .2±4.552 .2±5.071 .6±3.5
+> MP1 (AAAI’26) 75 .7±2.388 .2±1.168 .0±3.158 .1±5.067 .2±2.778 .9±2.1
+> DSSP (ours) 73 .0±2.990 .5±2.167 .4±4.154 .6±2.471 .3±3.880 .1±2.6
+
+Implementation Details. All models are trained with AdamW on NVIDIA RTX 4090 GPUs. We use 50 demonstrations per task for RoboTwin and real-world experiments, and 10 demonstrations per task for MetaWorld and Adroit. DSSP employs trajectory-wise batching for causal history encoding. Training schedules, architectural details, and hyperparameters are specified in Appendix C. 
+
+5.2 Simulation Experiments Main Results. We first evaluate DSSP on tasks from RoboTwin and report the success rate on categorized tasks in Table 1. On RoboTwin, DSSP achieves a 12.8% relative improvement compared to DP3 on average, with the largest improvement on long-horizon tasks ( 21.4% ), indicating the benefit of long-horizon historical context. Beyond RoboTwin, we further evaluate DSSP on the shorter-horizon Adroit and MetaWorld benchmarks, with task horizons of 100 and 200 steps, respectively. As shown in Table 2, DSSP achieves the best overall average among all compared methods. 
+
+Analysis of History Encoding. To better understand how DSSP uses historical information, we conduct controlled studies on the six-task long-horizon subset defined in Appendix C.3. We analyze three aspects: (1) how temporal backbone and history length affect performance, (2) how efficiently the history encoder scales to full-history conditioning, and (3) whether the policy truly relies on context representation when recent observations are corrupted. Together, these studies show that the gains of DSSP come from effective long-history utilization, while maintaining practical efficiency. Table 3: Comparison of temporal backbones across history lengths. We report average success over six long-horizon tasks and history-prefix encoding cost in p95 latency and peak GPU memory.                  
+
+> Encoder Backbone History Length ( Th)Success Rate (%) ↑Encoding Cost ↓
+> Transformer 10 68.00 1.43 ms / 176.5 MB 20 61.83 1.43 ms / 176.7 MB Full history 66.00 3.61 ms / 586.2 MB Mamba 10 53.00 1.87 ms / 181.1 MB 20 60.00 1.90 ms / 181.5 MB
+> Full history (Ours) 71.33 1.97 ms / 238.5 MB
+
+We first compare the impact of history length on different encoder backbones (Table 3). While the Transformer encoder performs best with a short window ( Th = 10 ) and stagnates with longer histories, the state-space encoder scales effectively with increasing context. Mamba achieves its peak success rate of 71.33% using full history, which is an 8.1% relative improvement over the full-history Transformer. These results confirm that the recurrent formulation of Mamba is better suited for aggregating varying length observations into a compact context representation. Beyond improving success rates, DSSP also scales more efficiently to long histories. Full-history Transformer encoding costs 3.61 ms and a larger peak GPU memory (586.2 MB), whereas our full-history Mamba encoder requires only 1.97 ms and 238.5 MB, reducing latency by 45.4% and peak memory by 59.3%. This advantage stems from the linear-time state-space formulation, which aggregates history through recurrent state updates instead of pairwise attention over all historical 8tokens. Meanwhile, during streaming inference, DSSP only maintains a compact hidden-state cache, making the per-step encoding overhead nearly independent of accumulated history length. Table 4: Robustness comparison under Gaussian perturbations to recent state representations. We report the six tasks’ average success rate (%) under different perturbation scales ( σ) during inference.                  
+
+> Method Noise Scale ( σ)0.00 (Clean) 0.05 0.10 0.15
+> DP3 (Baseline) 58.67 43.00 15.83 3.17 DSSP (w/o full history) 60.00 41.67 23.33 11.33
+> DSSP (Full history) 71.33 52.33 37.00 20.83
+
+We further test whether the policy uses historical context when recent observations are unreliable by perturbing the most recent three state tokens during inference: zpert  
+
+> i
+
+= zi + σϵ i, where ϵi ∼ N (0 , I).As shown in Table 4, DP3 and our short-window ( Th = 10 ) variant degrade sharply as the perturbation scale increases, while DSSP with full history maintains substantially higher success rates. These results indicate that the learned context token incorporates earlier information, preventing the policy from degenerating into merely relying on recent observations for action generation. Table 5: Ablation on six history-sensitive RoboTwin tasks under the demo clean setting. Hist., TD, Recent, Dyn., and Trans. denote the history encoder, timestep-decoupled denoising, recent-state conditioning, dynamics-aware loss, and Transformer denoising backbone, respectively.                      
+
+> Metric DP3 w/o Hist. w/o TD w/o Recent w/o Dyn. w/ Trans. Full Success Rate (%) 58.67 64.33 66.67 68.17 69.50 68.50 71.33
+> Relative Improvement (%) –+9.65 +13.64 +16.21 +18.46 +16.75 +21.56
+
+Ablation Study. We ablate the key components of DSSP on the six-task history-sensitive subset defined in Section 5.1. As shown in Table 5, the full model achieves the best success rate of 71.33%, a 21.56% relative improvement over DP3. Removing the history encoder leads to the largest drop, highlighting the importance of long-horizon context. Replacing the Mamba action denoising backbone with a Transformer-based one remains stronger than DP3 but underperforms the full model, showing that Mamba further improves temporal action generation. Without timestep-decoupled conditioning, performance drops to 66.67%, validating the effectiveness of our decoupled conditioning design. Finally, removing recent-state conditioning or the dynamics-aware loss also degrades performance, confirming the importance of local grounding and predictive context learning. 
+
+5.3 Real-World Experiments 
+
+We evaluate DSSP on three real-world manipulation tasks that require long-horizon memory or progress tracking, as shown in Table 6. DSSP substantially outperforms DP3 across all tasks, increasing the average success rate from 30% to 70% (a 133.3% relative improvement). The gains are particularly significant on Morse Tapping, where DSSP improves the success rate from 15% to 85%. These results demonstrate the effectiveness of full-history context for real-world memory-dependent manipulation, where the decision making often depends on previous interactions rather than the current observation alone. To better understand where the gains come from, we provide a failure-mode analysis for each real-world task in Appendix D.2 and the limitations are discussed in Section F. Table 6: Real-world long-horizon task (avg. steps) evaluation.                
+
+> Method Put Bottles (666) Object Swap (713) Morse Tapping (366) FlowPolicy (AAAI’25) 40% 30% 10% MP1 (AAAI’26) 45% 30% 25% DP3 (RSS’24) 40% 35% 15% DSSP (ours) 60% 65% 85%
+
+96 Conclusion 
+
+In this paper, we introduce DSSP, an efficient full-history conditioned diffusion state-space policy for long-horizon robot manipulation. Our results show that compactly encoding the full observation history improves temporal disambiguation and task-progress tracking in history-sensitive tasks. The proposed state-space history encoder, dynamics-aware objective, and hierarchical timestep-decoupled conditioning jointly integrate long-horizon context with recent observations for action generation. 
+
+## References 
+
+[1] Junjie Bai, Yu-Wei Chao, Qizhi Chen, Jinwei Gu, Moo Jin Kim, Zhaoshuo Li, Xuan Li, Tsung-Yi Lin, Ming-Yu Liu, Nic Ma, Kaichun Mo, Delin Qu, Shangkun Sun, Hongchi Xia, Fangyin Wei, and Xiaohui Zeng. Openpi Comet: Competition Solution For 2025 BEHAVIOR Challenge, December 2025. URL http://arxiv.org/abs/2512.10071 . arXiv:2512.10071 [cs]. [2] Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Xi Chen, Krzysztof Choro-manski, Tianli Ding, Danny Driess, Avinava Dubey, Chelsea Finn, Pete Florence, Chuyuan Fu, Montse Gonzalez Arenas, Keerthana Gopalakrishnan, Kehang Han, Karol Hausman, Alexander Herzog, Jasmine Hsu, Brian Ichter, Alex Irpan, Nikhil Joshi, Ryan Julian, Dmitry Kalash-nikov, Yuheng Kuang, Isabel Leal, Lisa Lee, Tsang-Wei Edward Lee, Sergey Levine, Yao Lu, Henryk Michalewski, Igor Mordatch, Karl Pertsch, Kanishka Rao, Krista Reymann, Michael Ryoo, Grecia Salazar, Pannag Sanketi, Pierre Sermanet, Jaspiar Singh, Anikait Singh, Radu Soricut, Huong Tran, Vincent Vanhoucke, Quan Vuong, Ayzaan Wahid, Stefan Welker, Paul Wohlhart, Jialin Wu, Fei Xia, Ted Xiao, Peng Xu, Sichun Xu, Tianhe Yu, and Brianna Zitkovich. Rt-2: Vision-language-action models transfer web knowledge to robotic control, 2023. URL 
+
+https://arxiv.org/abs/2307.15818 .[3] Jiahang Cao, Qiang Zhang, Jingkai Sun, Jiaxu Wang, Hao Cheng, Yulin Li, Jun Ma, Kun Wu, Zhiyuan Xu, Yecheng Shao, Wen Zhao, Gang Han, Yijie Guo, and Renjing Xu. Mamba Policy: Towards Efficient 3D Diffusion Policy with Hybrid Selective State Models, June 2025. URL 
+
+http://arxiv.org/abs/2409.07163 . arXiv:2409.07163 [cs]. [4] Ying Chai, Litao Deng, Ruizhi Shao, Jiajun Zhang, Kangchen Lv, Liangjun Xing, Xiang Li, Hongwen Zhang, and Yebin Liu. Gaf: Gaussian action field as a 4d representation for dynamic world modeling in robotic manipulation, 2025. URL https://arxiv.org/abs/2506.14135 .[5] Jingjing Chen, Hongjie Fang, Chenxi Wang, Shiquan Wang, and Cewu Lu. History-Aware Visuomotor Policy Learning via Point Tracking, March 2026. URL http://arxiv.org/abs/ 2509.17141 . arXiv:2509.17141 [cs]. [6] Tianxing Chen, Zanxin Chen, Baijun Chen, Zijian Cai, Yibin Liu, Zixuan Li, Qiwei Liang, Xianliang Lin, Yiheng Ge, Zhenyu Gu, Weiliang Deng, Yubin Guo, Tian Nian, Xuanbing Xie, Qiangyu Chen, Kailun Su, Tianling Xu, Guodong Liu, Mengkang Hu, Huan-ang Gao, Kaixuan Wang, Zhixuan Liang, Yusen Qin, Xiaokang Yang, Ping Luo, and Yao Mu. RoboTwin 2.0: A Scalable Data Generator and Benchmark with Strong Domain Randomization for Robust Bimanual Robotic Manipulation, August 2025. URL http://arxiv.org/abs/2506.18088 .arXiv:2506.18088 [cs]. [7] Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion Policy: Visuomotor Policy Learning via Action Diffusion, March 2024. URL http://arxiv.org/abs/2303.04137 . arXiv:2303.04137 [cs]. [8] Tri Dao and Albert Gu. Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality, May 2024. URL http://arxiv.org/abs/2405. 21060 . arXiv:2405.21060 [cs]. [9] Karthik Dharmarajan, Wenlong Huang, Jiajun Wu, Li Fei-Fei, and Ruohan Zhang. Dream2flow: Bridging video generation and open-world manipulation with 3d object flow, 2025. URL 
+
+https://arxiv.org/abs/2512.24766 .10 [10] Han Fang, Yize Huang, Yuheng Zhao, Paul Weng, Xiao Li, and Yutong Ban. Omp: One-step meanflow policy with directional alignment, 2026. URL https://arxiv.org/abs/2512. 19347 .[11] Xiao Fu, Xintao Wang, Xian Liu, Jianhong Bai, Runsen Xu, Pengfei Wan, Di Zhang, and Dahua Lin. Learning video generation for robotic manipulation with collaborative trajectory control, 2026. URL https://arxiv.org/abs/2506.01943 .[12] Dechen Gao, Boqi Zhao, Andrew Lee, Ian Chuang, Hanchu Zhou, Hang Wang, Zhe Zhao, Junshan Zhang, and Iman Soltani. Vita: Vision-to-action flow matching policy, 2026. URL 
+
+https://arxiv.org/abs/2507.13231 .[13] Albert Gu and Tri Dao. Mamba: Linear-Time Sequence Modeling with Selective State Spaces, May 2024. URL http://arxiv.org/abs/2312.00752 . arXiv:2312.00752 [cs]. [14] Youqiang Gui, Yuxuan Zhou, Shen Cheng, Xinyang Yuan, Haoqiang Fan, Peng Cheng, and Shuaicheng Liu. SeedPolicy: Horizon Scaling via Self-Evolving Diffusion Policy for Robot Manipulation, March 2026. URL http://arxiv.org/abs/2603.05117 . arXiv:2603.05117 [cs]. [15] Jun Guo, Xiaojian Ma, Yikai Wang, Min Yang, Huaping Liu, and Qing Li. Flowdreamer: A rgb-d world model with flow-based motion representations for robot manipulation, 2025. URL 
+
+https://arxiv.org/abs/2505.10075 .[16] Yanjiang Guo, Lucy Xiaoyang Shi, Jianyu Chen, and Chelsea Finn. Ctrl-world: A controllable generative world model for robot manipulation, 2026. URL https://arxiv.org/abs/2510. 10125 .[17] Pim de Haan, Dinesh Jayaraman, and Sergey Levine. Causal Confusion in Imitation Learning, November 2019. URL http://arxiv.org/abs/1905.11979 . arXiv:1905.11979 [cs]. [18] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models, 2020. URL https://arxiv.org/abs/2006.11239 .[19] Xixi Hu, Bo Liu, Xingchao Liu, and Qiang Liu. AdaFlow: Imitation Learning with Variance-Adaptive Flow-Based Policies, November 2024. URL http://arxiv.org/abs/2402.04292 .arXiv:2402.04292 [cs]. [20] Helong Huang, Min Cen, Kai Tan, Xingyue Quan, Guowei Huang, and Hong Zhang. Graphcot-vla: A 3d spatial-aware reasoning vision-language-action model for robotic manipulation with ambiguous instructions, 2025. URL https://arxiv.org/abs/2508.07650 .[21] Huiwon Jang, Sihyun Yu, Heeseung Kwon, Hojin Jeon, Younggyo Seo, and Jinwoo Shin. ContextVLA: Vision-Language-Action Model with Amortized Multi-Frame Context, October 2025. URL http://arxiv.org/abs/2510.04246 . arXiv:2510.04246 [cs]. [22] Xiaogang Jia, Qian Wang, Atalay Donat, Bowen Xing, Ge Li, Hongyi Zhou, Onur Celik, Denis Blessing, Rudolf Lioutikov, and Gerhard Neumann. MaIL: Improving Imitation Learning with Mamba, November 2024. URL http://arxiv.org/abs/2406.08234 . arXiv:2406.08234 [cs]. [23] Xiaogang Jia, Atalay Donat, Xi Huang, Xuan Zhao, Denis Blessing, Hongyi Zhou, Han A. Wang, Hanyi Zhang, Qian Wang, Rudolf Lioutikov, and Gerhard Neumann. X-IL: Exploring the Design Space of Imitation Learning Policies, February 2025. URL http://arxiv.org/ abs/2502.12330 . arXiv:2502.12330 [cs]. [24] Yuhua Jiang, Shuang Cheng, Yan Ding, Feifei Gao, and Biqing Qi. Asyncvla: Asynchronous flow matching for vision-language-action models, 2025. URL https://arxiv.org/abs/ 2511.14148 .[25] Zhennan Jiang, Kai Liu, Yuxin Qin, Shuai Tian, Yupeng Zheng, Mingcai Zhou, Chao Yu, Haoran Li, and Dongbin Zhao. World4rl: Diffusion world models for policy refinement with reinforcement learning for robotic manipulation, 2026. URL https://arxiv.org/abs/2509. 19080 .11 [26] Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan Foster, Grace Lam, Pannag Sanketi, Quan Vuong, Thomas Kollar, Benjamin Burchfiel, Russ Tedrake, Dorsa Sadigh, Sergey Levine, Percy Liang, and Chelsea Finn. OpenVLA: An Open-Source Vision-Language-Action Model, September 2024. URL 
+
+http://arxiv.org/abs/2406.09246 . arXiv:2406.09246 [cs]. [27] Moo Jin Kim, Chelsea Finn, and Percy Liang. Fine-tuning vision-language-action models: Optimizing speed and success, 2025. URL https://arxiv.org/abs/2502.19645 .[28] Myungkyu Koo, Daewon Choi, Taeyoung Kim, Kyungmin Lee, Changyeon Kim, Younggyo Seo, and Jinwoo Shin. HAMLET: Switch your Vision-Language-Action Model into a History-Aware Policy, April 2026. URL http://arxiv.org/abs/2510.00695 . arXiv:2510.00695 [cs]. [29] Aakash Lahoti, Kevin Y. Li, Berlin Chen, Caitlin Wang, Aviv Bick, J. Zico Kolter, Tri Dao, and Albert Gu. Mamba-3: Improved Sequence Modeling using State Space Principles, March 2026. URL http://arxiv.org/abs/2603.15569 . arXiv:2603.15569 [cs]. [30] Seungjae Lee, Yibin Wang, Haritheja Etukuru, H. Jin Kim, Nur Muhammad Mahi Shafiullah, and Lerrel Pinto. Behavior Generation with Latent Actions, June 2024. URL http://arxiv. org/abs/2403.03181 . arXiv:2403.03181 [cs]. [31] Sergey Levine, Chelsea Finn, Trevor Darrell, and Pieter Abbeel. End-to-End Training of Deep Visuomotor Policies, April 2016. URL http://arxiv.org/abs/1504.00702 .arXiv:1504.00702 [cs]. [32] Hao Li, Shuai Yang, Yilun Chen, Xinyi Chen, Xiaoda Yang, Yang Tian, Hanqing Wang, Tai Wang, Dahua Lin, Feng Zhao, and Jiangmiao Pang. CronusVLA: Towards Efficient and Robust Manipulation via Multi-Frame Vision-Language-Action Modeling, October 2025. URL 
+
+http://arxiv.org/abs/2506.19816 . arXiv:2506.19816 [cs]. [33] Songming Liu, Lingxuan Wu, Bangguo Li, Hengkai Tan, Huayu Chen, Zhengyi Wang, Ke Xu, Hang Su, and Jun Zhu. RDT-1B: a Diffusion Foundation Model for Bimanual Manipulation, March 2025. URL http://arxiv.org/abs/2410.07864 . arXiv:2410.07864 [cs]. [34] Guanxing Lu, Baoxiong Jia, Puhao Li, Yixin Chen, Ziwei Wang, Yansong Tang, and Siyuan Huang. Gwm: Towards scalable gaussian world models for robotic manipulation, 2025. URL 
+
+https://arxiv.org/abs/2508.17600 .[35] Yiyang Lu, Yufeng Tian, Zhecheng Yuan, Xianbang Wang, Pu Hua, Zhengrong Xue, and Huazhe Xu. H$^{\mathbf{3}}$DP: Triply-Hierarchical Diffusion Policy for Visuomotor Learning, May 2025. URL http://arxiv.org/abs/2505.07819 . arXiv:2505.07819 [cs] version: 1. [36] Jiahua Ma, Yiran Qin, Yixiong Li, Xuanqi Liao, Yulan Guo, and Ruimao Zhang. CDP: Towards Robust Autoregressive Visuomotor Policy Learning via Causal Diffusion, August 2025. URL 
+
+http://arxiv.org/abs/2506.14769 . arXiv:2506.14769 [cs]. [37] Max Sobol Mark, Jacky Liang, Maria Attarian, Chuyuan Fu, Debidatta Dwibedi, Dhruv Shah, and Aviral Kumar. BPP: Long-Context Robot Imitation Learning by Focusing on Key History Frames, February 2026. URL http://arxiv.org/abs/2602.15010 . arXiv:2602.15010 [cs]. [38] Nayoung Oh, Jaehyeong Jang, Moonkyeong Jung, and Daehyung Park. Dispo: Diffusion-ssm based policy learning for coarse-to-fine action discretization, 2026. URL https://arxiv. org/abs/2409.14719 .[39] William Peebles and Saining Xie. Scalable Diffusion Models with Transformers, March 2023. URL http://arxiv.org/abs/2212.09748 . arXiv:2212.09748 [cs]. [40] Aaditya Prasad, Kevin Lin, Jimmy Wu, Linqi Zhou, and Jeannette Bohg. Consistency Policy: Accelerated Visuomotor Policies via Consistency Distillation, June 2024. URL http://arxiv. org/abs/2405.07503 . arXiv:2405.07503 [cs]. 12 [41] Delin Qu, Haoming Song, Qizhi Chen, Yuanqi Yao, Xinyi Ye, Yan Ding, Zhigang Wang, JiaYuan Gu, Bin Zhao, Dong Wang, and Xuelong Li. Spatialvla: Exploring spatial representations for visual-language-action model, 2025. URL https://arxiv.org/abs/2501.15830 .[42] Aravind Rajeswaran, Vikash Kumar, Abhishek Gupta, Giulia Vezzani, John Schulman, Emanuel Todorov, and Sergey Levine. Learning Complex Dexterous Manipulation with Deep Reinforce-ment Learning and Demonstrations, June 2018. URL http://arxiv.org/abs/1709.10087 .arXiv:1709.10087 [cs]. [43] Nur Muhammad Mahi Shafiullah, Zichen Jeff Cui, Ariuntuya Altanzaya, and Lerrel Pinto. Behavior Transformers: Cloning $k$ modes with one stone, October 2022. URL http: //arxiv.org/abs/2206.11251 . arXiv:2206.11251 [cs]. [44] Juyi Sheng, Ziyi Wang, Peiming Li, and Mengyuan Liu. MP1: MeanFlow Tames Policy Learning in 1-step for Robotic Manipulation, October 2025. URL http://arxiv.org/abs/ 2507.10543 . arXiv:2507.10543 [cs]. [45] Gokul Swamy, Sanjiban Choudhury, J. Andrew Bagnell, and Zhiwei Steven Wu. Sequence Model Imitation Learning with Unobserved Contexts, January 2023. URL http://arxiv. org/abs/2208.02225 . arXiv:2208.02225 [cs]. [46] Jiaming Tang, Yufei Sun, Yilong Zhao, Shang Yang, Yujun Lin, Zhuoyang Zhang, James Hou, Yao Lu, Zhijian Liu, and Song Han. Vlash: Real-time vlas via future-state-aware asynchronous inference, 2025. URL https://arxiv.org/abs/2512.01031 .[47] Octo Model Team, Dibya Ghosh, Homer Walke, Karl Pertsch, Kevin Black, Oier Mees, Sudeep Dasari, Joey Hejna, Tobias Kreiman, Charles Xu, Jianlan Luo, You Liang Tan, Lawrence Yunliang Chen, Pannag Sanketi, Quan Vuong, Ted Xiao, Dorsa Sadigh, Chelsea Finn, and Sergey Levine. Octo: An open-source generalist robot policy, 2024. URL 
+
+https://arxiv.org/abs/2405.12213 .[48] Marcel Torne, Andy Tang, Yuejiang Liu, and Chelsea Finn. Learning Long-Context Diffusion Policies via Past-Token Prediction, May 2025. URL http://arxiv.org/abs/2505.09561 .arXiv:2505.09561 [cs]. [49] Toshiaki Tsuji. Mamba as a Motion Encoder for Robotic Imitation Learning. IEEE Access ,13:69941–69949, 2025. ISSN 2169-3536. doi: 10.1109/ACCESS.2025.3561283. URL 
+
+https://ieeexplore.ieee.org/document/10966860/ .[50] Yi-Lin Wei, Haoran Liao, Yuhao Lin, Pengyue Wang, Zhizhao Liang, Guiliang Liu, and Wei-Shi Zheng. Cyclemanip: Enabling cyclic task manipulation via effective historical perception and understanding. arXiv preprint arXiv:2512.01022 , 2025. [51] Chuan Wen, Jierui Lin, Trevor Darrell, Dinesh Jayaraman, and Yang Gao. Fighting Copycat Agents in Behavioral Cloning from Observation Histories, October 2020. URL http://arxiv. org/abs/2010.14876 . arXiv:2010.14876 [cs]. [52] Chuan Wen, Jierui Lin, Jianing Qian, Yang Gao, and Dinesh Jayaraman. Keyframe-Focused Visual Imitation Learning, June 2021. URL http://arxiv.org/abs/2106.06452 .arXiv:2106.06452 [cs]. [53] Junlin Xie, Xu Luo, Hao Wu, Ji Zhang, Youguang Xing, Lianli Gao, and Jingkuan Song. In-context adaptation for generalizable imitation learning. In CoRL 2025 Workshop RemembeRL .[54] Ge Yan, Jiyue Zhu, Yuquan Deng, Shiqi Yang, Ri-Zhao Qiu, Xuxin Cheng, Marius Memmel, Ranjay Krishna, Ankit Goyal, Xiaolong Wang, and Dieter Fox. ManiFlow: A General Robot Manipulation Policy via Consistency Flow Training, September 2025. URL http://arxiv. org/abs/2509.01819 . arXiv:2509.01819 [cs]. [55] Tenny Yin, Zhiting Mei, Zhonghe Zheng, Miyu Yamane, David Wang, Jade Sceats, Samuel M. Bateman, Lihan Zha, Apurva Badithela, Ola Shorinwa, and Anirudha Majumdar. Playworld: Learning robot world models from autonomous play, 2026. URL https://arxiv.org/abs/ 2603.09030 .13 [56] Youngju Yoo, Jiaheng Hu, Yifeng Zhu, Bo Liu, Qiang Liu, Roberto Martín-Martín, and Peter Stone. RoboSSM: Scalable In-context Imitation Learning via State-Space Models, September 2025. URL http://arxiv.org/abs/2509.19658 . arXiv:2509.19658 [cs]. [57] Tianhe Yu, Deirdre Quillen, Zhanpeng He, Ryan Julian, Avnish Narayan, Hayden Shively, Adithya Bellathur, Karol Hausman, Chelsea Finn, and Sergey Levine. Meta-World: A Bench-mark and Evaluation for Multi-Task and Meta Reinforcement Learning, June 2021. URL 
+
+http://arxiv.org/abs/1910.10897 . arXiv:1910.10897 [cs]. [58] Yanjie Ze, Gu Zhang, Kangning Zhang, Chenyuan Hu, Muhan Wang, and Huazhe Xu. 3D Diffusion Policy: Generalizable Visuomotor Policy Learning via Simple 3D Representations, September 2024. URL http://arxiv.org/abs/2403.03954 . arXiv:2403.03954 [cs]. [59] Andy Zeng, Pete Florence, Jonathan Tompson, Stefan Welker, Jonathan Chien, Maria Attarian, Travis Armstrong, Ivan Krasin, Dan Duong, Ayzaan Wahid, Vikas Sindhwani, and Johnny Lee. Transporter Networks: Rearranging the Visual World for Robotic Manipulation, January 2022. URL http://arxiv.org/abs/2010.14406 . arXiv:2010.14406 [cs]. [60] Qinglun Zhang, Zhen Liu, Haoqiang Fan, Guanghui Liu, Bing Zeng, and Shuaicheng Liu. Flowpolicy: Enabling fast and robust 3d flow-based policy via consistency flow matching for robot manipulation. In Proceedings of the AAAI Conference on Artificial Intelligence ,volume 39, pages 14754–14762, 2025. [61] Tony Z. Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware, April 2023. URL http://arxiv.org/ abs/2304.13705 . arXiv:2304.13705 [cs]. [62] Ruijie Zheng, Yongyuan Liang, Shuaiyi Huang, Jianfeng Gao, Hal Daumé III, Andrey Kolobov, Furong Huang, and Jianwei Yang. Tracevla: Visual trace prompting enhances spatial-temporal awareness for generalist robotic policies. arXiv preprint arXiv:2412.10345 , 2024. [63] Yulin Zhou, Yuankai Lin, Fanzhe Peng, Jiahui Chen, Kaiji Huang, Hua Yang, and Zhouping Yin. MTIL: Encoding Full History With Mamba for Temporal Imitation Learning. IEEE Robotics and Automation Letters , 10(11):11761–11767, November 2025. ISSN 2377-3766, 2377-3774. doi: 10.1109/LRA.2025.3615520. URL https://ieeexplore.ieee.org/ document/11184145/ .[64] Fangqi Zhu, Hongtao Wu, Song Guo, Yuxiao Liu, Chilam Cheang, and Tao Kong. Irasim: A fine-grained world model for robot manipulation, 2025. URL https://arxiv.org/abs/ 2406.14540 .
+
+## A Preliminaries 
+
+Diffusion Policy. Diffusion Policy [7] adapts Denoising Diffusion Probabilistic Models (DDPMs) [ 18 ] to action generation. The policy treats a future action sequence at:t+Ha−1 of horizon 
+
+Ha as the clean sample x0. We parameterize the model to predict the clean action sequence directly, conditioning the denoising process on the history representation ht. During training, we optimize the reconstruction objective over L diffusion steps: 
+
+Lx0 = Ex0,τ,ϵ 
+
+h
+
+∥fθ (xτ , τ, h t) − x0∥22
+
+i
+
+, (13) where τ ∈ { 1, . . . , L } is the uniform diffusion step and xτ is the noise-corrupted action sequence. 
+
+State Space Models (SSMs). We employ Mamba as the sequence backbone for both history encoding and action diffusion. A standard discrete SSM updates a hidden state st ∈ RN and outputs yt via time-invariant parameters: 
+
+st = ¯As t−1 + ¯Bx t, yt = Cs t. (14) Mamba introduces a selective mechanism where parameters become input-dependent: (∆ t, B t, C t) = 
+
+fθ (xt), with ∆t serving as the discretization step size. The discretized parameters are: 
+
+¯At = exp(∆ tA), ¯Bt = (∆ tA)−1  exp(∆ tA) − I∆tBt. (15) The recurrent update becomes st = ¯Atst−1 + ¯Btxt and yt = Ctst. This input-dependent selection enables the model to efficiently compress long observation histories and generate temporally coherent actions. 14 B Additional Related Works 
+
+B.1 Vision-Language-Action Models 
+
+Vision-language-action (VLA) models have recently become a central direction for scalable robot learning. RT-2 [ 2] transfers vision-language knowledge to robotic control by representing actions as language-like tokens. Octo [ 47 ] and OpenVLA [ 26 ] further introduce open-source generalist policies trained on large cross-embodiment robot datasets. Recent generative VLA models move beyond discrete action tokenization toward continuous action generation, including flow-matching-based policies such as π0 [1] and large-scale diffusion policies such as RDT-1B [33]. Recent work has further improved VLA policies along several directions. OpenVLA-OFT [ 27 ]studies effective fine-tuning recipes with continuous actions and action chunking, while VITA-VLA [ 12 ] equips pretrained vision-language models with action-generation capability through action expert distillation. Other works improve inference efficiency and temporal consistency through asynchronous generation, coarse-to-fine action generation, or action coherence guidance [ 24 , 46 ]. In parallel, SpatialVLA [ 41 ] and GraphCoT-VLA [ 20 ] enhance spatial reasoning and embodiment-aware manipulation. 
+
+B.2 World Models for Robotics 
+
+World models provide a complementary direction for robot learning by predicting future environment states for simulation, planning, or policy improvement. In robotic manipulation, action-conditioned video generation has been widely used to model robot-object dynamics. IRASim [ 64 ] learns an interactive real-robot action simulator conditioned on observations and robot actions. RoboMas-ter [ 11 ] improves trajectory-controlled robotic video generation by modeling robot-object interactions, while Ctrl-World [ 16 ] studies controllable multi-view world modeling for evaluating and improving generalist robot policies. Recent works further introduce structured spatial representations for world modeling. Flow-Dreamer [ 15 ] uses RGB-D observations and 3D scene flow for action-conditioned future prediction. GAF [ 4] and GWM [ 34 ] represent dynamic manipulation scenes with Gaussian-based formulations, enabling future scene prediction and action refinement. Dream2Flow [ 9] connects video generation with robot control by extracting 3D object flow from generated videos. World4RL [ 25 ] and Play-World [ 55 ] further use learned world models for policy evaluation, reinforcement learning, or policy refinement. 
+
+## C Implementation Details 
+
+C.1 Trajectory-Wise Training 
+
+Since DSSP conditions action generation on causal history context, we use trajectory-wise batch construction during training. At each optimization step, we randomly load one complete demonstra-tion trajectory and compute its state representations and causal context representations following Equations (2) and (3). We then sample B valid action-window start indices from this trajectory, where B is the training batch size. For each sampled start time ti, we construct the hierarchical condition using Equation (7), with the context representations and recent state representations available up to ti. The corresponding diffusion target is the future action chunk starting from ti. This ensures that every training sample is conditioned only on observations before its prediction time, without accessing future observations. For fair comparison with window-based baselines, we keep the same effective batch size B and comparable optimization budget across methods. Thus, trajectory-wise training does not introduce additional demonstrations or a larger denoising batch; it only changes how causal history conditions are constructed for DSSP. The training objectives follow Equation (10). 
+
+C.2 Hyperparameters 
+
+To account for the varying difficulty levels and unique characteristics of different benchmarks, we tailor our hyperparameter configurations to each individual dataset. The final settings, which include 15 Table 7: Hyperparameters used for RoboTwin simulation experiments. 
+
+Hyperparameter Value Recent Observation Horizon ( N ) 3Horizon ( H) 8Action Execution Horizon ( Ha) 6Expert Demonstrations per Task 50 Optimizer AdamW Betas (β1, β 2) (0 .95 , 0.999) 
+
+Learning Rate 1.0 × 10 −4
+
+Weight Decay 1.0 × 10 −6
+
+Diffusion Training Steps 100 Inference Steps 10 Learning Rate Scheduler Cosine Warmup Steps 500 Prediction Type Sample prediction Dynamics Loss Weight ( λ) 0.05 Dynamics Loss Type Cosine distance Mamba Backbone Layers 8Mamba History Encoder Layers 2Hidden Dimension 512 SSM State Dimension 64 
+
+Table 8: Hyperparameters used for Adroit simulation experiments. 
+
+Hyperparameter Value Recent Observation Horizon ( N ) 2Horizon ( H) 4Action Execution Horizon ( Ha) 3Expert Demonstrations per Task 10 Optimizer AdamW Betas (β1, β 2) (0 .95 , 0.999) 
+
+Learning Rate 1.0 × 10 −4
+
+Weight Decay 1.0 × 10 −6
+
+Epoch 3000 Learning Rate Scheduler Cosine Warmup Steps 500 Diffusion Training Steps 100 Inference Steps 10 Prediction Type Sample prediction Dynamics Loss Weight ( λ) 0.05 Dynamics Loss Type Cosine distance Mamba Backbone Layers 8Mamba History Encoder Layers 2Hidden Dimension 512 SSM State Dimension 64 Evaluation Episodes 20 Maximum Evaluation Steps 300 
+
+additional configurations for the Mamba-based history encoder, Mamba diffusion backbone, and dynamics-aware auxiliary objective and are summarized in Tables 7,8,9, are informed by established practices in prior literature [58, 60, 6]. 
+
+C.3 RoboTwin Horizon Grouping 
+
+For horizon-wise analysis, we partition the 50 RoboTwin tasks according to their average episode length. Tasks with average length below 150 steps are categorized as short-horizon tasks, tasks between 150 and 250 steps are categorized as mid-horizon tasks, and tasks above 250 steps are categorized as long-horizon tasks. The resulting groups are listed in Table 10. 16 Table 9: Hyperparameters used for MetaWorld simulation experiments. 
+
+Hyperparameter Value Recent Observation Horizon ( N ) 2Horizon ( H) 4Action Execution Horizon ( Ha) 3Expert Demonstrations per Task 10 Optimizer AdamW Betas (β1, β 2) (0 .95 , 0.999) 
+
+Learning Rate 1.0 × 10 −4
+
+Weight Decay 1.0 × 10 −6
+
+Epoch 1000 Learning Rate Scheduler Cosine Warmup Steps 500 Diffusion Training Steps 100 Inference Steps 10 Prediction Type Sample prediction Dynamics Loss Weight ( λ) 0.05 Dynamics Loss Type Cosine distance Mamba Backbone Layers 8Mamba History Encoder Layers 2Hidden Dimension 512 SSM State Dimension 64 Evaluation Episodes 20 Maximum Evaluation Steps 1000 
+
+Table 10: RoboTwin task grouping by average episode length. Short, mid, and long horizons correspond to average episode lengths of < 150 , 150 –250 , and > 250 steps, respectively. 
+
+Horizon Group Tasks Long (17) Put Bottles Dustbin, Open Microwave, Stack Blocks Three, Stack Bowls Three, Blocks Ranking Rgb, Blocks Ranking Size, Hanging Mug, Stack Blocks Two, Stack Bowls Two, Place Cans Plasticbox, Handover Block, Shake Bottle Horizontally, Put Object Cabinet, Dump Bin Bigbin, Open Laptop, Place Can Basket, Place Object Basket Mid (15) Shake Bottle, Place Burger Fries, Place Bread Basket, Place Dual Shoes, Handover Mic, Place Shoe, Place Empty Cup, Scan Object, Place Bread Skillet, Place Container Plate, Place A2B Left, Rotate Qrcode, Move Stapler Pad, Stamp Seal, Move Can Pot Short (18) Place Mouse Pad, Place Fan, Adjust Bottle, Move Pillbottle Pad, Place Object Scale, Place A2B Right, Press Stapler, Place Object Stand, Place Phone Stand, Pick Dual Bottles, Pick Diverse Bottles, Move Playingcard Away, Beat Block Hammer, Lift Pot, Turn Switch, Grab Roller, Click Bell, Click Alarmclock 
+
+For ablation and diagnostic analysis, we further define a six-task long-horizon analysis subset from the above grouping. This subset is selected from tasks with long execution horizons and temporally dependent manipulation behaviors. The purpose of this subset is not to replace the full benchmark evaluation, but to provide a controlled set of tasks for studying how different architectural components affect history utilization. Unless otherwise specified, all ablation studies and history-utilization analyses are conducted on this subset. The selected tasks and their task-level results are shown in Table 11. 
+
+## D Additional Results and Failure-Mode Analysis 
+
+D.1 Per-task RoboTwin results. 
+
+Table 12 reports the per-task success rates of DP3 and DSSP on all 50 RoboTwin tasks under the clean setting. Overall, DSSP improves the average success rate from 55.24% to 62.30%, with particularly large gains on tasks requiring sequential progress tracking, such as Open Microwave, Place Cans Plasticbox, Put Bottles Dustbin, and Stack Bowls Three. 17 Table 11: Six-task history-sensitive analysis subset used for ablation and diagnostic studies. The table reports task-level success rates under the in-distribution ( demo clean ) evaluation setting.                         
+
+> Task Avg. Steps DP3 (%) DSSP (%) Put Bottles Dustbin 637 60 83 Stack Bowls Three 476 57 80 Put Object Cabinet 274 72 70 Place Dual Shoes 228 13 19 Stack Bowls Two 313 83 93 Place Can Basket 255 67 83 Average 364 58.67 71.33
+
+Table 12: Per-task success rate comparison between RoboTwin DP3 and DSSP on 50 RoboTwin tasks under the clean setting. Task DP3 DSSP Adjust Bottle 99.00 96.00 Beat Block Hammer 72.00 79.00 
+
+Blocks Ranking RGB 3.00 6.00 
+
+Blocks Ranking Size 2.00 4.00 
+
+Click Alarmclock 77.00 99.00 
+
+Click Bell 90.00 100.00 
+
+Dump Bin Bigbin 85.00 84.00 Grab Roller 98.00 98.00 
+
+Handover Block 70.00 95.00 
+
+Handover Mic 100.00 93.00 Hanging Mug 17.00 24.00 
+
+Lift Pot 97.00 96.00 Move Can Pot 70.00 86.00 
+
+Move Pillbottle Pad 41.00 58.00 
+
+Move Playingcard Away 68.00 71.00 
+
+Move Stapler Pad 12.00 16.00 
+
+Open Laptop 82.00 88.00 
+
+Open Microwave 61.00 97.00 
+
+Pick Diverse Bottles 52.00 53.00 
+
+Pick Dual Bottles 60.00 66.00 
+
+Place A2B Left 46.00 40.00 Place A2B Right 49.00 52.00 
+
+Place Bread Basket 26.00 29.00 
+
+Place Bread Skillet 19.00 39.00 
+
+Place Burger Fries 72.00 81.00 
+
+Place Can Basket 67.00 83.00 
+
+Place Cans Plasticbox 48.00 88.00 
+
+Place Container Plate 86.00 95.00 
+
+Place Dual Shoes 13.00 19.00 
+
+Place Empty Cup 65.00 86.00 
+
+Place Fan 36.00 40.00 
+
+Place Mouse Pad 4.00 4.00 
+
+Place Object Basket 65.00 62.00 Place Object Scale 15.00 10.00 Place Object Stand 60.00 61.00 
+
+Place Phone Stand 44.00 60.00 
+
+Place Shoe 58.00 49.00 Press Stapler 69.00 66.00 Put Bottles Dustbin 60.00 83.00 
+
+Put Object Cabinet 72.00 70.00 Rotate QRcode 74.00 66.00 18 Task DP3 DSSP Scan Object 31.00 29.00 Shake Bottle 98.00 100.00 
+
+Shake Bottle Horizontally 100.00 100.00 
+
+Stack Blocks Three 1.00 2.00 
+
+Stack Blocks Two 24.00 30.00 
+
+Stack Bowls Three 57.00 80.00 
+
+Stack Bowls Two 83.00 93.00 
+
+Stamp Seal 18.00 32.00 
+
+Turn Switch 46.00 57.00 Average 55.24 62.30 D.2 Failure-Mode Analysis on Real-World Tasks 
+
+We further analyze the failure modes of each real-world task to better understand where the gains of DSSP come from. 
+
+Morse Tapping. DSSP achieves the largest relative improvement on this task. The policy is required to tap the target three times before returning, which demands accurate tracking of the number of completed taps. However, the visual observation before each tap is nearly identical, making the task progress ambiguous when only short-term context is available. As a result, DP3 often stops at an incorrect stage or performs redundant taps. By maintaining a history context, DSSP better tracks the tapping progress and executes the correct number of taps. The remaining failures of DSSP mainly come from inaccurate target localization, which can cause missed or imprecise contacts. 
+
+Put Bottles. This long-horizon task requires the robot to sequentially place multiple bottles into the basket. A common failure mode of DP3 is premature termination after placing only one bottle. This happens because intermediate states, where one bottle has already been placed, can appear visually similar to the final completion state when the policy only observes a short recent context. With historical context, DSSP better infers the overall task progress and distinguishes intermediate subgoals from true task completion. Its failures are more often caused by local manipulation errors, such as inaccurate grasping or placement, rather than losing track of the task stage. 
+
+Object Swap. This task requires swapping two objects through an intermediate buffer slot, with demonstrations collected in both swap directions. When an object is located in the buffer, the current observation alone is insufficient to determine whether it should be moved to the left or to the right. Consequently, DP3 may move the object back to its original location, leading to a reversal of progress. In contrast, DSSP uses the historical context to infer the previous movement direction and resolve this ambiguity. This allows the policy to maintain consistent task progress across visually aliased intermediate states. 
+
+## E Theoretical Analysis 
+
+We provide the formal proofs for the propositions presented in the main text regarding the theoretical advantages of history conditioning in imitation learning. Our analysis is grounded in the framework of Partially Observable Markov Decision Processes (POMDPs), where we demonstrate that the interaction history ht serves as a sufficient statistic for the underlying belief state. We establish two primary results: first, a safety guarantee showing that conditioning on history never increases the theoretical minimum loss (proposition 4.1); and second, a proof of performance gain showing that history conditioning strictly improves performance in environments subject to observation aliasing (proposition 4.2). These derivations utilize the law of total variance and information-theoretic principles to quantify the performance gap between reactive and history-dependent policies. 
+
+E.1 Adding history information does not hurt the performance. Proposition E.1. The minimum achievable diffusion-based imitation loss for a history-conditioned policy is always less than or equal to that of an reactive policy. That is, 
+
+min  
+
+> θ
+
+Ldiff (πθ ; ht) ≤ min  
+
+> θ
+
+Ldiff (πθ ; ot). (16) 19 Proof. For notational brevity, we denote the minimum achievable loss for a given conditioning variable X as L∗(X) = min  
+
+> θ
+
+Ldiff (πθ ; X). Consider the diffusion-based imitation loss defined in Eq. 9. For a conditioning variable X, the minimum achievable Mean Squared Error (MSE) loss is the expected conditional variance of the expert action at calculated over the expert dataset DE :
+
+L∗(X) = E(X,a t)∼D E [Var (at | X)] . (17) Specifically, we denote the optimal losses for reactive and history-conditioned policies as: 
+
+L∗(ot) = Eot∼D E [Var (at | ot)] and L∗(ht) = Eht∼D E [Var (at | ht)] . (18) By definition, the history ht contains the current observation ot as its final element ( ot ⊂ ht). This inclusion allows us to apply the law of total variance to decompose the variance of the action at given 
+
+ot as: Var (at | ot) = Eht [Var (at | ht) | ot] + Var ht (E[at | ht] | ot). (19) Intuitively, the first term represents the inherent uncertainty that remains even if we know the full history, which is also the minimum possible error of a history-conditioned policy. The second term represents the aliasing penalty, which measures how much the average expert action changes depending on which history led to the current observation. Since the variance of the conditional expectation (the second term) is non-negative, it follows that Var (at | ot) ≥ Eht [Var (at | ht) | ot].To find the total loss, we take the expectation over the entire expert distribution DE :
+
+Eot∼D E [Var (at | ot)] ≥ Eot∼D E [Eht∼D E [Var (at | ht) | ot]] . (20) By the law of iterated expectations, the right-hand side simplifies to the total average variance over the dataset: 
+
+Eot∼D E [Var (at | ot)] ≥ Eht∼D E [Var (at | ht)] , (21) which is equivalent to L∗(ht) ≤ L ∗(ot). This proves that the history-conditioned objective never exceeds the observation-only objective when averaged over the expert demonstrations. 
+
+E.2 Adding history information can improve the performance. Proposition E.2. In the presence of observation aliasing, history conditioning strictly reduces the minimum achievable imitation loss compared to an reactive policy: 
+
+min  
+
+> θ
+
+Ldiff (πθ ; ht) < min  
+
+> θ
+
+Ldiff (πθ ; ot), whenever IE (at; ht | ot) > 0. (22) 
+
+This condition implies that history resolves state ambiguity by capturing mutual information that is inaccessible to a reactive policy. Proof. Recall the decomposition from the law of total variance: Var (at | ot) = E[Var (at | ht) | ot] + Var (E[at | ht] | ot). (23) The gap between the optimal observation-only loss and the history-conditioned loss is determined by the second term, Var (E[at | ht] | ot), which represents the variance of the expert’s conditional mean across different histories that share the same current observation. Under the condition of observation aliasing, there exist histories such that E[at | h1 
+
+> t
+
+]̸ = E[at | h2 
+
+> t
+
+] for the same observation ot = o. Because the conditional expectation E[at | ht] is not constant given ot,its variance is strictly positive: Var (E[at | ht] | ot) > 0. (24) This variance reduction is fundamentally linked to the conditional mutual information IE (at; ht | ot).Formally, this is defined as the reduction in the expert’s action entropy when conditioned on history: 
+
+IE (at; ht | ot) = HE (at | ot) − HE (at | ht), (25) where HE (· | · ) denotes the conditional entropy. This term quantifies the additional information about the expert action at contained in the full history ht that is not present in the current observation 
+
+ot alone. When observation aliasing exists, the expert’s action depends on the past context; therefore, at and ht
+
+are not conditionally independent given ot, leading to IE (at; ht | ot) > 0. Consequently, an reactive policy πθ (at | ot) must average over these conflicting expert behaviors, resulting in a strictly higher Bayes risk. In contrast, a history-conditioned policy πθ (at | ht) utilizes the additional information to disambiguate the states, thereby achieving a strictly lower imitation loss. 20 F Limitations 
+
+DSSP is primarily designed to improve temporal disambiguation and task-progress tracking through full-history conditioning. It does not directly eliminate low-level perception or control failures, such as inaccurate target localization, grasping, or placement, which remain a source of real-world failure. Moreover, our real-world evaluation is limited to three tabletop tasks with a fixed-camera point-cloud setup. Extending DSSP to more diverse embodiments, viewpoints, deformable objects, and dynamic environments remains an important direction for future work. 21
