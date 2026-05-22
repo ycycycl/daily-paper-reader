@@ -26,7 +26,9 @@ class GenerateDocsMetaParseTest(unittest.TestCase):
                     pass
 
             llm_stub.DEFAULT_BLT_BASE_URL = "https://api.bltcy.ai/v1"
+            llm_stub.DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
             llm_stub.LLMClient = DummyClient
+            llm_stub.DeepSeekClient = DummyClient
             llm_stub.create_chat_client = lambda *args, **kwargs: DummyClient()
             llm_stub.default_chat_base_url = lambda: "https://api.openai.com/v1"
             llm_stub.first_env = lambda *names: ""

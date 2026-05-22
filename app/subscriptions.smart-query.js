@@ -871,6 +871,28 @@ window.SubscriptionsSmartQuery = (function () {
         if (u && !out.includes(u)) out.push(u);
       };
       pushUnique(buildChatCompletionsEndpoint(baseUrl));
+      const expandEndpoint = (base) => {
+        const src = normalizeText(base).replace(/\/+$/, '');
+        if (!src) return;
+        if (src.includes('/chat/completions')) {
+          pushUnique(src);
+          pushUnique(src.replace(/\/chat\/completions$/, '/v1/chat/completions'));
+          return;
+        }
+        if (/\/v\d+$/i.test(src)) {
+          pushUnique(`${src}/chat/completions`);
+          pushUnique(`${src}/v1/chat/completions`);
+          return;
+        }
+        pushUnique(`${src}/v1/chat/completions`);
+        pushUnique(`${src}/chat/completions`);
+      };
+
+      const raw = normalizeText(baseUrl);
+      if (!raw) {
+        return out;
+      }
+      expandEndpoint(raw);
       return out;
     };
     const attempts = llmEntries.flatMap((llm) => (
@@ -880,9 +902,22 @@ window.SubscriptionsSmartQuery = (function () {
       throw new Error('LLM 配置缺少 baseUrl。');
     }
 
+    const resolveJsonResponseModeFor = (llm) => {
+      const utils = window.DPRLLMConfigUtils || {};
+      if (typeof utils.resolveJsonResponseMode === 'function') {
+        return utils.resolveJsonResponseMode({
+          baseUrl: llm.baseUrl,
+          model: llm.model,
+          preferSchema: false,
+        });
+      }
+      return 'json_object';
+    };
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
-    const requestPayload = (llm, { useResponseFormat = true, includeTools = true }) => {
+    const requestPayload = (llm, { useResponseFormat = true, includeTools = true } = {}) => {
+      const jsonResponseMode = resolveJsonResponseModeFor(llm);
       const payload = {
         model: llm.model,
         messages: [
@@ -900,7 +935,7 @@ window.SubscriptionsSmartQuery = (function () {
         payload.tools = [];
         payload.tool_choice = 'none';
       }
-      if (useResponseFormat) {
+      if (useResponseFormat && jsonResponseMode === 'json_object') {
         payload.response_format = { type: 'json_object' };
       }
       return payload;
@@ -948,8 +983,9 @@ window.SubscriptionsSmartQuery = (function () {
         try {
           let current = null;
           let txt = '';
+          const jsonResponseMode = resolveJsonResponseModeFor(llm);
           current = await doFetch(endpoint, llm, {
-            useResponseFormat: true,
+            useResponseFormat: jsonResponseMode !== 'prompt_only',
             includeTools: true,
           });
           if (current && !current.ok) {

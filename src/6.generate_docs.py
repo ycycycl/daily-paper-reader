@@ -35,11 +35,12 @@ TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezon
 RANGE_DATE_RE = re.compile(r"^(\d{8})-(\d{8})$")
 
 # LLM 配置：优先使用 SUMMARY/LLM 通用配置，兼容历史 BLT 配置。
-LLM_API_KEY = first_env("SUMMARY_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY", "BLT_API_KEY")
-LLM_MODEL_NAME = first_env("SUMMARY_MODEL", "LLM_MODEL", "BLT_SUMMARY_MODEL") or "gemini-3-flash-preview"
+LLM_API_KEY = first_env("SUMMARY_API_KEY", "DEEPSEEK_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY", "BLT_API_KEY")
+LLM_MODEL_NAME = first_env("SUMMARY_MODEL", "DEEPSEEK_MODEL", "LLM_MODEL", "BLT_SUMMARY_MODEL") or "deepseek-chat"
 LLM_BASE_URL = (
     first_env(
         "SUMMARY_BASE_URL",
+        "DEEPSEEK_BASE_URL",
         "LLM_BASE_URL",
         "LLM_PRIMARY_BASE_URL",
         "OPENAI_BASE_URL",
@@ -613,7 +614,7 @@ def upsert_glance_block_in_text(md_text: str, glance: str) -> str:
 
 def generate_deep_summary(md_file_path: str, txt_file_path: str, max_retries: int = 3) -> str | None:
     if LLM_CLIENT is None:
-        log("[WARN] 未配置 SUMMARY_API_KEY / LLM_API_KEY / BLT_API_KEY / OPENAI_API_KEY，跳过精读总结。")
+        log("[WARN] 未配置 SUMMARY_API_KEY / DEEPSEEK_API_KEY / LLM_API_KEY / BLT_API_KEY / OPENAI_API_KEY，跳过精读总结。")
         return None
     if not os.path.exists(md_file_path):
         return None

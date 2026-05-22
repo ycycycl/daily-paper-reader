@@ -14,6 +14,8 @@
     'gpt-5-chat',
     'gemini-3-pro-preview',
   ];
+  const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+  const DEFAULT_DEEPSEEK_CHAT_MODELS = ['deepseek-chat', 'deepseek-reasoner'];
   const OPENAI_COMPATIBLE_PRESETS = Object.freeze({
     deepseek: Object.freeze({
       key: 'deepseek',
@@ -45,6 +47,9 @@
       baseUrl: 'https://api.openai.com/v1',
       models: Object.freeze(['gpt-4.1-mini', 'gpt-4.1']),
     }),
+  });
+  const DEEPSEEK_PRESETS = Object.freeze({
+    deepseek: OPENAI_COMPATIBLE_PRESETS.deepseek,
   });
 
   const normalizeText = (value) => String(value || '').trim();
@@ -138,13 +143,27 @@
     const safeSecret = secret && typeof secret === 'object' ? secret : {};
     const llmProvider = safeSecret.llmProvider || {};
     const explicit = normalizeText(llmProvider.type || llmProvider.provider || '').toLowerCase();
-    if (explicit === 'plato' || explicit === 'openai-compatible') {
-      return explicit;
+    if (
+      explicit === 'deepseek'
+      || explicit === 'plato'
+      || explicit === 'openai-compatible'
+      || explicit === 'generic-openai'
+      || explicit === 'openai'
+    ) {
+      return explicit === 'generic-openai' || explicit === 'openai'
+        ? 'openai-compatible'
+        : explicit;
     }
     const summary = resolveSummaryLLM(safeSecret);
     if (!summary) return 'openai-compatible';
     if (/bltcy\.ai|gptbest\.vip/i.test(summary.baseUrl)) {
       return 'plato';
+    }
+    if (
+      /(^|\/\/)(api\.)?deepseek\.com(?:$|\/)/i.test(summary.baseUrl)
+      || normalizeText(summary.model).toLowerCase().startsWith('deepseek-')
+    ) {
+      return 'deepseek';
     }
     return 'openai-compatible';
   };
@@ -161,19 +180,27 @@
     };
   };
 
+  const getDeepSeekPreset = (key) => {
+    return getOpenAICompatiblePreset(key);
+  };
+
   const inferChatApiProfile = (baseUrl, model) => {
     const normalizedBaseUrl = normalizeBaseUrlForStorage(baseUrl || '').toLowerCase();
     const normalizedModel = normalizeText(model || '').toLowerCase();
-    if (
-      /(^|\/\/)(api\.)?deepseek\.com(?:$|\/)/i.test(normalizedBaseUrl)
-      || normalizedModel.startsWith('deepseek-')
-    ) {
+    if (/(^|\/\/)(api\.)?deepseek\.com(?:$|\/)/i.test(normalizedBaseUrl)) {
+      return 'deepseek';
+    }
+    if (normalizedModel.startsWith('deepseek-')) {
       return 'deepseek';
     }
     if (/bltcy\.ai|gptbest\.vip/i.test(normalizedBaseUrl)) {
       return 'plato';
     }
     return 'generic-openai';
+  };
+
+  const resolveJsonResponseMode = ({ baseUrl, model, preferSchema = true }) => {
+    return 'json_object';
   };
 
   const shouldUseXApiKeyHeader = ({ baseUrl, model }) => {
@@ -242,7 +269,10 @@
   return {
     DEFAULT_PLATO_BASE_URL,
     DEFAULT_PLATO_CHAT_MODELS,
+    DEFAULT_DEEPSEEK_BASE_URL,
+    DEFAULT_DEEPSEEK_CHAT_MODELS,
     OPENAI_COMPATIBLE_PRESETS,
+    DEEPSEEK_PRESETS,
     normalizeText,
     normalizeBaseUrlForStorage,
     buildChatCompletionsEndpoint,
@@ -251,7 +281,9 @@
     resolveSummaryLLM,
     inferProviderType,
     getOpenAICompatiblePreset,
+    getDeepSeekPreset,
     inferChatApiProfile,
+    resolveJsonResponseMode,
     shouldUseXApiKeyHeader,
     buildStreamingChatPayload,
     buildConnectivityTestPayload,

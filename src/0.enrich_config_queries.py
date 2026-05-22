@@ -15,7 +15,17 @@ from llm import LLMClient, create_chat_client, default_chat_base_url, first_env
 SCRIPT_DIR = os.path.dirname(__file__)
 CONFIG_FILE = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "config.yaml"))
 
-MODEL_NAME = first_env("REWRITE_MODEL", "SUMMARY_MODEL", "LLM_MODEL", "BLT_REWRITE_MODEL") or "gemini-3-flash-preview"
+MODEL_NAME = (
+  first_env(
+    "REWRITE_MODEL",
+    "DEEPSEEK_REWRITE_MODEL",
+    "SUMMARY_MODEL",
+    "LLM_MODEL",
+    "DEEPSEEK_MODEL",
+    "BLT_REWRITE_MODEL",
+  )
+  or "deepseek-chat"
+)
 
 def log(message: str) -> None:
   ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -142,6 +152,7 @@ def main() -> None:
 
     api_key = first_env(
       "REWRITE_API_KEY",
+      "DEEPSEEK_API_KEY",
       "SUMMARY_API_KEY",
       "LLM_API_KEY",
       "OPENAI_API_KEY",
@@ -149,12 +160,13 @@ def main() -> None:
     )
     if not api_key:
         raise RuntimeError(
-          "缺少 REWRITE_API_KEY / SUMMARY_API_KEY / LLM_API_KEY / "
-          "BLT_API_KEY / OPENAI_API_KEY，无法调用工作流 LLM。"
+          "缺少 REWRITE_API_KEY / DEEPSEEK_API_KEY / SUMMARY_API_KEY / "
+          "LLM_API_KEY / BLT_API_KEY / OPENAI_API_KEY，无法调用工作流 LLM。"
         )
     base_url = (
       first_env(
         "REWRITE_BASE_URL",
+        "DEEPSEEK_BASE_URL",
         "SUMMARY_BASE_URL",
         "LLM_BASE_URL",
         "LLM_PRIMARY_BASE_URL",

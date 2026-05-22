@@ -201,36 +201,7 @@ def should_skip_rerank() -> tuple[bool, str]:
     skip_flag = _read_env_text("DPR_SKIP_RERANK")
     if _env_flag_enabled(skip_flag):
         return True, "DPR_SKIP_RERANK=true"
-
-    rerank_base = _read_env_text(
-        "RERANKER_BASE_URL",
-        "Reranker_LLM_BASE_URL",
-        "BLT_RERANK_BASE_URL",
-    )
-    rerank_key = _read_env_text(
-        "RERANKER_API_KEY",
-        "Reranker_LLM_API_KEY",
-        "BLT_RERANK_API_KEY",
-    )
-    if rerank_base or rerank_key:
-        if not rerank_base:
-            return False, ""
-        if _looks_like_blt_base(rerank_base):
-            return False, rerank_base
-        return True, rerank_base
-
-    primary_base = _read_env_text(
-        "LLM_BASE_URL",
-        "LLM_PRIMARY_BASE_URL",
-        "BLT_PRIMARY_BASE_URL",
-        "GPTBEST_BASE_URL",
-        "BLT_API_BASE",
-    )
-    if not primary_base:
-        return False, ""
-    if _looks_like_blt_base(primary_base):
-        return False, primary_base
-    return True, primary_base
+    return False, ""
 
 
 def score_to_stars(score: float) -> int:
@@ -329,6 +300,7 @@ def resolve_summary_step_env() -> dict[str, str]:
     env = os.environ.copy()
     summary_api_key = _read_env_text(
         "SUMMARY_API_KEY",
+        "DEEPSEEK_API_KEY",
         "LLM_API_KEY",
         "OPENAI_API_KEY",
         "BLT_SUMMARY_API_KEY",
@@ -337,6 +309,7 @@ def resolve_summary_step_env() -> dict[str, str]:
     blt_api_key = _read_env_text("BLT_SUMMARY_API_KEY", "BLT_API_KEY")
     summary_base_url = _read_env_text(
         "SUMMARY_BASE_URL",
+        "DEEPSEEK_BASE_URL",
         "LLM_BASE_URL",
         "LLM_PRIMARY_BASE_URL",
         "OPENAI_BASE_URL",
@@ -344,19 +317,30 @@ def resolve_summary_step_env() -> dict[str, str]:
         "BLT_PRIMARY_BASE_URL",
         "BLT_API_BASE",
     )
-    summary_model = _read_env_text("SUMMARY_MODEL", "LLM_MODEL", "BLT_SUMMARY_MODEL")
+    summary_model = _read_env_text(
+        "SUMMARY_MODEL",
+        "DEEPSEEK_MODEL",
+        "LLM_MODEL",
+        "BLT_SUMMARY_MODEL",
+    )
 
     if summary_api_key:
+        env["SUMMARY_API_KEY"] = summary_api_key
+        env["DEEPSEEK_API_KEY"] = summary_api_key
         env["LLM_API_KEY"] = summary_api_key
     if blt_api_key:
         env["BLT_API_KEY"] = blt_api_key
     if summary_base_url:
+        env["SUMMARY_BASE_URL"] = summary_base_url
+        env["DEEPSEEK_BASE_URL"] = summary_base_url
         env["LLM_BASE_URL"] = summary_base_url
         env["LLM_PRIMARY_BASE_URL"] = summary_base_url
         if _looks_like_blt_base(summary_base_url):
             env["BLT_PRIMARY_BASE_URL"] = summary_base_url
             env["BLT_API_BASE"] = summary_base_url
     if summary_model:
+        env["SUMMARY_MODEL"] = summary_model
+        env["DEEPSEEK_MODEL"] = summary_model
         env["LLM_MODEL"] = summary_model
         env["BLT_SUMMARY_MODEL"] = summary_model
     return env
@@ -739,17 +723,16 @@ def main() -> None:
     )
     if trace_ids:
         print_trace_retrieval("RRF", rrf_path, trace_ids)
-    skip_rerank, rerank_base = should_skip_rerank()
+    skip_rerank, rerank_reason = should_skip_rerank()
     if skip_rerank:
         print(
-            f"[INFO] Step 3 - Rerank 已跳过：当前配置未提供可用 BLT /rerank 能力。"
-            f"reason={rerank_base}",
+            f"[INFO] Step 3 - Local Rerank 已跳过：reason={rerank_reason}",
             flush=True,
         )
         prepare_rerank_fallback(rrf_path, rerank_path)
     else:
         run_step(
-            "Step 3 - Rerank",
+            "Step 3 - Local Rerank",
             [python, os.path.join(SRC_DIR, "3.rank_papers.py")],
         )
     if trace_ids:
