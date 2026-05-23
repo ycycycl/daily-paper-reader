@@ -1,0 +1,492 @@
+Title: Composition of Memory Experts for Diffusion World Models
+
+URL Source: https://arxiv.org/pdf/2605.18813v1
+
+Published Time: Wed, 20 May 2026 00:09:24 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+Published as a conference paper at ICLR 2026 
+
+# COMPOSITION OF MEMORY EXPERTS FOR DIFFUSION 
+
+# WORLD MODELS 
+
+Sebastian Stapf & Pablo Acuaviva Huertos & Aram Davtyan & Paolo Favaro 
+
+Computer Vision Group Department of Computer Science University of Bern 
+
+{sebastian.stapf,pablo.acuavivahuertos aram.davytan, paolo.favaro }@unibe.ch 
+
+Figure 1: Overview of our memory-augmented diffusion world model. Specialized experts capture short-term dynamics, long-term episodic memory, and spatial consistency, which are combined through a product-of-experts formulation to generate futures consistent with past observations. 
+
+# ABSTRACT 
+
+World models aim to predict plausible futures consistent with past observations, a capability central to planning and decision-making in reinforcement learning. Yet, existing architectures face a fundamental memory trade-off: transformers preserve local detail but are bottlenecked by quadratic attention, while recurrent and state-space models scale more efficiently but compress history at the cost of fidelity. To overcome this trade-off, we suggest decoupling future–past consistency from any single architecture and instead leveraging a set of specialized experts. We introduce a diffusion-based framework that integrates heterogeneous memory models through a contrastive product-of-experts formulation. Our approach instantiates three complementary roles: a short-term memory expert that captures fine local dynamics, a long-term memory expert that stores episodic history in external diffusion weights via lightweight test-time finetuning, and a spatial long-term memory expert that enforces geometric and spatial coherence. This compositional design avoids mode collapse and scales to long contexts without incurring a quadratic cost. Across simulated and real-world benchmarks, our method improves temporal consistency, recall of past observations, and navigation performance, establishing a novel paradigm for building and operating memory-augmented diffusion world models. 
+
+Project page: github.io/composition-of-memory-experts 
+
+# 1 INTRODUCTION 
+
+World models (WMs) are powerful tools designed to predict plausible future states of the world based on past observations Ha & Schmidhuber (2018b;a); Hafner et al. (2019); Hu et al. (2023); Bruce et al. (2024). By learning to model the distribution of the observed environment, WMs implicitly capture its underlying rules and dynamics. This capability makes them especially attractive for decision-making 1
+
+> arXiv:2605.18813v1 [cs.LG] 12 May 2026
+
+Published as a conference paper at ICLR 2026 in downstream tasks Alonso et al. (2024); Ha & Schmidhuber (2018a); Hafner et al. (2019). Recent advances, particularly in diffusion-based world models, have demonstrated remarkable progress in generating high-quality future trajectories Hassan et al. (2024). Crucially, this predictive ability makes WMs well suited for navigation and interaction, where agents must anticipate future states in order to plan and act effectively. In such settings, an agent explores, perceives objects, and selects trajectories under uncertainty by simulating candidate futures and evaluating their outcomes before acting. These imagined rollouts are only useful if they remain consistent with prior observations; for example, a previously visited room should not spontaneously change its contents on a later visit. Maintaining such cross-time consistency is the crux of reliable prediction and decision-making. Unfortunately, predictive WMs face a structural trade-off: richer temporal context improves fidelity but explodes compute. Transformer architectures can produce high-quality rollouts, yet their quadratic attention scales poorly and caps context length Vaswani et al. (2017). Recurrent networks and state-space models scale more gracefully in context, but compress history into hidden states, inevitably discarding detail over time. There is no silver bullet here: each family wins in one regime and loses in another. Simply “turning up” context is not a sustainable solution, because training becomes unstable and expensive, and inference costs quickly blow past practical budgets. We advocate a different stance: memory should be distributed across a system rather than confined to a single architecture. Human cognition illustrates this principle by separating fast, capacity-limited short-term memory (STM) from slower but durable long-term memory (LTM). These forms of memory differ in both mechanism and purpose, and it is precisely this division that makes them effective together Liu et al. (2025). We adopt the same philosophy for world models (WMs): instead of burdening a single backbone with every temporal demand, we structure memory as a composition of specialized experts. This distributed approach enables WMs to balance efficiency with fidelity, supporting scalable and reliable use of past experience. Beyond composition, we address the hard reality that scaling context in training and inference is costly and brittle. Even with linear-time designs, pushing horizons indefinitely is not viable. To keep costs flat, we add a long-term memory channel that stores episodic knowledge directly in the weights of an external diffusion expert. A small number of targeted “memorization” updates amortizes future recall, enabling constant-time reuse of past experience without dragging full histories through the core model at every step. Diffusion models are a particularly good fit for this idea because they permit principled inference-time composition of heterogeneous experts without retraining Du et al. (2023). We leverage this to integrate large pretrained backbones with lightweight adapters and auxiliary specialists into a unified framework. Na ¨ıve composition, however, is not enough: when experts still share modes that are not consistent with the past, standard product-of-experts, as we show, tends to over-sharpen common regions and collapse consistency. We therefore introduce a contrastive mechanism that factors out redundant modes during composition, preserving agreement where it matters while avoiding over-confidence where experts are merely echoing each other. Finally, for navigation the world is not just temporal, it is spatial. Where the agent is, and how observations tie to place, is decisive for consistency. We hypothesize that anchoring memory to spatial priors ( e.g. , pose/topological cues or map-aligned keys) improves retrieval and composition, especially in RL-style tasks that revisit locations under changing viewpoints. Accordingly, we ground our memory modules in spatial structure, so imagined futures respect both what was seen and where it was seen. 2Published as a conference paper at ICLR 2026 To summarize, our main contributions are: 1. We aim to solve the memory problem, by using multiple expert models that excel at modeling memory at different scales and formulate it as a product-of-experts (PoE) 
+
+problem, enabling a principled probabilistic view of memory integration in video world models; 2. We introduce product of contrastive experts (PoCE) a novel strategy tailored for this setting, ensuring that heterogeneous memory experts can be fused together for consistent prediction. We provide both theoretical and empirical evidence supporting its necessity; 3. We propose leveraging an external diffusion model as long-term memory (LTM) 
+
+with a finetuning strategy that adapts pretrained priors while retaining domain-general capabilities, and extend this framework with spatial long-term memory models 
+
+(SLTM) to further improve accuracy and spatial coherence in generated sequences. 
+
+# 2 PRIOR WORK 
+
+Video Generation and World Models Recent video diffusion models have demonstrated strong capabilities in modeling temporally coherent video sequences, though ensuring long-term consistency remains an open challenge He et al. (2022); Henschel et al. (2024); Bar-Tal et al. (2024); Ma et al. (2024); Lin et al. (2024); Davtyan et al. (2023). This has motivated several lines of work, including architectural modifications such as transformer variants designed for temporal stability Tay et al. (2020); Lu et al. (2024) or different modeling frameworks Fuest et al. (2025); Ge et al. (2022). Alternative sampling strategies have also been explored, with methods that guide generation toward temporally aligned predictions based on prior context Yin et al. (2023); Chen et al. (2024); Song et al. (2025); Davtyan et al. (2023). In world modeling, early work learned dynamics from pixels; newer approaches incorporate generative memory to extend reasoning over longer horizons Feng et al. (2023); Deng et al. (2023); Samsami et al. (2024); Alonso et al. (2024). 
+
+Product of Experts and Compositional Adaptation Adapting large pretrained diffusion models to new domains is challenging due to their size and domain specificity. One approach, probabilistic adaptation Yang et al. (2024a), trains a smaller diffusion model alongside a frozen pretrained one, combining their scores to flexibly adapt to new domains while retaining the robustness of the original. Combining multiple conditional experts Du et al. (2023) has been applied for image generation. Beyond images, compositionality has been explored for task and visual planning Liu et al. (2022), as well as for factorizing language instructions to guide video generation models Ajay et al. (2023). 
+
+Memory for Video Models SlowFast Hong et al. (2025) introduces a two-stage memory mechanism, applying LoRA adapters Hu et al. (2022) to a pretrained diffusion model for fast adaptation to recent sequences ( fast learning ), while maintaining a separate slower loop to consolidate changes for future predictions ( slow learning ). Unlike our approach, this method follows a meta-learning-style memory paradigm and requires additional training of the potentially large pretrained network. Other approaches implement memory by explicitly storing relevant past frames and learning how to retrieve and inject them into the model’s context window Xiao et al. (2025). However, it introduces challenges related to increasing storage demands and retrieval complexity. Other lines of work utilize spatial memory models that retrieve relevant past context based on camera position Xiao et al. (2025); Yu et al. (2025); Wu et al. (2025). And lastly approaches that implement recurrent networks such as state-space models into their world model Savov et al. (2025); Po et al. (2025). 
+
+# 3 MEMORY ADAPTATION 
+
+3.1 BACKGROUND 
+
+Denoising Diffusion Probabilistic Models Diffusion models Ho et al. (2020) aim to learn a data distribution q(x0) by introducing a sequence of T progressively noisier versions {xt}Tt=1 
+
+of the data x0. This is done via a forward Markov chain where each transition probability 3Published as a conference paper at ICLR 2026 
+
+q(xt|xt−1) = N (xt; √1 − βt xt−1, β tI) is Gaussian with a predefined noise schedule {βt}Tt=1 ,where 0 < β t ≤ 1. The generative process learns to reverse this diffusion, modeling pθ (xt−1|xt) = 
+
+N (xt−1; μθ (xt, t ), ˜βtI), which approximates the reverse conditional q(xt−1|xt). The mean μθ (xt, t )
+
+is predicted using a neural network that outputs a noise estimate ϵθ (xt, t ). This model is trained by minimizing the simplified objective of Ho et al. (2020) 
+
+L(θ) = Ex0,t,ϵ ∼N (0 ,I)
+
+h
+
+∥ϵ − ϵθ (xt, t )∥2i
+
+, (1) which implicitly learns the score function of the data distribution ∇xt log pθ (xt) ≈ − βt√1− ¯αt
+
+ϵθ (xt, t ).
+
+After training, sampling iterates Langevin-style updates 
+
+xt−1 = 1
+
+√αt
+
+
+
+xt − βt
+
+√1 − ¯αt
+
+ϵθ (xt, t )
+
+
+
++ σtη, η ∼ N (0 , I), (2) with αt, ¯αt, σ t defined by the noise schedule. 
+
+Compositional Diffusion via Product of Experts In many generative settings, it is desirable to combine the knowledge or constraints encoded by multiple models. A principled way to achieve this is through the Product of Experts (PoE) framework Hinton (2002), which defines a composite distribution as the (normalized) product of individual distributions. Each model can be viewed as an expert pi(x), and the query itself may define an additional constraint pquery (x). The PoE then computes a joint distribution p(x) ∝ pquery (x) Q 
+
+> i
+
+pi(x), sharply focusing on latent states consistent with all sources of evidence. This allows for selective, content-addressable generation, retrieving or synthesizing patterns that satisfy all contributing distributions. In the context of diffusion models, this corresponds to composing multiple pretrained models, pθi (xt) ≡ pi(xt) into a unified generative process Liu et al. (2022); Du et al. (2023). 3.2 COMPOSITION OF MEMORY EXPERTS 
+
+Our goal is to augment video world models with the ability to efficiently condition generation on specific past histories, while preserving the diversity and generalization of a pretrained prior. We denote a video sequence of T frames as x ∈ RT ×3×H×W , with spatial resolution H × W . The context M represents the set of all past frames, which could be of arbitrary length. In most modern video world models, T is fixed and limited by design Lin et al. (2024); Ma et al. (2024); Yang et al. (2024b); Polyak et al. (2024). Our objective is to model the conditional distribution p(x | M ) for coherent generation that reflects both recent and long-term context. Different architectures offer trade-offs between consistency with the immediate past, long-term memory, generation quality, and inference speed. There is no universally optimal solution. Scaling transformers with longer context windows quickly incurs quadratic attention costs and often leads to unstable training Song et al. (2025). Sparsified attention or purely state-space models reduce memory usage but lose fidelity and long-range consistency Gu & Dao (2024); Behrouz et al. (2024). Motivated by this, we propose to compose specialized experts , each responsible for a particular memory role, and fuse them probabilistically at sampling time. Diffusion models naturally support such composition through a PoE formulation, without requiring retraining Du et al. (2023). Concretely, we assume the past history M can be decomposed into multiple (possibly overlapping) subsets of frames {ci}Ki=1 with ci ⊂ M and ∪Ki=1 ci = M. We assume that a diffusion model pi(x) has been trained to predict future frames conditioned on the corresponding context ci. To approximate p(x|M ),we then use 
+
+p(x | M ) = p(x | c1, . . . , c K ) ∝
+
+> K
+
+Y
+
+> i=1
+
+pi(x),
+
+which balances contributions from all experts. 
+
+Product of Contrastive Experts. The PoE framework amplifies regions where all experts assign high likelihood and suppresses others. While this sharpens consensus, in practice it can also lead to over-confident distributions and reduced diversity, particularly as the number of experts increases. To address this, we introduce a Product of Contrastive Experts (PoCM) formulation that explicitly factors out spurious distribution modes. 4Published as a conference paper at ICLR 2026 Formally, {pi(x)}Ki=1 denotes a set of heterogeneous experts. We define their composition as 
+
+p(x | M ) ∝
+
+> K
+
+Y
+
+> i=1
+
+˜pi(x), where ˜pi(x) ∝ pi(x)αi pi(x) 1−αi , (3) and where αi > 1 are contrasting coefficients, and pi(x) denotes the expert’s unconditional baseline distribution ( i.e. , without conditioning on the context ci), and ˜pi are the contrastive experts. The contrastive product is motivated by the fact that each expert is only an approximation of a true distribution, and, as we show below, PoCE provides a way to suppress undesired spurious modes. 
+
+Taming spurious modes. A first impulse to suppress spurious modes of an approximate expert 
+
+pi is to temper it, i.e. , use pi(x)α with α > 1. This indeed downweights lighter modes more than heavier ones. However, tempering alters not only the magnitude of the modes but also their spread :for standard kernels ( e.g. , Gaussians), 
+
+N (x; μ, Σ) α ∝ N  x; μ, 1 
+
+> α
+
+Σ,
+
+so the variance shrinks by a factor 1/α . Thus, naive tempering narrows kernels and changes local geometry, which reduces diversity when sampling from it. 
+
+Contrastive experts. To suppress spurious modes while preserving local shapes, we combine each conditional expert pi with its unconditional baseline pi via contrastive mixture : for αi > 1,
+
+˜pi(x) ∝ pi(x)αi pi(x) 1−αi .
+
+This operation is log-linear (additive in log density), but, unlike pαi , does not, in the KDE setting below, tighten kernels; it reweights the existing components and leaves their shapes intact. 
+
+Proposition 1 (KDE reweighting under disjoint support) . Assume a KDE for pi(x) = PMk=1 πik hk(x)
+
+and pi(x) = PMk=1 ωik hk(x) with P 
+
+> k
+
+πik = 1 , πik ≥ 0, P 
+
+> k
+
+ωik = 1 , ωik ≥ 0, and R hk(x) dx = 1 .Suppose each kernel hk has limited bandwidth and the supports of {hk}Mk=1 are disjoint. Then the contrastive expert satisfies 
+
+˜pi(x) ∝
+
+> M
+
+X
+
+> k=1
+
+ πik
+
+αi  ωik
+
+1−αi
+
+hk(x).
+
+In particular, if ωik = 1 
+
+> M
+
+(uniform baseline), the factor (ωik)1−αi is constant in k and is absorbed into normalization, yielding ˜pi(x) ∝ P
+
+> k
+
+(πik)αi hk(x).Proof. On the support of hk, the disjointness assumption implies pi(x) ≈ πikhk(x) and pi(x) ≈
+
+ωikhk(x). Hence ˜pi(x) ∝ (πik)αi (ωik)1−αi hk(x)αi+1 −αi = ( πik)αi (ωik)1−αi hk(x). Summing over 
+
+k and renormalizing gives the claim. 
+
+Interpretation and trade-offs. By Proposition 1, the transformation pi 7 → ˜pi leaves the kernels 
+
+hk untouched and acts only on the mixture weights , via πik 7 → ˜πik ∝ (πik)αi (ωik)1−αi . Hence lighter modes are disproportionately downweighted when αi > 1. This suppresses spurious modes without distorting local shapes. The downside is that genuinely valid but secondary modes (with smaller weights) are also reduced, which may lower diversity; αi must therefore balance artifact removal 
+
+vs. diversity preservation . The KDE modeling assumptions on pi and pi are also valid in very general settings. One can always approximate both distributions with the same basis functions (non-overlapping kernels) but different coefficients. As further discussed in Sec. A, the main requirement is instead that pi has larger magnitudes for the valid modes than for the spurious ones compared to 
+
+pi, which should be a natural outcome of the training of these experts. Additional analysis and a simplified illustrative example are provided in Sec. A. 3.3 INSTANTIATING MULTIPLE MEMORY EXPERTS 
+
+We instantiate three complementary experts that address different aspects of temporal conditioning. Together, they form a compositional memory system that balances fidelity to recent frames, long-term consistency, and spatial disambiguation. In practice, we build upon pretrained diffusion models that generate videos from a small number of input frames. For our first memory expert, which we denote as pθ (x | c), we use a standard image-to-video (I2V) diffusion model. It excels at producing high-quality frames conditioned on the immediate past c (in the range of 1-3 images). 5Published as a conference paper at ICLR 2026 
+
+Short-Term Memory (STM). The STM expert is a diffusion model that directly attends to a short-term recent context window cST (in the range of 10-100 images). This expert is effective at capturing local dynamics and fine details, though its temporal consistency is limited by the finite context size. We denote it as pϕ(x | cST ), implemented using an architecture with moderately extended context length, motivated by fast weight learning Schlag et al. (2021). The contrastive expert is the unconditional model pϕ(x) = pϕ(x | ∅). The notation ∅ indicates the absence of conditioning. 
+
+Long-Term Memory (LTM). While STM effectively models a limited history, many applications require consistency across hundreds of frames. Scaling the context length of existing models quickly becomes computationally prohibitive, motivating a different strategy. We therefore introduce a separate diffusion model that can be conditioned through two channels: 1) by stores episodic knowledge in its weights ψ via test-time finetuning on the long-term history cLT (in the range of 100-1000 images) and 2) through the standard context conditioning. To clarify the notation, let 
+
+pψ(c′)(x | c) denote a base diffusion model conditioned on a context c and with weights conditioned on a separate context c′. Using ∅ as one of the contexts indicates that no conditioning has been provided or used to finetune the weights ψ. We then introduce pψ(cLT )(x | c), where the parameters 
+
+ψ(cLT ) incorporate long-term context through finetuning on cLT using the diffusion loss (eq. (1)). The contrastive expert is then the model without any context pψ (x) = pψ(∅)(x | ∅), where pψ(∅) = pψ .A key challenge is catastrophic forgetting in the adapted model. While explicit regularization strategies such as KL penalties between base and finetuned models are possible, we find that finetuning a set of LoRA adapters Hu et al. (2022) provides sufficient implicit regularization. This approach avoids overfitting to the past, reduces computational cost, and preserves the generalization capacity of the original model. 
+
+Spatial Long-Term Memory (SLTM). LTM can be viewed as an associative memory that retrieves long-range knowledge conditioned on immediate visual cues c Schaeffer et al. (2024). However, when cues are ambiguous ( e.g. , looping paths or visually similar but distinct locations), additional spatial priors are essential. To address this, we extend the context M with auxiliary spatial signals S (e.g. , camera poses or point maps) extracted from the history M. We define a spatial prior pλ(x | S ), where S = Enc λ(M)
+
+encodes the memory into a spatial representation. Here, Enc λ(·) may correspond to a structure-from-motion algorithm ( e.g. , SLAM Smith et al. (1986)) or a learned encoder Wang et al. (2025). This spatial prior improves long-range consistency by disambiguating locations and reducing drift in repetitive or visually ambiguous environments. The contrastive expert, as in STM, is obtained by dropping the spatial prior: pλ(x | ∅).
+
+Composition of Memory Experts. We now combine the individual experts into a unified distribu-tion. Specializing eq. (3) to the STM pϕ, LTM pψ , and SLTM pλ, together with the pretrained prior 
+
+pθ , we obtain 
+
+pCoME (x | c, c ST , c LT , S) ∝
+
+h
+
+pθ (x | ∅)1−α0 pθ (x | c)α0
+
+ih 
+
+pϕ(x | ∅)1−α1 pϕ(x | cST )α1
+
+i
+
+×
+
+h
+
+pψ(∅)(x | c)1−α2 pψ(cLT )(x | c)α2
+
+ih 
+
+pλ(x | ∅)1−α3 pλ(x | S )α3
+
+i
+
+. (4) Equation (4) shows the product-of-experts formulation where each memory model is a contrastive expert. The coefficients αi ≥ 1 balance unconditional and conditional contributions, ensuring that recent context, long-term consistency, and spatial priors are integrated in a principled manner. For the integration of this approach into diffusion models, we refer to Sec. B. 
+
+# 4 EXPERIMENTS 
+
+In this section, we evaluate our proposed method through comparisons with baselines on synthetic and real-world datasets. We describe the datasets, baseline models, and evaluation metrics before presenting quantitative and qualitative results. Additional details, including implementation settings, computational cost analysis, extended ablation studies, and further visualizations, are provided in the appendix. 6Published as a conference paper at ICLR 2026 Table 1: Comparison of different memory con-figurations on reconstruction metrics with two steps per frame. Best values are highlighted .                                  
+
+> Method LPIPS ↓SSIM ↑PSNR ↑
+> Base 0.209 0.771 19.16 + STM 0.156 0.820 21.29 + LTM 0.171 0.805 19.98 + SLTM 0.150 0.833 20.65 + STM+LTM 0.114 0.862 22.32 CoME 0.097 0.892 23.07 Sliding 0.183 0.753 19.02 SSM 0.158 0.828 20.62 Full 0.113 0.859 22.78
+
+Figure 2: (LPIPS ↓) as a function of context length on the Memory Maze dataset. Longer contexts lead to more faithful reconstructions, with no saturation observed up to 480 frames. 
+
+Datasets. We assess Composition of Memory Experts (CoME) on synthetic and real-world datasets. 
+
+Memory Maze Pasukonis et al. (2022) consists of 30k offline trajectories (1k frames each) of agents navigating 3D mazes, with absolute and relative position signals, making it suitable for evaluating long-term memory learning. RE10K Zhou et al. (2018) provides indoor scenes with camera pose annotations and serves as a challenging real-world benchmark. RECON Shah et al. (2021) contains over 5k trajectories of real-world outdoor navigation and provides absolute camera trajectories, making it suitable for navigation planning tasks. 
+
+Evaluation Metrics. For high-fidelity prediction tasks ( i.e. , low uncertainty), we report frame-wise Learned Perceptual Image Patch Similarity (LPIPS) Zhang et al. (2018), Structural Similarity Index (SSIM), and Peak Signal-to-Noise Ratio (PSNR). For navigation planning, we evaluate trajectory alignment using Absolute Trajectory Error (ATE) and Relative Pose Error (RPE), where ATE measures the global deviation of the predicted trajectory from ground truth and RPE captures the local consistency of relative motion. 4.1 CONSISTENCY WITH PAST OBSERVED FRAMES 
+
+Baseline Models. Our primary baseline is a Diffusion Transformer (DiT) Peebles & Xie (2022b), also following prior work Chen et al. (2024); Song et al. (2025). The model uses three context frames with relative positional information to predict the next seventeen frames. We further evaluate specialized memory architectures. The short-term memory (STM) expert is a DiT(-S) with sliding window attention chunk size of 20, with 2 full attention layers at the 2 and 6 layers, taking 33 frames as conditioning and predicting the next 17 frames. The long-term memory (LTM) module adapts a pretrained DiT with LoRA finetuning. The spatial long-term memory (SLTM) variant doubles the patch size in the input projection and conditions on absolute camera poses. To align relative trajectories with absolute coordinates, we introduce an auxiliary encoder that maps relative positions and current clean frame estimates into absolute camera positions. Although our approach in principle allows training-free composition of different pretrained models, we still compare with specialized architectures that represent memory-oriented alternatives: (i) a full-attention transformer as the absolute baseline, (ii) chunked transformer inference with interleaved Mamba blocks Gu & Dao (2024) for SSM-style memory, and (iii) sliding-window attention with interleaved full-attention blocks. All baselines have a comparable parameter budget and are trained for 150 k steps. We report quantitative results across SSIM, PSNR, and LPIPS (Table 1) on Memory Maze. Both LTM and SLTM are finetuned with two gradient steps per context frame. Each additional memory component consistently improves temporal consistency over the base model. In particular, augment-ing with long-term memory, and especially combining STM and LTM, yields significant gains in consistency, beating all provided baselines. Training cost is also noteworthy. Full-attention training required roughly 60 × the compute of STM and 12 × that of the base model, with also more than 3× the amount of training steps to converge 7Published as a conference paper at ICLR 2026 Table 2: Planning accuracy on the RECON benchmark (100 sampled trajectories). We report Absolute Trajectory Error (ATE) and Relative Pose Error (RPE). Comparison of CoME with GNM Shah et al. (2022), NOMAD Sridhar et al. (2023) and NWM Bar et al. (2024).                        
+
+> GNM NOMAD NWM CoME STM LTM NWM+STM NWM+LTM
+> ATE ( ↓)1.87 1.93 1.13 0.96 1.05 1.10 0.98 1.07 RPE ( ↓)0.73 0.52 0.35 0.28 0.32 0.32 0.30 0.33
+
+with the same base settings, see Section E.1. Moreover, full attention with the standard diffusion regime was unstable, requiring a modified training scheme for convergence Song et al. (2025). In contrast, our memory composition approach achieves comparable or better consistency at a fraction of the training and inference cost, demonstrating the efficiency of leveraging specialized memory experts over brute-force scaling. 
+
+Effect of Context Length. We further investigate the effectiveness of LTM by varying the number of context frames used for adaptation, ranging from 50 to 480 with 3 update steps per frame. Increasing the context length consistently improves perceptual quality, as measured by LPIPS (Figure 2). Longer contexts allow the model to leverage more temporal information and generate reconstructions that are more faithful to the ground truth. Notably, consistency continues to improve up to 500 frames, with no saturation observed (limited by dataset length). These findings highlight the complementary roles of STM and LTM in balancing short- and long-range temporal dependencies. 
+
+Effect on Planning. Consistency is particularly critical for planning tasks. As a testbed for visual planning, we adopt the NavigationWM framework Bar et al. (2024), where the model is applied to goal-conditioned navigation. Given past observations and a goal image, candidate sequences of trajectories are scored by executing NWM rollouts of length eight and computing the LPIPS distance between the final frame and the goal image, averaged over three runs. Our STM is implemented as a finetuned DiT-B on twelve context frames, while the LTM is instantiated by adapting a frozen pretrained world model with LoRA finetuning. As shown in Table 2, adding memory components consistently improves planning accuracy. Even lightweight additions such as a smaller STM yield tangible gains, supporting the principle that structured memory enhances temporal consistency and thereby benefits downstream tasks such as navigation. 4.2 CONSISTENCY WITH A CONTINUOUS STREAM OF OBSERVATIONS 
+
+Streaming Evaluation. In reinforcement learning settings, agents receive a continuous stream of observations and must remain consistent with them over time. To evaluate whether our memory composition extends beyond fixed contexts at the beginning of generation, we design the following experiment: at each step, the model memorizes the last 50 frames for 25 gradient updates, predicts the next frames, and then appends the ground-truth frames back into the context. This procedure is repeated for 11 iterations. As shown in Figure 3, on Memory Maze the STM already improves consistency across iterations by reinforcing short-term dynamics. Adding the LTM yields a com-pounding effect: consistency continues to improve as new observations are integrated, demonstrating that the LTM successfully stores additional information in its weights and leverages it in subsequent generations. This highlights the importance of online memory adaptation for handling continuous observation streams. 
+
+Recall Ability. We evaluate the recall capabilities of CoME on the RE10K dataset using a large pretrained network Song et al. (2025). In this experiment, the model generates frames and memorizes them, and then follows the reversed trajectory to reconstruct previously visited states. We test sequences of 3 forward rollouts, each followed by 3 backward rollouts. To measure recall accuracy, we compare the frames of the backward rollout with the forward rollout using LPIPS for perceptual similarity. As reported in Table 3, CoME consistently outperforms baseline methods in semantic recall. In Figure 4 we provide qualitative results, where we see that CoME accurately is able to retrieve the exact frames, preserving a consistent scene view. In contrast, the baseline model without memory generates plausible but inconsistent frames, failing to recall the original state. 8Published as a conference paper at ICLR 2026 
+
+Figure 3: Evaluation on Memory Maze with 10 chunks of 20 frames each. Our method incre-mentally memorizes to maintain consistency. Table 3: Comparison of evaluation metrics across different methods and rollout lengths on RealEstate10K . PSNR and SSIM ( ↑) indi-cate higher is better; LPIPS ( ↓) lower is better. Highlighting marks the best results. 
+
+Method LPIPS ↓ PSNR ↑ SSIM ↑
+
+Base 0.405 19.8 0.794 CoME 0.359 21.3 0.83 HG-v 0.414 19.2 0.764 HG-t 0.400 19.7 0.788 +🧠 
+
+## +🧠 
+
+(a) 
+
+(b) 
+
+Figure 4: Qualitative results on the RealEstate10K dataset. We generate six forward rollouts and then reverse the camera trajectory. Unlike the base model without long-term memory, Composition of Memory Experts correctly recalls the initial frame in both examples, ensuring scene consistency. (The first frame and last frame of a sequence should be equal.) 
+
+Notes on Compute. In the online setting, we perform two memorization steps per frame, resulting in approximately 100 steps in total. When using the LTM with LoRA at rank r = 64 , this introduces about a 4× compute overhead due to memorization, in addition to the overhead from the added experts. With r = 16 , the overhead decreases to roughly a 2× increase in sampling time. Further details are provided in Section F. 4.3 ABLATION 
+
+Contrastive Expert Composition. We first ablate the role of the contrastive formulation in Table 4. Applying the contrastive PoE approach improves the performance of each individual memory expert with the Memory Maze setting from Section 4. We can see that the naive product-of-experts quickly collapses or cancels out consistency gains, whereas our contrastive composition is essential for stable improvements. Without contrastive weighting, stacking multiple experts fails to outperform the base model and in some cases even reduces consistency. 
+
+LTM Architecture and Context Frames. We next analyze the effect of LTM adaptation capacity and context length in Table 5. Increasing LoRA rank consistently improves performance, while full fine-tuning tends to overfit unless the available context is highly diverse. This suggests that LoRA provides implicit regularization, enabling sufficient adaptation while retaining general priors. Longer contexts further amplify these benefits, with no saturation observed even at 450 frames, underscoring the scalability of our long-term memory design. 9Published as a conference paper at ICLR 2026 Table 4: LPIPS results with and without the ad-dition of the contrastive experts.               
+
+> Model w/o Contrastive w/ Contrastive
+> Base 0.203 0.200 STM 0.175 0.156 LTM 0.188 0.171 SLTM 0.178 0.150 STM+LTM 0.170 0.114 All 0.192 0.097
+
+Table 5: Effect of LTM adaptation capacity and context length given in LPIPS.                         
+
+> Context Frames Rank 50 150 450 Params
+> 80.193 0.161 0.146 1% 32 0.175 0.169 0.128 4% 64 0.161 0.158 0.124 7% 256 0.162 0.142 0.118 25% Full 0.221 0.188 0.125 100%
+
+# 5 CONCLUSIONS 
+
+In this work, we explored how different memory mechanisms can be combined to improve the consis-tency and reliability of video world models. First, we demonstrated that models with complementary strengths in memory modeling can be effectively combined to yield more consistent generations. We showed analytically and experimentally that our proposed Product of Contrastive Experts can successfully eliminate spurious modes without introducing side-effects as in a naive Product of Experts formulation. We further introduced a novel long-term memory module that allows to store efficiently information across more than 500 frames, enabling substantially improved temporal consistency. These contributions were validated across both synthetic and real-world datasets, as well as in reinforcement learning navigation planning tasks, where reliable memory is crucial for effective decision-making. Looking ahead, future work will explore extending long-term memory mechanisms to explicitly capture temporal dependencies, incorporating richer conditioning strategies, and developing more exhaustive forms of spatial conditioning to further enhance generative fidelity and downstream task performance. 
+
+# ACKNOWLEDGEMENTS 
+
+This work was supported by a grant from the Swiss National Supercomputing Centre (CSCS) under project ID a144 on Alps as part of the Swiss AI Initiative, and by SNSF Grant 10001278. Additional computations were carried out on UBELIX (https://www.id.unibe.ch/hpc), the high-performance computing cluster at the University of Bern. 
+
+# REFERENCES 
+
+Anurag Ajay, Seungwook Han, Yilun Du, Shuang Li, Abhi Gupta, Tommi S. Jaakkola, Joshua B. Tenenbaum, Leslie Pack Kaelbling, Akash Srivastava, and Pulkit Agrawal. Compositional founda-tion models for hierarchical planning. In NeurIPS , 2023. Eloi Alonso, Adam Jelley, Vincent Micheli, Anssi Kanervisto, Amos J. Storkey, Tim Pearce, and Fran c¸ ois Fleuret. Diffusion for world modeling: Visual details matter in atari. In 
+
+NeurIPS , 2024. URL http://papers.nips.cc/paper_files/paper/2024/hash/ 6bdde0373d53d4a501249547084bed43-Abstract-Conference.html .Amir Bar, Gaoyue Zhou, Danny Tran, Trevor Darrell, and Yann LeCun. Navigation world models. 
+
+2025 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pp. 15791– 15801, 2024. Omer Bar-Tal, Hila Chefer, Omer Tov, Charles Herrmann, Roni Paiss, Shiran Zada, Ariel Ephrat, Junhwa Hur, Yuanzhen Li, Tomer Michaeli, Oliver Wang, Deqing Sun, Tali Dekel, and Inbar Mosseri. Lumiere: A space-time diffusion model for video generation. CoRR , abs/2401.12945, 2024. URL https://doi.org/10.48550/arXiv.2401.12945 .Charles Beattie, Joel Z. Leibo, Denis Teplyashin, Tom Ward, Marcus Wainwright, Heinrich K ¨uttler, Andrew Lefrancq, Simon Green, V ´ıctor Vald ´es, Amir Sadik, Julian Schrittwieser, Keith Anderson, 10 Published as a conference paper at ICLR 2026 Sarah York, Max Cant, Adam Cain, Adrian Bolton, Stephen Gaffney, Helen King, Demis Hassabis, Shane Legg, and Stig Petersen. Deepmind lab. CoRR , abs/1612.03801, 2016. URL http: //arxiv.org/abs/1612.03801 .Ali Behrouz, Peilin Zhong, and Vahab S. Mirrokni. Titans: Learning to memorize at test time. ArXiv ,abs/2501.00663, 2024. Arwen Bradley and Preetum Nakkiran. Classifier-free guidance is a predictor-corrector. ArXiv ,abs/2408.09000, 2024. Jake Bruce, Michael Dennis, Ashley Edwards, Jack Parker-Holder, Yuge Shi, Edward Hughes, Matthew Lai, Aditi Mavalankar, Richie Steigerwald, Chris Apps, Yusuf Aytar, Sarah Bechtle, Feryal M. P. Behbahani, Stephanie Chan, Nicolas Manfred Otto Heess, Lucy Gonzalez, Simon Osindero, Sherjil Ozair, Scott Reed, Jingwei Zhang, Konrad Zolna, Jeff Clune, Nando de Freitas, Satinder Singh, and Tim Rocktaschel. Genie: Generative interactive environments. ArXiv ,abs/2402.15391, 2024. Boyuan Chen, Diego Mart ´ı Mons ´o, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitzmann. Diffusion forcing: Next-token prediction meets full-sequence diffusion. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL 
+
+https://openreview.net/forum?id=yDo1ynArjj .Aram Davtyan, Sepehr Sameni, and Paolo Favaro. Efficient video prediction via sparsely conditioned flow matching. In ICCV , pp. 23206–23217, 2023. URL https://doi.org/10.1109/ ICCV51070.2023.02126 .Fei Deng, Junyeong Park, and Sungjin Ahn. Facing off world model backbones: RNNs, transformers, and s4. In Thirty-seventh Conference on Neural Information Processing Systems , 2023. URL 
+
+https://openreview.net/forum?id=GDYuzX0rwj .Yilun Du, Conor Durkan, Robin Strudel, Joshua B. Tenenbaum, Sander Dieleman, Rob Fergus, Jascha Narain Sohl-Dickstein, A. Doucet, and Will Grathwohl. Reduce, reuse, recycle: Composi-tional generation with energy-based diffusion models and mcmc. In International Conference on Machine Learning , 2023. Yunhai Feng, Nicklas Hansen, Ziyan Xiong, Chandramouli Rajagopalan, and Xiaolong Wang. Finetuning offline world models in the real world. In CoRL , pp. 425–445, 2023. URL https: //proceedings.mlr.press/v229/feng23a.html .Michael Fuest, Vincent Tao Hu, and Bjorn Ommer. Maskflow: Discrete flows for flexible and efficient long video generation. ArXiv , abs/2502.11234, 2025. Songwei Ge, Thomas Hayes, Harry Yang, Xi Yin, Guan Pang, David Jacobs, Jia-Bin Huang, and Devi Parikh. Long video generation with time-agnostic vqgan and time-sensitive transformer. In ECCV (17) , pp. 102–118, 2022. URL https://doi.org/10.1007/978-3-031-19790-1_7 .Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. In First Conference on Language Modeling , 2024. URL https://openreview.net/forum?id= tEYskw1VY2 .David Ha and J ¨urgen Schmidhuber. Recurrent world models facilitate policy evolution. CoRR ,abs/1809.01999, 2018a. URL http://arxiv.org/abs/1809.01999 .David R Ha and J¨ urgen Schmidhuber. World models. ArXiv , abs/1803.10122, 2018b. Danijar Hafner, Timothy P. Lillicrap, Jimmy Ba, and Mohammad Norouzi. Dream to control: Learning behaviors by latent imagination. CoRR , abs/1912.01603, 2019. URL http://arxiv. org/abs/1912.01603 .Mariam Hassan, Sebastian Stapf, Ahmad Rahimi, Pedro M. B. Rezende, Yasaman Haghighi, David Br ¨uggemann, Isinsu Katircioglu, Lin Zhang, Xiaoran Chen, Suman Saha, Marco Cannici, Elie Aljalbout, Botao Ye, Xi Wang, Aram Davtyan, Mathieu Salzmann, Davide Scaramuzza, Marc Pollefeys, Paolo Favaro, and Alexandre Alahi. Gem: A generalizable ego-vision multimodal world model for fine-grained ego-motion, object dynamics, and scene composition control. CoRR ,abs/2412.11198, 2024. URL https://doi.org/10.48550/arXiv.2412.11198 .11 Published as a conference paper at ICLR 2026 Yingqing He, Tianyu Yang, Yong Zhang, Ying Shan, and Qifeng Chen. Latent video diffusion models for high-fidelity video generation with arbitrary lengths. CoRR , abs/2211.13221, 2022. URL 
+
+https://doi.org/10.48550/arXiv.2211.13221 .Roberto Henschel, Levon Khachatryan, Daniil Hayrapetyan, Hayk Poghosyan, Vahram Tadevosyan, Zhangyang Wang, Shant Navasardyan, and Humphrey Shi. Streamingt2v: Consistent, dynamic, and extendable long video generation from text. CoRR , abs/2403.14773, 2024. URL https: //doi.org/10.48550/arXiv.2403.14773 .Geoffrey E. Hinton. Training products of experts by minimizing contrastive divergence. Neural Computation , 14:1771–1800, 2002. Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In Proceedings of the 34th International Conference on Neural Information Processing Systems , NIPS ’20, Red Hook, NY, USA, 2020. Curran Associates Inc. ISBN 9781713829546. Yining Hong, Beide Liu, Maxine Wu, Yuanhao Zhai, Kai-Wei Chang, Linjie Li, Kevin Lin, Chung-Ching Lin, Jianfeng Wang, Zhengyuan Yang, Ying Nian Wu, and Lijuan Wang. Slowfast-VGen: Slow-fast learning for action-driven long video generation. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum? id=UL8b54P96G .Emiel Hoogeboom, Jonathan Heek, and Tim Salimans. simple diffusion: End-to-end diffusion for high resolution images. CoRR , abs/2301.11093, 2023. URL https://doi.org/10.48550/ arXiv.2301.11093 .Anthony Hu, Lloyd Russell, Hudson Yeo, Zak Murez, George Fedoseev, Alex Kendall, Jamie Shotton, and Gianluca Corrado. Gaia-1: A generative world model for autonomous driving. ArXiv ,abs/2309.17080, 2023. Edward J Hu, yelong shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations , 2022. URL https://openreview.net/forum? id=nZeVKeeFYf9 .Bin Lin, Yunyang Ge, Xinhua Cheng, Zongjian Li, Bin Zhu, Shaodong Wang, Xianyi He, Yang Ye, Shenghai Yuan, Liuhan Chen, Tanghui Jia, Junwu Zhang, Zhenyu Tang, Yatian Pang, Bin She, Cen Yan, Zhiheng Hu, Xiaoyi Dong, Lin Chen, Zhang Pan, Xing Zhou, Shaoling Dong, Yonghong Tian, and Li Yuan. Open-sora plan: Open-source large video generation model. CoRR , abs/2412.00131, 2024. URL https://doi.org/10.48550/arXiv.2412.00131 .Bangbang Liu, Xinfeng Li, Jiayi Zhang, Jinlin Wang, Tanjin He, Sirui Hong, Hongzhang Liu, Shaokun Zhang, Kaitao Song, Kunlun Zhu, Yuheng Cheng, Suyuchen Wang, Xiaoqiang Wang, Yuyu Luo, Haibo Jin, Peiyan Zhang, Ollie Liu, Jiaqi Chen, Huan-Rui Zhang, Zhaoyang Yu, Hao Shi, Boyan Li, De Ming Wu, Fengwei Teng, Xiao Jia, Jiawei Xu, Jinyu Xiang, Yizhang Lin, Tianming Liu, Tongliang Liu, Yu Su, Huan Sun, Glen Berseth, Jianyun Nie, Ian T. Foster, Logan T. Ward, Qingyun Wu, Yu Gu, Mingchen Zhuge, Xiangru Tang, Haohan Wang, Jiaxuan You, Chi Wang, Jian Pei, Qiang Yang, Xiaoliang Qi, and Chenglin Wu. Advances and challenges in foundation agents: From brain-inspired intelligence to evolutionary, collaborative, and safe systems. ArXiv , abs/2504.01990, 2025. Nan Liu, Shuang Li, Yilun Du, Antonio Torralba, and Joshua B. Tenenbaum. Compositional visual generation with composable diffusion models. CoRR , abs/2206.01714, 2022. URL https: //doi.org/10.48550/arXiv.2206.01714 .Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Confer-ence on Learning Representations , 2019. URL https://openreview.net/forum?id= Bkg6RiCqY7 .Yu Lu, Yuanzhi Liang, Linchao Zhu, and Yi Yang. Freelong: Training-free long video generation with spectralblend temporal attention. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL https://openreview.net/forum?id=X9Fga52OOv .12 Published as a conference paper at ICLR 2026 Xin Ma, Yaohui Wang, Gengyun Jia, Xinyuan Chen, Ziwei Liu, Yuan-Fang Li, Cunjian Chen, and Yu Qiao. Latte: Latent diffusion transformer for video generation. CoRR , abs/2401.03048, 2024. URL https://doi.org/10.48550/arXiv.2401.03048 .Jurgis Pasukonis, Timothy P. Lillicrap, and Danijar Hafner. Evaluating long-term memory in 3d mazes. CoRR , abs/2210.13383, 2022. URL https://doi.org/10.48550/arXiv.2210. 13383 .William Peebles and Saining Xie. Scalable diffusion models with transformers. CoRR ,abs/2212.09748, 2022a. URL https://doi.org/10.48550/arXiv.2212.09748 .William S. Peebles and Saining Xie. Scalable diffusion models with transformers. 2023 IEEE/CVF International Conference on Computer Vision (ICCV) , pp. 4172–4182, 2022b. Ryan Po, Yotam Nitzan, Richard Zhang, Berlin Chen, Tri Dao, Eli Shechtman, Gordon Wetzstein, and Xun Huang. Long-context state-space video world models. ArXiv , abs/2505.20171, 2025. Adam Polyak, Amit Zohar, Andrew Brown, Andros Tjandra, Animesh Sinha, Ann Lee, Apoorv Vyas, Bowen Shi, Chih-Yao Ma, Ching-Yao Chuang, David Yan, Dhruv Choudhary, Dingkang Wang, Geet Sethi, Guan Pang, Haoyu Ma, Ishan Misra, Ji Hou, Jialiang Wang, Ki ran Jagadeesh, Kunpeng Li, Luxin Zhang, Mannat Singh, Mary Williamson, Matt Le, Matthew Yu, Mitesh Kumar Singh, Peizhao Zhang, Peter Vajda, Quentin Duval, Rohit Girdhar, Roshan Sumbaly, Sai Saketh Rambhatla, Sam S. Tsai, Samaneh Azadi, Samyak Datta, Sanyuan Chen, Sean Bell, Sharadh Ramaswamy, Shelly Sheynin, Siddharth Bhattacharya, Simran Motwani, Tao Xu, Tianhe Li, Tingbo Hou, Wei-Ning Hsu, Xi Yin, Xiaoliang Dai, Yaniv Taigman, Yaqiao Luo, Yen-Cheng Liu, Yi-Chiao Wu, Yue Zhao, Yuval Kirstain, Zecheng He, Zijian He, Albert Pumarola, Ali K. Thabet, Artsiom Sanakoyeu, Arun Mallya, Baishan Guo, Boris Araya, Breena Kerr, Carleigh Wood, Ce Liu, Cen Peng, Dimitry Vengertsev, Edgar Schonfeld, Elliot Blanchard, Felix Juefei-Xu, Fraylie Nord, Jeff Liang, John Hoffman, Jonas Kohler, Kaolin Fire, Karthik Sivakumar, Lawrence Chen, Licheng Yu, Luya Gao, Markos Georgopoulos, Rashel Moritz, Sara K. Sampson, Shikai Li, Simone Parmeggiani, Steve Fine, Tara Fowler, Vladan Petrovic, and Yuming Du. Movie gen: A cast of media foundation models. ArXiv , abs/2410.13720, 2024. Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj ¨orn Ommer. High-resolution image synthesis with latent diffusion models. CoRR , abs/2112.10752, 2021. URL 
+
+https://arxiv.org/abs/2112.10752 .Mohammad Reza Samsami, Artem Zholus, Janarthanan Rajendran, and Sarath Chandar. Master-ing memory tasks with world models. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id=1vDArHJ68h .Nedko Savov, Naser Kazemi, Deheng Zhang, Danda Pani Paudel, Xi Wang, and Luc Van Gool. Statespacediffuser: Bringing long context to diffusion world models. CoRR , abs/2505.22246, May 2025. URL https://doi.org/10.48550/arXiv.2505.22246 .Rylan Schaeffer, Nika Zahedi, Mikail Khona, Dhruv Pai, Sang T. Truong, Yilun Du, Mitchell Ostrow, Sarthak Chandra, Andres Carranza, Ila Rani Fiete, Andrey Gromov, and Sanmi Koyejo. Bridging associative memory and probabilistic modeling. CoRR , abs/2402.10202, 2024. URL 
+
+https://doi.org/10.48550/arXiv.2402.10202 .Imanol Schlag, Kazuki Irie, and J ¨urgen Schmidhuber. Linear transformers are secretly fast weight programmers. In Marina Meila and Tong Zhang (eds.), Proceedings of the 38th International Conference on Machine Learning , volume 139 of Proceedings of Machine Learning Research , pp. 9355–9366. PMLR, 18–24 Jul 2021. URL https://proceedings.mlr.press/v139/ schlag21a.html .Dhruv Shah, Benjamin Eysenbach, Nicholas Rhinehart, and Sergey Levine. Rapid exploration for open-world navigation with latent goal models. In CoRL , pp. 674–684, 2021. URL https: //proceedings.mlr.press/v164/shah22a.html .Dhruv Shah, Ajay Kumar Sridhar, Arjun Bhorkar, Noriaki Hirose, and Sergey Levine. Gnm: A general navigation model to drive any robot. 2023 IEEE International Conference on Robotics and Automation (ICRA) , pp. 7226–7233, 2022. 13 Published as a conference paper at ICLR 2026 Pete Shinners and the Pygame community. Pygame - python game development. https://www. pygame.org/ , 2000–. Version X.Y.Z. Randall Smith, Matthew Self, and Peter C. Cheeseman. Estimating uncertain spatial relationships in robotics. Proceedings. 1987 IEEE International Conference on Robotics and Automation , 4: 850–850, 1986. Kiwhan Song, Boyuan Chen, Max Simchowitz, Yilun Du, Russ Tedrake, and Vincent Sitzmann. History-guided video diffusion. ArXiv , abs/2502.06764, 2025. Ajay Kumar Sridhar, Dhruv Shah, Catherine Glossop, and Sergey Levine. Nomad: Goal masked diffusion policies for navigation and exploration. 2024 IEEE International Conference on Robotics and Automation (ICRA) , pp. 63–70, 2023. Chengkun Sun, Jinqian Pan, Russell Terry, Jiang Bian, and Jie Xu. Bgdb: Bernoulli-gaussian decision block with improved denoising diffusion probabilistic models. CoRR , abs/2409.13116, 2024. URL 
+
+https://doi.org/10.48550/arXiv.2409.13116 .Yi Tay, Mostafa Dehghani, Dara Bahri, and Donald Metzler. Efficient transformers: A survey. CoRR ,abs/2009.06732, 2020. URL https://arxiv.org/abs/2009.06732 .Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In NIPS , pp. 6000–6010, 2017. URL 
+
+http://papers.nips.cc/paper/7181-attention-is-all-you-need .Jianyuan Wang, Minghao Chen, Nikita Karaev, Andrea Vedaldi, Christian Rupprecht, and David Novotn ´y. Vggt: Visual geometry grounded transformer. 2025 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pp. 5294–5306, 2025. Tong Wu, Shuai Yang, Ryan Po, Yinghao Xu, Ziwei Liu, Dahua Lin, and Gordon Wetzstein. Video world models with long-term spatial memory. ArXiv , abs/2506.05284, 2025. Zeqi Xiao, Yushi Lan, Yifan Zhou, Wenqi Ouyang, Shuai Yang, Yanhong Zeng, and Xingang Pan. Worldmem: Long-term consistent world simulation with memory. 2025. Wilson Yan, Danijar Hafner, Stephen James, and Pieter Abbeel. Temporally consistent transformers for video generation. In ICML , pp. 39062–39098, 2023. URL https://proceedings.mlr. press/v202/yan23b.html .Sherry Yang, Yilun Du, Bo Dai, Dale Schuurmans, Joshua B. Tenenbaum, and Pieter Abbeel. Probabilistic adaptation of black-box text-to-video models. In The Twelfth International Confer-ence on Learning Representations , 2024a. URL https://openreview.net/forum?id= pjtIEgscE3 .Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, Da Yin, Xiaotao Gu, Yuxuan Zhang, Weihan Wang, Yean Cheng, Ting Liu, Bin Xu, Yuxiao Dong, and Jie Tang. Cogvideox: Text-to-video diffusion models with an expert transformer. ArXiv , abs/2408.06072, 2024b. Shengming Yin, Chenfei Wu, Huan Yang, Jianfeng Wang, Xiaodong Wang, Minheng Ni, Zhengyuan Yang, Linjie Li, Shuguang Liu, Fan Yang, Jianlong Fu, Ming Gong, Lijuan Wang, Zicheng Liu, Houqiang Li, and Nan Duan. Nuwa-xl: Diffusion over diffusion for extremely long video generation. In ACL (1) , pp. 1309–1320, 2023. URL https://doi.org/10.18653/v1/ 2023.acl-long.73 .Jiwen Yu, Jianhong Bai, Yiran Qin, Quande Liu, Xintao Wang, Pengfei Wan, Di Zhang, and Xihui Liu. Context as memory: Scene-consistent interactive long video generation with memory retrieval. 
+
+CoRR , abs/2506.03141, June 2025. URL https://doi.org/10.48550/arXiv.2506. 03141 .Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman, and Oliver Wang. The unreasonable effectiveness of deep features as a perceptual metric. 2018 IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 586–595, 2018. 14 Published as a conference paper at ICLR 2026 Tinghui Zhou, Richard Tucker, John Flynn, Graham Fyffe, and Noah Snavely. Stereo magnification: learning view synthesis using multiplane images. ACM Trans. Graph. , 37(4):65, 2018. URL 
+
+https://doi.org/10.1145/3197517.3201323 .
+
+# A FURTHER ANALYSIS FOR PRODUCT OF CONTRASTIVE EXPERTS 
+
+Non-Uniform Weights and Mode Selectivity. If the weights ωi are not uniform, Proposition 1 yields 
+
+˜πik ∝ (πik)αi (ωik)1−αi = ( ωik)
+
+ πik
+
+ωik
+
+αi
+
+,
+
+where ˜πik are the KDE weights for qi, i.e. , ˜pi(x) = PMk=1 ˜πikhk(x). Let ρk
+
+.
+
+= πik/ω ik denote the 
+
+contrast ratio of conditional to baseline weights. Then ˜πik/ω ik ∝ ραi 
+
+> k
+
+, which is (strictly) increasing in ρk for αi > 1. Therefore: (i) modes with ρk > 1 (more emphasized by the conditional than the baseline) are amplified relative to baseline, (ii) modes with ρk < 1 are suppressed, and the degree of separation grows with αi.
+
+Spurious vs. Secondary Modes. To reliably remove spurious modes while retaining secondary but genuine modes, one needs a margin in the contrast ratios: 
+
+∃ τ > 1 s.t. ρk ≥ τ for genuine modes and ρk ≤ τ −1 for spurious modes .
+
+Under such a gap, choosing αi so that τ αi is large cleanly separates the two groups after renormaliza-tion. If secondary modes have ρk only slightly above 1 (or even below), aggressive αi will attenuate them too; in that case one can (a) keep αi close to 1, or (b) use a baseline model with ωis that better reflect “background” mass ( e.g. , flatten clearly spurious regions). 
+
+Toy Example and Visualization To illustrate the effect of the Mixture of Contrastive Experts, we construct a toy example where each expert pk(x) is modeled as a mixture of M Gaussians, 
+
+pk(x) = 
+
+> M
+
+X
+
+> m=1
+
+wk,m N (x | μk,m , σ 2
+
+> k,m
+
+), (5) with weights chosen either to decay geometrically (emphasizing a few dominant modes) or to equalize peak heights across all components. The latter case defines the contrastive distributions ¯pk(x).We then study their interaction by composing multiple experts using different rules: • the product of experts (PoE) Q 
+
+> k
+
+pk(x), which amplifies consensus and yields various spurious likelihood modes; • a product of contrastive experts (PoCE) Q 
+
+> k
+
+pk(x)α ¯pk(x)1−α, which balances experts and their contrastive counterparts. All products are renormalized to define valid probability densities. The results highlight that stan-dard PoE compositions concentrate probability mass around shared modes, while contrastive and interpolated forms provide control over the degree of sharpening and mitigate trivial collapse. As shown in Figure 5, the standard PoE yields nearly equal likelihood for the two leftmost modes, centering the probability mass close to the second peak. In contrast, the contrastive composition removes the four right-hand modes almost entirely, while maintaining the structure of the dominant left kernel. This demonstrates how contrastive weighting prevents spurious consensus and yields sharper, more interpretable mixtures. 
+
+# B SAMPLING AND TEST -T IME TRAINING 
+
+Sampling. Given the compositional formulation in eq. (4), sampling proceeds by replacing the single-model score function in the reverse diffusion update (eq. (2)) with the joint score of all experts. At noise level t, we compute 
+
+∇xt log pCoM (xt) = X
+
+> k
+
+h
+
+αk∇xt log pk(xt) + (1 − αk)∇xt log pk(xt)
+
+i
+
+, (6) 15 Published as a conference paper at ICLR 2026 
+
+Figure 5: Illustration of Mixture of Contrastive Experts. (a) Individual experts, modeled as Gaussian mixtures, modes are decreasing geometrically (from left to right). (b) Individual contrastive experts, with uniform modes. (c) Product of Experts, Exponentially scales PoE, Product of Contrastive Experts.PoCE suppresses inconsistent modes (e.g., the four rightmost peaks) while preserving the dominant left kernel. The vertical line indicates the center of probability mass for the PoE and PoCE. where the unconditional counterpart of each expert acts as a contrastive baseline. This additive score naturally integrates into the denoising step (eq. (2)) by substituting ϵθ with the weighted combination of expert noise predictors. 
+
+Test-Time Adaptation of LTM. Among the experts, the Long-Term Memory (LTM) uniquely adapts online to the current episode. At the beginning of a rollout, the base diffusion prior pψ(∅)
+
+is finetuned on the long-term context cLT , yielding pψ(cLT ). We perform nmem gradient steps on mini-batches sampled from the memory M using the diffusion loss (eq. (1)). To mitigate catastrophic forgetting, updates are restricted to low-rank adapters (LoRA layers), while the backbone remains frozen. This strategy injects episodic knowledge into the weights at low computational cost without degrading the pretrained prior. After adaptation, sampling resumes with the composite score (eq. (6)). Newly observed clips are appended to the memory M, and the LTM may be updated again for longer rollouts. This establishes a recurrent loop: the STM ensures short-term fidelity, the LTM maintains evolving long-term consistency, and the spatial prior resolves global ambiguities. Together, these components yield a stable online generation process grounded in both immediate dynamics and extended history. 
+
+# C DATASETS 
+
+Memory Maze The Memory Maze environment Pasukonis et al. (2022) provides trajectories of an agent navigating through a 3D maze. However, it also provides both absolute and relative positional information of the agent within the maze. Designed for reinforcement learning, the agent’s task is to navigate toward colored balls placed in the maze, with the correct color cue provided via a colored border around the frame. Relative position is represented by 2D displacement vectors and two rotation angles, while absolute position includes 2D coordinates and an orientation angle (defined with respect to the maze center). The environment supports four maze sizes. In our experiments, we use an offline dataset comprising 30,000 trajectories of 1,000 frames each, collected using a stochastic navigation policy targeting random locations under action noise. This policy ensures diverse trajectory paths that often form loops, facilitating long-term memory learning. 
+
+RECON The RECON Shah et al. (2021) dataset contains over 5k trajectories of real-world outdoor navigation with a Clearpath Jackal robot, providing absolute camera trajectories along with RGB, stereo, thermal, LiDAR, GPS, and IMU data, making it a comprehensive benchmark for studying latent goal models and topological memory in navigation planning. 
+
+RealEstate10K RealEstate10K Zhou et al. (2018) is a video dataset captured in real-world real estate environments, annotated with accurate 3D camera poses and trajectories. This rich spatial information supports training video models with explicit control over camera motion and scene geometry. The dataset is particularly valuable for memory and consistency evaluations, as it allows 16 Published as a conference paper at ICLR 2026 testing whether models can retain and recall visual information about different rooms or viewpoints within the same property. Unlike synthetic datasets, RealEstate10K provides real-world complexity and diversity, helping to validate model generalization to non-simulated settings. In our experiments, we use videos resized to 256 × 256 .
+
+DeepMind Lab (DMLab-40K) The DMLab-40K dataset consists of 64 × 64 resolution videos depicting agent trajectories in a 3D maze environment Yan et al. (2023); Beattie et al. (2016). The DeepMind Lab simulator procedurally generates random mazes with varied floor and wall textures. Each trajectory is 300 frames long and involves an agent traversing 7 × 7 mazes by selecting random target points and navigating to them using the shortest path. In total, 40,000 such action-conditioned videos are provided. The maze layout is static throughout each episode, making the environment particularly suitable for evaluating recall capabilities. 
+
+Minecraft-200K Minecraft-200K Yan et al. (2023) is a large-scale dataset comprising 200,000 videos of Minecraft gameplay, where the player navigates using three discrete actions: forward , left ,and right . Each video is 300 frames long at a resolution of 128 × 128 pixels, with corresponding action labels for each frame. The gameplay occurs in Minecraft’s marsh biome, a procedurally generated 3D world featuring complex terrain such as hills, forests, rivers, and lakes. The player alternates between walking forward for a random number of steps and rotating randomly, causing parts of the environment to disappear and reappear in the field of view. This dynamic makes the dataset particularly well-suited for evaluating memory and temporal consistency, especially under changing viewpoints. Following the protocol of Song et al. (2025), we upsample the original frames from 128 × 128 to 256 × 256 resolution to enable higher-quality video generation. 
+
+Memory Cards Dataset To provide a simplified and interpretable testbed for discrete recall, we introduce the Memory Cards dataset. Each sample is a 4 × 4 grid containing eight unique objects. The player can move up, down, left, or right, and may cover or uncover tiles. The object layout remains static during an episode. A competent world model should be able to reconstruct the complete object configuration after observing all tiles at least once. We generate 100,000 sequences of 250 frames using random actions from the pygame library Shinners & the Pygame community (2000–). Actions are sampled such that covering/uncovering occurs with 0.4 probability, while each directional movement (up/down/left/right) occurs with 0.15 probability, promoting frequent tile changes. The dataset is split into 90% training and 10% test sets. Additionally, we provide a specialized test set where sequences start either fully covered or uncovered and then transition through zig-zag uncovering/covering patterns. 
+
+# D ADDITIONAL EXPERIMENTS 
+
+D.1 MEMORY -C ARDS : D ISCRETE RECALL EVALUATION 
+
+This experiment evaluates the model’s ability to recall individual objects that have been concealed or occluded over time. We use the discrete Memory Cards dataset, specifically constructed for this purpose. We train a standard diffusion U-Net Sun et al. (2024) for 20k steps, as described in Section E.1. The evaluation input consists of video sequences showing a 4 × 4 grid of cards, which are sequentially revealed and concealed line by line. To measure object-level recall, we compute the tile-wise mean squared error (MSE) between the predicted and ground-truth frames at the end of each sequence. A grid tile is considered correctly reconstructed if its MSE falls below a threshold of 2 × 10 −5. Our method achieves a recall accuracy of 79.2% over a sample of 50 sequences with 20 memorization steps. In contrast, the standard diffusion (SD) baseline performs at chance level, achieving only 13%. See Section H for qualitative results. D.2 DML AB : D ETERMINISTIC ENVIRONMENT ANALYSIS 
+
+We replicate the Memory Maze experiment in DMLab, a fixed environment that allows for determin-istic evaluation of recall capabilities. The agent initially explores the maze to collect observations, 17 Published as a conference paper at ICLR 2026 after which we generate 50 future frames and compute LPIPS scores against ground-truth frames. We use a UViT model, as described in Section E.1. The baseline SD model achieves an LPIPS of 0.558, while our method improves this to 0.456, marking an 18% improvement. Notably, no clear overfitting ceiling is observed: increasing the number of memorization steps from 1000 to 2000 yields a modest further improvement of 0.028 in LPIPS. This suggests that, for deterministic tasks, performance may continue to benefit from additional memorization steps. Visual examples are provided in Section H. D.3 ABLATION : L ANGEVIN CORRECTION STEPS 
+
+Motivated by techniques from Du et al. (2023) and predictor-corrector sampling in diffusion mod-els Bradley & Nakkiran (2024), we examine whether inserting Langevin dynamics steps during sampling improves generation quality and memory recall. We conduct this ablation on the Memory Maze dataset, using 200 context frames and generating 17 future frames. We vary both the number and scale of Langevin steps, testing fixed step sizes as well as step sizes proportional to the noise schedule βt. Across all configurations, we observe no significant improvement over the baseline, indicating that these modifications do not provide a favorable tradeoff between computational cost and generation quality. Furthermore using unadjusted Hamiltonian Monte Carlo, did not yield better results, with the same settings as detailed in Du et al. (2023). D.4 EXPERIMENT ON MINECRAFT (O ASIS -STYLE SETTING ). CoME is intended as a general framework rather than a standalone world model: whenever diffusion-based world models are used, CoME can be layered on top. Beyond the diverse architectures evaluated in Tables 2–3, we additionally apply CoME to an Oasis/Diamond-style setup on the simpler Minecraft Marsh dataset. We train a diffusion model that takes 3 input context frames and predicts 17 future frames. The STM variant again uses doubled patch size for efficiency and 33 context frames to predict 17 future frames, while all other settings follow Section E.1. Table 6: Minecraft Marsh results (3 →17 prediction). CoME consistently improves perceptual and reconstruction metrics over the base model and single-expert variants. 
+
+Model LPIPS ↓ SSIM ↑ PSNR ↑
+
+Base 0.408 0.450 16.19 +STM 0.375 0.549 17.03 +LTM 0.389 0.552 17.28 CoME 0.369 0.574 17.78 These results demonstrate that CoME transfers effectively to Oasis-style diffusion world models in Minecraft, yielding consistent gains across perceptual similarity (LPIPS) and reconstruction metrics (SSIM, PSNR). 
+
+# E IMPLEMENTATION DETAILS 
+
+This section outlines the experimental configurations used across all datasets to ensure reproducibility of Composition of Memory Experts. For consistency, all memorization steps, i.e., the gradient updates on past trajectories, are performed using the AdamW optimizer Loshchilov & Hutter (2019) with the same learning rate and hyperparameters as during training. Unlike prior work Hong et al. (2025), we retain the conditioning during memorization, mirroring the training setup. Regarding hyperparameters of Composition of Memory Experts, we found that simple and stable settings (e.g. the same αi within a narrow, fixed range ∈ [2 , 3] for all experts) worked robustly across tasks. 18 Published as a conference paper at ICLR 2026 E.1 EXPERIMENTAL DETAILS 
+
+Memory-Maze We evaluate our approach on the Memory-Maze 9 ×9 environment using the DiT(-B) configuration Peebles & Xie (2022a). Input videos are 64 × 64 resolution and are subsampled every second frame. We train a VAE with 2× spatial downsampling. The model takes in a total of 20 frames, 3 context frames and predicts the next 17 frames. For relative positional encoding, we concatenate translational and rotational changes and stack conditioning channels for skipped frames. In the case of relative position conditioning, we omit conditioning on skipped frames. The model is trained for 150k steps with a batch size of 16. We generate 512 videos for evaluation and exclude the ground truth context frames from metric computations. We implement the STM as a DiT(-S) with sliding window attention chunk size of 20, with 2 full attention layers at the 2 and 6 layers, taking 33 frames as conditioning and predicting the next 17 frames. The LTM is simply the base model but with LoRA applied to query, key, value projections, MLPs, and out projections. The SLTM is implemented as a DiT(-B) transformer with patch size 4 (instead of 2). It takes absolute 2D position and angle (2+2 dimensions) as direct conditioning. To infer absolute position from relative motion alone, we train an additional encoder composed of 12 3D convolutional layers. This encoder uses embeddings formed by combining the current prediction of clean frames with the relative positioning information. In our experiments we infuse the SLTM with the information by test-time training similar to the LTM. Our baselines take 200 context frames and predict the next 17 frames. The full attention baseline consists of a DiT(-B) transformer with patch size 4. The SSM baseline employs a DiT(-B) transformer that processes 20 frames at a time. Every third layer integrates a Mamba Gu & Dao (2024) layer, which causally propagates information to subsequent chunks. For the sliding window baseline, we replace the Mamba global layers with full attention layers, which mimics our STM architecture. 
+
+RealEstate10K For RealEstate10K, we follow Song et al. (2025), reusing the pretrained model and associated hyperparameters. All methods use 4 context frames and 4 future frames within the attention window. We compare against DFoT Song et al. (2025), evaluating both History Guidance variants: vanilla (HG-v) and temporal (HG-t). Each method generates 256 videos for evaluation, with 4 clean ground truth frames provided as context. Note that this setting differs from the interpolation setup in Song et al. (2025), so reused hyperparameters may not be optimal. 
+
+DMLab For DMLab, we use a UViT backbone Hoogeboom et al. (2023), detailed in Table 7. We follow the same diffusion and sampling procedure as in Memory Maze, but employ a continuous noise schedule and operate in pixel space. Training uses a linear learning rate scheduler with 1000 warmup steps, a learning rate of 2 × 10 −4, weight decay of 0.001, and AdamW optimizer. Videos are resized to 64 × 64 and subsampled with a stride of 2. We train for 50k steps with a batch size of 256. Evaluation involves generating 512 videos using 50 DDIM steps. The SD baseline mirrors the sampling algorithm used for Memory Maze. Table 7: Configuration of the UViT3D model. 
+
+Component Setting 
+
+Encoder Channels [128, 128, 256, 256] Block Types 2×ResBlock, 2×TransformerBlock Up/Down Blocks [3, 3, 3] Embedding Dimension 1024 Patch Size 2Mid Transformer Blocks 16 Attention Heads 4
+
+Minecraft We adopt the DiT architecture Peebles & Xie (2022a), diffusion framework, and training hyperparameters from Song et al. (2025). We train a latent diffusion model using precomputed latents obtained from a pretrained image VAE Rombach et al. (2021). The model attends to a 20-frame 19 Published as a conference paper at ICLR 2026 window with 3 clean context frames. For the STM, we double the patch size for efficiency and use 33 context frames to predict 17 future frames. Other settings follow Section E.1. 
+
+Memory-Cards We use a UNet backbone Sun et al. (2024), detailed in Table 8. Input resolution is 48 × 48 . The model is conditioned on 3 frames to predict 5 future frames. Diffusion and training settings follow those used for DMLab. We train for 20k steps with a batch size of 256 until convergence. For evaluation, we sample 100 videos using 20 DDIM steps. Table 8: Configuration of the UNet3D backbone. 
+
+Component Setting 
+
+Encoder Channels [64, 128, 256, 512] Number of Resnets in Block 8Attention Resolutions [8, 16, 32, 64] Attention Heads 4
+
+# F COMPUTE ANALYSIS 
+
+For our compute analysis, we employ the DiT configuration used in the Memory Maze experiments, retaining most settings as described in Sections E.1. Inference with memory adaptation generally requires up to 2 × n − 1 compute compared to the base model, where n is the additional number of experts we chose , due to the need for multiple forward passes, one through the expert model and another through the contrastive expert. However, the actual overhead depends heavily on the size of the expert networks. In settings where the experts have significantly fewer parameters than the base model (e.g., 45% of the pretrained model’s size in the STM, SLTM), the additional compute can be substantially reduced. In our Memory Maze setting, this results in only a 2× increase with the addition of LTM and a 3× increase in forward compute for using all experts in CoME. Table 9: Average runtime (in seconds) for memorization and sampling . For 50 memorization and 50 denoising steps with different LTM, such as different LoRA ranks and a smaller adapter network. 
+
+Adapter Config Memorization Time Sample Time 
+
+r = 64 3.33 1.88 
+
+r = 32 2.42 1.88 
+
+r = 16 2.07 1.87 LTM (45%) 4.01 1.38 We compare the memorization and sampling time in the streaming setting from Section 4, we evaluate the runtime on a Nvidia RTX 4090 by sampling 64 videos with activated TorchScript compilation. Each video involves 50 sampling steps interleaved with 50 memorization steps. Average runtimes for different adapter configurations are presented in Table 9. 
+
+# G LIMITATIONS 
+
+While CoME provides a flexible and effective framework for composing heterogeneous memory experts, CoME relies on the assumption that each expert provides plausible and reasonably calibrated predictions. In practice, we observed failure cases primarily when one expert produced outputs that the remaining experts considered implausible. This typically occurred when an expert’s expressiveness was severely constrained (e.g., due to aggressive parameter reduction), preventing it from reproducing basic scene structure. In such cases, the fused prediction can degrade in quality. While we did not observe instability under normal settings, CoME remains sensitive to the quality and capacity of its constituent experts. 20 Published as a conference paper at ICLR 2026 
+
+# H ADDITIONAL VISUAL EXAMPLES 
+
+This section provides qualitative results that complement the main experiments described in Sec-tion E.1. For each dataset, we visualize the generations produced by our model after receiving a fixed context window. The context frames are highlighted in red. The sampling configuration matches that used in Section E.1. We present results across the Memory Maze (Figures 6 and 7), RealEstate10K (Figures 8 and 9), DMLab (Figure 10), and Memory Cards (Figure 11) environments, highlighting spatial and temporal coherence in the generated rollouts. For DMLab datasets, we pick videos where the memory is required, so when the actions lead to a revisit of the scene. For the other datasets, we randomly pick videos for visualization. 
+
+# I LARGE LANGUAGE MODEL USAGE 
+
+Large language models were used solely to assist in revising and improving the clarity, structure, and grammar of the camera-ready manuscript. No LLMs were used for generating experimental results, modifying data, designing algorithms, or conducting analyses. All technical content, experiments, and conclusions were developed and verified by the authors. 21 Published as a conference paper at ICLR 2026 
+
+Figure 6: Memory Maze – CoME. After memorizing a trajectory through the maze, and only given three context frame, the model generates frames that accurately reflect the correct turns and re-entries. 22 Published as a conference paper at ICLR 2026 
+
+Figure 7: Memory Maze – CoME. After memorizing a trajectory through the maze, and only given three context frame, the model generates frames that accurately reflect the correct turns and re-entries. 23 Published as a conference paper at ICLR 2026 
+
+Figure 8: RealEstate10K - CoME. We provide 4 ground truth context frames, here highlighted with a red border. We generate 3 forward rollouts and 3 rollouts with the reversed trajectory camera position. 24 Published as a conference paper at ICLR 2026 
+
+Figure 9: RealEstate10K - CoME. We provide 4 ground truth context frames, here highlighted with a red border. We generate 3 forward rollouts and 3 rollouts with the reversed trajectory camera position. 25 Published as a conference paper at ICLR 2026 
+
+Figure 10: DMLab - CoME. Given 50 context frames, here highlighted with a red border, we visualize the next 4 rollouts. Our method produces coherent forward trajectories that reflect consistent agent movement and scene structure. 26 Published as a conference paper at ICLR 2026 
+
+Figure 11: Memory Cards — Discrete object recall. At the end of the sequence, the model is evaluated on its ability to regenerate occluded tiles. After being shown a sequence of uncovering and covering actions, such that all tiles were visible at some point, our method more accurately recalls the occluded tiles, here given as ’target’, demonstrating effective memory recall. 27
