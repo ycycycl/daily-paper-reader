@@ -1,0 +1,709 @@
+Title: HoloMotion-1 Technical Report
+
+URL Source: https://arxiv.org/pdf/2605.15336v1
+
+Published Time: Mon, 18 May 2026 00:11:36 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# HoloMotion-1 Technical Report 
+
+Maiyue Chen , Kaihui Wang , Bo Zhang , Xihan Ma , Zhiyuan Yang , Yi Ren , Qijun Huang , Zihao Zhu ,
+
+Yucheng Wang , Zhizhong Su Horizon Robotics 
+
+In this report, we present HoloMotion-1, a humanoid motion foundation model for zero-shot whole-body motion tracking. A key innovation of HoloMotion-1 is to scale control-policy training with a large-scale hybrid motion corpus, where video-reconstructed motions from in-the-wild videos pro-vide the dominant source of motion diversity, while curated motion-capture and in-house motion data provide higher-fidelity supervision and deployment-oriented coverage. This data regime en-ables HoloMotion-1 to move beyond conventional MoCap-only training and exposes the policy to substantially broader behaviors, capture conditions, and motion styles. Learning from such heterogeneous data introduces new challenges, including reconstruction noise, source-domain mismatch, uneven motion quality, and the need for temporal modeling under large behavioral variation. To address these challenges, HoloMotion-1 integrates large-capacity temporal modeling, a sparsely activated Mixture-of-Experts (MoE) Transformer with KV-cache inference for real-time control, and a sequence-level training strategy that improves learning efficiency on ex-tended motion sequences. Extensive experiments on multiple unseen motion benchmarks show that HoloMotion-1 generalizes robustly across diverse motion types and capture conditions, significantly improves tracking accuracy over prior methods, and transfers directly to a real humanoid robot without task-specific fine-tuning. 
+
+Code: https://github.com/HorizonRobotics/HoloMotion 
+
+Webpage: https://horizonrobotics.github.io/robot_lab/holomotion 
+
+Correspondence: Yucheng Wang at yucheng.wang@horizon.auto 
+
+Figure 1: (a) The MoE-Transformer policy network architecture; (b) HoloMotion achieves the lowest overall mean per-keypoint position error; (c) HoloMotion consistently outperforms all compared methods across diverse datasets; (d) the training and inference speedup brought by our sequence-level optimization and KV-cache design. 1
+
+> arXiv:2605.15336v1 [cs.RO] 14 May 2026
+
+# 1 Introduction 
+
+Robust humanoid motion tracking is fundamental to reliable whole-body control. By imitating reference motions, tracking policies enable agile and expressive full-body behaviors on real robots. Despite recent progress in imitation-based reinforcement learning [1, 2, 3, 4], most existing systems are trained on relatively limited motion capture datasets using modest-capacity policies, and often struggle when confronted with unseen motion styles or degraded sensing conditions. In contrast, large-scale pretraining has fundamentally reshaped language modeling, where web-scale data combined with high-capacity models enables generalization far beyond carefully curated datasets [5]. This paradigm motivates an analogous question for robotics: can humanoid motion tracking benefit from scaling both motion data diversity and policy capacity, especially when large-scale video-reconstructed motions are incorporated into the training corpus? In this report we explore this question using motion reconstructed from large collections of in-the-wild videos [6], which provide orders of magnitude more motion diversity than traditional motion capture datasets. However, scaling humanoid motion tracking is fundamentally harder than scaling language models. Zero-shot tracking under unseen behaviors and capture conditions requires broad motion coverage, suggesting a transition from small curated MoCap datasets to large heterogeneous motion corpora. In HoloMotion-1, the dominant scaling source comes from motions reconstructed from in-the-wild videos, which provide substantially broader behavioral diversity than conventional motion-capture datasets. At the same time, we retain curated MoCap and in-house motion sources to provide cleaner supervision and deployment-relevant motion patterns. This hybrid regime is more scalable than MoCap-only training, but also introduces reconstruction noise, source-domain heterogeneity, and uneven motion quality. As a result, scaling motion tracking to large-scale heterogeneous motion corpora introduces both a modeling challenge that arises from learning from diverse motion signals with imperfect supervision and a systems challenge that arises from meeting strict latency constraints required for real-time humanoid control. These challenges motivate a foundation-model approach to humanoid motion learning. Conventional MLP policies are computationally efficient but lack explicit sequence modeling capability, limiting their ability to represent diverse and long-horizon motion patterns. Transformer architectures [7] provide a natural interface for sequence modeling and exhibit favorable scaling behavior in large-data regimes [5, 8], making them a promising candidate for learning from large-scale heterogeneous motion corpora. However, naively scaling Transformers introduces two bottlenecks that are less prominent in typical language modeling settings: train-ing high-capacity sequence models becomes expensive at large data scale, and dense Transformer inference can exceed the latency budget required for real-time closed-loop humanoid control. In this report we present HoloMotion-1 , a humanoid motion foundation model trained on a video-derived hybrid motion corpus for robust zero-shot whole-body motion tracking. HoloMotion-1 is built to absorb large and heterogeneous motion data while remaining deployable for real-time control on physical humanoid robots. HoloMotion-1 brings large-scale video-reconstructed motions into a deployable whole-body tracking system, while retaining curated MoCap and in-house motion sources for fidelity and deployment coverage. At the model level, the system adopts a Transformer-based motion tracking architecture that explicitly models tem-poral dependencies in motion sequences. To make large-capacity models deployable in latency-constrained robotic settings, HoloMotion-1 employs a sparsely activated Mixture-of-Experts (MoE) Transformer with KV-cache inference, allowing only a small subset of experts to be activated at each control step while pre-serving high model capacity. At the training level, we introduce a sequence-level PPO optimization paradigm that operates on motion segments rather than individual timesteps, reducing redundant computation on long motion clips and substantially improving training efficiency when learning from large-scale heterogeneous motion corpora. We evaluate HoloMotion-1 through extensive out-of-domain generalization experiments on multiple unseen motion datasets covering diverse motion types and capture devices, together with comparisons against prior methods, efficiency analysis, and direct transfer experiments on real humanoid hardware. Our main technical components and findings can be summarized as follows: 2• We present HoloMotion-1, a large-scale humanoid motion foundation model trained on a video-derived hybrid motion corpus. By integrating large-scale heterogeneous motion data, sparse MoE Trans-former modeling, and deployment-oriented training and inference design, HoloMotion-1 achieves ap-proximately 40% lower global tracking error than the strongest evaluated baseline. • We design a sparsely activated MoE Transformer motion tracker with KV-cache inference that pre-serves high model capacity while meeting real-time closed-loop control constraints, improving inference efficiency by up to 4×.• We introduce a sequence-level PPO training paradigm for autoregressive Transformer policies, reducing redundant computation on long motion clips and improving training efficiency by up to 22 ×.• We establish a comprehensive zero-shot evaluation across five unseen motion datasets spanning diverse motion types and capture devices, demonstrating strong generalization and direct transfer to a real humanoid robot without task-specific fine-tuning. 
+
+# 2 Background 
+
+# 2.1 From Curated Motion Capture to Hybrid Large-Scale Motion Corpora 
+
+Humanoid motion tracking has traditionally relied on curated motion-capture datasets, most notably AMASS [9], as well as laboratory-collected corpora such as LAFAN1 [10], OMOMO [11], and Human-Act12 [12]. These datasets provide clean and well-aligned motion sequences and have enabled stable training of imitation and reinforcement-learning policies. However, their scale and behavioral coverage are often limited compared with the diversity required by zero-shot whole-body humanoid tracking. Recent efforts have started to scale humanoid motion learning with larger motion corpora. Some systems scale primarily with high-quality curated or in-house motion data, while another emerging direction recon-structs human motion from large collections of in-the-wild videos [6]. Video-reconstructed motions provide substantially broader behavioral diversity and are easier to scale, but they also introduce reconstruction artifacts, viewpoint-induced errors, and heterogeneous motion quality. HoloMotion-1 follows a hybrid data strategy: it uses video-reconstructed motions as the dominant source of diversity, while complementing them with curated MoCap and in-house motion sources to improve motion fidelity, coverage, and deployment rel-evance. 
+
+# 2.2 High-Capacity Policies for Real-Time Humanoid Control 
+
+Humanoid motion tracking policies must balance representational capacity for diverse motions with strict latency requirements for high-frequency closed-loop control. Most existing systems adopt MLP-based policies trained via reinforcement learning [13, 14, 1, 2]. These architectures are computationally efficient and suitable for real-time deployment, but provide limited explicit sequence modeling capability as motion diversity and temporal complexity increase. To improve policy capacity, some approaches augment MLPs with Mixture-of-Experts (MoE) mechanisms. In many cases, however, MoE layers are deployed with dense activation, which increases both model capacity and per-step computation. Transformer architectures [7] provide an alternative sequence modeling paradigm and have demonstrated strong scaling behavior in large-data regimes [5, 8]. Transformers have recently been explored in robot manipulation [15, 16] and humanoid control [17, 18, 19]. Nevertheless, many existing implementations rely on dense sequence models, where increasing model capacity directly increases inference cost and may exceed the latency budget required for real-time humanoid control. 3Figure 2: Real-world zero-shot transfer of the HoloMotion policy. In the first row, the robot performs high-dynamic dancing reconstructed from in-the-wild videos. In the second row, the robot performs contact-rich and difficult kung fu motions. The last two rows showcase real-time teleoperation with robust tracking performance. See the supplementary video for full demonstrations. 
+
+# 2.3 Training High-Capacity Sequence Policies 
+
+Training high-capacity Transformer policies for humanoid control introduces additional challenges, particu-larly when motion sequences become long. Prior work explores several training paradigms. Some approaches rely on supervised behavior cloning from curated demonstrations [19]. Others adopt expert decomposition and distillation strategies to train a generalist Transformer policy [20]. Reinforcement learning approaches such as PPO with history windows are also commonly used to train policies with temporal context [17]. As model capacity and sequence length increase, however, these training paradigms can become compu-tationally expensive, especially when applied to large-scale motion corpora. Improving training efficiency for sequence policies therefore remains an important challenge when scaling humanoid motion learning to large-scale heterogeneous motion corpora. 43 HoloMotion-1 Foundation Model 
+
+HoloMotion-1 learns a goal-conditioned control policy for humanoid whole-body motion tracking. The control problem is formulated as a goal-conditioned Partially Observable Markov Decision Process (POMDP) defined over a continuous state space S, an action space A, and an observation space O. At each control step t,the underlying physical state of the robot, including generalized coordinates, velocities, and contact-related variables, is represented by the state vector st ∈ S. Because this exact physical state cannot be perfectly measured on real-world humanoid robots, the environment provides an observation vector ot ∈ O generated according to an observation model p(ot | st).The tracking objective is specified by a reference kinematic state provided by the environment, denoted as the goal state sref  
+
+> t
+
+. In practice, this goal specification may include a short-horizon lookahead window 
+
+sref  
+
+> t:t+H
+
+, which exposes future reference poses to the policy and allows the controller to anticipate upcoming motion transitions. Conditioned on the processed observation or observation history ˜ot, the policy selects a continuous control action at ∈ A according to the parameterized policy πθ (· | ˜ot). After applying this action, the environment evolves to a new state st+1 according to the transition dynamics distribution p(· | st, at).At every step the agent receives a reward signal measuring tracking performance with respect to the reference motion. This reward is defined as r(st, at; sref  
+
+> t
+
+) and captures how closely the robot’s motion matches the reference trajectory while maintaining physically stable behavior. Given a discount factor γ ∈ [0 , 1) , the learning objective is to optimize the policy parameters θ such that the expected discounted return 
+
+E
+
+[ ∑ 
+
+> t≥0
+
+γtr(st, at; sref  
+
+> t
+
+)
+
+]
+
+is maximized. The complete control formulation can therefore be summarized by the POMDP tuple 
+
+P = ⟨S, A, p, r, O, γ ⟩.
+
+This formulation provides a unified interface for training HoloMotion-1 on large-scale motion corpora while enabling deployment under real-time closed-loop humanoid control. 
+
+# 3.1 Motion Tracking Formulation 
+
+This section describes the task formulation used to train HoloMotion-1 for humanoid whole-body motion tracking. The formulation defines the observation representation, reward function, termination conditions, domain randomization strategy, and the low-level control interface that together specify the learning problem for the tracking policy. 
+
+3.1.1 Observation 
+
+At each control step t, the policy receives an observation vector composed of two primary components: proprioceptive feedback and reference motion features, denoted as oprop  
+
+> t
+
+and oref  
+
+> t
+
+, respectively. The complete observation vector is defined as 
+
+ot = [oprop  
+
+> t
+
+, oref 
+
+> t
+
+]. (1) The proprioceptive component oprop  
+
+> t
+
+captures the currently observable physical state of the robot together with recent control history. This includes the projected gravity vector, root angular velocity, joint positions and velocities, as well as the action applied at the previous control step. The reference component oref  
+
+> t
+
+encodes the target motion trajectory. It contains the current reference kine-matic state sref  
+
+> t
+
+together with a lookahead window spanning H = 10 future control steps. This lookahead 5window provides the policy with short-horizon future motion targets, including reference gravity, root ve-locity, joint targets, and root height, enabling the controller to anticipate upcoming motion transitions. During training, the actor policy operates on noise-injected observations ˜ot, which are obtained by adding sampled noise ϵt to the clean observation: 
+
+˜ot = ot + ϵt. (2) In contrast, the critic network evaluates the state using the clean observation ot augmented with privileged information opriv  
+
+> t
+
+. This privileged vector includes exact simulation states that are not available on real robots, such as anchor pose differences, heading-aligned reference root states, and precise robot link states. Providing this information during training improves the accuracy of value estimation without affecting deployment. Table 1 summarizes the observation design and the associated noise distributions. 
+
+Observation Equation Actor noise 
+
+Proprioceptive Observation 
+
+Projected gravity gproj  
+
+> t
+
+U(−0.1, 0.1) 
+
+Root angular velocity ωt U(−0.2, 0.2) 
+
+Joint positions (rel.) qt − q0 U(−0.01 , 0.01) 
+
+Joint velocities ˙qt U(−0.5, 0.5) 
+
+Previous action at−1 None 
+
+Goal Kinematic States 
+
+Ref. projected gravity ˆgproj  
+
+> t:t+H
+
+U(−0.1, 0.1) 
+
+Ref. base lin. vel ˆvbase  
+
+> t:t+H
+
+U(−0.1, 0.1) 
+
+Ref. base ang. vel ˆωbase  
+
+> t:t+H
+
+U(−0.1, 0.1) 
+
+Ref. joint targets ˆqt:t+H U(−0.05 , 0.05) 
+
+Ref. root height ˆht:t+H U(−0.1, 0.1) 
+
+Table 1: Observation design and the noise perturbation added to the actor policy during training. 
+
+3.1.2 Reward 
+
+The reward function is designed to encourage accurate motion tracking while maintaining stable and phys-ically plausible robot behavior. A dense reward is used that combines multiple tracking objectives with regularization terms: 
+
+rt = ∑
+
+> i
+
+wi r(i) 
+
+> t
+
+. (3) Tracking terms measure how well the robot follows the reference motion through root-relative key-body tracking, root velocity tracking, and a local five-point body-position objective. Absolute root position and orientation rewards are disabled in the configuration used for our main experiments. Additional penalty terms regularize the control policy by discouraging excessive control variation, high joint acceleration, joint limit violations, and unstable contacts. These regularization terms improve training stability and contribute to robust real-world deployment. For ratio rewards, ρ(·, ·) denotes the relative velocity error with a small stabilizing constant ϵ = 0 .1. The local point set B5 contains the torso, both wrists, and both ankles, with a vertical torso offset. Table 2 lists the reward components used in our main experiments. 6Reward Term Equation Weight 
+
+Tracking rewards 
+
+Alive ralive (t) = 1 0.1 Key body position rkb pos (t) = exp 
+
+(
+
+− 1
+
+> |B|
+
+∑  
+
+> b∈B
+> ∥pp, rel
+> t,b −pg, rel
+> t,b ∥22
+> 0.32
+
+)
+
+1.0 Key body rotation rkb ori (t) = exp 
+
+(
+
+− 1
+
+> |B|
+
+∑  
+
+> b∈Bdquat (qp, rel
+> t,b ,qg, rel
+> t,b )2
+> 0.42
+
+)
+
+1.0 Key body linear velocity rkb lin (t) = exp 
+
+(
+
+− 1
+
+> |B|
+
+∑
+
+> b∈B
+> ∥vpt,b −vgt,b ∥22
+> 1.02
+
+)
+
+1.0 Key body angular velocity rkb ang (t) = exp 
+
+(
+
+− 1
+
+> |B|
+
+∑
+
+> b∈B
+> ∥ωpt,b −ωgt,b ∥22
+> 3.14 2
+
+)
+
+1.0 Root linear velocity ratio rroot lin (t) = exp 
+
+(
+
+− ρ(vpt ,vgt )2
+
+> 1.02
+
+)
+
+1.0 Root angular velocity ratio rroot ang (t) = exp 
+
+(
+
+− ρ(ωpt ,ωgt )2
+
+> 1.02
+
+)
+
+1.0 Local five-point position r5pt pos (t) = exp 
+
+(
+
+− 15
+
+∑  
+
+> b∈B5
+> ∥pp, local
+> t,b −pg, local
+> t,b ∥22
+> 0.12
+
+)
+
+2.0 
+
+Penalty terms 
+
+Action rate ract (t) = ∥at − at−1∥22 -0.2 Joint acceleration racc (t) = ∥¨qt∥22 −10 −6
+
+Joint limit rjlim (t) = ∑ 
+
+> j
+
+I[qt,j /∈ [qmin  
+
+> t,j
+
+, qmax  
+
+> t,j
+
+]] -10.0 Undesired contacts rcontact (t) = ∑  
+
+> c/∈Callow
+
+I[∥Ft,c ∥ > F th 
+
+] -0.1 Table 2: Reward function formulations and corresponding coefficients used for motion tracking training. 
+
+3.1.3 Termination 
+
+Episode termination occurs either when the maximum episode length is reached or when the robot deviates significantly from the reference motion. In our main experiments, early termination is defined using projected-gravity, key-body height, and pelvis position thresholds. First, let ˆgproj  
+
+> t
+
+denote the reference projected gravity vector. An episode terminates if the Euclidean distance between the robot’s projected gravity vector and the reference exceeds δg = 0 .8:
+
+∥gproj  
+
+> t
+
+− ˆgproj  
+
+> t
+
+∥2 > 0.8.
+
+Second, let Bz denote critical body links consisting of the pelvis, both ankles, and both wrists. The episode terminates if the maximum vertical tracking error across these links exceeds δz = 0 .25 :max 
+
+> b∈Bz
+
+|pp,z t,b − pg,z t,b | > 0.25 .
+
+Third, pelvis position drift is constrained directly: 
+
+∥ppt, pelvis − pgt, pelvis ∥2 > 0.25 .
+
+These termination conditions prevent unstable rollouts and encourage policies that maintain consistent alignment with the reference motion. 
+
+3.1.4 Domain Randomization 
+
+To improve robustness and sim-to-real transfer, domain randomization is applied during training. The configuration used for our main experiments randomizes observation noise, action delay, initial motion state, contact material properties, mass, center-of-mass offsets, and actuator gains. In addition, periodic external perturbations in the form of random pushes are applied during rollouts, and training is performed on a 7rough height-field terrain. These perturbations expose the policy to disturbances and encourage recovery behaviors. Table 3 summarizes the domain randomization configuration. 
+
+Parameter Sampling Distribution 
+
+Control and terrain 
+
+Action delay da ∼ Uniform {0, 1, 2} steps Terrain height noise hterrain ∼ U [0 .0, 0.04] m
+
+Physical parameters 
+
+Static friction coefficient μs ∼ U [0 .3, 1.6] 
+
+Dynamic friction coefficient μd ∼ U [0 .3, 1.2] 
+
+Restitution coefficient e ∼ U [0 , 0.5] 
+
+Default joint positions q0 ← q0 + U [−0.01 , 0.01] 
+
+Pelvis/torso mass offset ∆m ∼ U [−1.0, 2.0] kg Torso COM offset 
+
+∆x ∼ U [−0.075 , 0.075] ∆y ∼ U [−0.1, 0.1] ∆z ∼ U [−0.1, 0.1] 
+
+PD gain scaling kp, k d ← kp, k d · U [0 .9, 1.1] 
+
+Initial-state perturbations 
+
+Root position ∆x, ∆y ∼ U [−0.05 , 0.05] , ∆z ∼ U [−0.01 , 0.01] 
+
+Root orientation ∆r, ∆p ∼ U [−0.1, 0.1] , ∆ψ ∼ U [−0.2, 0.2] 
+
+Root velocity ∆vx,y ∼ U [−0.5, 0.5] , ∆vz ∼ U [−0.2, 0.2] 
+
+Joint positions ∆q ∼ U [−0.1, 0.1] 
+
+Root velocity perturbations 
+
+Push interval ∆t ∼ U [1 , 3] 
+
+Root linear velocity 
+
+vx ∼ U [−0.5, 0.5] 
+
+vy ∼ U [−0.5, 0.5] 
+
+vz ∼ U [−0.2, 0.2] 
+
+Root angular velocity 
+
+ωroll ∼ U [−0.52 , 0.52] 
+
+ωpitch ∼ U [−0.52 , 0.52] 
+
+ωyaw ∼ U [−0.78 , 0.78] 
+
+Table 3: Domain randomization parameters and their corresponding sampling distributions applied during training. 
+
+3.1.5 Action and Low-Level Control 
+
+The policy outputs normalized action commands that parameterize joint position targets around default joint configurations: 
+
+qtar  
+
+> t
+
+= q0 + s ⊙ at, (4) where s denotes a per-joint scaling vector. These target positions are tracked by per-joint proportional-derivative (PD) controllers that convert position errors into torque commands: 
+
+τt = kp ⊙ (qtar  
+
+> t
+
+− qt) − kd ⊙ ˙qt. (5) This control interface provides a stable low-level actuation layer while allowing the learned policy to operate in joint position space. 83.2 Sparse MoE Transformer Policy 
+
+HoloMotion-1 adopts a causal decoder-only Transformer architecture with sparsely activated Mixture-of-Experts (MoE) layers to map goal-conditioned observation streams to continuous joint-space control actions. The control policy is implemented as a Transformer sequence model that processes temporal observation tokens and outputs joint-level control commands. During training, a separate value network is used to estimate the expected return of the current state using noise-free observations and privileged information. Figure 1-(a) illustrates the overall architecture of the HoloMotion-1 policy network. 
+
+3.2.1 Tokenization 
+
+At each control step t, the observation is converted into a token representation xt ∈ Rdin by concatenating proprioceptive signals and reference motion features. The reference component includes a fixed look-ahead window of H future reference frames (see Table 1), allowing the model to anticipate upcoming motion transitions. The resulting observation vector is normalized using a running empirical mean and variance updated via an exponential moving average (EMA) during training. The normalized vector is then projected into the hidden model dimension d through a lightweight MLP projection layer to form the Transformer input token. 
+
+3.2.2 Transformer Backbone 
+
+The core control model is a decoder-only Transformer [7] that operates autoregressively over a rolling context window of the most recent C tokens. The architecture follows a pre-norm residual design with RMSNorm [21] and rotary positional embeddings (RoPE) [22]. To improve computational efficiency, the causal self-attention mechanism uses grouped-query attention (GQA) [23], configured with nh query heads and nkv key-value heads. Training stability is further en-hanced using query-key normalization (QK-Norm) [24] and a lightweight sigmoid gating mechanism applied to attention outputs (Gated-Attention) [25]. This Transformer backbone enables explicit sequence modeling of motion trajectories while maintaining efficient inference for real-time control. 
+
+3.2.3 Mixture-of-Experts 
+
+To increase model capacity while maintaining bounded inference cost, HoloMotion-1 employs a sparse Mixture-of-Experts (MoE) architecture. The policy uses a reference-routed grouped MoE Transformer block without a leading dense feed-forward layer. This design concentrates capacity in a large expert pool while keeping the number of activated experts small at each control step. For an input token representation u, the MoE layer combines a shared dense expert fsh with a set of E
+
+specialized experts {fi}Ei=1 . A learned routing network selects the top-k experts for each token, forming the index set Tk(u). Each selected expert contributes to the output using normalized mixture weights αi(u).The resulting computation is MoE (u) = fsh (u) + ∑ 
+
+> i∈Tk(u)
+
+αi(u) fi(u). (6) This sparse expert routing significantly increases the model’s representational capacity while limiting the per-token expert computation to k, making the architecture suitable for real-time humanoid control. 93.2.4 Router 
+
+Routing quality is a key factor in the effectiveness of MoE policies. We find that naively combining propri-oceptive observations with reference motion inputs for routing leads to severe sim-to-real degradation. This occurs because routing decisions significantly influence policy behavior; when the router becomes sensitive to low-level dynamic variations, unavoidable sim-to-real discrepancies can amplify routing oscillations and ultimately destabilize real-world execution. Therefore, we deliberately separate the router input pathway and condition the router exclusively on the reference motion input. This design reduces the sensitivity of expert assignment to robot-state sim-to-real discrepancies, while keeping routing decisions consistent for the same reference motion across simulation and deployment. 
+
+3.2.5 Action Distribution 
+
+The final Transformer hidden state is mapped to a Gaussian action distribution using a lightweight MLP prediction head. The head outputs the mean vector μt of the policy distribution, while the policy uncertainty is parameterized by a learnable state-independent log-standard-deviation vector log σ, forming a diagonal covariance matrix diag (σ2). The continuous action at is sampled from this Gaussian distribution. 
+
+3.2.6 Auxiliary Losses 
+
+To improve optimization efficiency and encourage the Transformer to encode motion-relevant structure before sparse expert routing, we attach auxiliary prediction heads to the pre-MoE hidden representation. These heads are used only during training and provide direct supervision on low-dimensional kinematic signals that are strongly correlated with successful motion tracking. In the configuration used for our experiments, the active auxiliary objectives supervise base linear velocity, key-body contact states, reference key-body positions relative to the root, and robot key-body positions relative to the root. We additionally employ a router-side dead-expert margin regularizer to mitigate expert under-utilization. Let mbt ∈ { 0, 1} denote the valid-token mask for batch index b and time index t, and let N = ∑ 
+
+> b,t
+
+mbt . The auxiliary objective added to the actor loss is 
+
+Laux = λvel Lvel + λcontact Lcontact + λref Lref + λrobot Lrobot + λdead Ldead ,
+
+where the released HoloMotion-1 configuration uses λvel = λcontact = 10 −2, λref = λrobot = 10 −1, and 
+
+λdead = 10 −1.For base-velocity prediction, the auxiliary head outputs a diagonal Gaussian with mean ˆμvbt ∈ R3 and standard deviation ˆσvbt ∈ R3. The corresponding negative log-likelihood is 
+
+Lvel = 1
+
+N
+
+∑
+
+> b,t
+
+mbt · 12
+
+> 3
+
+∑
+
+> j=1
+
+( vbtj − ˆμvbtj 
+
+ˆσvbtj 
+
+)2
+
++ 2 log ˆσvbtj 
+
+ ,
+
+where vbt is the ground-truth base linear velocity and the predicted standard deviation is clamped to a fixed interval for numerical stability. This term encourages the pre-MoE representation to preserve compact global dynamics information. Let Kc denote the number of supervised key bodies for contact prediction, let cbtk ∈ { 0, 1} be the ground-truth contact label, and let ˆℓbtk be the predicted contact logit. The contact loss is 
+
+Lcontact = 1
+
+N K c
+
+∑
+
+> b,t
+
+mbt Kc∑
+
+> k=1
+
+BCE (ˆℓbtk , c btk 
+
+),
+
+where BCE (·, ·) denotes the binary cross-entropy with logits. This objective promotes sensitivity to gait phase and support transitions. 10 Let Kp denote the number of supervised key bodies for position prediction. The reference-position head predicts root-relative reference key-body positions ˆpref  
+
+> btk
+
+∈ R3 and is supervised by pref  
+
+> btk
+
+from the current reference motion. The corresponding masked mean-squared error is 
+
+Lref = 13N K p
+
+∑
+
+> b,t
+
+mbt Kp
+
+∑
+
+> k=1
+
+∥∥ˆpref  
+
+> btk
+
+− pref 
+
+> btk
+
+∥∥22 .
+
+The robot-position head uses the same supervised body set, but its targets are the robot key-body positions transformed into the root-relative frame. If ˆprobot  
+
+> btk
+
+, probot  
+
+> btk
+
+∈ R3 are the predicted and target robot key-body positions, the loss is 
+
+Lrobot = 13N K p
+
+∑
+
+> b,t
+
+mbt Kp
+
+∑
+
+> k=1
+
+∥∥ˆprobot  
+
+> btk
+
+− probot 
+
+> btk
+
+∥∥22 .
+
+Together, these two position losses encourage the pre-MoE representation to encode both the reference motion geometry and the robot-specific kinematic realization. Finally, to reduce expert collapse in sparse routing, we introduce a dead-expert margin loss. For each MoE layer ℓ, let E denote the number of fine experts, let sℓbte be the router score for expert e at token (b, t ), and let τ ℓbt be the score of the k-th selected expert, i.e., the routing threshold induced by top-k selection. Let Dℓ
+
+be the set of experts that receive no tokens in the current batch. The per-layer dead-expert margin loss is 
+
+Lℓ 
+
+> dead
+
+= 1
+
+BT max (1 , |Dℓ|)
+
+∑
+
+> b,t
+
+∑
+
+> e∈Dℓ
+
+[τ ℓbt − sℓbte 
+
+] 
+
+> +
+
+,
+
+where [x]+ = max (x, 0) and BT is the number of tokens in the update batch. The final Ldead is averaged over MoE layers. This regularizer drives inactive experts toward the current routing frontier, improving expert utilization while preserving the sparsity structure of top-k routing. 
+
+3.2.7 Value Network 
+
+During training, a value network is used to estimate the expected return of the current state. The value function is parameterized as an MLP that predicts a scalar value Vψ (ot, opriv  
+
+> t
+
+) from the observation and privileged state information. To improve value estimation accuracy, the value network receives noise-free observations together with priv-ileged simulation states, including anchor pose differences and exact link states. These privileged signals are used only during training and are not required during deployment. In the default HoloMotion-1 configuration, the hidden model dimension is set to d = 512 , and the Transformer contains a single sparse MoE layer without a leading dense feed-forward layer. The attention module uses 
+
+nh = 8 query heads and nkv = 4 key-value heads with a context window of C = 32 tokens. The MoE routing layer contains E = 1024 fine experts, includes one shared expert, and activates the top k = 2 fine experts per token. 
+
+# 3.3 Sequence-Level Policy Optimization 
+
+Optimizing high-capacity sequence models for humanoid control presents a significant efficiency challenge. Standard Proximal Policy Optimization (PPO) [26] typically flattens rollout trajectories and updates the policy using randomly shuffled individual time steps. This design is well suited for policies that operate on static per-step feature vectors. However, HoloMotion-1 employs a causal Transformer policy whose decision at step t depends on an ordered sequence of historical observations up to the context length C.11 Let the observation prefix be denoted as ˜ot−C+1: t, and the policy as πθ (at | ˜ot−C+1: t). Applying standard step-level PPO in this setting requires storing and recomputing the entire observation prefix for every sam-pled step during optimization. Because these prefixes overlap heavily within a mini-batch, this results in redundant O(C) computation per step and becomes a major memory and compute bottleneck when scaling to large motion corpora. To address this limitation, HoloMotion-1 adopts a sequence-level policy optimization strategy. Instead of shuffling individual time steps, training preserves contiguous rollout segments of length T collected from a batch of B parallel environments. This design leverages the autoregressive factorization of the trajectory distribution: 
+
+πθ (a1: T | ˜o1: T ) = 
+
+> T
+
+∏
+
+> t=1
+
+πθ (at | ˜o1: t). (7) With this formulation, a single batched forward pass can compute the action log-probabilities for all BT 
+
+time steps simultaneously. This eliminates the repeated evaluation of highly overlapping observation prefixes and significantly improves training efficiency for long motion sequences. The resulting optimization objective follows the PPO clipped surrogate loss. Let θ denote the policy param-eters, ˆAt the estimated advantage at time step t, and ϵ the PPO clipping parameter. The importance ratio 
+
+rt(θ) is defined as the ratio between the action probability under the current policy and the behavior policy used during rollout collection. The policy objective is given by 
+
+LRL (θ) = ˆEt
+
+[
+
+min (rt(θ) ˆAt, clip (rt(θ), 1 − ϵ, 1 + ϵ) ˆAt
+
+)]
+
+. (8) To support efficient autoregressive inference during rollout collection, HoloMotion-1 maintains a per-environment key-value (KV) cache for the Transformer attention layers. The cache is implemented as a ring buffer of length C storing previously computed key-value states. At each control step, the model processes only the newly observed token while attending to the cached context, reducing the attention computation complexity from O(C2) to O(C).When an episode terminates, the corresponding environment cache is cleared so that the next episode begins with an empty context. The same KV-caching mechanism is also used during real-world deployment, enabling the Transformer policy to operate at high control frequencies. 
+
+# 4 HoloMotion-1 System Pipeline 
+
+Beyond the model architecture and training algorithm, HoloMotion-1 is designed as an end-to-end system for scalable humanoid motion learning, evaluation, and deployment. As shown in Figure 3, the system pipeline covers the complete workflow from environment setup and motion data preparation to distributed policy training, offline evaluation, model export, and real-world deployment. This design makes HoloMo-tion not only a motion tracking policy, but also a reproducible framework for developing, evaluating, and deploying whole-body humanoid control models. The pipeline is organized around explicit intermediate ar-tifacts, including AMASS-style motion files, retargeted robot trajectories, packed HDF5 databases, trained checkpoints, exported deployment policies, and deployment-ready motion clips. 
+
+Environment and data preparation. The pipeline begins with documented environment setup for simu-lation, motion processing, training, evaluation, and deployment. Motion data from different sources are first converted into AMASS-style SMPL or SMPL-X motion files, and then retargeted from human motion to the target humanoid robot through GMR-based motion retargeting. The retargeted trajectories are converted into HoloMotion-compatible NPZ files, which can be visualized in MuJoCo for quality inspection before training. For large-scale training and IsaacLab evaluation, these trajectories are further packed into HDF5 databases, providing a compact and efficient format for batched motion loading. 12 Figure 3: The HoloMotion system pipeline. The framework provides an end-to-end workflow covering environment setup, dataset preparation, motion retargeting, distributed PPO training, offline evaluation, policy export, and real-world deployment. This pipeline supports both training from customized motion datasets and direct deployment using pretrained motion tracking and velocity tracking models. 
+
+Distributed policy training. Given the prepared motion database, HoloMotion supports distributed PPO training for motion tracking and velocity tracking tasks. Training is configured through modular training files, allowing datasets, robot-specific parameters, observation schemas, reward settings, domain randomization settings, terrain settings, and policy architectures to be reused within the same framework. This configuration structure keeps the learning algorithm, robot description, environment definition, and network architecture decoupled, which makes it easier to reproduce released models or adapt the pipeline to new motion datasets. The output of this stage is a set of trained checkpoints together with the resolved training configuration required for evaluation and export. 
+
+Offline evaluation and model export. To ensure reproducible benchmarking, HoloMotion provides two complementary offline evaluation paths. The IsaacLab evaluation path runs trained checkpoints on HDF5 motion datasets and can dump rollout results as NPZ files. The MuJoCo sim-to-sim evaluation path consumes exported policies and NPZ motion datasets, supporting batch evaluation, video rendering, per-clip metrics, and failure-case inspection. This separation mirrors the deployment flow: PyTorch checkpoints are used during training and IsaacLab evaluation, while exported policies are used for MuJoCo validation and robot-side runtime deployment. 
+
+Real-world deployment. Finally, HoloMotion includes a deployment workflow for running pretrained or newly trained models on physical humanoid robots. The deployment stack includes ROS2 runtime inte-gration, robot-side observation construction, policy inference, and low-level control interfaces. The robot runtime supports dual-policy execution: a velocity tracking policy provides locomotion and safe mode transi-tions, while a motion tracking policy executes either offline NPZ motion clips or live teleoperation references. This enables users to either train customized policies from their own motion datasets or directly use released pretrained models for real-world motion tracking and velocity tracking. Overall, this system pipeline complements the HoloMotion-1 model by providing the infrastructure required to scale humanoid motion learning in practice. It standardizes the full lifecycle from motion data construc-tion to real-robot execution, making HoloMotion a practical foundation for future extensions in command following, terrain-aware control, and cross-embodiment deployment. 13 5 Experiments 
+
+# 5.1 Experimental Setup 
+
+All experiments are conducted on the Unitree G1 humanoid robot platform with 29 degrees of freedom (DoF). Policy training is performed in IsaacLab, while evaluation rollouts are executed in the MuJoCo simulator to ensure consistent physics benchmarking across methods. 
+
+5.1.1 Training Corpus 
+
+HoloMotion-1 is trained on a large-scale video-derived hybrid motion corpus that combines reconstructed motions from in-the-wild videos with curated MoCap datasets and in-house motion sources. For the video-derived portion, we primarily use MotionMillion [6], an external source of motions reconstructed from in-the-wild monocular videos using SMPL-based motion estimation, to provide scale and behavioral diversity. Curated MoCap data such as AMASS and LAFAN1 provides cleaner and more physically consistent mo-tion supervision, while in-house motion data improves coverage of deployment-relevant behaviors such as teleoperation and high-dynamic demonstrations. The in-house subset is collected with two complementary capture setups: a PICO 4 Ultra VR/MR headset for VR-style teleoperation motions and a Noitom PN Link system for anti-magnetic inertial MoCap and continuous full-body motion capture. Overall, the full training corpus contains over 2,000 hours of motion data. This hybrid data design differs from conventional MoCap-only training: it preserves the scalability and diversity of video-reconstructed motions while mitigating their reconstruction noise and domain heterogeneity through higher-fidelity and deployment-oriented motion sources. Table 4 summarizes the main components of the training corpus. Component Source / Device Role Duration Video-derived MotionMillion [6] Diversity at scale 2,000+ hours Curated MoCap AMASS [9] Clean MoCap 40+ hours Curated MoCap LAFAN1 [10] Studio MoCap 4.6 hours In-house PICO 4 Ultra VR/MR headset Teleoperation 10+ hours In-house Noitom PN Link system Inertial MoCap 10+ hours Table 4: Training corpus components used by HoloMotion-1. The video-derived portion provides large-scale behavioral diversity, while curated MoCap and in-house sources improve fidelity and deployment relevance. 
+
+5.1.2 Training Configuration 
+
+All HoloMotion-1 models are trained on a cluster of 64 NVIDIA RTX 5090 GPUs for approximately six days, corresponding to roughly 9,200 GPU hours in total. Training is conducted using large-scale parallel simulation environments in IsaacLab, where 8,192 environments run simultaneously to collect on-policy rollouts for reinforcement learning. The Transformer-based policy and value networks are optimized using the proposed sequence-level PPO algorithm. During training, policy updates are performed on batched trajectory segments collected from multiple parallel environments, enabling efficient learning from long motion sequences. 
+
+5.1.3 Evaluation Datasets 
+
+To comprehensively evaluate the generalization capability of HoloMotion-1, we construct an out-of-domain evaluation suite designed to test motion tracking under diverse motion styles and noise conditions. 14 To evaluate tracking performance on high-quality reference motions, we use the OMOMO [11] dataset, which provides precise kinematic trajectories captured using optical motion capture systems. To assess performance on motions reconstructed from commodity sensors, we use HumanAct12 [12], which contains motions ex-tracted from RGB-D recordings. To evaluate teleoperation-style motion inputs, we include Twist2 [27], an open dataset designed for VR-based teleoperation scenarios. In addition, we construct two in-house datasets to further stress-test the model under challenging motion conditions. TikTokDance is curated from in-the-wild dance videos and contains highly dynamic and stylistically diverse motion sequences reconstructed from in-the-wild videos. InertialTeleop is collected using an inertial motion capture suit and provides real-time teleoperation motion inputs with natural human variability. Together, these datasets form a heterogeneous evaluation suite covering multiple motion sources and sens-ing modalities, enabling a comprehensive assessment of zero-shot motion tracking performance. Table 5 summarizes the details of each dataset. Sub-dataset Device Activities Duration OMOMO Optical MoCap Object interactions 9 hours HumanAct12 RGB-D cameras Daily actions 1.6 hours Twist2 VR headset Teleoperation 0.28 hours TikTokDance RGB camera Popular dance 1 hour InertialTeleop Inertial MoCap Teleoperation 0.6 hours Table 5: Out-of-domain evaluation sub-datasets spanning diverse activities and capture devices. 
+
+5.1.4 Evaluation Metrics 
+
+To mitigate the impact of sample size imbalance across the evaluation datasets, all reported metrics are macro-averaged across the sub-evaluation sets. Tracking performance is evaluated using four metrics: • Mean per-keypoint position error ( Empkpe ). Measured in millimeters (mm), this metric quantifies the global positional deviation of the robot body links relative to the reference motion. • Mean per-joint position error ( Empjpe ). Measured in radians (rad), this metric evaluates the tracking error in joint configuration space. • Root velocity error ( Evel ). Measured in millimeters per frame (mm/frame), this metric assesses the alignment between predicted and reference root velocities. • Success rate (SR). Defined as the percentage of evaluation clips in which the robot root height remains within 0.25 m of the reference trajectory throughout the entire rollout. Among these metrics, Empkpe serves as the primary evaluation metric since it simultaneously reflects both global root motion accuracy and local articulation fidelity. 
+
+# 5.2 Evaluation Protocol 
+
+The experimental evaluation is designed to assess HoloMotion-1 as a complete system along three key di-mensions: • Comparison with prior methods: Performance is compared against existing humanoid motion tracking systems on the same out-of-domain evaluation suite. 15 Method Training Corpus Dur. Architecture Activated Total Empkpe Empjpe Evel SR                                   
+
+> GMT LAFAN1 & AMASS 30 hours MLP 2M 2M 484.05 0.1097 8.0 92.54% Any2Track LAFAN1 10 hours MLP 33M 33M 1200.96 0.1342 13.8 25.10% Sonic In-house 700 hours MLP 42M 42M 227.95 0.1069 5.4 95.58% HoloMotion Video-derived motions 2000+ hours MoE Transformer 7M 400M 124.57 0.0979 3.9 97.55% + AMASS/LAFAN1 + In-house motions
+
+Table 6: Evaluation metrics across different methods, training corpora, and model architectures. For Holo-Motion, the training corpus uses video-derived motions as the primary source of diversity, including motions from MotionMillion [6], and complements them with curated MoCap and in-house motion sources. • Training and inference efficiency: The efficiency improvements introduced by sequence-level op-timization and sparse MoE inference are measured. • Real-world deployment: The ability of the learned policy to transfer to real humanoid hardware without task-specific fine-tuning is evaluated. The evaluation focuses on the released HoloMotion-1 system and compares it with representative open-source humanoid motion tracking baselines under a consistent MuJoCo evaluation suite. Whenever available, base-line checkpoints are taken from the authors’ official repositories to reduce implementation-specific discrep-ancies. This protocol highlights the end-to-end capability of HoloMotion-1 as a practical foundation model for zero-shot whole-body humanoid motion tracking. 
+
+# 5.3 Comparison with Prior Methods 
+
+The performance of HoloMotion-1 is compared with several recent humanoid motion tracking systems, in-cluding GMT [1], Any2Track [3], and Sonic [2]. These methods represent recent approaches to large-scale humanoid motion tracking using reinforcement learning and imitation-based control policies. All methods are evaluated under the same simulation conditions and across the same out-of-domain eval-uation datasets. For each method, policies are executed in MuJoCo using identical robot models and a consistent evaluation protocol to improve comparability. Table 6 summarizes the quantitative comparison, and Figure 1-(b) and (c) visualize the overall and per-dataset results. HoloMotion-1 trained on the full hybrid training corpus of over 2,000 hours consistently achieves the best performance across the evaluation datasets. In particular, HoloMotion-1 obtains the lowest mean per-keypoint position error (MPKPE), outperforming the strongest baseline (Sonic) by approximately 40% .Improvements are also observed across other metrics including joint position error and root velocity error, indicating more accurate and stable tracking of the reference motions. Qualitative results further illustrate that HoloMotion-1 is able to reproduce a wider range of motion styles and dynamic behaviors compared to the baseline methods. The policy maintains stable tracking under large motion variations and noisy reference signals, which commonly arise in motion reconstructed from in-the-wild videos. As an integrated release, HoloMotion-1 combines a video-derived hybrid motion corpus with a sparse MoE Transformer policy that has approximately 400M total parameters but activates only about 7M parameters per control step. The complete system brings together large-scale heterogeneous motion data, sequence-level training, sparse expert routing, KV-cache inference, and deployment-oriented evaluation, enabling robust zero-shot tracking while keeping inference efficient enough for real-time humanoid control. 16 5.4 Training and Inference Efficiency 
+
+The computational efficiency of the proposed sequence-level PPO optimization is evaluated against a tra-ditional single-step sliding-window PPO baseline. For a controlled comparison, both methods use the same Dense Transformer policy architecture during profiling. Training efficiency is measured using 8,192 parallel simulation environments for a single optimization itera-tion. This setup reflects the large-scale parallel training configuration typically used for humanoid control policies. Inference latency is evaluated on the robot-side embedded compute module used in our real-world deployment setup. As illustrated in Figure 1-(d), the sequence-level optimization significantly reduces redundant computation associated with overlapping observation prefixes. In the training setting, the proposed method achieves approximately a 22 × improvement in training throughput compared to the sliding-window PPO baseline. For inference, the sparse MoE Transformer combined with KV-cache execution reduces policy evaluation latency by approximately 4× in the embedded deployment setup. These results indicate that the proposed training and inference design enables efficient scaling of Transformer-based humanoid control policies while maintaining real-time deployment capability on embedded robotic hardware. 
+
+# 5.5 Real-World Deployment 
+
+To evaluate sim-to-real transfer, the best-performing HoloMotion-1 policy based on the sparse MoE Trans-former architecture is deployed directly on a physical Unitree G1 humanoid robot without any real-world fine-tuning. All onboard policy inference runs on the robot-side embedded compute module. The combination of the sparsely activated MoE architecture and KV-cached Transformer inference enables efficient real-time control. The policy is capable of running at approximately 200–300 Hz on the robot-side embedded platform, while the robot control loop operates at a fixed frequency of 50 Hz for stable execution. As illustrated in Figure 2, the trained policy transfers successfully from simulation to the real robot hard-ware. The robot demonstrates robust zero-shot tracking across a wide range of out-of-domain reference motions. Examples include highly dynamic dance sequences reconstructed from in-the-wild videos, contact-rich behaviors such as crawling and sitting, and agile martial arts kicking motions. Additional experiments are conducted using real-time teleoperation devices, including inertial motion capture suits and VR-based tracking systems. In these scenarios, the robot follows the human operator’s motion commands with stable tracking and responsive behavior. More demonstrations and videos are available on the project page. 
+
+# 6 Conclusion 
+
+This report introduced HoloMotion-1 , a humanoid whole-body motion tracking system trained on a video-derived hybrid motion corpus. By combining large-scale video-reconstructed motions with curated MoCap and in-house motion sources, HoloMotion-1 benefits from broad motion diversity while retaining high-quality and deployment-relevant supervision. The system combines a sparse Mixture-of-Experts (MoE) Transformer architecture with sequence-level policy optimization, enabling efficient training on long motion sequences and high-capacity sequence modeling for whole-body control. Together with KV-cached inference, the sparsely activated policy preserves real-time closed-loop execution while scaling model capacity. Experiments show strong zero-shot generalization across multiple unseen motion datasets spanning diverse activities and capture devices, as well as direct sim-to-real transfer without task-specific fine-tuning. These results highlight the value of combining high-capacity sequence models with large-scale heterogeneous motion corpora for scalable humanoid motion control. 17 7 Roadmap and Future Work 
+
+HoloMotion is developed around a 4-Any roadmap for whole-body humanoid control: Imitate Any Pose ,
+
+Follow Any Command , Move on Any Terrain , and Control Any Embodiment . HoloMotion-1 delivers the first stage, Imitate Any Pose , by providing a deployable whole-body tracking policy that can follow diverse reference motions from offline motion clips and online tracking inputs. This release also serves as a scalable training and evaluation baseline for users who want to build their own motion tracking models. The next stages extend HoloMotion from motion imitation toward command-driven control, terrain-aware interaction, and cross-robot generalization, as summarized in Figure 4. 
+
+Figure 4: Roadmap of HoloMotion toward a foundation model for whole-body humanoid control. HoloMotion-1 establishes the first-stage capability of Imitate Any Pose , while future stages extend the system toward Follow Any Command , Move on Any Terrain , and Control Any Embodiment .
+
+Follow Any Command. The next stage is command-conditioned humanoid control. Instead of requiring a complete full-body reference trajectory at every timestep, future HoloMotion releases will support more compact and user-friendly command interfaces, including velocity commands, remote controllers, partial-body VR or MoCap inputs, and language or task-level instructions. The goal is to reuse the real-time stabilization and whole-body coordination learned by HoloMotion-1 while adding a command interface that turns sparse user intent into feasible robot motion. 
+
+Move on Any Terrain. The terrain stage is about making the same whole-body skills usable outside clean flat-floor settings. Future HoloMotion releases will extend motion tracking and command following to stairs, slopes, uneven ground, narrow passages, and contact-rich environments. This requires terrain-aware perception, such as height maps, depth sensing, and proprioceptive feedback, together with large-scale simulation and automated curriculum learning so that users can deploy motions under more realistic environmental constraints. 
+
+Control Any Embodiment. The embodiment stage targets transfer across different humanoid platforms and robot morphologies. Current motion tracking policies are usually tied to one robot’s kinematic struc-ture, degrees of freedom, actuator limits, and sensing configuration. Future HoloMotion releases will explore morphology-conditioned representations and robot-specific action decoders so that a shared motion founda-tion model can adapt to humanoids with different proportions, joint layouts, and hardware constraints. In short, HoloMotion-1 is the Imitate Any Pose release. Follow Any Command is the next near-term 18 expansion, while Move on Any Terrain and Control Any Embodiment define longer-term milestones toward general-purpose whole-body humanoid control. 
+
+# References 
+
+[1] Zixuan Chen, Mazeyu Ji, Xuxin Cheng, Xuanbin Peng, Xue Bin Peng, and Xiaolong Wang. Gmt: General motion tracking for humanoid whole-body control. arXiv preprint arXiv:2506.14770 , 2025. [2] Zhengyi Luo, Ye Yuan, Tingwu Wang, Chenran Li, Sirui Chen, Fernando Castaneda, Zi-Ang Cao, Jiefeng Li, David Minor, Qingwei Ben, et al. Sonic: Supersizing motion tracking for natural humanoid whole-body control. arXiv preprint arXiv:2511.07820 , 2025. [3] Zhikai Zhang, Jun Guo, Chao Chen, Jilong Wang, Chenghuai Lin, Yunrui Lian, Han Xue, Zhenrong Wang, Maoqi Liu, Jiangran Lyu, et al. Track any motions under any disturbances. arXiv preprint arXiv:2509.13833 , 2025. [4] Jinrui Han, Weiji Xie, Jiakun Zheng, Jiyuan Shi, Weinan Zhang, Ting Xiao, and Chenjia Bai. Kungfubot2: Learning versatile motion skills for humanoid whole-body control. arXiv preprint arXiv:2509.16638 , 2025. [5] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language models are unsupervised multitask learners. OpenAI blog , 1(8):9, 2019. [6] Ke Fan, Shunlin Lu, Minyue Dai, Runyi Yu, Lixing Xiao, Zhiyang Dou, Junting Dong, Lizhuang Ma, and Jingbo Wang. Go to zero: Towards zero-shot motion generation with million-scale data. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 13336–13348, 2025. [7] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems , 30, 2017. [8] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. Advances in neural information processing systems , 33:1877–1901, 2020. [9] Naureen Mahmood, Nima Ghorbani, Nikolaus F Troje, Gerard Pons-Moll, and Michael J Black. Amass: Archive of motion capture as surface shapes. In Proceedings of the IEEE/CVF international conference on computer vision , pages 5442–5451, 2019. [10] Félix G Harvey, Mike Yurick, Derek Nowrouzezahrai, and Christopher Pal. Robust motion in-betweening. ACM Transactions on Graphics (TOG) , 39(4):60–1, 2020. [11] Jiaman Li, Jiajun Wu, and C Karen Liu. Object motion guided human motion synthesis. ACM Transactions on Graphics (TOG) , 42(6):1–11, 2023. [12] Chuan Guo, Xinxin Zuo, Sen Wang, Shihao Zou, Qingyao Sun, Annan Deng, Minglun Gong, and Li Cheng. Action2motion: Conditioned generation of 3d human motions. In Proceedings of the 28th ACM international conference on multimedia , pages 2021–2029, 2020. [13] Zhengyi Luo, Jinkun Cao, Kris Kitani, Weipeng Xu, et al. Perpetual humanoid control for real-time simulated avatars. In Proceedings of the IEEE/CVF International Conference on Computer Vision ,pages 10895–10904, 2023. [14] Tairan He, Zhengyi Luo, Xialin He, Wenli Xiao, Chong Zhang, Weinan Zhang, Kris Kitani, Changliu Liu, and Guanya Shi. Omnih2o: Universal and dexterous human-to-humanoid whole-body teleoperation and learning. arXiv preprint arXiv:2406.08858 , 2024. 19 [15] Brianna Zitkovich, Tianhe Yu, Sichun Xu, Peng Xu, Ted Xiao, Fei Xia, Jialin Wu, Paul Wohlhart, Stefan Welker, Ayzaan Wahid, et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. In Conference on Robot Learning , pages 2165–2183. PMLR, 2023. [16] Hongzhe Bi, Lingxuan Wu, Tianwei Lin, Hengkai Tan, Zhizhong Su, Hang Su, and Jun Zhu. H-rdt: Human manipulation enhanced bimanual robotic manipulation. arXiv preprint arXiv:2507.23523 , 2025. [17] Zipeng Fu, Qingqing Zhao, Qi Wu, Gordon Wetzstein, and Chelsea Finn. Humanplus: Humanoid shadowing and imitation from humans. arXiv preprint arXiv:2406.10454 , 2024. [18] Chen Tessler, Yunrong Guo, Ofir Nabati, Gal Chechik, and Xue Bin Peng. Maskedmimic: Unified physics-based character control through masked motion inpainting. ACM Transactions On Graphics (TOG) , 43(6):1–21, 2024. [19] I Radosavovic, B Zhang, B Shi, J Rajasegaran, S Kamat, T Darrell, K Sreenath, and J Malik. Humanoid locomotion as next token prediction. arxiv 2024. arXiv preprint arXiv:2402.19469 , 2024. [20] Yuxuan Wang, Ming Yang, Ziluo Ding, Yu Zhang, Weishuai Zeng, Xinrun Xu, Haobin Jiang, and Zongqing Lu. From experts to a generalist: Toward general whole-body control for humanoid robots. 
+
+arXiv preprint arXiv:2506.12779 , 2025. [21] Biao Zhang and Rico Sennrich. Root mean square layer normalization. Advances in neural information processing systems , 32, 2019. [22] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. [23] Joshua Ainslie, James Lee-Thorp, Michiel De Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. Gqa: Training generalized multi-query transformer models from multi-head checkpoints. In 
+
+Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pages 4895– 4901, 2023. [24] Alex Henry, Prudhvi Raj Dachapally, Shubham Shantaram Pawar, and Yuxuan Chen. Query-key normalization for transformers. In Findings of the Association for Computational Linguistics: EMNLP 2020 , pages 4246–4253, 2020. [25] Zihan Qiu, Zekun Wang, Bo Zheng, Zeyu Huang, Kaiyue Wen, Songlin Yang, Rui Men, Le Yu, Fei Huang, Suozhi Huang, et al. Gated attention for large language models: Non-linearity, sparsity, and attention-sink-free. arXiv preprint arXiv:2505.06708 , 2025. [26] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. [27] Yanjie Ze, Siheng Zhao, Weizhuo Wang, Angjoo Kanazawa, Rocky Duan, Pieter Abbeel, Guanya Shi, Jiajun Wu, and C Karen Liu. Twist2: Scalable, portable, and holistic humanoid data collection system. 
+
+arXiv preprint arXiv:2511.02832 , 2025. 20
