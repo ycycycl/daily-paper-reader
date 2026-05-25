@@ -1,0 +1,630 @@
+Title: MATE: Solving Contextual Markov Decision Processes with Memory of Accumulated Transition Embeddings
+
+URL Source: https://arxiv.org/pdf/2605.17431v1
+
+Published Time: Tue, 19 May 2026 01:22:11 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# MATE: Solving Contextual Markov Decision Processes with Memory of Accumulated Transition Embeddings 
+
+Himchan Hwang 1 Hyeokju Jeong 1 Gene Chung 2 Seungyeon Kim 1
+
+Sangwoong Yoon 3 Frank Chongwoo Park 1 2 
+
+# Abstract 
+
+We propose MATE, a simple yet effective memory architecture for solving Contextual Markov Deci-sion Processes (CMDPs), a family of MDPs pa-rameterized by an unobserved context. In CMDPs, an optimal agent can adapt online by maintain-ing the posterior belief over contexts. MATE replaces this intractable posterior with a sum-aggregated memory, leveraging the posterior’s permutation invariance to retain provably suffi-cient expressiveness. Compared to prior mem-ory architectures, MATE avoids the growing per-step rollout cost of Transformers and the gra-dient issues commonly associated with Recur-rent Neural Networks (RNNs). Extensive eval-uations across diverse benchmarks demonstrate that MATE provides clear computational advan-tages while achieving performance comparable to standard sequence-model baselines. 
+
+# 1. Introduction 
+
+Solving Contextual Markov Decision Processes (CMDPs) (Hallak et al., 2015) enables RL agents to operate beyond fixed simulation environments, extending to real-world ap-plications with inherent variations, such as sim-to-real trans-fer, healthcare, and autonomous driving (Kirk et al., 2023). In these settings, environmental variations are governed by a latent context. To adapt effectively, an optimal agent must infer this context from its interaction history—a capability beyond the reach of standard state-dependent policies. A prominent solution is memory-based RL, where sequence models are trained end-to-end to encode transition histories into a policy-accessible memory. Ni et al. (2022) demon-strated the efficacy of this approach using RNNs, outper-
+
+> 1
+
+Seoul National University 2Saige 3Ulsan National Institute of Science and Technology (UNIST). Correspondence to: Sang-woong Yoon <swyoon@unist.ac.kr >, Frank Chongwoo Park <
+
+fcp@snu.ac.kr >.
+
+Preprint. May 19, 2026. 
+
+forming prior specialized methods. More recently, Grigsby et al. (2024a;b) achieved strong performance in multi-task and long-horizon domains by leveraging Transformer ar-chitectures. However, these architectures face distinct lim-itations: RNNs suffer from gradient instabilities (Bengio et al., 1994; Pascanu et al., 2013) and preclude temporal parallelization during the update step (Lu et al., 2023). Con-versely, Transformers incur quadratic computational costs with respect to sequence length during both the update step and trajectory rollout, often necessitating a limited context window (Beck et al., 2025). In this paper, we propose a memory-based RL agent that exploits the permutation invariance of the context posterior in CMDPs (see Figure 1). In a CMDP, the posterior belief over the context is invariant to the ordering of transition data. We argue that an optimal memory-based RL agent should inherently incorporate this inductive bias. While bidirectional Transformers can capture such invariance, the cost of re-encoding the full history at each step is prohibitive. Thus, causal Transformers are generally utilized in memory-based RL despite lacking this property. Motivated by this perspective, we propose MATE (Memory of Accumulated Transition Embeddings), a sum-aggregated memory architecture for solving CMDPs (see lower-left of Figure 1). By design, MATE guarantees permutation invariance across transition histories while avoiding the complexity of recurrent layers and attention mechanisms. Notably, MATE preserves the computational advantages of prior approaches: it enables temporal parallelization during the update step (like Transformers) while maintaining a lin-ear computational cost with respect to sequence length (like RNNs). While Beck et al. (2024) employed a similar mean aggregation of linear embeddings as a baseline, we extend this idea by adopting sum aggregation over embeddings produced by arbitrary neural networks. We validate our model from both theoretical and empirical perspectives. Theoretically, we show that an agent equipped with MATE retains sufficient expressiveness to represent the optimal policy by leveraging permutation invariance in CMDPs. Empirically, we demonstrate that MATE achieves competitive or superior performance compared to Trans-1        
+
+> arXiv:2605.17431v1 [cs.LG] 17 May 2026 MATE: Memory of Accumulated Transition Embeddings
+> Figure 1. Overview of MATE. MATE represents the memory mtas a summation of transition embeddings, serving as a tractable substitute for the intractable posterior p(c|x1: t). By preserving the permutation invariance of the posterior, πθis provably capable of representing the optimal policy π∗, despite its structural simplicity.
+
+former and RNN baselines across diverse benchmarks. Our results highlight its effective adaptation to variations in dy-namics, rewards, and tasks (MuJoCo, Meta-World), as well as its handling of long-term memorization and credit assign-ment challenges (T-Maze). 
+
+# 2. Preliminaries 
+
+2.1. Contextual MDP 
+
+A Contextual Markov Decision Process (CMDP) (Hallak et al., 2015) is defined as a set of MDPs {(S, A, P c) | c ∈C} , where S, A, and C denote the state, action, and context spaces. The unobserved context c determines the transition kernel Pc, given by p(st+1 , r t|st, a t, c ). A CMDP can be viewed as a special case of a partially observable MDP (POMDP) (Cassandra et al., 1994) where the unobserved state is the context. The goal in a CMDP is to find an optimal policy π∗ that maximizes the expected discounted return under the context prior p(c):
+
+max  
+
+> π
+
+Ec∼p(c),π 
+
+" ∞X
+
+> t=0
+
+γtrt
+
+#
+
+, (1) where γ is the discount factor. Thus, the optimal agent gener-alizes across MDPs induced by different contexts and adapts to the current MDP within an episode. For CMDPs, the optimal policy and value function can be expressed as functions of the current state st and the posterior belief over contexts p(c|x1: t):
+
+π∗(at|st, p (c|x1: t)) , V ∗(st, p (c|x1: t)) . (2) Here, xt = ( st−1, a t−1, r t−1, s t) denotes the transition at time t. This formulation is derived by casting the CMDP as an MDP with an augmented state s+ 
+
+> t
+
+= ( st, p (c|x1: t)) 
+
+(Duff, 2002; Zintgraf et al., 2020). However, exact posterior inference is typically intractable, as it requires knowledge of the unknown transition kernel Pc and may not admit a finite-dimensional representation. 
+
+2.2. Memory-based RL 
+
+To learn history-dependent policies as required in CMDPs (Equation (2)), leveraging sequence models to compress the transition history into a latent memory has emerged as a promising approach (Ni et al., 2022; Beck et al., 2023; Grigsby et al., 2024a;b). In this work, we refer to this general framework as memory-based RL .Memory-based RL employs a memory network mψ ,parametrized by ψ, that summarizes the transition history into a finite-dimensional memory mt = mψ (x1: t) ∈ Rm.This is then used to condition the memory-augmented policy and value networks: 
+
+πθ (at|st, m t), Vϕ(st, m t). (3) All networks are jointly trained with RL. Existing methods vary in the critic formulation ( Vϕ, Qϕ, or none) and in how the networks are conditioned (on (st, m t) or on mt alone). We use Equation (3) as a representative case in our analysis. 2MATE: Memory of Accumulated Transition Embeddings 
+
+Transformers (Grigsby et al., 2024a;b; Shala et al., 2025) and RNNs (Duan et al., 2016; Ni et al., 2022; Beck et al., 2023), or their variants (Beck et al., 2020; 2024; Huang et al., 2024), are the standard choices for mψ . RNNs offer the advantage of constant inference costs during rollout, but their recurrent nature often leads to gradient instabilities during the update step (Bengio et al., 1994; Pascanu et al., 2013). Transformers excel at long-term memorization (Ni et al., 2023), but their reliance on attention mechanisms incurs linearly growing inference costs per rollout step. 
+
+# 3. Methods 
+
+In this section, we introduce Memory of Accumulated 
+
+Transition Embeddings ( MATE ), a simple sum-aggregated memory architecture for CMDPs that addresses the limita-tions of Transformers and RNNs. We first formalize permu-tation invariance in CMDPs in Section 3.1, which serves as the foundation of our model. We then describe the detailed architecture of MATE and its computational advantages over Transformers and RNNs in Section 3.2. In Section 3.3, we establish that MATE provides a theoretically grounded representation for solving CMDPs. Finally, we introduce a normalization technique in Section 3.4 to prevent memory divergence in practice. 
+
+3.1. Permutation Invariance in CMDPs 
+
+The permutation invariance of the context posterior p(c|x1: t)
+
+is a fundamental property in CMDPs that serves as both the primary motivation and the theoretical foundation for our ar-chitecture. We therefore explicitly formalize this property in Equation (5), noting its utilization in prior studies (Imagawa et al., 2022; Beck et al., 2024). By applying Bayes’ rule and leveraging the conditional independence of transitions given 
+
+c, the posterior factorizes as: 
+
+p(c|x1: t) ∝ p(c)
+
+> t−1
+
+Y
+
+> i=0
+
+p(si+1 , r i|si, a i, c ), (4) assuming that s0 is independent of c (see Section A.1 for full derivation). Since the product operation in Equation (4) is commutative, the posterior is invariant to the order of transitions. Thus, for any permutation ρ : {1, . . . , t } → {1, . . . , t },
+
+p(c|x1, . . . , x t) = p(c|xρ(1) , . . . , x ρ(t)). (5) 
+
+3.2. Memory of Accumulated Transition Embeddings 
+
+A desirable memory mt for CMDPs should act as a tractable surrogate for the context posterior p(c|x1: t), as suggested by Equations (2)–(3). Motivated by the permutation invari-ance of p(c|x1: t), we introduce Memory of Accumulated   
+
+> Figure 2. Comparison of memory architectures. MATE replaces the attention mechanisms of Transformers and the recurrent con-nections of RNNs with simple sum aggregation. Single-layer ver-sions are illustrated for clarity.
+
+Transition Embeddings ( MATE ), a permutation-invariant memory defined as 
+
+mt =
+
+> t
+
+X
+
+> i=1
+
+Eψ (xi). (6) The transition encoder Eψ can be any network that maps each transition xi to an embedding. As highlighted in Fig-ure 2, MATE summarizes the transition history through simple accumulation, unlike Transformer or RNN-based memories that utilize attention or recurrent layers. To provide intuition for why summation can be a natural choice, consider a case where the context posterior takes the form of a product of Gaussian factors, p(c|x1: t) ∝Qti=1 N (c; μ(xi), σ 2(xi)) , as in Rakelly et al. (2019). If we set Eψ (xi) = ( μ(xi)/σ 2(xi), 1/σ 2(xi)) , then the accu-mulated memory mt exactly specifies p(c|x1: t) (see Sec-tion A.2 for details). MATE offers computational efficiency compared to other sequence models, as summarized in Table 1. Specifically, MATE maintains a constant inference cost per rollout step via the update rule: mt+1 = mt + Eψ (xt+1 ). In contrast, causal Transformers incur an O(t) cost per step due to the growing attention window. MATE also supports parallel update across the sequence dimension, a capability lacking in RNNs (Lu et al., 2023). We note that while bidirectional Transformers could theoretically offer permutation invari-3MATE: Memory of Accumulated Transition Embeddings 
+
+ance, they are impractical for autoregressive rollout as they typically require reprocessing the full history at each step. To the best of our knowledge, prior memory-based RL work has exclusively adopted causal Transformers. 
+
+3.3. Theoretical Optimality of MATE 
+
+MATE cannot represent arbitrary history-dependent policies, as it constrains the policy to be independent of the transition order. However, we demonstrate in this section that MATE remains a sufficiently expressive memory architecture for CMDPs by leveraging the permutation invariance of the context posterior established in Section 3.1. We first establish the necessary notation and assumptions. Recall that xi = ( si−1, a i−1, r i−1, s i) denotes a transition sample. We assume the space of transitions X ⊂ Rn is com-pact, as states and actions are typically bounded real vec-tors in practice. Given the episode length T , let M≤T (X )
+
+denote the collection of all multisets {{ x1, . . . , x t}} with elements in X and t ≤ T . Crucially, the permutation in-variance of p(c|x1: t) (Equation (5)) implies that the optimal policy defined in Equation (2) can be viewed as a mapping 
+
+π∗ : S × M ≤T (X ) → Y . While Y theoretically represents a space of probability measures, practical implementations parameterize these distributions using finite-dimensional vectors (e.g., probability simplex for discrete actions, Gaus-sian parameters for continuous actions). Thus, without loss of generality, we assume Y ⊂ Rk.In the following proposition, we show that with sufficient memory dimension, MATE with only a one-layer MLP transition encoder suffices to represent the optimal policy. 
+
+Proposition 3.1. Let Eψ : X → Rm be a one-layer MLP with output dimension m = 2 nT + 1 and an analytic non-polynomial element-wise activation f : R → R, defined as 
+
+Eψ (x) = f (Ax + b), where ψ = ( A, b ). (7) 
+
+Then, given a continuous optimal policy π∗ : S × M≤T (X ) → Y ⊂ Rk, there exists a continuous function 
+
+π : S × Rm → Rk such that 
+
+π(st,
+
+> t
+
+X
+
+> i=1
+
+Eψ (xi)) = π∗(st, p (c|x1: t)) (8) 
+
+for Lebesgue-almost-every A ∈ Rm×n and b ∈ Rm.Proof sketch. We construct π as the composition of map-pings: 
+
+(st, m t) 7 → (st, {{ x1, . . . , x t}} ) 7 → π∗(st, p (c|x1: t)) .
+
+(9) The first map is well-defined because the summation mt =P Eψ (xi) is injective (Amir et al., 2023, Theorem 3.3),        
+
+> Table 1. Total computational complexity of rollout and update
+> over the episode length T, and whether the update is parallelizable
+> across the sequence dimension, comparing Transformers (causal), RNNs, and MATE.
+
+Model Rollout Update Parallelizable 
+
+Transformers O(T 2) O(T 2) Yes 
+
+RNNs O(T ) O(T ) No 
+
+MATE (Ours) O(T ) O(T ) Yes 
+
+and the second is the optimal policy itself. The continuity is guaranteed by the Tietze extension theorem. See Section A.3 for details. This existence result directly extends to the optimal value function with the same choice of Eψ , which justifies the architectural choice of sharing the memory mt between the policy and value networks. 
+
+Corollary 3.2. Under the same assumptions as Theo-rem 3.1, for a continuous optimal value function V ∗ :
+
+S × M ≤T (X ) → R, there exists a continuous function 
+
+V : S × Rm → R such that 
+
+V (st,
+
+> t
+
+X
+
+> i=1
+
+Eψ (xi)) = V ∗(st, p (c|x1: t)) (10) In practice, we use neural networks to approximate π and 
+
+V (Equation (3)). Given their continuity established in The-orem 3.1 and Theorem 3.2, the universal approximation theorem (Cybenko, 1989) implies that the policy and value networks equipped with MATE can approximate the optimal policy and value function to arbitrary accuracy. 
+
+3.4. Hyperspherical Memory Normalization 
+
+In memory-based RL, the memory mt serves as an input to the policy and value networks. Here, the sum aggregation of MATE can be problematic, as the norm of mt typically grows with t. This unbounded growth poses challenges for neural network training, as it induces internal covariate shift and destabilizes optimization (Ioffe & Szegedy, 2015). To address this issue, we normalize the memory by projecting it onto a hypersphere: 
+
+ˆmt = mt + Ψ 
+
+∥mt + Ψ ∥ . (11) We demonstrate that the guarantee in Theorem 3.1 remains valid with a memory dimension of m = 2 nT + 2 (see Section A.4). The offset Ψ is a necessary component that prevents information loss during normalization; without it, distinct histories such as {{ x, x }} and {{ x}} would yield the same normalized memory. In our experiments, we treat Ψ as a trainable parameter. We 4MATE: Memory of Accumulated Transition Embeddings   
+
+> Figure 3. Learning curves on MuJoCo (Left, Center) and Meta-World (Right) benchmarks. Tasks are ordered by increasing difficulty from top to bottom. Solid lines and shaded regions represent the mean and standard deviation across 3 random seeds. All agents are trained using Soft Actor-Critic (SAC) (Haarnoja et al., 2018)
+
+also scale ˆmt by the square root of its dimension, adopting the strategy in RMSNorm (Zhang & Sennrich, 2019). 
+
+# 4. Experiments 
+
+We evaluate MATE against Transformer and RNN baselines on three distinct CMDP benchmarks: MuJoCo, Meta-World, and T-Maze, selected to provide a comprehensive assess-ment of memory-based RL agents. We detail the baselines and experimental setup in Section 4.1, followed by main results in Section 4.3. Additional details are provided in Section B. 
+
+4.1. Baselines and Experiment Settings 
+
+To evaluate the performance of MATE as a memory archi-tecture, we compare it against standard RNN and Trans-former baselines, specifically LSTM (Hochreiter & Schmid-huber, 1997) and GPT-2 (Radford et al., 2019), following the Ni et al. (2023). Additionally, we include a memory-free Markovian policy as a baseline for ablation. For this base-line, we report the optimal policy where available; otherwise, we train a memory-less agent from scratch. We align the network architectures across all baselines to ensure a fair comparison. All models share identical pol-icy and value network structures. Since GPT-2 requires an embedding layer for residual connections, we incorporate an embedding layer into all baselines for consistency. To maintain comparable model complexity, we configure both the LSTM and GPT-2 baselines with a single layer. Simi-larly, MATE utilizes a single feed-forward block adapted from the GPT-2 architecture. The memory dimension is uni-fied across all models. Further implementation details are provided in Section B.2. 
+
+4.2. Benchmarks MuJoCo. The MuJoCo benchmark is a widely adopted suite in Meta-RL literature (e.g., Finn et al., 2017; Rakelly et al., 2019; Li et al., 2024), comprising four variants of standard MuJoCo locomotion environments (Todorov et al., 2012). These environments are specifically designed to as-sess an agent’s adaptability to variations in either the re-ward function (Ant-Dir, Cheetah-Vel) or system dynamics 
+
+(Walker-Param, Hopper-Param). Among them, Ant-Dir and Walker-Param are considered more challenging benchmarks due to their higher degrees of freedom. We set the episode length to T = 200 for all tasks. Detailed configurations are provided in Section B.4.1. 
+
+Meta-World. Meta-World benchmark (Yu et al., 2020) features diverse robot manipulation tasks with varying ob-jects and goals that share a unified state and action space. In our experiments, we utilize the ML10 benchmark, compris-ing 10 distinct tasks (e.g., door-open , pick-place ). Although 5MATE: Memory of Accumulated Transition Embeddings   
+
+> Figure 4. Performance comparison on the T-Maze tasks. The figures show the maximum average return on the (Left) Passive T-Maze and (Right) Active T-Maze environments. The reported values are the best results from 2 independent runs. All agents are trained using Double Q-Learning (DDQN) (Van Hasselt et al., 2016).
+
+ML10 includes out-of-distribution test tasks, we focus on evaluating adaptability to the variation within the training tasks. Since task descriptions are not provided, the agent must infer the underlying task solely from the interaction history. The episode length is set to T = 300 . Detailed configurations are provided in Section B.4.2. 
+
+T-Maze. T-Maze (Ni et al., 2023) is a 2-dimensional nav-igation task where an agent must acquire goal information from an oracle state to successfully reach the target. We employ two variants, Passive and Active , which differ in the oracle’s configuration to assess memory retention and credit assignment capabilities, respectively. While the origi-nal T-Maze is formulated as a POMDP, we reformulate its state representation and reward structure to align with the CMDP framework. We evaluate MATE and baselines across corridor lengths ranging from 200 to 600, with a fixed bud-get of 80,000 training episodes. Detailed configurations are provided in Section B.4.3. 
+
+4.3. Results MuJoCo& Meta-World Figure 3 shows learning curves on MuJoCo (left) and Meta-World (right), with tasks ordered by increasing difficulty. On MuJoCo, MATE per-forms on par with a diverse set of memory and sequence-based baselines (e.g., recurrent and Transformer-style vari-ants), achieving similar learning speed and final perfor-mance. On Meta-World, MATE consistently outperforms these baselines, attaining higher returns and improved sam-ple efficiency, despite its lightweight architecture. Notably, MATE can be viewed as a simplified Transformer that removes positional encoding and attention and instead uses permutation-invariant summation, suggesting that sum-based memory updates are particularly effective for learning from transition data. 
+
+T-Maze Experimental results for the T-Maze tasks are presented in Figure 4. In the Passive T-Maze, both MATE and GPT-2 achieve optimal returns across all context lengths, whereas LSTM shows a decrease in performance as the se-quence length grows. In the Active T-Maze, MATE main-tains its performance, while GPT-2 shows lower returns compared to the passive task. LSTM shows comparable performance with MATE up to a context length of 400 but exhibits a decline at the length of 600. Overall, MATE demonstrates the most consistent performance across both tasks and varying context lengths. 
+
+# 5. Related Work 
+
+5.1. Meta-Reinforcement Learning 
+
+Meta-RL studies how agents can adapt across a distribu-tion of tasks from interaction history (Beck et al., 2025). A common distinction is between task-inference methods, which explicitly estimate a latent task or context variable, and black-box methods, which train a history-dependent policy end-to-end (Duan et al., 2016; Rakelly et al., 2019; Zintgraf et al., 2020; Ni et al., 2022; Beck et al., 2023). Task-inference methods such as PEARL, VariBAD, and ELUE introduce dedicated objectives for context estima-tion, often decoupling inference from control (Rakelly et al., 2019; Zintgraf et al., 2020; Imagawa et al., 2022; Li et al., 2024). This separation can improve training stability and interpretability, but it typically requires auxiliary losses, additional decoders, or parametric assumptions on the pos-terior. Black-box methods instead compress interaction history di-rectly into memory and optimize the entire agent through the RL objective. From RL 2 to more recent recurrent and Transformer agents, this line has become a strong baseline for CMDPs and related POMDP settings (Duan et al., 2016; Ni et al., 2022; Beck et al., 2023; Grigsby et al., 2024a;b). Its main limitation, however, is that the memory is usually implemented with order-sensitive sequence models, even though the CMDP context posterior is permutation-invariant with respect to transitions. MATE follows the black-box formulation, but incorporates this inference-side prior di-rectly into the architecture: it retains end-to-end RL training while replacing order-sensitive memory with a permutation-invariant representation of history. 
+
+5.2. Memory Architectures for RL 
+
+Memory in RL is typically implemented with recurrent net-works or causal attention. Recurrent agents provide constant per-step inference cost, but can be difficult to optimize over long horizons and do not support temporal parallelization 6MATE: Memory of Accumulated Transition Embeddings 
+
+during training (Duan et al., 2016; Ni et al., 2022; Beck et al., 2023; Bengio et al., 1994; Pascanu et al., 2013; Lu et al., 2023). Transformer-based agents substantially im-prove long-range memory, but their cost grows with context length during both training and rollout (Ni et al., 2023; Grigsby et al., 2024a;b; Beck et al., 2025). More recent al-ternatives, including structured state-space models, Mamba-style architectures, and efficient Transformer variants, aim to improve this trade-off while remaining order-sensitive se-quence models (Lu et al., 2023; Gu & Dao, 2024; Beaussant & Mounsif, 2025; Elawady et al., 2024; Shala et al., 2025). MATE is motivated by a complementary perspective: in CMDPs, the key statistic for adaptation is permutation-invariant, so this invariance can be built into the memory itself. In this sense, MATE reduces complexity not by de-signing a better order-sensitive sequence model, but by re-moving the need for one when the problem structure allows it. 
+
+5.3. Permutation-Invariant Aggregation 
+
+The most closely related works are those that summarize his-tory with permutation-invariant aggregation. In black-box RL, AMRL and especially SplAgger are the closest prece-dents: they show that invariant aggregation is useful in end-to-end meta-RL, but retain a permutation-variant recurrent branch (Beck et al., 2020; 2024). In task-inference methods, PEARL and ELUE also exploit permutation-invariant con-text encoders; among them, ELUE is particularly close in its use of Deep-Sets-style sum aggregation, though within an explicit latent-inference pipeline trained with auxiliary objectives (Rakelly et al., 2019; Imagawa et al., 2022). A related idea appears in IIDA, which aggregates unordered transition tuples for dynamics adaptation through an auxil-iary prediction objective rather than end-to-end RL (Evans et al., 2022). MATE differs from these lines in a simple but important way: permutation-invariant aggregation is the agent’s only 
+
+memory mechanism. There is no recurrent backbone, no at-tention module, and no separate inference objective. This de-sign is supported by the Deep Sets perspective (Zaheer et al., 2017) and by our sufficiency analysis, which shows that sum-aggregated transition embeddings can retain enough information to represent the optimal CMDP policy. Com-pared with prior invariant architectures, MATE thus offers a cleaner black-box formulation tailored to the structure of CMDPs. 
+
+# 6. Conclusion 
+
+We propose MATE, a simple yet effective memory archi-tecture for agents solving CMDPs. By adopting a sum-aggregated architecture, we design a permutation-invariant memory model that effectively infers appropriate contex-tual representations of unknown environments from transi-tion histories. Unlike prior approaches such as RNNs and Transformers, our model offers computational advantages during rollout and training, thereby improving training effi-ciency. Beyond its efficiency, we theoretically validate that our model does not compromise the expressiveness of the agent, in the sense that a globally optimal policy can be represented within our formulation. We demonstrate that MATE achieves promising performance on several CMDP benchmarks, including MuJoCo, Meta-World and T-Maze, suggesting that our model effectively identifies relevant con-textual information during rollout. A promising avenue for future research lies in integrating our architecture with deep, self-supervised RL frameworks. Recent studies indicate that combining deep networks with self-supervised losses can yield substantial performance gains (Wang et al., 2025). Extending MATE to such high-capacity models could further enhance its scalability and robustness in complex environments. 
+
+# Impact Statement 
+
+This paper advances the robustness and adaptability of AI systems by proposing an effective model for reinforcement learning in the presence of unobserved contextual informa-tion, a common setting in real-world applications. We do not anticipate any direct negative impacts arising from this work. 
+
+# References 
+
+Amir, T., Gortler, S., Avni, I., Ravina, R., and Dym, N. Neural injective functions for multisets, measures and graphs via a finite witness theorem. Advances in Neural Information Processing Systems , 36:42516–42551, 2023. Beaussant, S. and Mounsif, M. Scaling algorithm distilla-tion for continuous control with mamba. arXiv preprint arXiv:2506.13892 , 2025. Beck, J., Ciosek, K., Devlin, S., Tschiatschek, S., Zhang, C., and Hofmann, K. Amrl: Aggregated memory for reinforcement learning. In International Conference on Learning Representations , 2020. Beck, J., Vuorio, R., Xiong, Z., and Whiteson, S. Recurrent hypernetworks are surprisingly strong in meta-rl. Ad-vances in Neural Information Processing Systems , 36: 62121–62138, 2023. Beck, J., Jackson, M. T., Vuorio, R., Xiong, Z., and Whiteson, S. Splagger: Split aggregation for meta-reinforcement learning. CoRR , 2024. 7MATE: Memory of Accumulated Transition Embeddings 
+
+Beck, J., Vuorio, R., Zheran Liu, E., Xiong, Z., Zintgraf, L., Finn, C., and Whiteson, S. A tutorial on meta-reinforcement learning. Foundations and Trends in Ma-chine Learning , 18(2-3):224–384, 2025. Bengio, Y., Simard, P., and Frasconi, P. Learning long-term dependencies with gradient descent is difficult. IEEE transactions on neural networks , 5(2):157–166, 1994. Cassandra, A. R., Kaelbling, L. P., and Littman, M. L. Act-ing optimally in partially observable stochastic domains. In Aaai , volume 94, pp. 1023–1028, 1994. Cybenko, G. Approximation by superpositions of a sig-moidal function. Mathematics of control, signals and systems , 2(4):303–314, 1989. Duan, Y., Schulman, J., Chen, X., Bartlett, P. L., Sutskever, I., and Abbeel, P. RL 2: Fast reinforcement learn-ing via slow reinforcement learning. arXiv preprint arXiv:1611.02779 , 2016. Duff, M. O. Optimal Learning: Computational procedures for Bayes-adaptive Markov decision processes . Univer-sity of Massachusetts Amherst, 2002. Elawady, A., Chhablani, G., Ramrakhya, R., Yadav, K., Ba-tra, D., Kira, Z., and Szot, A. Relic: A recipe for 64k steps of in-context reinforcement learning for embodied ai. arXiv preprint arXiv:2410.02751 , 2024. Evans, J., Thankaraj, A., and Pinto, L. Context is everything: Implicit identification for dynamics adaptation. In 2022 International Conference on Robotics and Automation (ICRA) , 2022. Finn, C., Abbeel, P., and Levine, S. Model-agnostic meta-learning for fast adaptation of deep networks. In Precup, D. and Teh, Y. W. (eds.), Proceedings of the 34th Inter-national Conference on Machine Learning , volume 70 of Proceedings of Machine Learning Research , pp. 1126– 1135. PMLR, 06–11 Aug 2017. Grigsby, J., Fan, J., and Zhu, Y. Amago: Scalable in-context reinforcement learning for adaptive agents. In Interna-tional Conference on Learning Representations , volume 2024, pp. 26919–26952, 2024a. Grigsby, J., Sasek, J., Parajuli, S., Adebi, D., Zhang, A., and Zhu, Y. Amago-2: Breaking the multi-task barrier in meta-reinforcement learning with transformers. Advances in Neural Information Processing Systems , 37:87473– 87508, 2024b. Gu, A. and Dao, T. Mamba: Linear-time sequence model-ing with selective state spaces. In First conference on language modeling , 2024. Haarnoja, T., Zhou, A., Abbeel, P., and Levine, S. Soft actor-critic: Off-policy maximum entropy deep reinforce-ment learning with a stochastic actor. In International conference on machine learning , pp. 1861–1870. Pmlr, 2018. Hallak, A., Di Castro, D., and Mannor, S. Con-textual markov decision processes. arXiv preprint arXiv:1502.02259 , 2015. Hochreiter, S. and Schmidhuber, J. Long short-term memory. 
+
+Neural computation , 9(8):1735–1780, 1997. Huang, S., Hu, J., Yang, Z., Yang, L., Luo, T., Chen, H., Sun, L., and Yang, B. Decision mamba: Reinforcement learning via hybrid selective sequence modeling. Ad-vances in Neural Information Processing Systems , 37: 72688–72709, 2024. Imagawa, T., Hiraoka, T., and Tsuruoka, Y. Off-policy meta-reinforcement learning with belief-based task inference. 
+
+IEEE Access , 10:49494–49507, 2022. Ioffe, S. and Szegedy, C. Batch normalization: Accelerating deep network training by reducing internal covariate shift. In International conference on machine learning , pp. 448– 456. pmlr, 2015. Kirk, R., Zhang, A., Grefenstette, E., and Rockt ¨aschel, T. A survey of zero-shot generalisation in deep reinforcement learning. Journal of Artificial Intelligence Research , 76: 201–264, 2023. Li, L., Zhang, H., Zhang, X., Zhu, S., Yu, Y., Zhao, J., and Heng, P.-A. Towards an information theoretic framework of context-based offline meta-reinforcement learning. In 
+
+Proceedings of the 38th International Conference on Neu-ral Information Processing Systems , pp. 75642–75667, 2024. Lu, C., Schroecker, Y., Gu, A., Parisotto, E., Foerster, J., Singh, S., and Behbahani, F. Structured state space models for in-context reinforcement learning. Advances in Neural Information Processing Systems , 36:47016– 47031, 2023. Ni, T., Eysenbach, B., and Salakhutdinov, R. Recurrent model-free rl can be a strong baseline for many pomdps. In International Conference on Machine Learning , pp. 16691–16723. PMLR, 2022. Ni, T., Ma, M., Eysenbach, B., and Bacon, P.-L. When do transformers shine in rl? decoupling memory from credit assignment. Advances in Neural Information Processing Systems , 36:50429–50452, 2023. Pascanu, R., Mikolov, T., and Bengio, Y. On the difficulty of training recurrent neural networks. In International 
+
+8MATE: Memory of Accumulated Transition Embeddings 
+
+conference on machine learning , pp. 1310–1318. Pmlr, 2013. Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I., et al. Language models are unsupervised multitask learners. OpenAI blog , 1(8):9, 2019. Rakelly, K., Zhou, A., Finn, C., Levine, S., and Quillen, D. Efficient off-policy meta-reinforcement learning via prob-abilistic context variables. In International conference on machine learning , pp. 5331–5340. PMLR, 2019. Shala, G., Biedenkapp, A., Krack, P., Walter, F., and Grabocka, J. Efficient cross-episode meta-rl. In The Thirteenth International Conference on Learning Repre-sentations , 2025. Todorov, E., Erez, T., and Tassa, Y. Mujoco: A physics engine for model-based control. In 2012 IEEE/RSJ Inter-national Conference on Intelligent Robots and Systems (IROS) , 2012. Van Hasselt, H., Guez, A., and Silver, D. Deep reinforce-ment learning with double q-learning. In Proceedings of the AAAI conference on artificial intelligence , volume 30, 2016. Wang, K., Javali, I., Bortkiewicz, M., Trzcinski, T., and Eysenbach, B. 1000 layer networks for self-supervised rl: Scaling depth can enable new goal-reaching capabilities. 
+
+CoRR , 2025. Yu, T., Quillen, D., He, Z., Julian, R., Hausman, K., Finn, C., and Levine, S. Meta-world: A benchmark and evalua-tion for multi-task and meta reinforcement learning. In 
+
+Conference on robot learning , pp. 1094–1100. PMLR, 2020. Zaheer, M., Kottur, S., Ravanbakhsh, S., Poczos, B., Salakhutdinov, R. R., and Smola, A. J. Deep sets. Ad-vances in neural information processing systems , 30, 2017. Zhang, B. and Sennrich, R. Root mean square layer nor-malization. Advances in neural information processing systems , 32, 2019. Zintgraf, L., Shiarlis, K., Igl, M., Schulze, S., Gal, Y., Hof-mann, K., and Whiteson, S. Varibad: a very good method for bayes-adaptive deep rl via meta-learning. Proceedings of ICLR 2020 , 2020. 9MATE: Memory of Accumulated Transition Embeddings 
+
+# A. Proofs and Derivations 
+
+A.1. Factorization of the Context Posterior 
+
+Based on the CMDP assumptions: (i) the transition kernel satisfy the Markov property conditioned on c, and (ii) the policy depends solely on the interaction history and not directly on the unobserved context. Consequently, the trajectory distribution given c factorizes as: 
+
+p(x1: t|c) = p(s0)π(a0|s0)p(s1, r 0|s0, a 0, c ) . . . π (at−1|x1: t−1)p(st, r t−1|st−1, a t−1, c ) (12) 
+
+= p(s0)
+
+> t−1
+
+Y
+
+> i=0
+
+π(ai|x1: i)p(si+1 , r i|si, a i, c ), (13) where we assume that s0 is independent of c. By applying Bayes’ rule and neglecting terms that are independent of c (i.e., 
+
+p(s0) and π(ai|x1: i)), we arrive at the desired property: 
+
+p(c|x1: t) ∝ p(c)p(x1: t|c) ∝ p(c)
+
+> t−1
+
+Y
+
+> i=0
+
+p(si+1 , r i|si, a i, c ). (14) 
+
+A.2. Probabilistic Interpretation of Sum Aggregation 
+
+To intuitively understand why sum aggregation can be a natural choice, consider a scenario where the context posterior 
+
+p(c|x1: t) is modeled as a product of Gaussian factors, following Rakelly et al. (2019). Under the assumption of a uniform prior p(c), the posterior distribution takes the form: 
+
+p(c|x1: t) ∝
+
+> t
+
+Y
+
+> i=1
+
+N (c; μ(xi), σ 2(xi)) ∝
+
+> t
+
+Y
+
+> i=1
+
+exp 
+
+
+
+− (c − μ(xi)) 2
+
+2σ2(xi)
+
+
+
+∝ exp 
+
+
+
+− (c − μpost )2
+
+2σ2
+
+> post
+
+
+
+. (15) Here, the posterior precision 1/σ 2 
+
+> post
+
+and the precision-weighted mean μpost /σ 2 
+
+> post
+
+are determined by the sum of individual precisions and precision-weighted means: 
+
+1
+
+σ2
+
+> post
+
+=
+
+> t
+
+X
+
+> i=1
+
+1
+
+σ2(xi) , μpost 
+
+σ2
+
+> post
+
+=
+
+> t
+
+X
+
+> i=1
+
+μ(xi)
+
+σ2(xi) . (16) If we define the transition embedder Eψ (xi) as: 
+
+Eψ (xi) = 
+
+ μ(xi)
+
+σ2(xi) , 1
+
+σ2(xi)
+
+
+
+, (17) then the accumulated memory mt becomes 
+
+mt =
+
+> t
+
+X
+
+> i=1
+
+Eψ (xi) = 
+
+ μpost 
+
+σ2
+
+> post
+
+, 1
+
+σ2
+
+> post
+
+
+
+. (18) Therefore, mt exactly encodes the sufficient statistics of the posterior p(c|x1: t).
+
+A.3. Proof of Theorem 3.1 
+
+Before presenting the main proof, we first establish a technical lemma regarding the topological properties of the multiset space. This lemma guarantees the compactness of the domain and the continuity of the summation function, which are prerequisites for establishing the homeomorphism and applying the extension theorem. 
+
+Lemma A.1. Let X be a compact subset of Rn, and E : Rn → Rm be a continuous function. Then, the space of bounded multisets M≤T (X ), endowed with the disjoint union topology, is compact. Furthermore, the summation function 
+
+ˆE : M≤T (X ) → Rm defined by ˆE({{ x1, . . . , x t}} ) = Pti=1 E(xi) is continuous. 
+
+10 MATE: Memory of Accumulated Transition Embeddings 
+
+Proof. First, we establish the compactness of M≤T (X ). Since X is compact, the product space X t is compact for any 
+
+t ≤ T . The component Mt(X ) is the image of X t under the continuous canonical quotient map, hence it is compact. Consequently, the finite disjoint union M≤T (X ) = FTt=0 Mt(X ) is compact. Next, regarding the continuity of ˆE, observe that the map (x1, . . . , x t) 7 → Pti=1 E(xi) defined on X t is continuous and permutation-invariant. By the definition of the quotient topology, this map induces a continuous restriction of ˆE on each component Mt(X ). Since ˆE is continuous on each component of the disjoint union, it is continuous on the entire domain. 
+
+Proposition 3.1 Let Eψ : X → Rm be a one-layer MLP with output dimension m = 2 nT + 1 and an analytic non-polynomial element-wise activation f : R → R, defined as 
+
+Eψ (x) = f (Ax + b), where ψ = ( A, b ). (19) 
+
+Then, given a continuous optimal policy π∗ : S ×M ≤T (X ) → Y ⊂ Rk, there exists a continuous function π : S × Rm → Rk
+
+such that 
+
+π(st,
+
+> t
+
+X
+
+> i=1
+
+Eψ (xi)) = π∗(st, p (c|x1: t)) (20) 
+
+for Lebesgue-almost-every A ∈ Rm×n and b ∈ Rm.Proof. Let ˆE : M≤T (X ) → Rm be the summation function defined as ˆE({{ x1, ..., x t}} ) = Pti=1 Eψ (xi). According to (Amir et al., 2023, Theorem 3.3), assuming m = 2 nT + 1 , ˆE is injective for Lebesgue-almost-every parameters A and b.From Theorem A.1, the domain M≤T (X ) is compact and ˆE is continuous. Since a continuous bijection from a compact space to a Hausdorff space is a homeomorphism onto its image, ˆE is a homeomorphism between M≤T (X ) and its image 
+
+Z := ˆE(M≤T (X )) ⊂ Rm. This implies that the inverse map ˆE−1 : Z → M ≤T (X ) is well-defined and continuous. Now, consider the function g : S × Z → Y defined by 
+
+g(st, z ) = π∗(st, p (c|x1: t)) , where {{ x1, ..., x t}} = ˆE−1(z). (21) The continuity of g follows directly from the continuity of π∗ and ˆE−1. Note that Z is a compact, and thus closed, subset of Rm. By the Tietze extension theorem applied component-wise to the output space Rk (recall Y ⊂ Rk), there exists a continuous extension π : S × Rm → Rk such that π(st, z ) = g(st, z ) for all z ∈ Z . For such π, we have 
+
+π(st,
+
+> t
+
+X
+
+> i=1
+
+Eψ (xi)) = g(st,
+
+> t
+
+X
+
+> i=1
+
+Eψ (xi)) = π∗(st, p (c|x1: t)) , (22) which verifies the claim. 
+
+A.4. Extension of Theorem 3.1 to Normalized Memory ( m = 2 nT + 2 )
+
+To extend the guarantee of Theorem 3.1 to the normalized setting, consider the original memory dimension m0 = 2 nT + 1 
+
+and let ˜Eψ : X → Rm0 be the encoder defined in Theorem 3.1. We construct an augmented encoder Eψ and an offset Ψ in 
+
+Rm0+1 as follows: 
+
+Eψ (x) = ( ˜Eψ (x), 0) , Ψ = ( 0m0 , 1) . (23) Let ˜mt = Pti=1 ˜Eψ (xi) denote the unnormalized memory in the original space. The memory vector before normalization then takes the form: 
+
+> t
+
+X
+
+> i=1
+
+Eψ (xi) + Ψ = ( ˜ mt, 1) . (24) 11 MATE: Memory of Accumulated Transition Embeddings            
+
+> (a) SAC-based memory agent for MuJoCo and Meta-World. (b) DDQN-based memory agent for T-Maze.
+> Figure 5. Memory-based RL framework used in our experiments. An episode trajectory consisting of observation, action, and reward history is processed by a sequence encoder to produce a latent memory representation mtthat summarizes past interactions. This memory vector conditions standard off-policy RL components. For discrete-control tasks (e.g., T-Maze), mtis provided to a DDQN head to estimate action values. For continuous-control tasks (MuJoCo and Meta-World), mtis shared by the policy (actor) and twin Q-networks (critics) in a SAC framework. The sequence encoder, policy, and value networks are trained end-to-end, allowing historical information to influence action selection and value estimation through the learned memory representation.
+
+Consequently, the normalized memory ˆmt is obtained by projecting this vector onto the unit hypersphere: 
+
+ˆmt = ( ˜ mt, 1) 
+
+∥( ˜ mt, 1) ∥ . (25) Observing that the normalization constant 1/∥( ˜ mt, 1) ∥ corresponds to the last coordinate of ˆmt, we can explicitly recover 
+
+˜mt from ˆmtvia: 
+
+˜mt = ˆmt, 1: m0
+
+ˆmt,m 0+1 
+
+, (26) where ˆmt,k denotes the k-th component of ˆmt. This continuous one-to-one correspondence between ˆmt and ˜mt implies that the existence of a continuous function π(st, ˜mt), established in Theorem 3.1, extends to the normalized memory formulation 
+
+π(st, ˆmt).
+
+# B. Experimental Details 
+
+This appendix provides detailed descriptions of the experimental setup that complement the main paper. We describe (i) the implementation of the memory-based RL framework, (ii) architectural design choices for memory modules and baselines, (iii) RL algorithm configurations, and (iv) environment specifications. Our implementation follows the sequence-based memory RL formulation of (Ni et al., 2023), with modifications tailored to our proposed memory architecture. 
+
+B.1. Memory-Based RL Implementation 
+
+Following the memory-based RL baseline described in (Ni et al., 2023), we implement a sequence-based agent that summarizes an episode into a compact memory representation and uses it as input to standard off-policy RL components. Concretely, we represent each episode as a sequence and feed the episode trajectory (observation–action history and rewards) into a sequence model to produce a latent memory vector mt. This memory embedding is then consumed by the RL heads to compute the corresponding training objectives. Figure 5 illustrates the overall structure and how the learned memory connects the sequence model to the RL heads. For training, we do not construct updates from a single transition alone; instead, we sample mini-batches consisting of 
+
+entire episodes from the replay buffer and train on episode batches. This training scheme directly follows the sequence-based baseline design in (Ni et al., 2023): learning a history summary from episode sequences and using it to perform off-policy RL updates. This design allows the memory module to be trained purely from the RL objective, without auxiliary sequence-prediction losses. 12 MATE: Memory of Accumulated Transition Embeddings 
+
+B.2. Memory architecture baselines 
+
+We compare MATE against Transformer and RNN memory baselines under closely matched capacity. Following (Ni et al., 2023), the Transformer baseline adopts a GPT-2 style architecture, and the RNN baseline uses an LSTM. To ensure that performance differences stem from memory structure rather than model scale, we match hidden dimensionality and depth across models. The transition encoder in MATE uses a residual feedforward design with a comparable parameter count to the Transformer blocks. Unlike GPT-style models, MATE is permutation-invariant and therefore does not rely on positional encodings. Additionally, to maintain consistency with MATE’s hyperspherical memory representation, we apply the same hyperspherical projection to state embeddings across all models when applicable. For the experimental setup, we utilized a single layer of unit block for all baselines and MATE. The hidden dimension was set to 256 for Mujoco and Meta-World benchmarks and 128 for T-Maze experiments. 
+
+B.3. RL algorithm Details 
+
+For MuJoCo and Meta-World experiments, we used SAC (Haarnoja et al., 2018) to train the memory-based agent. The actor and twin critics operate on the same memory embedding mt = fψ (τ0: t), and SAC is optimized with entropy regularization and target critics (using the minimum of the two critics to reduce overestimation). In particular, the actor objective can be written as 
+
+Lπ (ϕ, ψ, θ ) = E
+
+h
+
+α log πϕ(a | mt) − min  
+
+> i∈{ 1,2}
+
+Qθi (mt, a )
+
+i
+
+, (27) where ϕ denotes the actor parameters and θ = {θ1, θ 2} denotes the twin-critic parameters. When the encoder is shared, gradients of Lπ can flow not only to ϕ but also to the critic and encoder parameters through the critic term min i Qθi (mt, a ),which can undesirably couple the actor update with the critic (and the shared representation). To mitigate this, we enable an optional freeze critic mechanism during the actor update and instead optimize the stop-gradient variant 
+
+Lfreeze  
+
+> π
+
+(ϕ) = E
+
+h
+
+α log πϕ(a | sg( mt)) − min  
+
+> i∈{ 1,2}
+
+Q¯θi (sg( mt), a )
+
+i
+
+, (28) where sg( ·) denotes stop-gradient (detach) and ¯θ indicates that critic parameters are treated as fixed in the actor step. This enforces ∇θ Lfreeze  
+
+> π
+
+= 0 and ∇ψ Lfreeze  
+
+> π
+
+= 0 , so the critic and shared encoder are updated only via the TD critic loss, while the actor is optimized using the critic as a fixed evaluator. For a more detailed discussion and derivations of this shared-memory training issue, we refer readers to (Ni et al., 2023). The SAC hyperparameters for both Meta-World and Mujoco experiments are reported in Table 2. For T-Maze experiments we adopted DDQN (Van Hasselt et al., 2016) as the underlying off-policy RL algorithm, following the setup in (Ni et al., 2023). We employed an ϵ-greedy exploration strategy with a linear decay schedule. Specifically, ϵ
+
+is initialized at 1.0 and linearly annealed to 1 
+
+> T
+
+(where T denotes the horizon length) over the first 10% of total training episodes, after which it remains constant at 1 
+
+> T
+
+. The remaining hyperparameters are detailed in Table 3.  
+
+> Table 2. SAC algorithm hyperparameters
+
+Hyperparameter Value Network hidden size (512, 512) Discount factor ( γ) 0.99 Target update rate ( τ ) 0.001 Replay buffer size 1e4 Learning rate 1e-4 Batch size 64 Freeze critic true  
+
+> Table 3. DDQN algorithm hyperparameters
+
+Hyperparameter Value Network hidden size (256, 256) Discount factor ( γ) 0.99 Target update rate ( τ ) 0.001 Replay buffer size 1e4 Learning rate 3e-5 Batch size 64 Gradient Clipping 0.03 
+
+B.4. Environment Details 
+
+B.4.1. M UJOCO BENCHMARKS 
+
+Ant-Dir. Ant is a 3D quadruped robot with 8 torque-controlled joints. Each episode samples a latent context c = d⋆
+
+specifying a desired locomotion direction in the plane, which is not provided to the agent; thus the optimal behavior is to 13 MATE: Memory of Accumulated Transition Embeddings 
+
+infer d⋆ from interaction and adapt the gait to move consistently along the target direction. We use the standard Gymnasium MuJoCo observation (proprioceptive positions, velocities, and contact-related signals; see the Gymnasium documentation for details), with torque action at ∈ R8. The reward is goal-conditioned on d⋆ and encourages planar velocity projected onto 
+
+d⋆, together with a standard control penalty. (Finn et al., 2017) 
+
+Cheetah-Vel. HalfCheetah is a planar (2D) running robot with 6 torque-controlled joints. Each episode samples a latent context c = v⋆ corresponding to a target forward speed, which is not observed by the agent; the optimal behavior is therefore to infer v⋆ online and regulate the gait to match the target speed. We use the standard Gymnasium MuJoCo observation (joint positions and velocities; see the Gymnasium documentation for details), with torque action at ∈ R6. The reward is conditioned on v⋆ and encourages tracking the achieved forward velocity to the target, with a standard control penalty. (Finn et al., 2017) 
+
+Walker-Param. Walker2d is a planar (2D) biped robot with 6 torque-controlled joints. Each episode samples a latent context c that parameterizes the environment dynamics (e.g., masses/inertias, joint damping, and friction/contact coefficients) and is not revealed to the agent; the optimal behavior is to identify the current dynamics from interaction history and adapt control accordingly (rather than executing a single fixed gait). We use the standard Gymnasium MuJoCo observation (proprioceptive positions and velocities; see the Gymnasium documentation for details), with torque action at ∈ R6. The reward is the standard forward-locomotion objective with a control penalty and is fixed across contexts. 
+
+Hopper-Param. Hopper is a planar (2D) one-legged robot with 3 torque-controlled joints. Each episode samples a latent context c that changes the environment dynamics through randomized physical parameters (e.g., mass/inertia scalings, damping, and friction/contact coefficients) and is not observed by the agent; the optimal behavior is to infer the episode’s dynamics and adapt balance and thrust timing to maintain stable hopping under the current dynamics. We use the standard Gymnasium MuJoCo observation (proprioceptive positions and velocities; see the Gymnasium documentation for details), with torque action at ∈ R3. The reward is the standard forward-hopping objective with a control penalty and is fixed across contexts. B.4.2. M ETA -W ORLD 
+
+Meta-World ML10. We additionally evaluate on Meta-World ML10 (Yu et al., 2020). Unlike the MuJoCo CMDP tasks and T-Maze described above, this setting does not correspond to a fixed task per environment. Instead, ML10 defines a single manipulation environment distribution in which both the task type and task-specific configurations vary across episodes. At the beginning of each episode, one of 10 manipulation tasks ( reach, push, pick-place, sweep-into, basketball, drawer-close, window-open, button-press, dial-turn, and peg-insert-side ) is sampled, and the task identity is not provided to the agent. In addition to the change in task type, object initial positions, goal locations, and relevant target configurations are randomized within each task, so both high-level objectives and low-level scene layouts vary across episodes. All tasks share the same embodiment: a simulated 7-DoF Sawyer arm with a parallel gripper operating in a common tabletop workspace. We use the standard Meta-World low-dimensional state observations, including robot proprioceptive features, end-effector pose, and task-relevant object and goal information, and a continuous 4-dimensional action space corresponding to 3D end-effector displacement control and a gripper open/close command. We use a fixed episode horizon of H = 300 steps for all ML10 experiments. This formulation requires the agent to infer the underlying task and adapt its behavior from interaction history within a unified environment family rather than across separate task-specific environments. B.4.3. T-M AZE 
+
+We adopt and modify the T-Maze environment originally introduced by (Ni et al., 2023). The environment is situated in a discrete 2-dimensional space containing a T-shape structure. It consists of a 1-dimensional corridor of length L, extending from an oracle state O to a junction state J. At the junction, the path branches into two directions (Up and Down), leading to two potential goal states, G1 and G2.At the beginning of each episode, the true goal G is randomly initialized as either G1 or G2. Crucially, the context information regarding the true goal is observable only at the oracle state O. The agent is initialized at a start position S within the corridor. To solve the task, the agent must traverse the corridor, identify the correct goal by visiting O (if necessary), and proceed to J to turn toward the target. The action space consists of four discrete movements: Left, Right Up, and Down. 14 MATE: Memory of Accumulated Transition Embeddings 
+
+Adaptation to CMDP Framework. The original T-Maze is designed as a POMDP, where the agent receives discrete indicator observation about current state. To align this environment with the CMDP framework, where the state is typically fully observable while the context is hidden, we introduce two key modifications. First, regarding state representation, we define the state as the 2-dimensional coordinates of the agent instead of discrete indicators. Second, regarding reward shaping, we replace the original time-dependent penalty with a velocity-based penalty to provide a time-independent learning signal. The total reward consists of a sparse goal reward Rgoal = ⊮(st+1 = G) and penalty RP . The penalty is formulated as: 
+
+Rp(h1: t, a t) = 1 − (xt − xt−1)
+
+L
+
+where xt denotes the agent’s position along the corridor at time t. This term drives the agent towards the junction. 
+
+Passive. In the Passive setting, the start position coincides with the oracle position ( S = O), and the corridor length is 
+
+L = T − 1. Since the agent observes the goal cue immediately at the start, no exploration is required. The optimal policy simply moves right for T − 1 steps and move toward the goal G. The expected return for the optimal policy is 1.0, while an optimal Markovian policy yields 0.5. The worst-case return is -1.0. 
+
+Active. In the Active setting, the oracle is located one step to the left of the start position, and the corridor length is 
+
+L = T − 2. This necessitates active information gathering: the optimal policy must move left to O, observe the context, and then proceed right. To test active exploration, we introduce two constraints: distractor noise, where the agent receives a false goal cue at the start state, and physical constraint, where movement towards the junction is blocked at the first time step. These modifications force the agent to actively seek the oracle rather than relying on initial observations. Despite these challenges, the expected returns for optimal, Markovian policies remain consistent with the passive variant. 15

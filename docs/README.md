@@ -6,80 +6,82 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-24
-- 运行时间：2026-05-24 20:48:45 UTC
+- 最新运行日期：2026-05-25
+- 运行时间：2026-05-25 21:08:24 UTC
 - 运行状态：成功
-- 本次总论文数：19
-- 精读区：7
+- 本次总论文数：20
+- 精读区：8
 - 速读区：12
 
 ### 今日简报（AI）
-- 今日共生成 19 篇推荐（精读 7 篇，速读 12 篇）
-- 精读：《When Robots Do the Chores: A Benchmark and Agent for Long-Horizon Household Task Execution》（8.0/10）, 《Causal Forcing++: Scalable Few-Step Autoregressive Diffusion Distillation for Real-Time Interactive Video Generation》（8.0/10）
-- 速读：《HoloMotion-1 Technical Report》（8.0/10）, 《EgoExo-WM: Unlocking Exo Video for Ego World Models》（8.0/10）, 《FocalPolicy: Frequency-Optimized Chunking and Locally Anchored Flow Matching for Coherent Visuomotor Policy》（8.0/10）
-- 这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。
-- 详情：[/202605/24/README](/202605/24/README)
+1) 2026-05-25 日报已完成：共筛选 20 篇，精读 8 篇、速读 12 篇，重点聚焦自动驾驶、具身探索与多智能体安全规划。
+2) 最值得关注的是两篇满分精读：《Fast-dDrive》指向高效块扩散 VLM 在自动驾驶中的应用，《ChainFlow-VLA》聚焦 VLM 驱动的因果流规划。
+3) 建议普通读者先看这两篇精读建立主线，再快速浏览空地协同交接、跨楼层探索和行人不确定性下安全驾驶三类 8 分速读方向。
+- 详情：[/202605/25/README](/202605/25/README)
 
 ### 精读区论文标签
-1. [When Robots Do the Chores: A Benchmark and Agent for Long-Horizon Household Task Execution](/202605/24/2605.14504v2-when-robots-do-the-chores-a-benchmark-and-agent-for-long-horizon-household-task-execution)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：具身长程规划与记忆自适应层级
-2. [Causal Forcing++: Scalable Few-Step Autoregressive Diffusion Distillation for Real-Time Interactive Video Generation](/202605/24/2605.15141v1-causal-forcing-scalable-few-step-autoregressive-diffusion-distillation-for-real-time-interactive-video-generation)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：低延迟少步视频扩散展开
-3. [HoloMotion-1 Technical Report](/202605/24/2605.15336v1-holomotion-1-technical-report)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：用于控制策略的人形运动基础模型
-4. [PH-Dreamer: A Physics-Driven World Model via Port-Hamiltonian Generative Dynamics](/202605/24/2605.18303v1-ph-dreamer-a-physics-driven-world-model-via-port-hamiltonian-generative-dynamics)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：物理驱动的动作条件世界模型
-5. [World-Ego Modeling for Long-Horizon Evolution in Hybrid Embodied Tasks](/202605/24/2605.19957v1-world-ego-modeling-for-long-horizon-evolution-in-hybrid-embodied-tasks)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：长时程具身规划世界模型
-6. [Learning A Unified Risk Map for Autonomous Driving in Partially Observable Environments](/202605/24/2605.22189v1-learning-a-unified-risk-map-for-autonomous-driving-in-partially-observable-environments)  
-   标签：评分：8.0/10、query:q2
-   evidence：遮挡下自动驾驶规划风险建模
-7. [LACO: Adaptive Latent Communication for Collaborative Driving](/202605/24/2605.22504v1-laco-adaptive-latent-communication-for-collaborative-driving)  
-   标签：评分：8.0/10、query:q2
-   evidence：低延迟协同驾驶决策协调
+1. [Fast-dDrive: Efficient Block-Diffusion VLM for Autonomous Driving](/202605/25/2605.23163v1-fast-ddrive-efficient-block-diffusion-vlm-for-autonomous-driving)  
+   标签：评分：10.0/10、query:profile-1
+   evidence：面向自动驾驶轨迹规划的高效块扩散VLA
+2. [ChainFlow-VLA: Causal Flow Planning with Vision-Language Models](/202605/25/2605.23270v1-chainflow-vla-causal-flow-planning-with-vision-language-models)  
+   标签：评分：10.0/10、query:q4
+   evidence：自动驾驶流式VLA轨迹规划
+3. [VLA-REPLICA: A Low-Cost, Reproducible Benchmark for Real-World Evaluation of Vision-Language-Action Models](/202605/25/2605.20774v1-vla-replica-a-low-cost-reproducible-benchmark-for-real-world-evaluation-of-vision-language-action-models)  
+   标签：评分：9.0/10、query:upstream-ad-planning-idea
+   evidence：视觉语言动作模型基准
+4. [Distill to Think, Foresee to Act: Cognitive-Physical Reinforcement Learning for Autonomous Driving](/202605/25/2605.21139v2-distill-to-think-foresee-to-act-cognitive-physical-reinforcement-learning-for-autonomous-driving)  
+   标签：评分：9.0/10、query:q2
+   evidence：面向自动驾驶决策的强化学习框架
+5. [EvoScene-VLA: Evolving Scene Beliefs Inside the Action Decoder for Chunked Robot Control](/202605/25/2605.21862v1-evoscene-vla-evolving-scene-beliefs-inside-the-action-decoder-for-chunked-robot-control)  
+   标签：评分：9.0/10、query:upstream-ad-planning-idea
+   evidence：用于多步机器人控制的VLA策略
+6. [Agentic-VLA: Efficient Online Adaptation for Vision-Language-Action Models](/202605/25/2605.22896v1-agentic-vla-efficient-online-adaptation-for-vision-language-action-models)  
+   标签：评分：9.0/10、query:upstream-ad-planning-idea
+   evidence：VLA机器人动作在线适应
+7. [$π_0$-EqM: Equilibrium Matching for Closed-Loop Vision-Language-Action Control](/202605/25/2605.23128v1-0-eqm-equilibrium-matching-for-closed-loop-vision-language-action-control)  
+   标签：评分：9.0/10、query:upstream-ad-planning-idea
+   evidence：带流匹配动作解码器的闭环VLA控制
+8. [Point Tracking Improves World Action Models](/202605/25/2605.23856v1-point-tracking-improves-world-action-models)  
+   标签：评分：9.0/10、query:upstream-ad-planning-idea
+   evidence：用于机器人策略规划的扩散世界动作模型
 
 ### 速读区论文标签
-1. [HoloMotion-1 Technical Report](/202605/24/2605.15336v2-holomotion-1-technical-report)  
+1. [Learning-Accelerated Optimization-based Trajectory Planning for Cooperative Aerial-Ground Handover Missions](/202605/25/2605.19562v1-learning-accelerated-optimization-based-trajectory-planning-for-cooperative-aerial-ground-handover-missions)  
+   标签：评分：8.0/10、query:q5
+   evidence：面向无人机与地面车的学习加速轨迹规划
+2. [TravExplorer: Cross-Floor Embodied Exploration via Traversability-Aware 3-D Planning](/202605/25/2605.19958v1-travexplorer-cross-floor-embodied-exploration-via-traversability-aware-3-d-planning)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：面向控制策略的人形运动基础模型
-2. [EgoExo-WM: Unlocking Exo Video for Ego World Models](/202605/24/2605.15477v1-egoexo-wm-unlocking-exo-video-for-ego-world-models)  
+   evidence：具身探索与可通行三维规划
+3. [Multi-Agent Reinforcement Learning for Safe Autonomous Driving Under Pedestrian Behavioral Uncertainty](/202605/25/2605.20255v1-multi-agent-reinforcement-learning-for-safe-autonomous-driving-under-pedestrian-behavioral-uncertainty)  
+   标签：评分：8.0/10、query:q2
+   evidence：行人不确定性下的安全自动驾驶决策
+4. [Demo-JEPA: Joint-Embedding Predictive Architecture for One-shot Cross-Embodiment Imitation](/202605/25/2605.20811v1-demo-jepa-joint-embedding-predictive-architecture-for-one-shot-cross-embodiment-imitation)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：动作条件自我中心世界模型用于规划
-3. [FocalPolicy: Frequency-Optimized Chunking and Locally Anchored Flow Matching for Coherent Visuomotor Policy](/202605/24/2605.15944v2-focalpolicy-frequency-optimized-chunking-and-locally-anchored-flow-matching-for-coherent-visuomotor-policy)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：用于连贯轨迹的流匹配视觉运动策略
-4. [Identifiable Token Correspondence for World Models](/202605/24/2605.16457v2-identifiable-token-correspondence-for-world-models)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：Transformer世界模型的时序一致性
-5. [Baba in Wonderland: Online Self-Supervised Dynamics Discovery for Executable World Models](/202605/24/2605.16725v1-baba-in-wonderland-online-self-supervised-dynamics-discovery-for-executable-world-models)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：可执行世界模型用于规划
-6. [Event-Grounded Sparse Autoencoders for Vision-Language-Action Policies](/202605/24/2605.17204v1-event-grounded-sparse-autoencoders-for-vision-language-action-policies)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：VLA策略的可解释性方法
-7. [SEDualVLN: A Spatially-Enhanced Dual-System for Vision-Language Navigation](/202605/24/2605.17249v1-sedualvln-a-spatially-enhanced-dual-system-for-vision-language-navigation)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：视觉语言导航策略基于轨迹预测动作
-8. [DeTrack: A Benchmark and Altitude-Aware Dual World Model for Drone-embodied Tracking](/202605/24/2605.17451v1-detrack-a-benchmark-and-altitude-aware-dual-world-model-for-drone-embodied-tracking)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：闭环具身无人机跟踪与双世界模型
-9. [WorldArena 2.0: Extending Embodied World Model Benchmarking on Modality, Functionality and Platform](/202605/24/2605.17912v1-worldarena-20-extending-embodied-world-model-benchmarking-on-modality-functionality-and-platform)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：具身世界模型基准与动作条件未来预测
-10. [PhyWorld: Physics-Faithful World Model for Video Generation](/202605/24/2605.19242v1-phyworld-physics-faithful-world-model-for-video-generation)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：基于流匹配的物理一致视频世界模型
-11. [SWEET: Sparse World Modeling with Image Editing for Embodied Task Execution](/202605/24/2605.19319v1-sweet-sparse-world-modeling-with-image-editing-for-embodied-task-execution)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：面向具身规划的稀疏视觉世界模型
-12. [Beyond Waypoints: Dual-Heatmap Grounding for Cross-Embodiment Semantic Navigation](/202605/24/2605.19420v1-beyond-waypoints-dual-heatmap-grounding-for-cross-embodiment-semantic-navigation)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：视觉语言 grounding 到可执行机器人目标
+   evidence：世界模型跨具身模仿
+5. [Generating Realistic Safety-Critical Scenarios for Vehicle-Pedestrian Interactions](/202605/25/2605.17229v1-generating-realistic-safety-critical-scenarios-for-vehicle-pedestrian-interactions)  
+   标签：评分：7.0/10、query:q2
+   evidence：自动驾驶安全关键交互仿真
+6. [Drift Flow Matching](/202605/25/2605.17244v1-drift-flow-matching)  
+   标签：评分：7.0/10、query:upstream-ad-planning-idea
+   evidence：低延迟自适应流匹配
+7. [MATE: Solving Contextual Markov Decision Processes with Memory of Accumulated Transition Embeddings](/202605/25/2605.17431v1-mate-solving-contextual-markov-decision-processes-with-memory-of-accumulated-transition-embeddings)  
+   标签：评分：7.0/10、query:upstream-ad-planning-idea
+   evidence：自适应策略记忆架构
+8. [Self-supervised Hierarchical Visual Reasoning with World Model](/202605/25/2605.17537v1-self-supervised-hierarchical-visual-reasoning-with-world-model)  
+   标签：评分：7.0/10、query:upstream-ad-planning-idea
+   evidence：用于视觉预见推理的层级世界模型
+9. [Image-to-Video Diffusion: From Foundations to Open Frontiers](/202605/25/2605.17248v1-image-to-video-diffusion-from-foundations-to-open-frontiers)  
+   标签：评分：6.0/10、query:upstream-ad-planning-idea
+   evidence：视频扩散与时序一致性
+10. [Accelerating Redshift-Conditioned Galaxy Image Synthesis with One-step Generative Modeling](/202605/25/2605.17546v1-accelerating-redshift-conditioned-galaxy-image-synthesis-with-one-step-generative-modeling)  
+   标签：评分：6.0/10、query:upstream-ad-planning-idea
+   evidence：一步扩散与流模型提速
+11. [From a Single Demonstration to a General Policy for Contact-Rich Manipulation](/202605/25/2605.17601v1-from-a-single-demonstration-to-a-general-policy-for-contact-rich-manipulation)  
+   标签：评分：6.0/10、query:upstream-ad-planning-idea
+   evidence：单示范泛化机器人操作策略
+12. [Temporal Aware Pruning for Efficient Diffusion-based Video Generation](/202605/25/2605.17837v1-temporal-aware-pruning-for-efficient-diffusion-based-video-generation)  
+   标签：评分：6.0/10、query:upstream-ad-planning-idea
+   evidence：高效且时序一致的视频扩散生成
 
 
 <div class="dpr-home-promo-card">
