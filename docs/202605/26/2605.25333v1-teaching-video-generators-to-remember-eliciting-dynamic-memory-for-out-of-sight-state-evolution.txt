@@ -1,0 +1,497 @@
+Title: Teaching Video Generators to Remember: Eliciting Dynamic Memory for Out-of-Sight State Evolution
+
+URL Source: https://arxiv.org/pdf/2605.25333v1
+
+Published Time: Tue, 26 May 2026 02:04:49 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Teaching Video Generators to Remember: Eliciting Dynamic Memory for Out-of-Sight State Evolution 
+
+Tianshuo Xu 1, Yichen Xie 1,2, Depu Meng 1§, Chensheng Peng 1,2,Quentin Herau 1, Bo Jiang 1, Yihan Hu 1, Wei Zhan 1,2† 
+
+> 1
+
+Applied Intuition 2 University of California, Berkeley Long horizon     
+
+> Camera pan
+> Light toggle Generated Given
+> (a)
+> (b)
+> (c)
+> Light on
+> (d)
+> t = 20s
+> Occlusion
+> Camera away Camera back
+> Light off Light on
+> Occluder enters Occluder exits
+
+…
+
+Figure 1: ReMind successfully maintains out-of-sight state evolution. (a) An I2V pouring task where the state evolves correctly despite a light toggle interruption. (b) A V2V balloon inflation process keeping expanding through a full-frame occlusion. (c) A walking pedestrian resuming at a physically plausible walked-forward state when the camera returns. (d) A long-term stress test given the first frame and a 20s dark interval, ReMind accurately recovers the illuminated state. 
+
+## Abstract 
+
+Video world models should maintain evolving states when evidence is unobserved, yet current generators often freeze hidden states upon interruption. This is not simply a capacity problem: pretrained video diffusion transformers already possess KV-cache mechanisms capable of non-local retrieval, but they are rarely trained to use them as dynamic memory. We introduce ReMind, a framework eliciting dy-namic memory behavior via memory-oriented data, event-aware training, and cache adaptation. Organized around a taxonomy of 100+ dynamic events, we build a camera-annotated training mixture combining VLM-filtered real videos, generated hard dynamics, synthetic camera loops, and memory-interruption augmentations. Each clip is converted into a frame graph with protected anchors, degraded intervals, and explicit temporal gaps. A node-structured curriculum—including node-drop, noisy memory, frontier continuation, and reference-cache training—forces the model to retrieve relevant past states across interruptions rather than relying solely on local continuity. PM-RoPE, an elegant camera-phase RoPE extension, unlocks spatiotemporal retrieval at a single-attention cost while preserving pretrained path-ways. ReMind achieves the best overall scores on STEVO-Bench and recovery tasks. Furthermore, general image-to-video evaluations confirm this curriculum avoids catastrophic forgetting. We will open-source our code, data, and models.     
+
+> †Corresponding author: wei.zhan@applied.co .§Project lead.
+> arXiv:2605.25333v1 [cs.CV] 25 May 2026
+
+## 1 Introduction 
+
+Physical state continues to evolve even when it is temporarily unobserved. A container should keep filling while the lights are off, a balloon should continue inflating behind an occluder, and a pedestrian should keep walking while the camera looks away. Yet current video world models often tie state evolution too closely to immediate visual evidence: when the scene is revealed again, the hidden state may freeze, reset, or resume from an implausible point. This out-of-sight failure, recently formalized in STEVO-Bench [Ma et al., 2026], exposes a gap between generating visually plausible local motion and maintaining persistent world state across interrupted observation. At first glance, these failures might seem addressable by scaling temporal context or improving autoregressive rollout. Recent diffusion-autoregressive systems use self-forced training, streaming tuning, and KV caches to make long causal generation practical [Huang et al., 2025, Yang et al., 2026a, Yuan et al., 2026], while cache compression methods further improve storage efficiency [Ranganath et al., 2026]. In parallel, memory-conditioned generators inject static memory from historical views or 3D/4D representations to improve spatial consistency under camera motion [Yu et al., 2025, Xiao et al., 2025, Ren et al., 2025, Yang et al., 2026b, InSpatio Team et al., 2026]. However, these advances do not directly teach a model when an older observation should override recent but corrupted context. We view the missing behavior through the lens of frame graphs: standard training presents frames as a local chain, while interruptions create non-local edges from a recovery frame to the latest reliable state anchor. If training never exposes such edges, attention and KV-cache machinery may store past tokens without learning when to retrieve them as dynamic memory. We introduce ReMind, a framework for eliciting dynamic memory behavior from a pretrained autoregressive video diffusion transformer [Team Wan, 2025]. ReMind combines memory-oriented data construction, event-aware training, and pretraining-compatible cache adaptation. We build a camera-annotated training mixture organized around a taxonomy of over 100 dynamic events, combining VLM-filtered real videos, generated hard dynamics, rendered camera loops, and memory-interruption augmentations. Each clip is converted into a frame graph with protected state anchors, degraded observation intervals, and explicit temporal gaps, defining which historical nodes should remain useful when local visual evidence becomes unreliable. Given these memory graphs, ReMind trains the model with a node-structured curriculum, including node-drop, noisy memory, V2V frontier, and reference-cache training. These regimes corrupt, drop, or temporally separate observations so that successful recovery requires retrieving the relevant past state rather than relying only on local continuity. To make such retrieval geometrically meaningful, we add Projective Memory RoPE (PM-RoPE), a camera-phase extension to rotary position embedding (RoPE) [Su et al., 2024]. Unlike dual-attention mechanisms adding a separate spatial branch, PM-RoPE grants cached entries unified spatiotemporal addresses within a single self-attention operation, preserving their original temporal positions and the pretrained attention pathway. We evaluate ReMind on STEVO-Bench Ma et al. [2026] and controlled recovery tasks covering occlusion, darkness, and camera lookaway. ReMind achieves the best overall score among compared models, with leading state-progress and competitive physical-plausibility and coherence scores. General image-to-video evaluations on VBench [Huang et al., 2024] further suggest that the memory-elicitation curriculum preserves standard generation quality. We additionally use KV-importance diagnostics to verify whether recovery is associated with attention to the intended historical anchors. Our main contributions are summarized as follows: • We formulate out-of-sight state evolution as a dynamic-memory problem over frame graphs and introduce ReMind, a memory-elicitation framework constructing camera-annotated training graphs with protected anchors, degraded intervals, and temporal gaps. • We propose a node-structured training framework with pretraining-compatible cache adapta-tion: node-drop, noisy memory, V2V frontier, and reference-cache training force retrieval of reliable state anchors, while PM-RoPE provides unified spatiotemporal addressing at single-attention cost when paired with non-contiguous cache positioning. • We establish a validation protocol that measures both hidden-state recovery and standard generation quality, combining STEVO-Bench evaluation, controlled V2V recovery cases, reference-cache stress tests, KV-importance diagnostics, and VBench evaluation. 2C1
+
+> visible state
+
+C2
+
+> visible state
+
+C3
+
+> occluded
+
+C4
+
+> occluded
+
+C5
+
+> camera away
+
+C6 C7                                 
+
+> recovery
+> 123456
+> (a) Unidirectional Chain (b) Static Memory (c) Dynamic Memory (ours)
+> 1234567
+> 2nd path 4
+> 123465
+> 1.0
+> 0.5
+> 0.0
+> 123456
+> Attention from 7 1.0
+> 0.5
+> 0.0
+> 123456
+> Attention from 7 1.0
+> 0.5
+> 0.0
+> 123456
+> Attention from 7
+> Chain Attention Auxiliary Path with
+> Static Reference
+> Integrated Attention with
+> Addressable Cache
+> 7
+> 7
+> camera back
+
+Figure 2: Conceptual comparison of memory use in video generation. (a) Unidirectional Chain: 
+
+models only use rolling KV cache, which breaks down during extended occlusions. (b) Static Memory: memory- or world-conditioned methods use structured spatial representations as fixed static memory. They risk ignoring evolutions prior to occlusion. (c) ReMind (Dynamic Memory): 
+
+Our method reconceptualizes the KV cache as dynamic memory, establishing adaptive grounding via PM-RoPE to dynamically retrieve the most relevant historical anchors for continuous state evolution. 
+
+## 2 Related Work 
+
+2.1 Autoregressive Diffusion Video Generation 
+
+Autoregressive diffusion adapts pretrained video diffusion backbones such as Wan [Team Wan, 2025] into causal rollout models. Teacher forcing conditions on clean history [Williams and Zipser, 1989], Diffusion Forcing uses independent per-token noise levels [Chen et al., 2024], and Self Forcing reduces the train-test mismatch by rolling out generated context with KV caching [Huang et al., 2025]. LongLive and Helios further improve long or real-time generation through streaming tuning, context compression, and drift simulation [Yang et al., 2026a, Yuan et al., 2026]. However, these methods mostly treat the KV cache as recent rollout context or a systems resource: compression and pruning improve efficiency [Ranganath et al., 2026], but do not teach the model when to retrieve an older observation as the latest reliable state witness. ReMind targets this out-of-sight failure [Ma et al., 2026] by training existing attention and cache mechanisms to behave as dynamic memory. 
+
+2.2 Memory Mechanisms for Video World Models 
+
+There are already some explorations regarding the memory mechanism for video generation models. We conceptually categorize them by their underlying topologies in Fig. 2. 
+
+Unidirectional Chain: Standard Diffusion-AR models rely exclusively on a KV cache for causal video generation. The memory acts as a unidirectional temporal buffer rather than a structured scene-state store [Huang et al., 2025, Yang et al., 2026a, Yuan et al., 2026], which makes the models heavily rely on temporal continuity and may cause failures under occlusions. 
+
+Static Memory: To overcome the limitations of simple KV cache, recent methods explicitly inject spatial or 3D representations into memory. WorldPlay [Sun et al., 2025] uses dual attention to simultaneously route a standard temporal RoPE Su et al. [2024] path and a spatial PRoPE Li et al. [2025] path to handle temporal and spatial correlations separately (see Appendix C for an analysis of this decoupled design under occlusion). Similarly, InSpatio-World [InSpatio Team et al., 2026] and NeoVerse [Yang et al., 2026b] utilize explicit camera-motion warps and projections to provide historical structural residuals. Hybrid methods like MosaicMem [Yu et al., 2026] combine implicit generation with the retrieval of past spatial observations. These memories act as static and fixed-reference hubs, so they risk ignoring evolutions that occurred before occlusions. 
+
+Dynamic Memory: Our method, ReMind, moves beyond static memory by treating the KV cache in a dynamic way. Inter-frame relevance is not fixed to pure temporal adjacency or spatial overlapping. Instead, the model learns to adaptively condition the generation on past frames through its own 3(a) Memory-oriented data construction                 
+
+> 1. Inputs K=[fx,fy,cx,xy]
+> T=[R|t]
+> Source video frames
+> Per-frame
+> camera / depth
+> Clean clip 2. Interruption
+> augmentation
+> Camera Loop Light toggle Occluder N/A - Clean
+> 3. Annotated output Memory edge
+> Anchor Recovery Interruption
+> Event-annotated training clip with node labels
+
+(b) ReMind framework                                            
+
+> Training flow
+> Input latent chunks
+> Flow-matching noise
+> xt=(1−σt)x0+σtϵ
+> Causal DiT Blocks
+> Feed-Forward
+> Cross-Attention
+> SA with PM-RoPE
+> ..
+> Streaming
+> KV Cache Predicted velocity ̂μt
+> Output latent
+> Supervisions
+> ℒflow=∥̂μt−μt∥2ℒdelta=∥Δ˜x0−Δx0∥2
+> Adaptive weighting
+> PM-RoPE Attention Details
+> Camera Pose ct=[R,t,f]
+> MLP h(⋅)
+> zeroinit
+> δ
+> (θ+δ)RoPE (θ+δ)RoPE
+> qk
+> Softmax
+> ˜q˜k
+> v
+> P−1→WΔV
+> zeroinit
+> Wo
+> zeroinit
+> P→WΔO
+
+Figure 3: Overview of ReMind. (a) Memory-oriented data construction turns source videos with camera/depth metadata into frame graphs: dynamic-event mining, camera-loop/light-toggle/occlusion augmentations, and clean controls produce annotated anchor, interruption, and recovery nodes connected by explicit memory edges. (b) The causal video DiT is trained to use its native KV cache as dynamic memory. Cached chunks keep non-contiguous original RoPE positions, while PM-RoPE injects camera-conditioned phase offsets and zero-initialized value/output residuals into the pretrained single-attention path. attention module with our proposed PM-RoPE and training regimes, which forces the model to resort to most related historical anchors under various distractors. 
+
+2.3 Camera Control for Video Generation 
+
+Camera-controlled video generation injects pose information through camera encoders, ControlNet-style modules, geometry-aware conditions, or attention modifications [He et al., 2025, Bahmani et al., 2024, Ren et al., 2025, Yang et al., 2026b, InSpatio Team et al., 2026, Xu et al., 2026, Chen et al., 2025]. Recent attention-native methods further encode camera geometry through projection-aware transports, parallel camera branches, ray-coordinate RoPE, or relative camera pose embeddings [Li et al., 2025, Sun et al., 2025, Zhang et al., 2026, Xie et al., 2026b, Li et al., 2026, Xie et al., 2026a]. PM-RoPE serves a narrower role in ReMind: it provides camera-aware addresses and non-contiguous temporal positions for cached anchors while preserving the pretrained attention pathway, enabling the event-aware curriculum to train non-local state retrieval. 
+
+## 3 ReMind with Dynamic Memory 
+
+ReMind builds on a pretrained causal video diffusion transformer and elicits dynamic memory through memory-oriented data, cache-compatible spatial addressing, and node-structured training. Each chunk can attend to cached entries that retain their original temporal positions and camera-aware addresses, allowing the model to retrieve historical state anchors rather than only recent context. Sec. 3.1 describes the memory-oriented data construction, Secs. 3.2 and 3.3 introduce PM-RoPE and the non-contiguous streaming KV cache, and Sec. 3.4 presents the training curriculum that teaches the model to use this memory adaptively. The overall framework of ReMind is illustrated in Fig. 3. 
+
+3.1 Memory-Oriented Data Construction 
+
+We construct our training data to strengthen the dynamic memory of ReMind from public video sources, OpenVid [Nan et al., 2025] and DL3DV [Ling et al., 2024]. Since these sources are not targeted at dynamic-memory events, we augment them with a taxonomy of over one hundred dynamic event types, scored by visual salience, frequency, and usefulness for hidden-state recovery. The taxonomy drives Pexels retrieval with dynamics-specific keywords and Qwen3-VL filtering [Bai 4et al., 2025], where the VLM captions events, detects cuts, and estimates the spatial and temporal occupancy of the dynamic region. We further synthesize underrepresented high-occupancy dynamics, such as close-up pouring/filling, and render selected dynamic scenes under loop trajectories with Neoverse [Yang et al., 2026b] for camera-memory supervision. The full dynamic taxonomy and data collection policy are provided in Appendix F. We then convert clips into memory-training graphs by applying interruption augmentations inspired by STEVO-Bench [Ma et al., 2026], including camera loops, light toggles, moving occluders, and zoom/camera perturbations. All clips are normalized with RGB frames, captions, event metadata, and, when available, camera intrinsics/extrinsics and depth; for web videos without native geometry, we estimate depth and camera trajectories with Depth Anything 3 [Lin et al., 2025]. Event nodes are derived from loop-return points or known peak/recovery frames, and define the protected anchors and recovery regions used by the memory curriculum. 
+
+3.2 Projective Memory Rotary Positional Embedding Motivation: why couple camera and temporal addressing? While recent methods like World-Play [Sun et al., 2025] augment memory with a separate spatial attention branch, this decoupled design has two critical drawbacks. First, parallel attention operations effectively double the core computational cost. Second, it faces a representational bottleneck under occlusion (Appendix C): when querying an occluded region, the spatial branch loses discriminative power ( ∆p = 0 ). The model must then rely on the temporal branch, whose distance decay improperly favors the recent occluder over the earlier clean background. To resolve this efficiently, we introduce PM-RoPE, a camera-conditioned extension of rotary position embedding (RoPE) Su et al. [2024]. By injecting relative camera poses directly into the temporal attention mechanism, PM-RoPE allows the model to bypass the Markovian temporal penalty to retrieve correct historical anchors. Rather than instantiating a second spatial branch, it folds camera-dependent phase offsets and zero-initialized value/output residuals into the pretrained self-attention path, elegantly unlocking joint spatiotemporal addressing at a single-attention cost while preserving the backbone Q/K/V/O projections. For each frame i, we build a compact pose descriptor ci based on the current camera extrinsic parameters Pi = [ Ri|ti] and focal lengths (f xi , f yi ) as: 
+
+ci = [vec( Ri), ti, log f xi , log f yi ] , (1) where translation and intrinsics are normalized. In each self-attention layer, a zero-initialized MLP 
+
+h(·) maps ci to a per-frame rotary phase offset δi, which is added to the standard spatiotemporal phase in RoPE to indicate the relative positions between the camera poses at different frames: 
+
+˜qi = RoPE θi+δi (qi), δi = h(ci)˜kj = RoPE θj +δj (kj ), δj = h(cj ) (2) We also get inspiration from P-RoPE Li et al. [2025] to inject the relative camera position into the value and outputs of the self-attention module with zero-initialized residual projections W∆V , W∆O :
+
+˜vj = vj + W∆V (P−1 
+
+> j
+
+vj ), ˜yi = X
+
+> j≤i
+
+softmax j
+
+˜q⊤ 
+
+> i
+
+˜kj
+
+√d
+
+!
+
+˜vj , oi = WO ˜yi + W∆O (Pi ˜yi).
+
+(3) where P−1 
+
+> j
+
+vj denotes the feature-map vj back-projected from the camera coordinate system of frame 
+
+j into the world coordinate system (and Pi ˜yi represents the subsequent projection into the query frame i). In our implementation, this is achieved by linear projections W∆V , W ∆O operating on the concatenated latent and normalized 6-DoF camera embeddings. Since W∆V , W∆O , and h(·) are initialized as zeros, in the beginning of our finetuning process, PM-RoPE is the same as RoPE in the pretraining with δi = 0 and ˜vj = vj . As the finetuning process progresses, the PM-RoPE gradually takes the camera information into consideration so that the auto-regressive video generation can adaptively exploit historical frames according to the inter-frame relative camera poses in an adaptive manner. 53.3 Dynamic Memory with Streaming KV Cache 
+
+We partition the latent video into chunks and train with chunk-causal attention. During inference, dynamic memory is implemented as a streaming KV cache for auto-regressive video generation. Each generated chunk writes its keys and values into a KV cache for later chunks to read. To ensure temporal plausibility, the key design is to preserve the original frame position of each cached chunk instead of treating them equivalently or compacting all cached entries into consecutive timesteps. This prevents old references from being confused with recent neighbors. For example, a clean reference chunk may be placed at positions 0, . . . , m − 1, while the target video starts after a sampled gap of G chunks, at Gm, . . . , Gm + T − 1. Thus, the cache can store sparse, non-contiguous memories while still telling the model how far each memory item is from the current state. 
+
+3.4 Training Scheme for Dynamic Memory 
+
+To encourage the model to exploit the dynamic memory, we propose a novel strategy. We train with a flow-matching objective. For clean latent x0, Gaussian noise ϵ, and scheduler value σt, the noised input and target are: 
+
+xt = (1 − σt)x0 + σtϵ, ut = ϵ − x0. (4) The model predicts ut and is optimized with a masked mean-squared loss over selected chunks. The training process includes multiple schemes, decided by different masks and timestep schedules: The curriculum contains four complementary regimes. All-history training uses a chunk-causal pass in which each chunk attends to all previous chunks, matching the basic streaming inference path. Noisy-memory and node-drop training corrupt past chunks with high noise timesteps or replace interruption nodes with pure-noise latents while preserving at least one event anchor, forcing the model to ignore unreliable recent context and recover from surviving historical evidence. V2V suffix/frontier training keeps a clean or degraded prefix and supervises only the recovery suffix, matching chunk-wise autoregressive deployment. Reference-cache training prepends clean reference chunks from the undegraded clip at old positions and starts the target video after a sampled temporal gap, directly teaching retrieval from non-contiguous memory. Together, these regimes train the model to compare memory candidates with different visual reliability, camera poses, RoPE positions, and state histories, rather than attending only to a continuous prefix or fixed reference frame. 
+
+Dynamic Auxiliary Loss and Adaptive Weighting. Localized dynamic events often occupy only a small fraction of the canvas, so a standard flow-matching loss can be dominated by static background reconstruction. We therefore add a dynamic temporal-delta loss with adaptive weighting after warmup, increasing its influence for localized low-variance dynamics and reducing it for large camera or scene changes. Appendix B gives the full objective and hyperparameters. 
+
+## 4 Experiments 
+
+4.1 Evaluation Suite 
+
+We evaluate ReMind on both targeted hidden-state recovery and general I2V quality. For hidden-state recovery, we use the STEVO-Bench I2V protocol [Ma et al., 2026], where each example provides an initial image and an instruction describing an evolving process under occlusion, lights-off, or camera-lookaway distractors. We report the benchmark’s five metrics: State Progress measures whether the hidden physical state evolves correctly; Physical Plausibility measures artifact-free dynamics; Coherence measures temporal scene consistency; Observation Control measures whether the requested distractor is applied; and Action Control measures whether the instructed action occurs. For general generation quality, we use VBench [Huang et al., 2024] to assess semantic accuracy, temporal quality, and visual quality in standard I2V settings. 
+
+4.2 Quantitative Results: Out-of-Sight vs. General Quality 
+
+A critical requirement for dynamic memory frameworks is the ability to acquire strong out-of-sight state evolution capabilities without suffering from catastrophic forgetting of general image-to-video (I2V) priors. To demonstrate this, we conduct evaluations on two distinct fronts: STEVO-Bench [Ma 6ReMind (Ours) 
+
+Gen3C 
+
+Inspatio-World 
+
+WorldPlay 
+
+I2V 
+
+Input frames 
+
+ReMind (Ours) Gen3C 
+
+Inspatio-World V2V 
+
+> Prompt:Sand falls through an hourglass and visibly accumulates in the lower bulb. The camera slowly pans a little to the left with a slight up-and-
+> down wobble, leaving only part of the original view visible on the right side, then smoothly pans back to the right and returns to exactly the same
+> view as the very first frame.
+> Prompt: A toy car rolls across a table and stops at a new position. A cardboard panel slides across the foreground, briefly occluding the toy car, then
+> moves away.
+
+Figure 4: Qualitative comparisons with the state-of-the-art methods. Note that WorldPlay is omitted from the V2V comparison as it does not support this setting. et al., 2026] for targeted state evolution under occlusion/interruption, and VBench Huang et al. [2024] for general generation quality and consistency. 
+
+State Evolution (STEVO-Bench [Ma et al., 2026]). We evaluate our method against the base model and recent memory-augmented baselines on the STEVO-Bench I2V protocol. As shown in Table 2, ReMind’s dynamic non-local routing allows it to bridge temporal discontinuities, yielding a substantial improvement in state progress and physical coherence compared to other video models. As shown in Table 2, while ReMind does not achieve the highest score in every individual metric, it achieves the highest Total score by balancing these competing requirements. For instance, the InSpatio-World [InSpatio Team et al., 2026] baseline achieves exceptionally high Coherence (99.6%) but fails Observation Control (0.0%). This suggests that it often maintains visual consistency by avoiding requested degradations such as occlusions or lights-off, and therefore does not fully face the recovery challenge. In contrast, ReMind executes these partial observations (41.6% Observation Control) while maintaining strong Coherence (96.4%) and the best State Progress (14.5%), indicating more robust state evolution under degraded visibility. 
+
+General Generation Quality (VBench [Huang et al., 2024]). As shown in Table 1, we eval-uate standard I2V quality on VBench to verify that the memory-elicitation curriculum does not cause catastrophic forgetting. Compared with the InSpatio-World baseline [InSpatio Team et al., 2026], ReMind improves semantic accuracy, mo-tion and temporal quality, and visual quality. Table 1: VBench image-to-video evaluation. 
+
+Metric Group InSpatio ReMind 
+
+Semantic Accuracy ↑ 90.29 98.16 
+
+Motion & Temporal ↑ 76.11 77.22 
+
+Visual Quality ↑ 56.83 65.18 
+
+4.3 Ablation Study 
+
+We conduct ablation studies to analyze three major components in ReMind: 1) The PM-RoPE architecture , which injects camera geometry into attention; 2) the dynamic loss design , which improves memory-aware optimization; and 3) the memory-oriented data construction pipeline ,which targets continuous scene evolution and is analyzed in Appendix E. 7Table 2: Quantitative evaluation on STEVO-Bench. Metrics are shown as percentages. Baseline scores come from the STEVO-Bench leaderboard. ReMind achieves the highest state progress and demonstrates class-leading coherence among video models without camera-guided image warping.                                                                 
+
+> Model State Progress ↑
+> Physical Plausibility ↑Coherence ↑Observation Control ↑
+> Action Control ↑Total ↑
+> Video Models
+> HunyuanVideo 1.5 4.1 42.1 59.1 31.2 81.0 217.5 WAN 2.2 7.7 52.0 58.4 46.2 76.5 240.8 CogVideoX 1.4 68.5 67.1 22.2 75.5 234.7
+> Camera-Controlled Models
+> Gen-3C 0.0 30.6 82.4 90.6 57.6 261.2 HY-WorldPlay 0.0 72.2 88.2 55.4 64.9 280.7 Genie 3 2.9 15.2 27.3 84.7 78.6 208.7 Lingbot World 3.4 40.7 76.3 35.6 67.8 223.8 InSpatio-World 4.5 79.6 99.6 0.0 69.7 253.4
+> ReMind (Ours) 14.5 71.5 96.4 41.6 76.9 300.9
+
+PM-RoPE Architecture. To validate the structural design of PM-RoPE (Sec. 3.2), we ablate the camera geometry injection pathways. We compare our complete architecture ( Full ) with two variants that remove the camera geometry injection in query/key ( VO only ) and value/output ( QK only )separately, alongside a dual-branch attention similar to WorldPlay [Sun et al., 2025]. As shown in Table 3, the complete PM-RoPE architecture outperforms the partial variants in both low-level perceptual similarity (LPIPS) and high-level semantic consistency measured by Qwen3-VL Bai et al. [2025] scoring (Appendix D). PM-RoPE also outperforms the Dual Attention baseline despite using a single attention operation, empirically supporting our analysis of decoupled branches under occlusion (Appendix C). These high-level consistency gains align with the stronger State Progress and Physical Plausibility observed in the main STEVO-Bench results. Table 3: Ablation of PM-RoPE structural variants. Metrics are averaged across standard and noisy memory retrieval conditions. Full utilizes both QK-phase addressing and VO residuals, achieving the fastest convergence, best perceptual quality, and superior temporal consistency and content preservation compared to partial or dual-attention baselines.                            
+
+> Architecture Mode LPIPS ↓Degradation Visible ↑
+> Post-Degradation Coherence ↑
+> Temporal Consistency ↑
+> Content Preservation ↑
+> Dual Attention (WorldPlay) 0.507 4.0 2.9 2.7 3.3 QK only 0.508 3.5 3.2 2.5 2.9 VO only 0.452 4.0 3.8 3.5 3.7
+> Full (Ours) 0.403 4.1 3.9 3.8 3.9
+
+Dynamic Loss. We additionally ablate the dynamic loss design used to stabilize memory-aware finetuning (Sec. 3.4). The baseline Flow only variant relies only on the standard flow-matching objective and does not adaptively emphasize memory-critical regions or temporally sensitive recovery behavior. In contrast, our Dynamic + adaptive variant incorporates adaptive weighting for memory reconstruction, allowing the model to focus more strongly on degraded, occluded, or long-range-dependent content. As shown in Table 4, the dynamic adaptive objective improves all semantic dimensions measured by Qwen3-VL Bai et al. [2025] scoring. Although the flow-only baseline obtains a slightly better LPIPS, it performs worse in semantic and temporal metrics, suggesting that optimizing only low-level perceptual similarity is insufficient for memory-oriented video generation. 
+
+4.4 Attention Map Analysis for Dynamic Memory 
+
+We visualize KV-importance maps to verify that the dynamic memory retrieves relevant history rather than defaulting to recent frames (Fig. 5). In both V2V (occlusion) and I2V (camera pan loop), the base model concentrates attention on the diagonal, exhibiting a strong recency bias. Our model breaks this pattern: under occlusion, c5/c6 attend heavily to the pre-occlusion anchor c0 (0.92/0.86) while suppressing intermediate chunks; in the camera loop, attention shifts back to c0/c1 when the 8Table 4: Ablation of dynamic loss. Adaptive temporal-delta supervision improves semantic consis-tency with a small LPIPS tradeoff. 
+
+Loss Variant LPIPS ↓ Degradation Visible ↑
+
+Post-Degradation Coherence ↑
+
+Temporal Consistency ↑
+
+Content Preservation ↑
+
+Flow only 0.395 2.6 3.1 3.3 3.1 
+
+Dynamic + adaptive (Ours) 0.424 3.4 3.5 3.6 3.6 c c c c c c                                                                     
+
+> History Chunk
+> c
+> c
+> c
+> c
+> c
+> c
+> Query Chunk
+> 0.33 0.29 0.36 0.61
+> 0.34 0.20 0.24 0.43 0.68
+> 0.33 0.17 0.18 0.34 0.67 0.77
+> (a) V2V - Base Model cccccc
+> History Chunk
+> c
+> c
+> c
+> c
+> c
+> c
+> Query Chunk
+> 0.39 0.21 0.32 0.55
+> 0.92 0.53 0.18 0.15 0.38
+> 0.86 0.45 0.14 0.09 0.11 0.58
+> (b) V2V - Ours cccccc
+> History Chunk
+> c
+> c
+> c
+> c
+> c
+> c
+> Query Chunk
+> 0.96
+> 0.50 0.44
+> 0.41 0.21 0.71
+> 0.41 0.14 0.35 0.86
+> 0.35 0.15 0.22 0.61 0.86
+> 0.35 0.11 0.19 0.39 0.57 0.86
+> (c) I2V - Base Model cccccc
+> History Chunk
+> c
+> c
+> c
+> c
+> c
+> c
+> Query Chunk
+> 1.69
+> 1.16 0.76
+> 0.52 0.19 0.43
+> 0.38 0.16 0.23 0.61
+> 0.76 0.47 0.43 0.10 0.45
+> 0.86 0.51 0.38 0.06 0.10 0.57
+> (d) I2V - Ours
+
+Figure 5: KV-importance heatmaps (max over layers 20–24). Rows: query chunks; columns: history chunks. Slashed cells in (a, b): unavailable chunks in V2V. The base model attends along the diagonal; our model retrieves distant, semantically relevant chunks. camera returns, bypassing temporally adjacent but visually dissimilar chunks. This is consistent with our hypothesis that the model learns to query memory by visual relevance rather than defaulting to temporal proximity. 
+
+4.5 Qualitative Visualizations 
+
+We present qualitative visualizations in Fig. 4 to demonstrate the effectiveness of our dynamic-memory video generation model. The examples cover challenging scenarios with temporal discontinuities, including occlusion, camera motion, and re-observation after a long time gap. These cases require the model to recover scene states that are not directly visible from the recent context. Together with the KV-importance heatmaps (Sec. 4.3), these visualizations show that our model can identify useful historical evidence, bridge long temporal gaps, and maintain coherent scene evolution under challenging memory-dependent generation settings. Additional diverse cases covering broader dynamics, occlusions, and general content are provided in Appendix A. 
+
+## 5 Conclusion and Limitation 
+
+We present ReMind, empowering autoregressive video transformers to use their KV cache as dynamic memory for out-of-sight state evolution. By training on frame graphs with protected anchors, degraded intervals, and temporal gaps, ReMind learns to recover from reliable historical states instead of merely recent context. PM-RoPE further provides camera-aware spatiotemporal addressing while preserving pretrained attention pathways, enabling memory retrieval at single-attention cost. Experiments on STEVO-Bench and VBench demonstrate that ReMind improves hidden-state recovery under occlusions, darkness, and camera lookaways without degrading general generation quality. 
+
+Limitation. ReMind focuses on specific interruptions such as occlusion, darkness, lookaways, and loop closures, and does not solve all physical reasoning failures. Furthermore, the pipeline relies on camera and depth quality; pose errors in web videos may weaken PM-RoPE supervision and bias training toward sequences with reliable tracks. 
+
+Broader Impact. Like other video generators, ReMind inherits risks around misleading media and dataset bias. We mitigate these through documented provenance, safety filtering, usage guidelines, a non-commercial research license, and release of restricted media as identifiers, manifests, annotations, or derived metadata rather than repackaged raw videos. Positively, ReMind also offers a diagnostic lens for hidden-state evolution, helping identify when visually plausible models fail to maintain persistent world states. 9References 
+
+Sherwin Bahmani, Ivan Skorokhodov, Aliaksandr Siarohin, Willi Menapace, Guocheng Qian, Michael Vasilkovsky, Hsin-Ying Lee, Chaoyang Wang, Jiaxu Zou, Andrea Tagliasacchi, et al. Vd3d: Taming large video diffusion transformers for 3d camera control. arXiv preprint arXiv:2407.12781 , 2024. Shuai Bai, Yuxuan Cai, Ruizhe Chen, Keqin Chen, Xionghui Chen, Zesen Cheng, Lianghao Deng, Wei Ding, Chang Gao, Chunjiang Ge, et al. Qwen3-VL technical report. arXiv preprint arXiv:2511.21631 , 2025. Boyuan Chen, Diego Martí Monsó, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitzmann. Diffusion forcing: Next-token prediction meets full-sequence diffusion. Advances in Neural Information Processing Systems , 37:24081–24125, 2024. Zhifei Chen, Tianshuo Xu, Leyi Wu, Luozhou Wang, Dongyu Yan, Zihan You, Wenting Luo, Guo Zhang, and Yingcong Chen. STANCE: Motion coherent video generation via sparse-to-dense anchored encoding. arXiv preprint arXiv:2510.14588 , 2025. Hao He, Yinghao Xu, Yuwei Guo, Gordon Wetzstein, Bo Dai, Hongsheng Li, and Ceyuan Yang. CameraCtrl: Enabling camera control for video diffusion models. In International Conference on Learning Representations (ICLR) , 2025. Xun Huang, Zhengqi Li, Guande He, Mingyuan Zhou, and Eli Shechtman. Self forcing: Bridging the train-test gap in autoregressive video diffusion. In Advances in Neural Information Processing Systems (NeurIPS) ,2025. Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. Vbench: Comprehensive benchmark suite for video generative models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21807–21818, 2024. InSpatio Team, Donghui Shen, Guofeng Zhang, Haomin Liu, Haoyu Ji, Hujun Bao, Hongjia Zhai, Jialin Liu, Jing Guo, Nan Wang, Siji Pan, Weihong Pan, Weijian Xie, Xianbin Liu, Xiaojun Xiang, Xiaoyu Zhang, Xinyu Chen, Yifu Wang, Yipeng Chen, Zhenzhou Fan, Zhewen Le, Zhichao Ye, and Ziqiang Zhao. INSPATIO-WORLD: A real-time 4d world simulator via spatiotemporal autoregressive modeling. arXiv preprint arXiv:2604.07209 , 2026. Chunyang Li, Yuanbo Yang, Jiahao Shao, Hongyu Zhou, Katja Schwarz, and Yiyi Liao. ReRoPE: Repurposing RoPE for relative camera control. arXiv preprint arXiv:2602.08068 , 2026. Ruilong Li, Brent Yi, Junchen Liu, Hang Gao, Yi Ma, and Angjoo Kanazawa. Cameras as relative positional encoding. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. Haotong Lin, Sili Chen, Junhao Liew, Donny Y. Chen, Zhenyu Li, Guang Shi, Jiashi Feng, and Bingyi Kang. Depth anything 3: Recovering the visual space from any views. arXiv preprint arXiv:2511.10647 , 2025. Lu Ling, Yichen Sheng, Zhi Tu, Wentian Zhao, Cheng Xin, Kun Wan, Lantao Yu, Qianyu Guo, Zixun Yu, Yawen Lu, Xuanmao Li, Xingpeng Sun, Rohan Ashok, Aniruddha Mukherjee, Hao Kang, Xiangrui Kong, Gang Hua, Tianyi Zhang, Bedrich Benes, and Aniket Bera. DL3DV-10K: A large-scale scene dataset for deep learning-based 3d vision. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) ,2024. Ziqi Ma, Mengzhan Liufu, and Georgia Gkioxari. Out of sight, out of mind? evaluating state evolution in video world models. arXiv preprint arXiv:2603.13215 , 2026. Kepan Nan, Rui Xie, Penghao Zhou, Tiehan Fan, Zhenheng Yang, Zhijie Chen, Xiang Li, Jian Yang, and Ying Tai. OpenVid-1M: A large-scale high-quality dataset for text-to-video generation. In International Conference on Learning Representations (ICLR) , 2025. Suraj Ranganath, Vaishak Menon, and Anish Patnaik. KV cache quantization for self-forcing video generation: A 33-method empirical study. arXiv preprint arXiv:2603.27469 , 2026. Xuanchi Ren, Tianchang Shen, Jiahui Huang, Huan Ling, Yifan Lu, Merlin Nimier-David, Thomas Müller, Alexander Keller, Sanja Fidler, and Jun Gao. GEN3C: 3d-informed world-consistent video generation with precise camera control. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) ,2025. Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. doi: 10.1016/j.neucom. 2023.127063. 
+
+10 Wenqiang Sun, Haiyu Zhang, Haoyuan Wang, Junta Wu, Zehan Wang, Zhenwei Wang, Yunhong Wang, Jun Zhang, Tengfei Wang, and Chunchao Guo. WorldPlay: Towards long-term geometric consistency for real-time interactive world modeling. arXiv preprint arXiv:2512.14614 , 2025. Team Wan. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 ,2025. Ronald J. Williams and David Zipser. A learning algorithm for continually running fully recurrent neural networks. Neural Computation , 1(2):270–280, 1989. doi: 10.1162/neco.1989.1.2.270. Zeqi Xiao, Yushi Lan, Yifan Zhou, Wenqi Ouyang, Shuai Yang, Yanhong Zeng, and Xingang Pan. WorldMem: Long-term consistent world simulation with memory. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. Yichen Xie, Depu Meng, Chensheng Peng, Yihan Hu, Quentin Herau, Masayoshi Tomizuka, and Wei Zhan. Urope: Universal relative position embedding across geometric spaces. arXiv preprint arXiv:2604.18747 ,2026a. Yichen Xie, Chensheng Peng, Mazen Abdelfattah, Yihan Hu, Jiezhi Yang, Eric Higgins, Ryan Brigden, Masayoshi Tomizuka, and Wei Zhan. Raynova: Scale-temporal autoregressive world modeling in ray space. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2026b. Tianshuo Xu, Zhifei Chen, Leyi Wu, Hao Lu, and Ying-cong Chen. Motion forcing: A decoupled framework for robust video generation in motion dynamics. arXiv preprint arXiv:2603.10408 , 2026. Shuai Yang, Wei Huang, Ruihang Chu, Yicheng Xiao, Yuyang Zhao, Xianbang Wang, Muyang Li, Enze Xie, Ying-Cong Chen, Yao Lu, Song Han, and Yukang Chen. LongLive: Real-time interactive long video generation. In International Conference on Learning Representations (ICLR) , 2026a. Yuxue Yang, Lue Fan, Ziqi Shi, Junran Peng, Feng Wang, and Zhaoxiang Zhang. NeoVerse: Enhancing 4d world model with in-the-wild monocular videos. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2026b. Jiwen Yu, Jianhong Bai, Yiran Qin, Quande Liu, Xintao Wang, Pengfei Wan, Di Zhang, and Xihui Liu. Context as memory: Scene-consistent interactive long video generation with memory retrieval. In SIGGRAPH Asia Conference Papers , 2025. Wei Yu, Runjia Qian, Yumeng Li, Liquan Wang, Songheng Yin, Sri Siddarth Chakaravarthy P, Dennis Anthony, Yang Ye, Yidi Li, Weiwei Wan, and Animesh Garg. MosaicMem: Hybrid spatial memory for controllable video world models. arXiv preprint arXiv:2603.17117 , 2026. Shenghai Yuan, Yuanyang Yin, Zongjian Li, Xinwei Huang, Xiao Yang, and Li Yuan. Helios: Real real-time long video generation model. arXiv preprint arXiv:2603.04379 , 2026. Cheng Zhang, Boying Li, Meng Wei, Yan-Pei Cao, Camilo Cruz Gambardella, Dinh Phung, and Jianfei Cai. Unified camera positional encoding for controlled video generation. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2026. 
+
+11 A Additional Qualitative Cases 
+
+We provide additional qualitative examples demonstrating the capabilities of ReMind across various settings. These include Image-to-Video (I2V) recovery cases under occlusions and lighting changes (Fig. 6), Video-to-Video (V2V) generation (Fig. 7), and general I2V content generation (Fig. 8). These cases demonstrate that ReMind can handle diverse state changes and occlusion patterns, rather than only a single controlled recovery setup. Green boxes denote the given conditioning frames, and blue boxes denote the generated frames. 
+
+Figure 6: Diverse Image-to-Video (I2V) recovery cases. The examples demonstrate ReMind handling dynamic processes under visibility disruptions such as occlusions and lighting changes (e.g., turning lights off and on), maintaining coherent state evolution. 
+
+Figure 7: Video-to-Video (V2V) generation cases. ReMind successfully extends and manipulates video sequences while preserving spatiotemporal consistency. 
+
+Figure 8: General Image-to-Video (I2V) generation cases. The model generates diverse and dynamic content from static images, showcasing its general video synthesis capabilities. 12 B Dynamic Auxiliary Loss Details 
+
+A core challenge in training out-of-sight state evolution is the imbalance of motion gradients. In localized dynamic events, such as water pouring into a cup within a largely static room, the state change only accounts for a small fraction of the canvas. Standard flow-matching loss averages errors across all pixels, causing the gradient direction to be dominated by static background reconstruction rather than the critical evolving state. To rectify this, we introduce a Dynamic Temporal-Delta Loss L∆ paired with an Adaptive Weighting strategy. Alongside the main flow loss Lflow predicting the noise vector, we enforce an auxiliary penalty on the recon-structed clean latent ˆx0 to match the ground-truth inter-frame changes ∆x0:
+
+L∆ = Et,ϵ 
+
+∥(ˆ x0,i − ˆx0,i −1) − (x0,i − x0,i −1)∥2 , (5) where i denotes the frame index within a chunk. The total objective is L = Lflow + λadapt L∆. Crucially, the weight λadapt is dynamically adjusted based on the global temporal variance σbatch of the current batch: 
+
+λadapt = α · exp( −γ · σbatch ), (6) where σbatch = Var(∆ x0) computed over all spatial and temporal dimensions in the batch. We set α = 0 .2
+
+and γ = 5 .0. When global spatial change is small (e.g., static background with localized evolution), λadapt 
+
+boosts the delta loss to provide a strong optimization signal for the hidden state. Conversely, for sequences with massive overall spatial variation (e.g., fast camera pans), the weight automatically decays, returning optimization priority to the standard flow loss to preserve structural stability. This auxiliary loss is enabled after the first 2,000 iterations of finetuning to ensure the model first stabilizes on the primary flow objective. 
+
+## C Identifiability of Dynamic Memory under Same-Position Occlusion 
+
+This section clarifies the mathematical limitation we target. We do not claim that RoPE [Su et al., 2024] forbids long-range retrieval: for a query at time ti and a key at time tj , standard RoPE gives: 
+
+⟨R(ti)qi, R (tj )kj ⟩ = q⊤ 
+
+> i
+
+R(tj − ti)kj , (7) so the score depends on the relative temporal offset, but it is not generally a monotone function of distance. The issue is instead identifiability : a decoupled spatial-memory branch and a separately reframed temporal branch (like WorldPlay[Sun et al., 2025]) do not provide a single key for “the last clean state at this spatial address before a degradation boundary.” 
+
+C.1 Problem Setup 
+
+Consider a recovery query q after an occlusion is removed. Let p denote the spatial address or camera ray of the dynamic region in the recovered view. There are two relevant cached candidates: • Clean anchor ( a): the last visible state before degradation, at time ta and spatial address p.• Corrupted context ( c): a more recent frame during degradation, at time tc and the same spatial address p, but whose visible content is the occluder or darkness rather than the underlying state. The times satisfy ta < t c < t q . The desired recovery edge is not simply “same spatial address” or “nearest previous time”, but the conjunction 
+
+j⋆ = arg max 
+
+> j<t q
+
+1{sj = sq }1{tj < τ deg }ρ(xj , x q ), (8) where sj is the spatial/camera address, τdeg is the start of the degradation interval, and ρ measures visual or state compatibility. In words, the key must jointly encode spatial alignment and whether the candidate is the clean pre-degradation state. 
+
+C.2 Decoupled Spatial and Temporal Scores 
+
+Many memory-augmented generators use separate mechanisms for spatial and temporal routing. Abstractly, a decoupled score has the form: 
+
+ℓ(q, j ) = ϕsp (sq , s j ) + ϕtmp (πq , π j ) + ϕcnt (xq , x j ), (9) where ϕsp is a spatial or camera-address score, ϕtmp is a temporal-position score, and ϕcnt is a content score. In WorldPlay-style reconstituted context memory [Sun et al., 2025], the selected historical frames are written into compact cache slots. Therefore the temporal position πj used by the RoPE branch is a cache order rather than the original absolute time or an explicit degradation-boundary coordinate. 
+
+13 Table 5: Main training data components. 
+
+Component Source Role General videos OpenVid, DL3DV-10K preserve appearance and camera motion Natural dynamics Pexels + VLM filtering visible state evolution and interactions Hard dynamics generative video models high-occupancy state changes Camera loops Pexels + Neoverse rendering loop-closure memory supervision For the clean anchor a and corrupted context c, same-position occlusion gives: 
+
+sa = sc = sq ⇒ ϕsp (sq , s a) = ϕsp (sq , s c). (10) Thus a purely spatial or PRoPE-style branch cannot distinguish whether the same-ray cached entry is a clean state or an occluder. The decision is reduced to temporal cache order and content: 
+
+ℓ(q, a ) − ℓ(q, c ) = ϕtmp (πq , π a) − ϕtmp (πq , π c) + ϕcnt (xq , x a) − ϕcnt (xq , x c). (11) Neither term explicitly contains the predicate tj < τ deg from Eq. 8. If the content term is ambiguous or uninformative–for example, the query region is currently unobserved, blacked out, or covered by an occluder– then the score has no identifiable variable that selects the clean pre-degradation anchor over the more recent corrupted context. 
+
+C.3 Implication 
+
+The limitation is therefore not a theorem that RoPE must always prefer nearby tokens. Rather, a decoupled spatial-temporal memory lacks the joint address needed for hidden-state recovery: spatial routing can find the same ray, but not the clean state boundary; compact temporal routing can preserve local order, but not the original elapsed-time relation to the degradation event. ReMind addresses this by writing memory nodes with their original RoPE positions and camera metadata, and by training reference-cache and node-drop regimes in which the correct recovery depends on retrieving the clean anchor rather than the recent degraded context. 
+
+## D VLM Evaluation Details 
+
+To comprehensively evaluate the state-recovery capabilities in our ablation studies, we utilize Qwen3-VL [Bai et al., 2025] to provide high-level semantic scoring. For each generated suffix, we prompt the VLM to act as an expert video reviewer and score the video from 1 (worst) to 5 (best) across four dimensions: Overall Quality, Temporal Consistency, Content Preservation, and Artifact Suppression (which correlates to the inverse of Degradation Visible). 
+
+Evaluation Protocol. We evaluate 200 clips randomly sampled from the recovery evaluation set across all degradation conditions. To ensure a blind and unbiased assessment, videos from different model variants were shuffled and presented to the LMM without identifying tags. Each video was evaluated three times using a temperature of 0.7 to account for stochasticity in the LMM’s reasoning, with the final scores averaged across these trials. We used a fixed random seed of 42 for all sampling and inference steps. Confidence intervals ( 95% )reported in the ablation results were calculated via bootstrap resampling over the 200 examples. The standard prompt template provided to the model follows the structure below, which asks the VLM to observe the transition from the visible history context to the newly recovered state: 
+
+“You are an expert video reviewer evaluating the physical consistency of generated videos after a period of occlusion or degradation. Observe the initial state of the objects and the background in the first few frames, and then closely examine the frames after the degradation ends. Please rate the following dimensions on a scale of 1 to 5: 1. Overall Quality: Is the recovered video visually coherent and realistic? 2. Temporal Consistency: Do the objects resume their motion and trajectory naturally without abrupt jumps? 3. Content Preservation: Are the identities, shapes, and textures of the original subjects completely preserved upon recovery? 4. Artifact Suppression: Is the video free from flickering, structural morphing, or lingering textures from the occluder?” 
+
+These individual scores are averaged across the evaluation set to yield the quantitative results reported in the ablation tables. 
+
+14 E Ablation of Data Construction 
+
+We study the effect of memory-oriented data construction by progressively adding specialized data components. The Base variant is trained solely on general videos (OpenVid [Nan et al., 2025] and DL3DV [Ling et al., 2024]). We then add Real Dynamics & Loops (Pexels and Neoverse-rendered camera loops) to introduce visible state evolution and memory supervision. Finally, the Full (Ours) variant additionally includes synthetic hard dynamics generated by video models to cover high-occupancy state changes. As shown in Table 6, while the base dataset achieves a reasonable perceptual quality (LPIPS), it performs poorly on semantic consistency metrics under occlusion. The progressive inclusion of real-world dynamics, camera loops, and synthetic hard dynamics significantly improves the model’s robustness, leading to the best post-degradation coherence, temporal consistency, and content preservation. 
+
+Table 6: Ablation of data construction components. Metrics evaluate low-level perceptual similarity and high-level semantic consistency. The progressive addition of memory-oriented data significantly improves the model’s semantic robustness under degradation. 
+
+Data Mixture LPIPS ↓ Degradation Visible ↑
+
+Post-Degradation Coherence ↑
+
+Temporal Consistency ↑
+
+Content Preservation ↑
+
+Base (General Videos) 0.422 2.0 1.9 1.8 1.9 + Real Dynamics & Loops 0.363 2.2 2.2 2.0 2.3 
+
++ Synthetic Hard Dynamics 0.515 2.2 2.4 2.2 2.6 
+
+## F Data Construction Details 
+
+The main components of our training data are listed in Table 5. 
+
+F.1 Dynamic Taxonomy and Retrieval Policy 
+
+We build a broad dynamic taxonomy covering over one hundred scene-event types. Each type receives an importance score that reflects three factors: whether the state change is visually salient, whether the event is common enough to collect at scale, and whether it is useful for hidden-state recovery after interruption. The high-priority groups include monotonic state changes such as pouring/filling, burning, melting, growing, and diffusion, as well as large-occupancy motion, deformation, lighting/weather changes, and human-object interactions. The taxonomy serves two roles. For Pexels retrieval, it provides keyword queries and negative filters. For generated or VLM-annotated clips, it acts as caption guidance: captions must describe the object, the state variable, and the temporal direction of change. After retrieval, Qwen3-VL [Bai et al., 2025] is used for secondary filtering. It estimates whether the clip contains a scene cut, which dynamic event is present, how much image area the dynamic region occupies, and how long the event remains visible. We keep high-occupancy, temporally sustained dynamic clips and discard clips dominated by static scenery, montage cuts, or tiny localized motion. 
+
+F.2 Event Nodes and Degradations 
+
+For each selected clip, we construct a clean video, an optional degraded video, a caption, and a set of latent chunk nodes used by the memory curriculum. The main event families are camera loops, light toggles, moving occluders, and zoom or camera perturbations. Camera-loop nodes are derived from the trajectory: the memory anchor is the initial view, and the recovery node is the later frame whose camera pose returns nearest to that view. Light-toggle nodes are derived from the dimming schedule, with anchors before the dark interval and recovery nodes after relighting. Occluder nodes are derived from the enter, full-cover, and exit frames. Zoom nodes are derived from peak crop scale and recovery frames, with intrinsics updated to match the crop. All sources are normalized into the same training format. Clips are sampled as 81 frames at 16 fps and resized to the training resolution ( 480 × 832 in our main runs). After VAE temporal compression, this gives 21 latent frames, which we group into seven chunks of three latent frames. Intrinsics are scaled to the training resolution; extrinsics are stored as OpenCV camera-to-world matrices with the first frame anchored as the origin. During model forward passes, intrinsics are normalized by image width and camera translations are centered and scaled per clip. 
+
+15 Table 7: Dynamic retrieval taxonomy. The full internal taxonomy covers over one hundred event types; this table groups them by retrieval and captioning role. Counts are from the tagged curation table and are not mutually exclusive. 
+
+Tag group Candidates Retrieval keywords and caption cues Translational 39,205 walk/run, vehicle motion, fall/drop, fly/float; caption moving object, direction, and speed Monotonic state 20,076 pouring/filling, burn, melt, grow/bloom, diffuse/spread; caption state variable and monotonic change Deformation 13,793 dance/yoga, body gesture, fabric motion, bubbles; cap-tion shape change and actor/object Lighting/weather 11,745 sun, rain/snow, wind/fog, cloud shadow, light switch; caption illumination or weather transition Interaction 10,218 cooking, mixing, assembly, ball sports, tool use; caption actor-object interaction and outcome Periodic 3,210 mechanical rotation, biological cycles, water periodic motion; caption periodic source and phase Discrete 1,147 doors, lids, page flips, switches; caption trigger, before-state, and after-state 
+
+## G Reproducibility, Compute, and Release Details 
+
+G.1 Training Configuration 
+
+The main experiments fine-tune a 1.3B autoregressive video diffusion transformer initialized from the InSpatio-World/Wan2.1 1.3B checkpoint family (Team Wan, 2025, InSpatio Team et al., 2026). The training implemen-tation in our ReMind codebase uses Lilypad-managed distributed training. Unless otherwise stated, runs use bfloat16 mixed precision, gradient checkpointing, AdamW, fixed random seeds, warmup, periodic validation, and periodic checkpointing. We will release the exact hyperparameters and run configuration records with the code and checkpoints. The main data mixture is the normalized 81-frame format described in Appendix F. Training sources include OpenVid [Nan et al., 2025], DL3DV [Ling et al., 2024], Pexels-based dynamic clips, Pexels pan/evolution camera-loop data, Veo3 full-frame occlusion clips, and Helios-generated hard dynamics [Yuan et al., 2026]. In the production full-data configurations, the sampler mixes real DA3-packed [Lin et al., 2025] sources with generated dynamics and loop sources. V2V-heavy runs use degradation-aware recovery training with frontier continuation and reference-cache reads, while I2V-aligned runs use clean first-frame seeding and node-drop training to align train/test cache structure. 
+
+G.2 Evaluation Protocols 
+
+STEVO-Bench [Ma et al., 2026] and VBench [Huang et al., 2024] I2V generation follow the official task lists and use the same 81-frame, 16-fps, 480 × 832 evaluation format as our main runs. We use fixed generation seeds and per-sample manifests so aggregate scores can be traced back to generated videos, prompts, checkpoint identifiers, and metric outputs. For ablation tables scored by Qwen3-VL [Bai et al., 2025], we report means over the fixed evaluation set and release the per-example scores and bootstrap resampling script used to estimate confidence intervals over examples. 
+
+G.3 Compute Resources 
+
+All reported training and evaluation jobs were run on Lilypad using A100 80GB GPU workers. Debug and evaluation jobs used 8 GPUs, the main I2V-aligned and V2V ablation runs used 32 GPUs, and the full-data production runs used 64 GPUs. Helios data generation jobs used 8-GPU shards for the curriculum sources used in the training mix. We will release the corresponding run configuration records and per-run GPU-hour accounting so the compute budget can be audited for each reported table. 
+
+16

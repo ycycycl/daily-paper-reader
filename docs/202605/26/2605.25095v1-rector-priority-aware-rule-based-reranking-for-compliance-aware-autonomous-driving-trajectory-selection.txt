@@ -1,0 +1,1735 @@
+Title: RECTOR: Priority-Aware Rule-Based Reranking for Compliance-Aware Autonomous Driving Trajectory Selection
+
+URL Source: https://arxiv.org/pdf/2605.25095v1
+
+Published Time: Tue, 26 May 2026 01:40:30 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+> 1
+
+# RECTOR: Priority-Aware Rule-Based Reranking for Compliance-Aware Autonomous Driving Trajectory Selection 
+
+Hadi Hajieghrary 1, Benedikt Walter 2, Chaitanya Shinde 3, Paul Schmitt 4, and Miguel Hurtado 5
+
+Abstract —Autonomous driving stacks must pick one trajectory from a multi-modal candidate set; choosing by model confidence ignores safety, traffic-law, and comfort constraints. We present RECTOR (Rule-Enforced Constrained Trajectory Orchestra-tor), a post-generation reranking layer that scores candidates against a tiered rulebook (Safety ≻ Legal ≻ Road ≻ Comfort) via differentiable proxies and a scene-conditioned applicability mechanism, then selects with a deterministic ε-lexicographic rule that preserves cross-tier priority by construction—without retraining the predictor. On the Waymo Open Motion Dataset 
+
+validation_interactive split (43,219 augmented instances, K=6 ), under Protocol B (28-rule proxy catalog, oracle applicability) rule-aware selection cuts Safety+Legal violations from 28.58% to 20.42% and Total from 40.32% to 32.41% versus confidence-only on the same candidates. A uniform-weight weighted-sum baseline matches binary compliance on this benchmark—the empirical lift comes from rule-aware ranking, while the lexicographic guarantee is the structural differentiator no weight calibration can replicate. Under adversarial confidence corruption, confidence-only selection fails in 100% of scenarios while both rule-aware selectors reject the injected mode in ∼96%. All figures are proxy-evaluator results (not a safety certificate), open-loop, 5 s horizon, U.S. rules, validation split. Source code: [1]. 
+
+Index Terms —autonomous driving, trajectory selection, rule compliance, lexicographic ranking, priority-aware reranking, multi-modal prediction, Waymo Open Motion Dataset, differ-entiable proxies, rule applicability prediction 
+
+I. I NTRODUCTION 
+
+# AUtonomous driving stacks must ultimately commit to a single trajectory from a multimodal candidate set. Modern predictors generate several plausible futures, but the final choice is still typically made by confidence or likelihood. That optimizes average geometric accuracy, not behavioral acceptability: a high-confidence mode can still run a red light, violate right-of-way, or tailgate. On WOMD validation_interactive , best-of-K error is also heavy-tailed: minADE is 0.46 m at the median but 2.16 m and 3.62 m at the 95th and 99th percentiles. In these long-tail   
+
+> 1Hadi Hajieghrary
+
+Hadi.Hajieghrary@Torc.ai , 2Benedikt Walter Benedikt.Walter@Torc.ai , 3Chaitanya Shinde 
+
+Chaitanya.Shinde@Torc.ai , and 5Miguel Hurtado 
+
+Miguel.Hurtado@Torc.ai are with TORC Robotics LLC, an independent subsidiary of Daimler Truck AG. 4Paul Schmitt 
+
+pauls@massrobotics.org is with and Reynolds & Moore and MassRobotics. This paper represents research activities conducted within TORC Robotics LLC. It does not describe any production system, does not constitute the safety case for any Daimler Truck AG product or development program, and has not been reviewed by Daimler Truck AG for regulatory compliance or product liability purposes. The research was conducted using public benchmark data and does not reflect the proprietary safety architecture of any deployed or in-development TORC Robotics or Daimler Truck product. 
+
+interactions, confidence is a weak ranking signal, and explicit constraints become decisive. This paper studies open-loop selection over a fixed can-didate set, after generation. We present RECTOR (Rule-Enforced Constrained Trajectory ORchestrator), a post-generation reranking layer that orders candidates under the priority Safety ≻ Legal ≻ Road ≻ Comfort using an ε-lexicographic rule. RECTOR has three pieces: a scene-conditioned applicability mechanism over 28 rules (retained as a tested reference component, not the deployment-default; see Section VI), 24 differentiable rule proxies for batched evaluation, and a deterministic tolerance-based lexicographic selector. The selector is interchangeable with any predictor that outputs world-frame candidates and confidences. The central claim is that proxy-evaluator compliance can be improved at selection time when the candidate set con-tains an acceptable option. Generation and selection are distinct responsibilities: the generator covers plausible fu-tures; the reranker picks the least-violating trajectory un-der explicit priorities, flags infeasibility when none is fully compliant, and avoids collapsing heterogeneous rules into a single penalty. This requires no online constrained op-timization or changes to learned scene features. RECTOR does not enforce rules in the control-theoretic or formal-verification sense: the guarantee it provides is structural pri-ority preservation over normalized proxy tier scores , condi-tional on the applicability mask and the reliability of each proxy (see Section VII for proxy–auditor concordance and known false-negative rates, notably on L0.R3). All compliance numbers in this paper are open-loop, 5 s horizon, on WOMD 
+
+validation_interactive ; closed-loop reactive evalua-tion is outside the scope of this study. 
+
+A. Related Work and Positioning 
+
+Most prior work improves the candidate set rather than the executed mode. Anchor-based predictors (LaneGCN, TNT/DenseTNT), Transformer set predictors (MTR, Way-former, QCNet, GameFormer), and latent-variable models (Trajectron++, MotionLM) target multimodal coverage [2]– [10]. Constraint-guided generators (CTG, CTG++, Motion-Diffuser) bias generation toward compliant regions [11]–[13]. These methods strengthen the proposal distribution but do not impose a priority hierarchy on the single trajectory that is executed. Constraints are also enforced earlier in the stack. Planning-and control-time methods such as MPC, control barrier func-tions, reachability analysis, and rulebook-based control embed constraints in online optimization [14]–[16]. Policy-time meth-ods such as constrained RL and SafetyNet internalize safety 
+
+> arXiv:2605.25095v1 [cs.AI] 24 May 2026 2
+
+during learning [17]–[19]. Both target different intervention points: RECTOR addresses post-generation reranking while leaving the predictor unchanged. The closest comparison is scalar reranking. Weighted penal-ties and differentiable optimization layers (OptNet, differ-entiable MPC) rank pre-generated candidates, but cross-tier behavior depends on weight calibration [20]–[22]. RSS and liability rulebooks motivate explicit priority structure [23], [24] but do not address learned scene-conditioned applicability over motion candidates. RECTOR targets post-generation selection on a fixed candidate set, predicts applicability from scene context, scores with smooth rule proxies, and enforces priority structurally rather than through tuned weights. Consistent with that focus, we evaluate selected-trajectory accuracy and rule compliance, not only candidate-set coverage. 
+
+B. Contributions 
+
+In the reference instantiation, a Transformer–CVAE gener-ator inspired by M2I produces K=6 candidates over a 5 s horizon ( T =50 at 10 Hz), evaluated against R=28 rules in four tiers (Safety: 5, Legal: 7, Road: 2, Comfort: 14); 24 are scored by differentiable proxies and 4 are audit-only. Candi-dates are ranked lexicographically, and confidence breaks ties that are compliance-equivalent; the selector is deterministic, parameter-free, and leaves the generator unchanged. The con-tributions are: 
+
+C1 Rule-aware selection measurably improves proxy compliance on a fixed candidate set. Under Protocol B (28 rules, oracle applicability), rule-aware reranking reduces Safety+Legal violations from 28.58% to 20.42% (8.16 pp) and Total from 40.32% to 32.41% (7.91 pp) versus confidence-only on 43,219 instances. The de-ployed Protocol A (24 rules, learned head) shows larger apparent gains, but its inflated baseline reflects Safety over-activation and Legal/Road suppression by the head; we therefore lead with Protocol B. A uniform-weight weighted-sum baseline matches the lexicographic binary compliance on this benchmark, so the empirical lift is rule-aware over confidence-only. 
+
+C2 ε-Lexicographic selection with a weight-free cross-tier guarantee. The selector preserves Safety ≻ Le-gal ≻ Road ≻ Comfort over the normalized tier scores within tolerance ε; no scalar reweighting can replicate this. The guarantee is structural and proxy-conditional, not a control-theoretic or jurisdictional safety certifi-cate. Lexicographic and weighted-sum match here only because cross-tier conflicts are rare in WOMD ( does not , not cannot ; Sec. VI). The selector also produces a regression-testable decision trace. 
+
+C3 Structural robustness to upstream confidence mis-calibration. Under an adversarial protocol that injects a Safety-violating candidate with the maximum confi-dence, confidence-only selection fails in 100% of sce-narios; both rule-aware selectors reject the injection in 
+
+∼96% across three injection families—structural robust-ness no scalar recalibration can match. 
+
+Fig. 1: Percentiles of best-of-K geometric error on WOMD 
+
+validation_interactive with K=6 . Blue bars show minADE and green bars show minFDE. The plotted minADE percentiles are 0.46 m (50th), 0.87 m (75th), 1.53 m (90th), 2.16 m (95th), and 3.62 m (99th), illustrating the heavy tail that motivates rule-aware selection. 
+
+C4 Differentiable proxy framework with explicit re-liability bounds. Pairwise concordance with the full Waymo evaluator is 0.875 on 10 variance-bearing rules (0.948 over all 24). Proxies run in ∼1 ms. The collision-avoidance proxy L0.R3 attains 0.80 concordance with 80.7% FNR at 0.0% FPR; compliance figures in-volving L0.R3 are proxy-evaluator rates, and a post-selection full-evaluator audit is recommended for any deployment-facing reading (Sec . VII). 
+
+C5 Always-on applicability as a design recommen-dation (negative result on learning applicability). 
+
+A parameter-free always-on policy for Safety/Legal Pareto-dominates the learned 3.33 M-parameter head on cross-evaluated compliance (S+L 20.53% vs. 20.69%) 
+
+and on accuracy (selADE 2.481 m vs. 2.737 m); we therefore recommend always-on Safety/Legal as the default and present the learned head as an ablation. 
+
+C6 Verification and practical integration. Formal proper-ties (order invariance, infeasibility fallback, scalarization correctness; Propositions II.2–II.3), 99.2–100% invariant pass rates, 0.0% post-mitigation NaN/Inf, and at most 6.1 pp / 12.1 pp violation increase under perception/map perturbations. Mean inference latency is 7.3 ms per sample (137 samples/s); rule evaluation and selection add only 1.4 ms (19%). Rule- and tier-level decision traces support audit, and a world-frame output contract keeps the RECTOR plug-in compatible. RECTOR reranks one trajectory from K=6 candidates over a 5 s open-loop horizon. Compliance gains come solely from reranking a fixed candidate set, and the open-loop, 5 s, validation-split setting precludes any closed-loop or deployment-grade claim. Model selection is also performed on the validation set, so absolute generation and Protocol A 3                            
+
+> Inputs
+> Ego History
+> [B,11 ,4]
+> Agent States
+> [B,32 ,11 ,4]
+> Lane Centers
+> [B,64 ,20 ,2]
+> M2I-style Scene Encoder
+> (PointNet + Transformer)
+> jointly trained
+> Scene Emb.
+> [B,256]
+> CVAE Decoder
+> Confidences
+> [B,6]
+> Ego Trajectories
+> [B,6,50 ,4]
+> Rule Applicability Head
+> Applicability
+> a∈[0 ,1] 28 Threshold
+> ˆa∈ { 0,1}28 Smooth Rule Proxies
+> Violations
+> [B,6,24] ∗
+> Tiered Lexicographic Scorer
+> Selected Ego Trajectory
+> Rule-based Explanation
+> map context
+> Safety ≻Legal ≻Road ≻Comfort
+
+Fig. 2: RECTOR system overview. Scene inputs flow through an M2I-style encoder to produce the scene embedding 
+
+escene ∈ R256 . The CVAE decoder generates six candidate ego trajectories, each with an associated confidence score. The rule applicability head (3 .33 M of 8.83 M total parameters) predicts continuous applicability scores a ∈ [0 , 1] 28 , thresholded to binary masks ˆa ∈ { 0, 1}28 . Smooth proxies score each candidate on 24 of 28 rules, with 4 remaining audit-only; the tiered lexicographic scorer then selects the trajectory with the smallest tier-score vector respecting Safety ≻ Legal ≻ Road ≻ Comfort, with confidence entering only as a tiebreaker among compliance-equivalent candidates. numbers carry an unquantified optimistic bias; Protocol B selector comparisons use oracle applicability and are immune. Held-out test reporting under both protocols is a deliberate next step (Sec. VIII). Results use U.S. right-hand traffic conventions; other jurisdictions require recalibrating the rule catalog. Route-level and longer-horizon planning are out of scope. Figure 2 gives a system overview; Sec. III details the architecture. II. P ROBLEM FORMULATION 
+
+We formulate trajectory selection as a hierarchical deci-sion problem over a fixed set of candidates. The generator provides diverse futures; the selector selects the trajectory most acceptable according to a prioritized rulebook. We fix the notation, motivate the rule-based objective by showing that geometric metrics are insufficient, and formalize the lexicographic criterion along with its correctness properties. Table I summarizes notation used throughout the paper. 
+
+A. Trajectory Prediction Setting 
+
+Let s ∼ D denote a driving scenario. A multi-modal predictor fθ maps it to a candidate set with confidences: 
+
+(T , p) = fθ (s), (1) 
+
+T = {τ (1) , . . . , τ (K)}, p = ( p(1) , . . . , p (K)).
+
+The goal is to select ˆτ ∈ T that is preferable under a prioritized rulebook. Standard geometric metrics—ADE, FDE, minADE, minFDE, MissRate ( δ=2 .0 m)—characterize candidate-set coverage but not the acceptability of the selected mode. Best-of-K minADE on WOMD 
+
+validation_interactive is strongly heavy-tailed: TABLE I: Key Notation and Symbol Definitions 
+
+Scenarios and Trajectories 
+
+s Driving scenario sampled from D
+
+xego , Xagents , M Ego history, neighbor histories, map context 
+
+τ, τ t Ego future trajectory; state at timestep t
+
+T = {τ (1) , . . . , τ (K)} Candidate set ( K=6 )
+
+τ gt Ground truth future trajectory 
+
+p(k) Confidence score for candidate kTh, T History (11 steps, 1.1 s); horizon (50 steps, 5.0 s) 
+
+Rules and Compliance 
+
+R, R =28 Rule catalog and its cardinality 
+
+ℓ(r) ∈ { 0, 1, 2, 3} Tier assignment for rule rar (s), ˆar (s) Oracle / predicted applicability indicator 
+
+Vr (τ ; s) ≥ 0 Raw violation severity 
+
+¯Vr (τ ; s) ∈ [0 , 1] Normalized severity: cr (Vr ) ∈ [0 , 1] ; see (3) 
+
+Tier Scores and Selection 
+
+˜wr Intra-tier weight; P 
+
+> r:ℓ(r)= ℓ
+
+˜wr = 1 
+
+Sℓ(τ ; s) ∈ [0 , 1] Aggregated tier-ℓ score 
+
+S(τ ; s) Tier score vector [S0, S 1, S 2, S 3]
+
+εℓ Tier tolerance for near-tie resolution 
+
+L=4 Number of tiers 
+
+Metrics 
+
+minADE , minFDE Best-of-K displacement errors selADE , selFDE Selected-trajectory displacement errors MissRate δ Fraction with minFDE > δ 
+
+0.46, 1.53, 2.16, and 3.62 m at the 50th, 90th, 95th, and 99th percentiles—nearly 8× from median to 99th (Fig. 1). In the tail, confidence-only selection is brittle because mode probabilities are poorly calibrated under rare interactions, while rule constraints (collision margins, signal compliance) 4
+
+remain decisive. This motivates selection grounded in traffic rules rather than likelihood alone. 
+
+B. Traffic Rule Taxonomy 
+
+Let R denote a catalog of R=28 traffic rules, each assigned to one of four tiers: Safety ≻ Legal ≻ Road ≻ Comfort . (2) Two applicability indicators are used throughout:  
+
+> •
+
+Oracle ar (s) ∈ {0, 1}: ground-truth label from map/scenario metadata, used only for post-hoc auditing (Protocol B).  
+
+> •
+
+Predicted ˆar (s) ∈ {0, 1}: thresholded output of the learned applicability head, used in the selection objective. The gap between ar and ˆar is a key source of approximation error. Each applicable rule produces a non-negative severity 
+
+Vr (τ ; s) ≥ 0. Because rules have heterogeneous units, we normalize to a common [0 , 1] scale. The canonical instantiation (used in all experiments) is the exponential cost map from Section IV: 
+
+¯Vr (τ ; s) = cr (Vr (τ ; s)) (3) 
+
+= 1 − exp  −κr max(0 , V r (τ ; s))  ∈ [0 , 1] ,
+
+where κr > 0 is a per-rule softness parameter (tabulated in Table III). The linear clamp clamp( Vr /α r , 0, 1) satisfies the same [0 , 1] contract and may be substituted for cr without affecting any downstream proposition; Propositions II.2–II.3 require only ¯Vr ∈ [0 , 1] , which both normalizations guarantee. Tier scores aggregate normalized violations using predicted applicability: 
+
+Sℓ(τ ; s) = X 
+
+> r:ℓ(r)= ℓ
+
+˜wr ˆar (s) ¯Vr (τ ; s), (4) with ˜wr ≥ 0 and P 
+
+> r:ℓ(r)= ℓ
+
+˜wr = 1 within each tier (default: uniform). This normalization ensures Sℓ ∈ [0 , 1] regardless of the number of rules per tier—a property required by Proposition II.3. We collect the four scores into S(τ ; s) = [S0, S 1, S 2, S 3].
+
+Definition II.1 (Tolerance-Based Lexicographic Selection) .
+
+Given candidates T , tier score vectors S(k), confidences p(k),and tolerances (ε0, . . . , ε 3):1) Initialize C0 = {1, . . . , K }.2) For each tier ℓ = 0 , 1, 2, 3: compute S∗ 
+
+> ℓ
+
+= min k∈C ℓ S(k)
+
+> ℓ
+
+and retain Cℓ+1 = {k ∈ C ℓ : S(k) 
+
+> ℓ
+
+≤ S∗ 
+
+> ℓ
+
++ εℓ}.3) If |C 4| > 1, break ties by selecting k∗ = arg max k∈C 4 p(k)
+
+(highest confidence among tier survivors). 4) If confidence is also exactly tied, return the candidate with the lowest index. 
+
+Note on confidence usage. Confidence p(k) does not enter compliance-based tier filtering (steps 1–2). It is used only in step 3, among candidates that are compliance-equivalent within tolerance. When all tier scores are zero—a majority case on WOMD—the lexicographic selector falls through to the confidence tiebreaker, whereas weighted-sum resolves tied scalar scores by its arg min convention. These compliance-equivalent cases account for the selADE gap between the two selectors in Section VI. The definition is deliberately procedural : the tolerance re-lation is not transitive, so pruning depends on the current pool’s global minimum rather than pairwise comparisons. Operationally, the procedure is deterministic and respects tier priority. 
+
+C. Formal Guarantees 
+
+Three properties establish the selector’s correctness: Order Invariance , Infeasibility Fallback , and Scalarization Correct-ness :
+
+Proposition II.2 (Order Invariance) . The selector’s output is invariant to candidate enumeration order, except in the degenerate case where two or more survivors share both identical tier scores and identical confidence; in that case, the lowest-index fallback (Def. II.1, step 4) is deterministic given the enumeration. Proof. At each stage ℓ, Cℓ+1 ={k ∈ Cℓ : S(k) 
+
+> ℓ
+
+≤
+
+min j∈Cℓ S(j) 
+
+> ℓ
+
++εℓ} is a function of the multiset of tier scores in 
+
+Cℓ, hence order-invariant; induction over ℓ=0 , . . . , 3 gives an order-invariant C4. The confidence tiebreak arg max k∈C4 p(k)
+
+is likewise a set operation. Order dependence enters only through step 4, which fires only when survivors share identical tier scores and identical confidence—probability zero for softmax confidences over distinct logits at generic floating-point precision. 
+
+Remark (Infeasibility Fallback) . If all candidates have non-zero Safety-tier scores, the selector returns the least-violating candidate under the full lexicographic procedure: Tier 0retains the minimum-Safety candidates within tolerance; lower tiers refine that survivor set. When the selected candidate has S0 > 0, the system emits an explicit infeasible flag for downstream fail-safe logic. This flag reflects the proxy-evaluated Safety tier and is not, by itself, a formal collision certificate under the full non-differentiable evaluator; post-selection full-evaluator auditing is therefore recommended for deployment safety monitoring. On the WOMD validation benchmark at K=6 , 96.8% of scenarios contain at least one candidate with S0 = 0; the infeasibility rate is ap-proximately 3.2%. Candidate policies for infeasible scenarios include conservative deceleration, a planner replan request, or an emergency-brake fallback; selection among these is a deployment-level decision outside the scope of this paper. 
+
+Proposition II.3 (Scalarization Correctness) . For any res-olution parameter ε > 0, the scalar score Score (k) =
+
+P3 
+
+> ℓ=0
+
+B4−ℓS(k) 
+
+> ℓ
+
+with base B ≥ ⌈ 1/ε ⌉ + 1 preserves lex-icographic ordering for every pair (τ (a), τ (b)) whose first differing tier exhibits a score gap δ ≥ ε. In particular, with 
+
+ε = 10 −3 (the operating tier tolerance) and B = 1001 , the scalarization is order-preserving on all pairs separated by at least one tolerance unit at the highest disagreeing tier. Proof. Let ℓ∗ be the least index with S(a) 
+
+> ℓ∗
+
+<S (b) 
+
+> ℓ∗
+
+,
+
+δ=S(b) 
+
+> ℓ∗
+
+−S(a) 
+
+> ℓ∗
+
+>0. Using S(k) 
+
+> ℓ
+
+∈ [0 , 1] , the lower-tier 5
+
+TABLE II: Parameter Breakdown (CVAE Generator + REC-TOR Selection Layer) 
+
+Component Parameters Fraction (%) 
+
+Scene Encoder 324,288 3.7 Trajectory Decoder 5,182,165 58.7 Applicability Head + Scorer 3,327,289 37.6 
+
+Total 8,833,742 100.0 
+
+perturbation is bounded by P 
+
+> ℓ>ℓ ∗
+
+B4−ℓ < B 4−ℓ∗
+
+/(B−1) ,so δ ≥ 1/(B−1) suffices for Score (b)>Score (a). Choosing 
+
+B ≥ ⌈ 1/ε ⌉+1 gives 1/(B−1) ≤ ε, so any δ ≥ ε preserves order. With ε=10 −3, B=1001 gives threshold 10 −3. Ties are resolved by the confidence tiebreaker (Def. II.1, step 3). These propositions are the selector-side basis for the pa-per’s structural claim. Lexicographic ranking cannot trade a higher-priority violation for a lower-priority gain, because tier filtering is applied before lower tiers are consulted; no reparameterization changes this. A weighted-sum scalarization can always be reparameterized to allow such trade-offs, even if its current weights avoid them on a specific benchmark. The formal problem statement is: 
+
+Problem 1 (Rule-Aware Trajectory Selection) . The system is specified by ⟨fθ , R, ˆa, ¯V , Select ⟩, where fθ generates candidates, R is the tiered rule catalog, ˆa is the applicability policy, ¯V is the normalized evaluation layer, and Select is the lexicographic selector. The objective is: 
+
+ˆτ = Select  T , S(· ; s), p, ε. (5) This tuple separates generation from selection and exposes the two sources of approximation: applicability prediction and proxy evaluation. The architecture appears in Section III; empirical consequences appear in Sections V and VI. III. RECTOR A RCHITECTURE 
+
+Given scenario s=( xego , Xagents , M), RECTOR runs athree-stage pipeline: 1) Scene encoding & candidate generation: An M2I-style encoder produces escene ∈ R256 ; a Transformer–CVAE decoder generates K=6 trajectories with confidences. 2) Applicability mechanism (tested reference, not deployment-default): A 3.33 M-parameter head predicts which of 28 rules apply. Section VI-B1 reports a negative result: a parameter-free always-on policy for Safety/Legal Pareto-dominates the learned head on cross-evaluated compliance and accuracy, and is the recommended de-fault; the learned head is retained as an ablation. 3) Tiered lexicographic scorer: Each candidate is scored on active rules via smooth proxies; the scorer returns the trajectory with the minimal violation vector under Safety ≻ Legal ≻ Road ≻ Comfort. 
+
+Note: The scorer has zero trainable parameters; the 3.33 M count is the applicability MLP. The encoder maps ego history, agent histories, and vectorized map context into a shared embedding escene ∈ RD (D=256 ) using point-wise encoding for agent and map tokens followed by Transformer fusion: 
+
+hego = Conv1D (xego , kernel =3) ∈ RB×1×D , (6) 
+
+hlane ,ℓ = max  
+
+> p
+
+MLP (Mlanes [ℓ, p, :]) ∈ RB×1×D , (7) 
+
+Xtok = TransformerEnc (hego ⊕ Hagents ⊕ Hlanes ), (8) 
+
+escene = QueryAttn (qego , Xtok , Xtok ) ∈ RB×D , (9) where qego is a learned pooling query. The encoder is intentionally modest (Table II): compliance gains should come from rule-aware selection, not from inflating the backbone. Inputs are zero-padded to 
+
+Npad =32 agents and Lpad =64 lane segments (20 points each); the Transformer uses 3 layers, 8 heads, and a 1024-d FFN. The decoder generates K=6 candidates over T =50 timesteps using mode-specific goal queries, a shared CVAE latent variable (dz =64 ), and Transformer decoding ( dmodel =256 , 4 layers, 8 heads, 1024-d FFN, post-LN, GELU, dropout 0.1): 
+
+g(k) 
+
+> emb
+
+= GoalNet (escene , q(k)), (10) 
+
+p(z | escene ) = N (μprior , diag (σ2
+
+> prior
+
+)) .
+
+GoalNet is a two-layer MLP that maps the concatenated scene embedding and mode query ( [escene ; q(k)] ∈ R512 ) through a hidden layer of width 384 (GELU activation, dropout 0.1) to a 256-d goal embedding g(k)
+
+> emb
+
+. The mode queries {q(k)}Kk=1 , q(k) ∈ R256 , are 
+
+K learned scene-independent embeddings, trained jointly in Stage 2. Diversity arises from the mode-specific query and a per-mode latent 
+
+z(k) ∼ p(z | escene ) at inference; using the prior mean without distinct queries collapses the set. During training the posterior is 
+
+q(z | escene , hgt ) = N (μpost , diag( σ2
+
+> post
+
+)) , with hgt produced by a compact two-layer MLP (hidden 256, ReLU) over the flattened ground-truth future. Each mode is decoded from (escene , g(k)
+
+> emb
+
+, z(k))
+
+into a state sequence (x, y, θ, v ) in one non-autoregressive pass. Higher-order kinematics (acceleration, jerk) are obtained by finite differences during proxy evaluation. A two-layer regression head maps decoder outputs to waypoints; a linear confidence head produces mode probabilities via softmax. Per-mode latent sampling at inference is required to preserve diversity. RECTOR does not apply a post-hoc kinematic feasibility filter. The generator is trained with a jerk-smoothness term ( λsmooth =1 .0) that implicitly penalizes implausible trajectories, but no hard curvature or acceleration bound is enforced at inference. Acceleration and jerk proxies (L3.R0, L3.R1) implicitly penalize kinematic extremes at selection time; stronger generator-side guarantees are future work. The applicability head is a tested reference component, not the deployment-default : Sec. VI-B1 shows a parameter-free always-on policy for Safety/Legal Pareto-dominates it on cross-evaluated compliance and accuracy. We retain its architecture as the most direct reference for future work on learned applicability. It uses a TierAwareBlock: each of R=28 rules has a learned query qr ∈ R256 
+
+that cross-attends over escene , then passes through a two-layer MLP (256 →384 →1, GELU, sigmoid): 
+
+˜ar = σ MLP r
+
+ CrossAttn (qr , escene ) ∈ [0 , 1] . (11) Binary predictions ˆar use per-tier thresholds [0 .05 , 0.15 , 0.30 , 0.50] 
+
+(Safety →Comfort) with tier-specific bias initialization 
+
+[+2 .0, +1 .0, 0.0, −1.0] ; training uses focal BCE (γ=2 .0) on oracle labels. With the applicability mask ˆa, the tiered scorer implements the lexicographic selection of Definition II.1: 
+
+S(k) 
+
+> ℓ
+
+(s) = X 
+
+> r:ℓ(r)= ℓ
+
+˜wr ˆar (s) · ¯Vr,k (s), ℓ ∈ { 0, 1, 2, 3}. (12) 6
+
+A. Training Objective 
+
+RECTOR is trained in two stages. Stage 1 (20 epochs): applica-bility head only, focal BCE on oracle labels. Stage 2 (20+5 epochs): full end-to-end model with a composite loss: 
+
+L = λWTA LWTA + λend Lend + λKL LKL + λgoal Lgoal (13) 
+
++ λsmooth Lsmooth + λconf Lconf + λapp Lapp + λrule Lrule .
+
+LWTA is time-weighted Huber reconstruction on the best mode, Lend 
+
+supervises the endpoint, LKL regularizes the CVAE, Lgoal aligns goal queries, Lsmooth penalizes jerk, Lconf calibrates confidence, Lapp 
+
+supervises applicability, and Lrule provides weak proxy-based shaping (λrule =1 .0). Its marginal contribution is not isolated here; compliance gains are primarily attributable to enforcement at the selection stage. The KL term is LKL = DKL (q(z | escene , hgt ) ∥ p(z | escene )) .The rule-shaped term is the mean gated proxy cost across modes, 
+
+Lrule = 1
+
+> K
+
+PKk=1 
+
+P3 
+
+> ℓ=0
+
+βℓS(k) 
+
+> ℓ
+
+, with βℓ=1 in our experiments. Averaging over modes can weakly discourage diversity; in practice, this is bounded by λrule ≪ λWTA .
+
+B. Inference Procedure 
+
+Algorithm 1 RECTOR Inference  
+
+> 1:
+
+Input: Scenario s, parameters θ 
+
+> 2:
+
+Output: Selected trajectory index k∗ 
+
+> 3:
+
+escene ← SceneEncoder (s) 
+
+> 4:
+
+for k = 1 to K do  
+
+> 5:
+
+z(k) ∼ p(z | escene ) ▷ Independent sample per mode  
+
+> 6:
+
+τ (k) ← Decode (escene , g(k)
+
+> emb
+
+, z(k)) 
+
+> 7:
+
+end for  
+
+> 8:
+
+p ← softmax (logits ) 
+
+> 9:
+
+ˆa ← ⊮[σ(ApplicabilityHead (escene )) > thresholds ] 
+
+> 10:
+
+for each candidate k and active rule r do  
+
+> 11:
+
+¯Vr,k ← RuleProxy r (τ (k), s ) 
+
+> 12:
+
+end for  
+
+> 13:
+
+Compute tier scores S(k) 
+
+> ℓ
+
+via Eq. (4)  
+
+> 14:
+
+k∗ ← LexicographicSelect ({S(k)}, p, ε) 
+
+> 15:
+
+return k∗
+
+Inference is the forward pass without the posterior network or training losses. Selection is deterministic given (T , p, ˆa), supporting regression testing under rule updates. Latency is dominated by generation; compliance evaluation is 1.4 ms of the 7.3 ms total. 
+
+Plug-in contract. The selection layer (stages 2–3) is decoupled from the generator. Any generator producing T ={τ (k)}Kk=1 with confi-dences p in world-frame at 10 Hz (0.1 s steps, 50 steps, [x, y, θ, v ]
+
+state) can be substituted without changing the rule-evaluation or selection code. The output is a trajectory index k∗, the tier-score vector S(k∗), and an infeasible flag when S(k∗)0 > 0.
+
+IV. R ULE EVALUATION AND DATA PIPELINE 
+
+This section specifies the rule catalog and the proxy layer used for selection-time ranking. RECTOR evaluates 28 rules across four tiers, with differentiable proxies for 24. Through-out, Protocol A and Protocol B refer to the settings defined in Section V-B. 
+
+A. Rule Catalog Overview 
+
+The catalog has 28 rules in four tiers consistent with Section II: Tier 0 (Safety, physical safety/collision), Tier 1 (Legal, traffic-law concepts in the WOMD annotation frame-work 1), Tier 2 (Road, drivable-surface/lane keeping), Tier 3 (Comfort, ride quality and context policies). Paper IDs 
+
+Lℓ. Ri are tier-local; Registry IDs in Table III index the 
+
+waymo_rule_eval evaluator. Of the 28 rules, 18 are invoked at least once across 43,219 instances; 10 are never observed. Low- or zero-support rules provide no training signal, which explains the learned head’s high FNRs on rare rules and motivates the always-on policy for Safety and Legal (Sec. VI). We use the WOMD rule-evaluation framework as the au-thoritative auditor (consistent semantics, oracle applicability labels, stable regression targets). The full evaluator is non-differentiable, so RECTOR uses smooth proxies for optional rule-shaped training losses and stable selection-time ranking. Protocol A evaluates only the proxy subset with predicted applicability; Protocol B evaluates the full catalog with oracle applicability. 
+
+1) Proxy Coverage: 24 of 28 rules have smooth proxies 
+
+(86% coverage). All Tier 0 rules are covered, so the highest-priority constraints always contribute a training signal. Ta-ble IV summarizes training vs. evaluation. The four unproxied rules (L1.R1, L3.R6, L3.R7, L3.R8) split into two categories: one requires multi-agent intent rea-soning; the other three depend on map annotations that are unreliable in WOMD v1.3.0. At selection time, they contribute zero cost ( ˆar · ¯Vr ≡ 0) regardless of applicability, so their violations are invisible to the selector and only accumulate in Protocol B audits. Notably, L3.R8 (construction-zone compli-ance) is marked applicable in WOMD but has no proxy, so it adds to Protocol B counts while remaining invisible to the selector. 
+
+2) Normalization of Proxy Severities: Proxy outputs have heterogeneous units. Each proxy yields a raw severity 
+
+Vr (τ ; s) ≥ 0 and a normalized severity ¯Vr (τ ; s) ∈ [0 , 1] :
+
+¯Vr (τ ; s) = min 
+
+
+
+1, Vr (τ ; s)
+
+αr
+
+
+
+, (14) with αr >0 from Section II. This linear form is a proof-compatible template; experiments use the exponential form from Eq. (3), repeated for convenience: 
+
+cr (v) = 1 − exp  −κr · max(0 , v ), (15) where κr > 0 controls saturation. Both forms satisfy the [0 , 1] 
+
+contract required by Proposition II.3; reported results use the exponential form. 
+
+B. Proxy Implementation Details 
+
+We report one representative proxy per tier; the rest follow the same hinge- or event-based pattern with parameters in Table III. All run at 10 Hz from decoded trajectories. 
+
+Safety (L0.R3, collision avoidance): V =P 
+
+> t,j
+
+min( plong (t, j ), p lat (t, j )) , with SAT-style overlap depths along the vehicle axes. Legal (L1.R3, red-light 
+
+> 1See the Legal-tier disclaimer in Sec. I. In this document ”rule” or any similar term is used as a mathematical term for constraints; it does not have any legal implications. 7
+
+TABLE III: Complete 28-rule catalog with applicability and proxy parameters. “Applicable” means support positive > 0
+
+in WOMD v1.3.0 validation_interactive (43,219 instances): 18 rules are invoked, and 10 are not observed. Rules without differentiable proxies are audit-only under Protocol B. 
+
+Paper ID Registry ID Tier Description Applicable κr Threshold Unit Proxy Violation Semantics 
+
+L0.R0 L0.R2 Safety Safe longitudinal distance ✓ 2.0 2.0 m Longitudinal gap < d min to lead vehicle L0.R1 L0.R3 Safety Safe lateral clearance ✓ 2.0 0.5 m Lateral clearance < d lat to any agent L0.R2 L0.R4 Safety Crosswalk occupancy ✓ 3.0 2.0 m Ego within crosswalk clearance zone L0.R3 L10.R1 Safety Collision avoidance (overlap) ✓ 2.0 0.0 m OBB penetration depth (SAT) > 0
+
+L0.R4 L10.R2 Safety VRU clearance buffer — 2.0 1.0 m Distance to VRU < d VRU 
+
+L1.R0 L5.R1 Legal Traffic signal compliance — 3.0 2.0 m Crossing stop line under red signal L1.R1 † L5.R2 Legal Priority / right-of-way — — — — No differentiable proxy (audit-only) L1.R2 L7.R4 Legal Speed limit adherence ✓ 2.0 —‡ m/s Speed > v limit + vtol (vtol =5 mph) L1.R3 L8.R1 Legal Red-light stop compliance ✓ 3.0 2.0 m Crossing stop line under red signal L1.R4 L8.R2 Legal Stop-sign compliance ✓ 3.0 0.5 m/s Min speed in stop zone > v stop 
+
+L1.R5 L8.R3 Legal Crosswalk yield to pedestrians ✓ 3.0 5.0 m Ego within crosswalk yield radius L1.R6 L8.R5 Legal Wrong-way driving prevention ✓ 2.0 2.356 rad Heading deviation > 135 ◦ from lane direction L2.R0 L3.R3 Road Drivable surface constraint — 2.0 1.0 m Signed distance outside drivable surface L2.R1 L7.R3 Road Lane departure prevention ✓ 2.0 1.8 m Lateral offset > half lane width + margin L3.R0 L1.R1 Comfort Smooth longitudinal acceleration ✓ 2.0 3.0 m/s 2 Longitudinal acceleration > a max 
+
+L3.R1 L1.R2 Comfort Smooth braking deceleration ✓ 2.0 4.0 m/s 2 Braking deceleration > a brake 
+
+L3.R2 L1.R3 Comfort Smooth lateral steering — 2.0 0.5 rad/s Steering rate > ω max 
+
+L3.R3 L1.R4 Comfort Speed consistency — 2.0 2.0 m/s Speed change > ∆vmax 
+
+L3.R4 L1.R5 Comfort Jerk / lane-change smoothness — 2.0 2.0 m/s 3 Jerk > j max 
+
+L3.R5 L4.R3 Comfort Left-turn gap acceptance ✓ 2.0 4.0 s Left-turn TTC gap < t min 
+
+L3.R6 † L5.R3 Comfort Parking-zone violation — — — — No differentiable proxy (audit-only) L3.R7 † L5.R4 Comfort School-zone speed compliance — — — — No differentiable proxy (audit-only) L3.R8 † L5.R5 Comfort Construction-zone compliance ✓ — — — No differentiable proxy (audit-only) L3.R9 L6.R1 Comfort Cooperative lane change — 2.0 3.0 s Lane-change TTC < t min 
+
+L3.R10 L6.R2 Comfort Safe following distance ✓ 2.0 2.0 s Following time < t follow 
+
+L3.R11 L6.R3 Comfort Intersection negotiation ✓ 2.0 3.0 s Intersection TTC < t min 
+
+L3.R12 L6.R4 Comfort Pedestrian interaction ✓ 2.0 3.0 m Pedestrian proximity < d VRU 
+
+L3.R13 L6.R5 Comfort Cyclist interaction ✓ 2.0 3.0 m Cyclist proximity < d VRU 
+
+Applicable: ✓ = rule was invoked (support positive > 0) in WOMD v1.3.0; — = never invoked in 43,219 evaluation instances. κr : softness parameter in the exponential cost function (Eq. 15). Higher κr leads to faster saturation. Signal-related proxies (L1.R0, L1.R3–R5, L0.R2) use κr =3 .0; all others use κr =2 .0.For rules where the threshold is inherent to the violation definition (e.g., speed limit), “—” indicates a scenario-dependent threshold. L1.R1, L3.R6–L3.R8 have no proxy and remain audit-only. Additional penalty scaling: yellow-light violations ×0.3, flashing-red ×0.5. ‡L1.R2 (speed limit): the per-scenario threshold is the WOMD lane-level speed limit when present. About 42% of validation_interactive lane segments lack an explicit speed-limit annotation; for those segments we fall back to a default of 25 mph (urban) or 35 mph (where the segment carries a freeway/ramp class label), which matches the U.S. statutory default for unposted urban roadways. Sensitivity at ±5 mph defaults changes L1.R2 violation rate by < 0.4 pp on Protocol B. 
+
+TABLE IV: Training vs. evaluation setup. Training uses smooth proxies for 24/28 rules for gradient learning; evalu-ation uses the full 28-rule Waymo framework with complete map context. 
+
+Aspect Training Evaluation 
+
+Rules evaluated 24 (proxied) 28 (all) Applicability source Predicted ( ˆar ) Oracle ( a∗ 
+
+> r
+
+)Map context Partial Full Gradient flow Yes No Speed Fast ( ∼1 ms) Moderate ( ∼5 ms) 
+
+stop): V = P 
+
+> t
+
+r(t) σα(cross( t)−cross( t−1)) , r(t) asoft red-signal indicator. Road (L2.R1, lane departure): 
+
+V = P 
+
+> t
+
+max(0 , |dlat  
+
+> t
+
+| − wlane /2 − m). Comfort (L3.R4, jerk): V = P 
+
+> t
+
+max(0 , |jt| − jmax ).
+
+C. Data Pipeline 
+
+The same rule-evaluation machinery is used during proxy-based training and full-catalog auditing. Dataset statistics and splits appear in Section V. The eval-uation set spans dense intersections, freeway merges, lane TABLE V: Data augmentation strategies in the ego-centric frame. Agent dropout simulates occlusion, trajectory noise regularizes dynamics, and flips/rotations improve spatial in-variance; rule-targeted augmentation adds controlled-violation samples to balance proxy supervision. 
+
+Augmentation Parameters Purpose 
+
+Rotation ±15 ◦ Orientation invariance Translation ±2.0 m Position invariance Scaling 0.95 –1.05 Scale robustness Agent dropout 10% prob. Occlusion handling Trajectory noise N (0 , 0.12) m Smoothness regularisation Time reversal 50% prob. Temporal symmetry Mirror flip 50% prob. Left-right symmetry 
+
+changes, and other interaction-rich geometries, requiring the catalog to cover both high-priority safety events and lower-priority comfort behaviors. Raw TFRecord scenarios are converted to ego-centric ten-sors: coordinates are transformed to the ego frame, nearby agents and relevant lanes are selected, finite-difference kine-matics are extracted, and map primitives (lane polylines, stop 8
+
+TABLE VI: Waymo Open Motion Dataset Statistics (Interac-tive Scenarios)                   
+
+> Property Value
+> Dataset Overview
+> Total augmented scenarios 159,924 Training split 102,040 augmented scenarios Validation split 12,800 base / 43,219 augmented Test split 14,665 augmented scenarios (withheld) Interactive criterion Exactly 2 objects of interest Geographic regions Phoenix, San Francisco, Mountain View Traffic convention Right-hand traffic (US) Average agents per scenario 8.2 Maximum agents 40+ Object types Vehicles, pedestrians, cyclists Agent tracking consistency Validity masks over the 9.1 s window
+> Map Context
+> Map coverage Full HD maps Lane annotations Complete lane topology Traffic signals Per-timestep state annotations Stop signs Location and orientation Crosswalks Polygon boundaries Speed limits Where available
+
+lines, crosswalks, drivable-surface polygons) are vectorized. Standard spatial and temporal augmentation is summarized in Table V. We also generate synthetic collision, speed, lane-departure, and red-light violations to improve proxy supervision on rare but high-impact events. V. D ATASETS , M ETRICS , B ASELINES , AND 
+
+IMPLEMENTATION DETAILS 
+
+This section fixes the evaluation scope. Unless stated otherwise, selector comparisons use the augmented WOMD 
+
+validation_interactive split (43,219 ego-scenario in-stances from 12,800 base scenarios), K=6 , and report com-pliance on the selected trajectory. K=6 follows the WOMD motion-prediction challenge convention; preliminary K ∈{8, 12 } runs gave no systematic compliance improvement at extra cost. Protocol A is the operating selector benchmark (matches RECTOR’s proxy stack); Protocol B is the complete-ness reference (full 28-rule catalog with oracle applicability). We distinguish candidate-set quality from selected-trajectory quality, since RECTOR changes only the selection. 
+
+A. Dataset 
+
+We use the Waymo Open Motion Dataset (WOMD) v1.3.0 [25], which provides temporally aligned trajectories for the ego and surrounding agents, HD map context (lane topology, crosswalks, boundaries), and traffic-control state (signals, stop signs) required for both motion prediction and rule applicability/violation computation. Table VI summarizes key statistics. Fig. 3 shows representative interactive scenarios spanning all four tiers. We follow WOMD’s official interactive splits to avoid leakage. Training uses 102,040 augmented interactive scenarios; the selector benchmark uses the augmented 
+
+validation_interactive split (43,219 evaluation in-stances from 12,800 validation scenarios across 150 shards). Each augmented TFRecord wraps the original Scenario proto with per-rule applicability labels, violation flags, and severity scores from waymo_rule_eval ; these labels are the oracle ground truth used in ablations (Table XI). The test split is withheld. The ∼3.4 × evaluation -set augmentation (12,800 → 43,219) comes from ego-perspective permutation: each base scenario with two objects_of_interest is evaluated once per ego designation (including the original sdc_index ), giving 2–4 instances per base scenario depending on interaction type and validity-mask coverage. Geometric training aug-mentations in Table VII (random rotation, translation noise, agent dropout, time reversal, mirror flip) are applied only during training, not at evaluation. Evaluation, therefore, uses original world-frame coordinates and timing. Higher absolute violation rates than single-perspective evaluation reflect harder interaction roles (yielding, merging) for which the predictor is less calibrated. WOMD defines an interactive scenario by exactly two objects_of_interest —the primary interacting entities—emphasizing cases where inter-agent coupling and priority reasoning are salient, an appropriate stress test for rule-aware selection. We use all interaction types in the validation split: v2v, v2p, v2c, and others. Filtering is minimal and removes only degenerate cases: scenarios with fewer than 2 agents, ego speed consistently below 0.1 m/s, or incomplete map features. About 98% of scenarios survive. The Legal-tier catalog reflects U.S. right-hand traffic norms in WOMD; other jurisdictions require re-parameterizing the catalog and re-evaluating proxy coverage. 
+
+B. Evaluation Protocols 
+
+Compliance numbers are meaningful only when the evalua-tion scope is unambiguous. We use two protocols throughout. 
+
+Protocol A (operating selector benchmark). The 24-rule proxy subset with predicted applicability ˆar . This is the like-for-like selector comparison since it matches the rule-aware re-ranking stack. 
+
+Protocol B (oracle-applicability proxy reference). The full 28-rule catalog with oracle applicability a∗ 
+
+> r
+
+and the same proxy-based violation stack. Used for full-rule accounting, applicability ablations, and conservative absolute compliance within the proxy-evaluator framework. 
+
+Aggregation. Total Viol.% is the fraction of scenarios where the selected trajectory violates at least one rule (union over the rulebook). Per-tier Viol.% is the fraction violating at least one rule in that tier. S+L Viol.% is the fraction violating any Safety or Legal rule. Per-tier rates may sum above Total because one scenario can violate multiple tiers. Protocol B is more complete but its absolute rates need not exceed Protocol A: oracle applicability re-exposes rules Protocol A suppresses while removing false positives from the learned head. Protocol B is therefore the stricter scope reference (oracle applicability + full catalog), rather than a separate, non-differentiable evaluator pass. For deployment-facing interpretation, Protocol B with always-on Safety/Legal activation is the most conservative reading. 9    
+
+> (a) Intersection turn —sce-nario map
+> (b) Intersection turn — per-tier violations
+> (c) Dense intersection — sce-nario map
+> (d) Dense intersection — per-tier violations
+> (e) Exit-ramp merge — sce-nario map
+> (f) Exit-ramp merge — per-tier violations
+> (g) Lane change — scenario map
+> (h) Lane change — per-tier vi-olations
+
+Fig. 3: Infrastructure-verification figure; not a selector comparison. Four representative WOMD v1.3.0 
+
+validation_interactive scenarios from the Waymax log-replay bridge (frames 35–40 of 8 s). Left panels show BEV maps (blue: surrounding agents; red: RECTOR-selected trajectory; green: executed trajectory); right panels show per-tier violation scores across the six candidate modes. Because the MockLogReplayGenerator returns the logged trajectory as K=6 
+
+near-identical candidates ( σ=0 .001 ), all three selectors produce identical selections by construction; the figure is included only to document that the Waymax execution path runs end-to-end and that the proxy scores trace correctly along the replayed rollout. Selector-disagreement BEV gallery on a reactive non-trivial generator is deferred to the journal-extension follow-up (Sec. VI, “Waymax Bridge”; Sec. VIII, next-step (iii)). 
+
+C. Evaluation Metrics 
+
+We report three metric groups: trajectory accuracy, rule compliance, and computational efficiency. 
+
+1) Trajectory Accuracy: Standard ADE/FDE/minADE/minFDE/MissRate (Sec. II) over T =50 
+
+at 10 Hz with miss threshold δ=2 .0 m, plus selected-trajectory variants selADE =ADE (ˆ τ , τ gt ) and selFDE =FDE (ˆ τ , τ gt ) that quantify decision quality rather than only candidate-set diversity. 
+
+2) Rule Compliance: Tier-wise violation rate 
+
+ViolationRate ℓ= 1
+
+> N
+
+P 
+
+> i
+
+⊮[Sℓ(τi; si)>0] ; S+L is the fraction violating any Safety or Legal rule; Total is the union over the rulebook. Per-tier rates may sum to more than the total because a single scenario can span multiple tiers. Compliance Rate is the complement. 
+
+3) Computational Efficiency: Mean/P95 inference latency, throughput, parameter counts, peak GPU memory. 
+
+D. Baseline Methods 
+
+Comparisons serve two purposes: external baselines situate candidate-set accuracy among prior WOMD predictors, and internal baselines isolate the selector on a fixed candidate set. 
+
+1) External Baselines: Candidate-set accuracy is compared against five published methods (LaneGCN [2], DenseTNT [4], M2I [26], Wayformer [7], MTR [6]) in Table VIII; compar-isons are approximate due to implementation differences. 
+
+2) Internal Selectors: All three operate on the same K=6 
+
+candidate set. Confidence Only: ˆτ = arg max k p(k). Weighted Sum: ˆτ = arg min k
+
+P 
+
+> r
+
+wr ˆar ¯Vr,k with uniform wr =1 and the default lowest-index tiebreak (compliance-equivalent all-zero cases need not match RECTOR’s confidence tiebreak; the qualitative distinction is in Sec. VI-A). Human GT (refer-ence): ground-truth trajectories under the identical Protocol A pipeline; the imitation ceiling for any system that perfectly replicates recorded behavior under the same stack. Its non-zero Protocol A rate reflects that proxy thresholds were calibrated for prediction evaluation rather than imitation, and that human driving is occasionally aggressive relative to proxy margins. The 12.8% Legal-tier rate under Protocol B is a policy-relevant context, not a target. 
+
+E. Implementation Details 
+
+To enable reproducibility, we report the training and infer-ence configuration below. 
+
+1) Model Architecture: An interaction-aware encoder with a multimodal CVAE decoder, a rule-applicability head, and a 10 
+
+TABLE VII: Training hyper-parameters and Configuration                                           
+
+> hyper-parameter Value
+> Optimizer Settings
+> Optimizer AdamW Max learning rate 3×10 −4
+> Learning rate schedule OneCycleLR (cosine) Weight decay 1×10 −4
+> Gradient clipping max norm = 1.0 Batch size 256 Epochs (Stage 1 / Stage 2) 20 / 20+5 Precision Mixed (AMP) Random seed 42
+> Loss Weights
+> λWTA (reconstruction) 20.0
+> λend (endpoint) 5.0
+> λKL (KL divergence) 0.05
+> λgoal (goal prediction) 2.0
+> λsmooth (smoothness) 1.0
+> λconf (confidence) 1.0
+> λapp (applicability) 1.0
+> λrule (proxy compliance) 1.0
+> Model Selection
+> Selection criterion Best validation loss Early stopping patience 15 epochs
+> Data Augmentation
+> Random rotation ±15 ◦
+> Position noise N(0 ,0.12)mAgent dropout 10% Time reversal ∗50% probability Mirror flip 50% probability
+> ∗Time reversal is applied to spatial position sequences only, not to rule violation labels or temporal rule semantics. Rule applicability and violation labels are computed on the original (non-reversed) trajectory. Training follows a two-stage procedure: Stage 1 trains only the applicability head (focal BCE,
+> γ=2 .0) on frozen encoder features for 20 epochs; Stage 2 fine-tunes the full model end-to-end with all eight loss terms for 20+5 epochs. The loss weights in this table apply to Stage 2; Stage 1 uses Lapp only.
+
+tiered scorer (Table II); capacity beyond the motion backbone concentrates in applicability, the scorer is structural. 
+
+2) Training Configuration: AdamW with OneCycleLR co-sine and brief warm-up; hyperparameters, loss weights, aug-mentation, and hardware in Table VII. 
+
+3) Loss Functions and Inference: The training objective is the flat weighted sum of the eight terms in Sec. III-A; the model with the lowest composite validation loss is selected, and because the reconstruction term ( λWTA =20 .0) dominates, this closely tracks the best validation ADE. Training follows a two-stage procedure (Stage 1: an applicability head with focal BCE; Stage 2: a full end-to-end model). All selector comparisons use the final model selected on the 43,219-instance augmented validation set; the augmented-set minADE of 0.805 m reflects evaluation across all ego perspectives. Inference runs in FP32 at batch size 128; latency, throughput, and memory are reported in Sec. VI. All experiments use Python 3.10, PyTorch 2.2, CUDA 12.1, Waymo Open Dataset SDK v1.5.2 (the parsing library; the dataset itself is WOMD v1.3.0, as in Section V), and a fixed seed of 42 with deterministic CUDA. Full dependency versions and the preprocessing pipeline accompany the code release. 
+
+4) Code and Artifacts: The full training pipeline, rule catalog with proxy implementations, applicability head, lexicographic selector, evaluation scripts, and the augmentation pipeline that produced the 43,219 evaluation instances will be released at 
+
+https://github.com/ 〈anonymized 〉/RECTOR 
+
+(URL and Zenodo DOI to be activated upon acceptance; an anonymized snapshot is available to reviewers on request). The release includes seed configuration, deterministic CUDA flags, and the proxy/auditor concordance harness used in Section VII. 
+
+5) Scope, Caveats, and Limitations of This Evaluation: 
+
+All selector comparisons in Section VI are bounded by the following methodological caveats. (i) Validation-split model selection. The WOMD test split lacks the per-rule applicability/violation labels required by our augmented pipeline, so we select the final checkpoint by best vali-dation composite loss and report on the same augmented 
+
+validation_interactive split; absolute generation and Protocol A numbers therefore carry an unquantified opti-mistic bias, while Protocol B selector deltas are insulated from learned-applicability bias. Held-out test-split reporting is an explicit next step (Section VIII). (ii) Statistical tests. 
+
+The 43,219 augmented instances are paired across selectors on identical candidate sets; multiple instances share base scenarios and map context, so significance values reflect paired-instance contrasts, not N =43 ,219 independent draws. A cluster-robust reading over ∼12,800 base scenarios yields the same selector ordering with wider intervals. (iii) Sen-sitivity scope. Reported results use ε=10 −3, K=6 , wr =1 ;spot-checks at ε ∈ { 10 −4, 10 −2} and K ∈ { 8, 12 } do not change the Protocol B selector ordering, and the full grid is in supplementary material. (iv) Protocol scope. All compliance numbers are proxy-evaluator results under Protocol A or Pro-tocol B and are not full Waymo-evaluator passes; concordance and the L0.R3 caveat are characterized in Section VII. VI. A CCURACY , R ULE COMPLIANCE , B EHAVIOR , AND 
+
+EFFICIENCY 
+
+This section reports the main empirical findings on the aug-mented WOMD validation_interactive split (43,219 instances, K=6 ). We lead with Protocol B (full 28-rule catalog, oracle applicability) as the primary headline because it is insulated from the learned applicability head’s calibration issues (Sec. VI-B) and exercises all four tiers; Protocol A (24 proxy rules, predicted applicability) is the operating-stack diagnostic. Best-of-K accuracy measures candidate-set coverage; selected accuracy measures the executed trajectory. All compliance numbers are proxy-evaluator results at their stated scope, not full-evaluator certificates (Sec. V-E5). 
+
+Headline (Protocol B): Rule-aware selection reduces 
+
+Safety+Legal violations from 28.58% to 20.42% (8.16 pp) and Total from 40.32% to 32.41% (7.91 pp) versus confidence-only on the same candidates (Table X); per-tier reductions hold on every tier. Under adversarial confidence corruption (Sec. VI-A2), confidence-only fails in 100% of scenarios while rule-aware selection rejects the injection in 
+
+∼96%. All Safety figures are proxy-evaluator rates; L0.R3 has 80.7% FNR against the Waymo full evaluator (Sec. VII), so a post-selection full-evaluator audit is required for any deployment-facing reading. 11 
+
+TABLE VIII: Candidate-set accuracy on WOMD 
+
+validation_interactive (43,219 augmented instances, K=6 ). minADE/minFDE are best-of-K (FDE from the ADE-best mode), and Miss uses a 2.0 m FDE threshold. RECTOR standard deviations are ±0.828 m (minADE) and 
+
+±2.07 m (minFDE). †Baselines are reported from original papers and may use different splits, augmentation, or K, so comparisons are approximate.                         
+
+> Method minADE (m) ↓minFDE (m) ↓Miss (%) ↓
+> Published results (reported from original papers †)
+> LaneGCN 0.87 1.92 28.4 DenseTNT 0.73 1.55 20.1 M2I 0.75 1.63 22.8 Wayformer 0.68 1.42 18.9 MTR 0.70 1.48 19.5
+> Reproduced in our pipeline
+> RECTOR (Ours) 0.805 1.513 23.33
+
+Fig. 4: Selected-trajectory accuracy (selADE) for the three se-lectors on the same WOMD validation_interactive 
+
+candidate set. Violin+box overlays summarize distribution and spread; mean selADE is 2.95 m (Confidence-only), 2.33 m (Weighted sum), and 2.74 m (RECTOR lexicographic). We begin with candidate-set accuracy, which upper-bounds any selector. Table VIII places RECTOR’s generation among published methods: minADE = 0.805 m , minFDE = 1.513 m ,
+
+Miss = 23.33% . The candidate set is strong enough for mean-ingful selection experiments; the rest of the section isolates the selector. 
+
+A. Selection Strategy Comparison 
+
+This experiment isolates the paper’s central claim: compli-ance can be improved by selection alone when candidates are held fixed. We apply three strategies to the same can-didate set T (s)—Confidence Only ( arg max k p(k)), Weighted Sum ( arg min k
+
+P 
+
+> r
+
+wr ¯Vr,k ), and RECTOR (lexicographic)— on 43,219 instances. Table X is the primary view under Protocol B (full catalog, oracle applicability); Table IX is the operating-stack diagnostic under Protocol A. Figure 4 and Table IX summarize the operating-stack diagnostic. Under Protocol A, rule-aware selection cuts reported Safety violations by 12.32 pp, from 68.39% (Confidence-only) to 56.07%. These Protocol A absolute rates are inflated by Safety over-activation in the learned head and suppression of Legal/Road; the Protocol B oracle baseline is 27.94%. We therefore read Protocol A as the delta induced by rule-aware reranking inside the deployed proxy configuration, not as a headline absolute. The deployed-stack value here is rule-aware over confidence-only; the structural separation between lexicographic and weighted-sum is ad-dressed in Secs. VI-A1 and VI-A2. Selected-trajectory endpoint error follows the selADE pat-tern: under Protocol A, both rule-aware selectors improve selFDE over confidence-only (5.729 m / 4.941 m vs. 6.270 m). The residual gap between lexicographic and weighted-sum stems from compliance-equivalent cases (a majority at K=6 ): when all four tier scores are zero, the lexicographic selector falls through to its confidence tiebreaker (Def. II.1, Step 3) while weighted-sum uses its own arg min .Paired tests support the same conclusion. McNemar gives 
+
+p ≈ 0 for lexicographic vs. confidence-only on Safety (5,326 discordant pairs, all favoring rule-aware) and Total (5,175). Wilcoxon on selADE gives p=3 .95 ×10 −85 with a 0.216 m mean improvement. Lex vs. WS gives McNemar p=1 .0
+
+(identical binary outcomes under Protocol A); Wilcoxon on selADE favors WS (mean ∆ 0.407 m). A 250-config weight grid confirms WS matches lex binary compliance whenever 
+
+wS ≥ 5; only fully flat weights produce ten extra Safety-violating scenarios ( +0.023 pp). p-values are paired-instance on the augmented 43,219 set; multiple instances may share a base scenario. 
+
+1) Cannot vs. Does Not: Why WS = Lex on This Benchmark: 
+
+WS and lex produce equal per-tier binary compliance not because the selectors are equivalent but because WOMD rarely exposes cross-tier conflicts: only 0.40% (171 scenarios) 
+
+contain a candidate that is strictly Pareto-conflicting across tiers. On the remaining 99.60%, candidates are either fully zero-score (the lex confidence tiebreak fires) or one candidate dominates on every tier (any monotone scalarization picks the same one), so binary compliance matches by construction. This is a does-not , not a cannot : the lex guarantee is that 
+
+no weighted-sum reparameterization can trade higher-priority for lower-priority violations within ε, and the weight-grid sweep confirms matching requires wS ≥ 5. Distributions with denser cross-tier conflicts (heavier intersections, more frequent emergency yields) would empirically separate the two; reporting on such distributions is future work. 
+
+2) Adversarial Confidence Corruption: The single clearest separation between confidence-based and rule-aware selection appears under adversarial confidence corruption. We perturb the candidate set by injecting a Safety-violating mode and forcing its confidence to exceed that of all alternatives. Across three injection families (collision-prone, off-road, signal-violating), confidence-only picks the injected violator in 100% 
+
+of scenarios; both rule-aware selectors reject it in ∼96% .Combined with the structural lex guarantee (Sec. VI-A1), this is robustness no scalar recalibration can match. Both rule-aware strategies also improve geometric accuracy versus confidence-only (selADE: 2.953 m → 2.33 m for WS, 2.74 m for RECTOR), since safety-violating trajectories tend to be less accurate. Table X gives the corresponding Protocol B 12 
+
+TABLE IX: Protocol A (operating-stack diagnostic): 24 proxy rules with predicted applicability ˆar . Selector comparison on a fixed candidate set (43,219 scenarios). selADE/selFDE are selected-trajectory errors; S+L = Safety ∪ Legal; Total counts scenarios with ≥ 1 active-rule violation. Legal and Road are 0.00% because the learned applicability head suppresses those tiers (a head-calibration artifact, not a selector property); the headline view is Table X under Protocol B. Weighted-sum and lexicographic have identical binary compliance; the selADE gap arises because compliance-equivalent all-zero-score cases are resolved by RECTOR’s confidence tiebreaker vs. the weighted-sum scalar arg min .                                       
+
+> Strategy selADE selFDE Safety Legal Road Comfort S+L Total (m) (m) (%) (%) (%) (%) (%) (%)
+> Confidence Only 2.953 6.270 68.39 0.00 0.00 3.43 68.39 69.96 Weighted Sum 2.33 4.941 56.07 0.00 0.00 2.68 56.07 57.99 RECTOR (lex.) 2.74 5.729 56.07 0.00 0.00 2.67 56.07 57.99
+
+TABLE X: Protocol B (primary headline view): full 28-rule proxy catalog with oracle applicability a∗ 
+
+> r
+
+. Selector comparison on the same 43,219-instance candidate set. Relative to confidence-only, both rule-aware selectors reduce violations across all tiers: Safety 8.15 pp, Legal 0.07 pp, Road 0.04 pp, Comfort about 2.4 pp, S+L 8.16 pp, Total 7.91 pp. Weighted-sum and lexicographic are equal at reported precision on binary per-tier compliance because cross-tier conflicts are rare in WOMD 
+
+validation_interactive (does not , not cannot ; see Sec. VI-A1); the structural lexicographic guarantee remains a separate property of the selector.                                        
+
+> Strategy selADE selFDE Safety Legal Road Comfort S+L Total (m) (m) (%) (%) (%) (%) (%) (%)
+> Confidence Only 2.953 6.270 27.94 0.82 1.60 14.80 28.58 40.32 Weighted Sum 2.370 5.060 19.79 0.76 1.55 12.40 20.42 32.41 RECTOR (lex.) 2.875 6.063 19.79 0.76 1.55 12.39 20.42 32.41
+
+Fig. 5: Lexicographic tier-filtering funnel on WOMD 
+
+validation_interactive (43,219 scenarios). From 
+
+K=6 , each tier keeps candidates within εℓ of the minimum tier score. The mean survivors are 5.77 (Tier 0), 5.67 (Tier 1), 5.67 (Tier 2), and 2.84 (Tier 3); then confidence selects one. The Tier 3 drop indicates Comfort is the main discriminator when Safety scores tie (96.8% of scenarios have at least one 
+
+S0=0 candidate). oracle-applicability view on the same 43,219 scenarios. Under oracle applicability, all four tiers are non-zero, and rule-aware selection reduces violations across each tier relative to confidence-only. Per-rule heatmaps for Protocol B are included in supple-mentary material; the main-text conclusions are supported by the aggregate and per-tier results in Tables IX and X. 
+
+B. Ablation Studies 
+
+This subsection reports ablations under Protocol B (full 28-rule proxy stack, oracle applicability) to isolate each architec-tural component with non-zero violations across all tiers. 
+
+Fig. 6: Tier-wise violation rates for Protocol A (solid; 24-rule subset with learned applicability) and Protocol B (hatched; full 28-rule catalog with oracle applicability) across three selectors on 43,219 augmented validation instances. Bar height is the 
+
+sum over tiers (Safety+Legal+Road+Comfort), which is higher than Total Viol.% in Tables IX and X because Total counts the union over tiers. Protocol A suppresses Legal and Road, while Protocol B reveals all tiers. Per-tier sums are labeled above bars. To diagnose the learned applicability head, we analyze its per-rule F1 on the full 43,219-scenario split: F1 correlates strongly with oracle support ( ρ=0 .981 ), with rules having 
+
+>5,000 positives reaching mean F 1=0 .77 and low-support rules collapsing to F 1=0 .00 . Figure 7 visualizes this; the head has severe false-negative bias for the 10 never-invoked rules. Table XI quantifies the impact: oracle applicability cuts Safety violations from 56.07% to 19.79% and Total from 57.99% to 32.41%, while restoring non-zero Legal and Road rates. 13 
+
+TABLE XI: Applicability-source ablation (oracle vs. learned) under lexicographic selection on 43,219 scenarios. Oracle applicability changes selected trajectories, reducing Safety from 56.07% to 19.79% and Total from 57.99% to 32.41%, while re-exposing non-zero Legal and Road rates suppressed by the learned head.                       
+
+> Applicability Total Safety Legal Road Comfort source (%) (%) (%) (%) (%)
+> Learned ( ˆar)57.99 56.07 0.00 0.00 2.67 Oracle ( a∗
+> r)32.41 19.79 0.757 1.55 12.39
+
+Fig. 7: Learned applicability-head F1 versus oracle support for all 28 rules (colored by tier). On the full evaluation set, F1 strongly correlates with support ( ρ=0 .981 ): it collapses near zero below 100 positives and typically exceeds 0.7 above 5,000 positives. The 10 never-invoked rules have zero support and F1 = 0 .0, which motivates conservative, always-on activation for the Safety and Legal tiers. 
+
+1) Applicability Learning: A Negative Result: Table XII reports the paper’s clearest negative result for the learned applicability head. We compare four activation policies: the learned 3.33 M-parameter head, a hybrid that forces Tier 0/1 (Safety, Legal) always-on (learned for Tier 2/3), a fully always-on policy, and the oracle. Each mode is used for selection ,while violations are scored under oracle applicability (cross-evaluation), isolating the activation policy’s effect on trajectory choice. Always-on improves selADE from 2.74 m to 2.481 m while slightly reducing Safety-tier violations (19.99% → 19.88%): the parameter-free policy is materially more accurate and at least as compliant as the learned head under cross-evaluation. We therefore recommend always-on Safety/Legal as the de-fault RECTOR configuration and treat the learned head as a tested-but-not-recommended ablation. The negative result has two readings. Operationally, 3.33 M parameters and Stage 1 focal-BCE training did not yield a calibrated applicability head on this task at this data scale; the under-supported rules (10 with zero positives, 14 with <5,000) drive the head toward false negatives that strictly worsen downstream selection. Methodologically, when the supervisory signal is dominated by low-prevalence rules, an always-on (or hand-specified) activation policy can dominate a learned one with no parameters and no training cost—a useful baseline for future rule-applicability research. RECTOR can improve compliance only when the candidate TABLE XII: Conservative Applicability Comparison (Cross-Evaluation: Mode-Specific Selection, Oracle Evaluation, Lex-icographic, 43,219 Scenarios)                                  
+
+> Applicability mode selADE Safety Legal S+L Total (m) (%) (%) (%) (%)
+> Learned ( ˆar)2.74 19.99 0.84 20.69 33.95 Hybrid conservative †2.850 19.88 0.79 20.53 33.75 Always-on (all rules) 2.481 19.88 0.79 20.53 33.50 Oracle ( a∗
+> r)2.875 19.79 0.76 20.42 32.41
+> †Hybrid conservative: always-on for Tier 0 (Safety) and Tier 1 (Legal), learned predictions for Tier 2 (Road) and Tier 3 (Comfort). Each row uses the specified applicability mode for selection; then all rows are evaluated under Oracle applicability (full 28 rules). Relative to the learned head, the conservative policies slightly reduce Safety and S+L violations and reduce selected-trajectory error by up to 9.3% (2.74 m →2.481 m); always-on also yields the lowest selADE among the conservative policies. Oracle selection yields the lowest Total violations (32.41%).
+
+set contains a relatively safe alternative. At K=6 , ∼3.2% of scenarios have no candidate with S0=0 ; in those, RECTOR returns the least-violating mode and emits the infeasible 
+
+flag from Remark II-C. Downstream policies (conservative deceleration, planner replan, emergency-brake fallback) are deployment decisions, summarized in Section VIII. Under Protocol B with always-on Safety/Legal and oracle reporting, 19.88% of scenarios remain Safety-violating; 99.53% of this floor is infeasibility-limited and only 0.47% is selector mis-ranking. Generator quality and candidate diversity therefore bound achievable compliance. 
+
+Contribution of audit-only rules to the Protocol B floor.: 
+
+Four rules in the Protocol B catalog (L1.R1 priority / right-of-way, L3.R6 parking-zone violation, L3.R7 school-zone speed compliance, L3.R8 construction-zone compliance; see Table III) are evaluated by the oracle auditor but lack a differentiable proxy: they enter the Protocol B total as binary auditor checks and cannot be optimized at selection time. They account for 2.6 pp of the 32.41% Protocol B Total floor, primarily through L3.R8 (construction-zone compliance, 
+
+∼1.7 pp), which is purely a candidate-set property: no rule-aware reranking can correct it on a fixed candidate set. The remaining 29.8 pp Total floor is split between the 24-proxy-addressable rules (where the selector reduces violations by 7.91 pp vs. confidence-only) and the L0.R3 proxy false-negative gap (Sec. VII). Closing the audit-only gap requires either adding proxies for those rules or increasing generator diversity to include compliant candidates. These gains are supported by the verification pipeline in Section VII: invariants pass at 99.2–100%, post-mitigation NaN/Inf is 0.0%, proxy–full-evaluator pairwise concordance is 
+
+0.875 on 10 variance-bearing rules (0.948 overall including 14 trivially concordant zero-variance rules), and sensitivity is bounded under perception ( ≤6.1 pp) and map ( ≤12 .1 pp) perturbations. 
+
+C. Waymax Bridge: Infrastructure Verification Only 
+
+All primary results above are open-loop. We verified that the RECTOR pipeline executes selected trajectories correctly through Waymax [27] ( DeltaGlobal dynamics, 10 Hz, 55 WOMD scenarios, 80 steps each, replan every 2.0 s, 3,338.5 s 14 
+
+TABLE XIII: Semantic Invariant and Integration Test Pass Rates                                                
+
+> Layer Test / Invariant Statement / Notes Enforcement Result
+> Semantic Non-negativity Vr≥0for all rReLU/clamping 100% Applicability ar=0 ⇒arVr=0 Multiplicative gating 99.2% Temporal consistency Vr= agg tV(t)
+> rBounds + unit tests 100% Monotonicity θ1>θ 2⇒V1≥V2parameterized tests 100% Integration Tier aggregation All tier sums match expected gated sums End-to-end PASS Lexicographic selection Verified across 100 selection instances Sampling PASS Proxy/full agreement On rules with both implementations Binary comparison 87.3% Applicability correctness Boundary-adjacent map edge cases Regression 99.2% NaN/Inf propagation Zero invalid values in tested runs Monitoring PASS Monotonicity regression All thresholded rules preserve order Regression suite PASS
+
+end-to-end wall time). Because we use a MockLogReplayGen-erator that returns the logged trajectory as K=6 near-identical candidates ( σ=0 .001 ), all three selectors produce identical selections and zero overlap steps; this run is therefore an integration test of the bridge, not a selector comparison and not a reactive closed-loop study. Figure 3 in Section V-A illustrates the bridge execution and is similarly non-differentiating among selectors. Reactive closed-loop evaluation with a generator that yields non-trivial candidate diversity is deliberate future work (Section VIII). VII. V ERIFICATION , I NVARIANTS , N UMERICAL 
+
+STABILITY , AND INTEGRATION TESTS 
+
+All compliance figures in this paper refer to proxy-evaluator compliance under the Protocol A/B stacks in Section V-B. They are not a formal safety certificate against ego-vehicle dynamics, the deployment ODD, or any jurisdiction’s traffic code. Protocol B (full proxy catalog, oracle applicability) is the stricter in-paper reference; Protocol A (proxy-24, predicted applicability) is the operating selection signal. Both are nec-essary; neither is a safety certificate. The compliance gains in Section VI are meaningful only if the evaluator is semantically correct, numerically stable, and reproducible. This section verifies the rule-evaluation and selection pipeline at the invariant, numerical, and integration levels, then stress-tests it under perturbations and edge cases. We verify four invariants required by tier aggregation: non-negativity of violation scores (100%), applicability dominance so inactive rules contribute zero (99.2% post-mitigation, with residual boundary-adjacent map cases logged for regression), temporal consistency of per-timestep aggregation (100%), and monotonicity of threshold-based rules (100%). Table XIII reports these together with end-to-end integration checks. Distance computations, soft overlap proxies, and kine-matic derivatives are protected with ϵ-regularization ( ϵ=10 −6), degenerate-geometry checks, windowed smoothing ( W =3 ), and finite-value bounds. After mitigation, the overall NaN/Inf rate is 0.0% . Tier scores consumed by the selector are well-defined; Table XIV lists pre-mitigation error modes and safe-guards. Tier aggregation correctness and lexicographic determinism are verified on sampled scenarios (all pass). The full per-rule proxy–evaluator alignment table for all 24 proxied rules (1,000 scenarios) is in supplementary material. A separation appears between per-rule severity correla-tion and candidate-ranking fidelity. Mean per-rule Spearman 
+
+ρ=0 .25 is low (Safety-distance proxies remain weak: L0.R0 
+
+ρ=−0.07 , L0.R1 ρ=−0.38 ); kinematic and interaction rules align better (L3.R10 ρ=0 .62 , L1.R2 ρ=0 .77 ). The opera-tionally relevant metric is pairwise ranking accuracy : across all  K
+
+> 2
+
+=15 pairs per scenario, mean concordance on the 10 variance-bearing rules is 0.875 (range 0.67–0.98; 0.948 averaged over all 24, including 14 zero-variance rules at trivial 1.0). Low per-rule ρ coexists with high concordance because the lex selector uses summed tier scores, and aggregation cancels per-rule noise. The collision-avoidance proxy (L0.R3) warrants explicit qualification. It reaches 0.80 pairwise concordance but flags only 19.3% of full-evaluator-positive cases (FNR = 80.7%) at 0.0% FPR. The high FNR is structurally consistent with the SAT-overlap formulation, which fires only on bounding-box penetration while the full evaluator counts a broader class of contact events. The gap is asymmetric (under-detection, not over-detection), so the lex selector uses L0.R3 as a
+
+sufficient condition for rejection and never wrongly demotes a Safety-compliant candidate. Two consequences: Protocol A/B Safety numbers under-count L0.R3 violations relative to a full-evaluator pass, and any deployment-facing reading should add a post-selection full-evaluator audit ( ∼5 ms/sample); always-on activation (Sec. VI-B1) is recommended precisely because it preserves L0.R3 evaluation on every scenario. The proxy Safety numbers in Sec. VI are not a safety certificate. To assess sensitivity to upstream errors, we inject controlled perturbations into 500 scenarios. Perception noise (position 0.1–0.5 m; velocity 0.5–2.0 m/s; heading 2–10°) increases vi-olation rates by at most 6.1 pp; map errors (missing lane boundaries, wrong signal states) by up to 12.1 pp (Table XV). Signal-state errors and missing lane boundaries are the highest-sensitivity inputs and the highest-priority targets for robustness hardening. A 367-case regression suite (zero-length segments, degenerate bounding boxes, track discontinuities, out-of-map queries) passes at 99.5%; the 0.5% residual failures are logged with diagnostic traces and do not propagate to tier scores. VIII. C ONCLUSION 
+
+We presented RECTOR, a priority-aware re-ranking layer that selects one trajectory from a fixed multi-modal candi-date set under Safety ≻ Legal ≻ Road ≻ Comfort via ε-15 
+
+TABLE XIV: Numerical Stability Analysis                         
+
+> Computation Error Mode Frequency Mitigation
+> Point-to-segment distance Degenerate segments 0.3% Skip <10 −4mPoint-to-polyline queries NaN from ill-conditioned geometry 0.1% Bounds + finiteness checks Soft overlap proxy Extreme/invalid boxes 0.05% Dimension checks + clamp Acceleration Velocity discontinuities 0.8% Windowing + bounds Jerk Transient spikes 1.2% Smoothing + thresholds
+> Overall NaN/Inf rate After mitigation 0.0% All caught + handled
+
+Fig. 8: Per-rule pairwise concordance between differentiable proxies and the full waymo_rule_eval evaluator (1,000 scenarios). The 10 variance-bearing rules are shown (sorted); 14 zero-variance rules are omitted as trivially concordant (1.0). Dashed lines mark mean concordance: 0.875 (variance rules) and 0.948 (all 24 rules). L0.R3 and L3.R10 are the weakest-discriminating proxies; the others exceed 0.80. 
+
+(a) False-positive rate (FPR) (b) False-negative rate (FNR) 
+
+Fig. 9: Proxy reliability across all 24 proxied rules: false-positive rate (FPR) and false-negative rate (FNR), grouped by tier. Color encodes 0–100%, and zero-variance rules are gray. L0.R3 (collision avoidance) shows 80.7% FNR, and several Legal rules show 100% FNR due to Protocol A learned-applicability suppression. These high-FNR cases motivate always-on activation (Section VI-B). lexicographic selection over normalized proxy tier scores. From K=6 Transformer–CVAE candidates, RECTOR runs TABLE XV: Rule Evaluation Robustness to Perception and Map Perturbations (500 Scenarios)                                              
+
+> Input /
+> Feature Perturbation /
+> Error Rule Change Sensitivity
+> Perception  Agent position 0.1–0.5 m L0.R1 +2 .1% Moderate Agent position 0.1–0.5 m L0.R3 +1 .8% Low Agent velocity 0.5–2.0 m/s L0.R0 +3 .2% Moderate Agent heading 2–10° L0.R1 +1 .5% Low Lane centreline 0.1–0.3 m L2.R1 +4 .7% High Signal state 1–5% flips L1.R0 +6 .1% High Map  Lane boundaries Missing (20%) L2.R1 +8 .3% High Traffic signals Wrong (5%) L1.R0 +12 .1% High Stop signs Missing (10%) L1.R4 +2 .1% Low Lane centreline Drift (0.5 m) L2.R1 +6 .7% High
+
+a scene-conditioned applicability mechanism (retained as a tested reference; the deployment-default is the parameter-free always-on policy for Safety/Legal), 24 differentiable proxies (pairwise concordance with the full evaluator: 0.875 on variance-bearing rules, 0.948 overall, with explicit L0.R3 qualification), and a parameter-free ε-lexicographic scorer. The selector’s guarantee is structural priority preservation over the proxy tier scores within tolerance ε; it is not a control-theoretic or jurisdictional safety certificate. On 43,219 augmented WOMD 
+
+validation_interactive instances, rule-aware selection reduces Safety+Legal violations from 28.58% to 20.42% (8.16 pp) and Total from 40.32% to 32.41% 
+
+(7.91 pp) versus confidence-only, with reductions on every tier. Protocol A (24 rules, learned head) shows a larger headline Total drop, but its inflated baseline reflects Safety over-activation and Legal/Road suppression by the head; we therefore lead with Protocol B. Weighted-sum matches lexicographic on per-tier binary compliance because cross-tier conflicts are rare in this dataset ( does-not , not cannot ); the structural lexicographic guarantee is a separate property no weight calibration can replicate. Under an adversarial protocol that injects a Safety-violating candidate with the maximum confidence, confidence-only selection picks the violator in 100% of scenarios; both rule-aware selectors reject it in ∼96% —the clearest empirical separation between confidence-based and rule-aware selection. An ablation also shows that a parameter-free always-on policy Pareto-dominates the learned 3.33 M-parameter applicability head on cross-evaluated compliance (S+L 20.53% vs. 20.69%) 
+
+and on selected-trajectory accuracy (selADE 2.481 m vs. 2.737 m); we therefore recommend always-on Safety/Legal as the default RECTOR configuration. 16 
+
+All compliance numbers are proxy-evaluator results and not a safety certificate; L0.R3 has 80.7% FNR at 0.0% FPR against the full Waymo evaluator, so a post-selection full-evaluator audit is required for any deployment-facing reading. The 32.41% Protocol B Total floor is dominated by candidate-set limitations: 3.2% of scenarios contain no candidate with 
+
+S0=0 , and audit-only rules (notably L3.R8) contribute ∼2.6 pp that no reranking on a fixed candidate set can address. Model selection was on the validation split because the WOMD test split lacks the per-rule applicability labels we require; Proto-col B selector deltas are insulated from learned-applicability bias, but absolute Protocol A numbers carry an unquantified optimistic bias. Results are open-loop, 5 s, U.S. rules, on the validation split. Four next steps follow directly: (i) held-out test-split reporting under both protocols (contingent on label-pipeline access); (ii) broader candidate diversity (mixture-of-experts decoders, generative ensembles) to address the 3.2% infeasibility floor; (iii) reactive closed-loop evaluation with a non-trivial Waymax generator (the run reported here is infrastructure verification only); (iv) full non-differentiable post-selection audit and proxies for the four currently audit-only rules. Latency is ∼7.3 ms per sample (137 samples/s), of which rule evaluation and selection add 1.4 ms (19%). Within these limits, RECTOR shows that explicit, priority-ordered selection is a practical and auditable mechanism for translating multimodal diversity into improved evaluator compliance. REFERENCES [1] H. Hajieghrary, “RECTOR: Rule-enforced constrained trajectory orches-trator (source code),” https://github.com/Hadi-Hajieghrary/RECTOR.git, 2026, accessed: 2026-05-23. [2] M. Liang, B. Yang, R. Hu, Y. Chen, R. Liao, S. Feng, and R. Urtasun, “Learning lane graph representations for motion forecasting,” in Euro-pean Conference on Computer Vision . Springer, 2020, pp. 541–556. [3] H. Zhao, J. Gao, T. Lan, C. Sun, B. Sapp, B. Varadarajan, Y. Shen, Y. Shen, Y. Chai, C. Schmid et al. , “TNT: Target-driven trajectory prediction,” in Conference on Robot Learning . PMLR, 2021, pp. 895– 904. [4] J. Gu, C. Sun, and H. Zhao, “DenseTNT: End-to-end trajectory predic-tion from dense goal sets,” in IEEE/CVF International Conference on Computer Vision , 2021, pp. 15 303–15 312. [5] T. Salzmann, B. Ivanovic, P. Chakravarty, and M. Pavone, “Trajectron++: Dynamically-feasible trajectory forecasting with heterogeneous data,” 
+
+European Conference on Computer Vision , pp. 683–700, 2020. [6] S. Shi, L. Jiang, D. Dai, and B. Schiele, “Motion transformer with global intention localization and local movement refinement,” in Advances in Neural Information Processing Systems , vol. 35, 2022, pp. 6531–6543. [7] N. Nayakanti, R. Al-Rfou, A. Zhou, K. Goel, K. S. Refaat, and B. Sapp, “Wayformer: Motion forecasting via simple & efficient attention net-works,” in IEEE International Conference on Robotics and Automation ,2023, pp. 2980–2987. [8] Z. Zhou, L. Wang, Y.-H. Li, and Y.-K. Huang, “QCNet: Query-centric trajectory prediction,” in IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2023, pp. 17 863–17 873. [9] Z. Huang, H. Liu, and C. Lv, “GameFormer: Game-theoretic modeling and learning of transformer-based interactive prediction and planning for autonomous driving,” in IEEE/CVF International Conference on Computer Vision , 2023, pp. 3903–3913. [10] A. Seff, B. Cera, D. Chen, M. Ng, A. Zhou, N. Nishi, K. S. Refaat, R. Al-Rfou, and B. Sapp, “MotionLM: Multi-agent motion forecasting as language modeling,” IEEE/CVF International Conference on Computer Vision , pp. 8579–8590, 2023. [11] Z. Zhong, D. Rempe, D. Xu, Y. Chen, S. Itkina, B. Ivanovic, M. Pavone, and B. Ray, “Guided conditional diffusion for controllable traffic simu-lation,” in IEEE International Conference on Robotics and Automation (ICRA) , 2023, pp. 3560–3566. [12] Z. Zhong, D. Rempe, Y. Chen, B. Ivanovic, Y. Cao, D. Xu, M. Pavone, and B. Ray, “Language-guided traffic simulation via scene-level diffu-sion,” in 7th Conference on Robot Learning (CoRL) , 2023. [13] C. Jiang, A. Cornman, C. Park, B. Sapp, Y. Zhou, and D. Anguelov, “MotionDiffuser: Controllable multi-agent motion prediction using dif-fusion,” in IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2023, pp. 9644–9653. [14] F. Borrelli, P. Falcone, T. Keviczky, J. Asgari, and D. Hrovat, “MPC-based approach to active steering for autonomous vehicle systems,” 
+
+International Journal of Vehicle Autonomous Systems , vol. 3, no. 2-4, pp. 265–291, 2005. [15] A. D. Ames, X. Xu, J. W. Grizzle, and P. Tabuada, “Control barrier function based quadratic programs for safety critical systems,” IEEE Transactions on Automatic Control , vol. 62, no. 8, pp. 3861–3876, 2017. [16] M. Althoff and B. H. Krogh, “Reachability analysis of nonlinear differential-algebraic systems,” vol. 59, no. 2, 2010, pp. 371–383. [17] E. Altman, Constrained Markov decision processes . CRC Press, 1999, vol. 7. [18] J. Achiam, D. Held, A. Tamar, and P. Abbeel, “Constrained policy optimization,” in International Conference on Machine Learning , 2017, pp. 22–31. [19] M. Vitelli, Y. Chang, Y. Ye, A. Halder, M. Gelber, A. Idnani, D. F. Llorca, and A. Jain, “SafetyNet: Safe planning for real-world self-driving vehicles using machine-learned policies,” in IEEE International Conference on Robotics and Automation , 2022, pp. 897–904. [20] R. T. Marler and J. S. Arora, “Survey of multi-objective optimization methods for engineering,” Structural and Multidisciplinary Optimiza-tion , vol. 26, no. 6, pp. 369–395, 2004. [21] B. Amos and J. Z. Kolter, “OptNet: Differentiable optimization as a layer in neural networks,” in International Conference on Machine Learning ,2017, pp. 136–145. [22] B. Amos, I. Jimenez, J. Sacks, B. Boots, and J. Z. Kolter, “Differentiable MPC for end-to-end planning and control,” in Advances in Neural Information Processing Systems , vol. 31, 2018. [23] S. Shalev-Shwartz, S. Shammah, and A. Shashua, “On a formal model of safe and scalable self-driving cars,” arXiv preprint arXiv:1708.06374 ,2017. [24] A. Censi, K. Slutsky, T. Wongpiromsarn, D. Yershov, S. Pendleton, J. Fu, and E. Frazzoli, “Liability, ethics, and culture-aware behavior specification using rulebooks,” in International Conference on Robotics and Automation , 2019, pp. 8536–8542. [25] S. Ettinger, S. Cheng, B. Caine, C. Liu, H. Zhao, S. Pradhan, Y. Chai, B. Sapp, C. R. Qi, Y. Zhou et al. , “Large-scale interactive motion forecasting for autonomous driving: The waymo open motion dataset,” in Proceedings of the IEEE/CVF international conference on computer vision , 2021, pp. 9710–9719. [26] Q. Sun, X. Huang, J. Gu, B. C. Williams, and H. Zhao, “M2i: From factored marginal trajectory prediction to interactive prediction,” in 2022 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , June 2022, pp. 6533–6542. [27] C. Gulino, J. Fu, W. Luo, G. Tucker, E. Bronstein, Y. Lu, J. Harb, X. Pan, Y. Wang, X. Chen, J. Langford, S. Mourad, K. Shiarlis, N. Schmid, F. Ben Amar, Y. Tassa, and D. Anguelov, “Waymax: An accelerated, data-driven simulator for large-scale autonomous driving research,” in 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2024. 17 
+
+APPENDIX AARCHITECTURE SPECIFICATIONS 
+
+This appendix tabulates the full dimension specifications for each RECTOR module. All values match the released model configuration. Symbol conventions follow Table I. 
+
+A. Scene Encoder 
+
+The scene encoder maps ego history, neighbor histories, and HD map context to a shared 256-dimensional scene embedding. Table XVI gives the full specification. 
+
+B. Transformer-CVAE Trajectory Decoder 
+
+The decoder generates K=6 trajectory candidates over 
+
+T =50 timesteps from a shared scene embedding and mode-specific goal queries. All decoding is single-shot (non-autoregressive): the full 50-step trajectory is produced in one forward pass. Table XVII details the configuration. 
+
+C. Applicability Head 
+
+The applicability head uses a TierAwareBlock architecture: each of the R=28 rules has an independent query vector that attends over the scene embedding. Table XVIII gives the full specification. APPENDIX BDIFFERENTIABLE PROXY SYMBOLIC FORMS 
+
+This appendix provides the exact functional form, kinematic variables, softness parameter κr , and activation condition for each of the 24 differentiable proxy rules used in RECTOR. All proxies produce a raw severity Vr (τ ; s) ≥ 0 that is normalized via the exponential cost map (Eq. 15); the per-rule κr and violation threshold appear in Table III. Proxies are evaluated at 10 Hz; higher-order kinematics (acceleration, jerk) are computed by finite differences with windowed smoothing (W =3 ). Rules are grouped by tier to match the priority structure. 
+
+Tier 0 — Safety 
+
+L0.R0 — Safe longitudinal distance. Let dlong  
+
+> t
+
+be the front-bumper-to-front-bumper distance to the nearest lead vehicle in the same lane at timestep t, and vt the ego speed. The required headway is dreq  
+
+> t
+
+= vt · ∆gap with ∆gap =2 .0 s. The proxy severity is: 
+
+VL0.R0 =
+
+> T
+
+X
+
+> t=1
+
+max  0, d req  
+
+> t
+
+− dlong 
+
+> t
+
+. (16) 
+
+Activation: lead vehicle detected, vt ≥ 0.3 m/s. 
+
+L0.R1 — Safe lateral clearance. Let cjt be the edge-to-edge lateral distance between the ego bounding box and agent j at timestep t, and cj 
+
+> min
+
+the type-dependent minimum clearance (vehicle: 0.5 m; cyclist: 1.0 m; pedestrian: 1.5 m). The proxy severity is: 
+
+VL0.R1 =
+
+> T
+
+X
+
+> t=1
+
+max 
+
+> j∈A t
+
+max  0, c j 
+
+> min
+
+− cjt
+
+. (17) 
+
+Activation: agents within 50 m lateral range. 
+
+L0.R2 — Crosswalk occupancy. Let At be the overlap area (m 2) between the ego OBB and a crosswalk polygon at timestep t, computed via SAT. The proxy severity is: 
+
+VL0.R2 =
+
+> T
+
+X
+
+> t=1
+
+At. (18) 
+
+Activation: crosswalk polygon in map, pedestrian moving ≥
+
+0.3 m/s within 5 m buffer. 
+
+L0.R3 — Collision avoidance (overlap). Let pj, long  
+
+> t
+
+and pj, lat 
+
+> t
+
+be the SAT penetration depths along the longitudinal and lateral axes between the ego OBB and agent j at timestep t.The proxy severity is: 
+
+VL0.R3 =
+
+> T
+
+X
+
+> t=1
+
+X
+
+> j∈A t
+
+min  pj, long  
+
+> t
+
+, p j, lat 
+
+> t
+
+. (19) 
+
+Activation: other agents within 50 m spatial pre-filter; penetra-tion threshold 0.01 m. 
+
+L0.R4 — VRU clearance. Let djt be the edge-to-edge distance between the ego OBB and VRU j (pedestrian/cyclist) at timestep t, and rj the type-dependent minimum clearance (pedestrian: 2.0 m; cyclist: 1.5 m). The proxy severity is: 
+
+VL0.R4 =
+
+> T
+
+X
+
+> t=1
+
+max 
+
+> j∈V t
+
+max  0, r j − djt
+
+. (20) 
+
+Activation: VRUs present, ego speed ≥ 1.0 m/s. 
+
+Tier 1 — Legal 
+
+L1.R0 — Traffic signal compliance. Let rt ∈ { 0, 1} indicate a red signal phase at timestep t, yt a yellow phase, dstop  
+
+> t
+
+the distance to the stop line, and at the ego acceleration. The proxy severity accumulates a speed-weighted red-light penalty and a scaled yellow-acceleration penalty: 
+
+VL1.R0 =
+
+> T
+
+X
+
+> t=1
+
+h
+
+rt · ⊮[dstop  
+
+> t
+
+< 5 m] · min  1, v t/10  (21) 
+
++ 0 .3 yt · ⊮[dstop  
+
+> t
+
+< 30 m] · min  1, a t/2i
+
+.
+
+Activation: stop-line geometry and per-timestep signal state available. 
+
+L1.R2 — Speed limit adherence. Let vt be ego speed and 
+
+vlim  
+
+> t
+
+the local speed limit with tolerance ∆v=1 .0 m/s. The proxy severity is: 
+
+VL1.R2 =
+
+> T
+
+X
+
+> t=1
+
+max  0, v t − vlim  
+
+> t
+
+− ∆v. (22) 
+
+Activation: speed-limit data available (map or default). 
+
+L1.R3 — Red-light stop compliance. Let cross t be adifferentiable stop-line crossing measure and rt a soft red-signal indicator. The proxy severity counts red-phase stop-line crossings: 
+
+VL1.R3 =
+
+> T
+
+X
+
+> t=1
+
+rt · σα
+
+ cross t − cross t−1
+
+, (23) 18 
+
+TABLE XVI: Scene Encoder Architecture 
+
+Component / Hyper-parameter Value 
+
+Input padding and masking 
+
+Max agents ( Npad ) 32 Max lane segments ( Lpad ) 64 Points per lane segment 20 Ego history length ( Th) 11 steps (1.1 s at 10 Hz) State dimension per timestep 4 ( x, y, θ, v )
+
+Per-token encoding 
+
+Ego Conv1D kernel 3 (causal padding) Agent MLP layers 2 ( 4 → 64 → 256 , ReLU) Lane PointNet max-pool over 20 points per segment Lane MLP layers 2 ( 2 → 64 → 256 , ReLU) 
+
+Transformer fusion 
+
+Model dimension ( D) 256 Number of layers 3Attention heads 8FFN dimension 1024 FFN activation ReLU Dropout 0.1 Positional encoding None (token-type embeddings) 
+
+Scene pooling 
+
+Pooling mechanism Cross-attention (learned query qego )Output dimension 256 Total parameters 324,288 
+
+where σα is a soft step with temperature α. Activation: red signal phases exist. 
+
+L1.R4 — Stop-sign compliance. Let vstop  
+
+> t
+
+be the ego speed within a 5 m window of the stop line and dpast  
+
+> t
+
+the depth past the line. The proxy severity is: 
+
+VL1.R4 = vstop,max  
+
+> t
+
+·  1 + dpast,max  
+
+> t
+
+/5. (24) 
+
+Activation: stop-sign annotation within approach radius. 
+
+L1.R5 — Crosswalk yield. Let TTC jt be time-to-collision with pedestrian j in a crosswalk, vt ego speed, and ρt
+
+proximity to the crosswalk. The proxy severity is: 
+
+VL1.R5 = min  5, (3 −TTC min ) · 2 + min  3, v t/10  (25) 
+
++ min  2, (ρmin − dcw )/7.5,
+
+where TTC min is the minimum TTC (safe threshold 3 s), 
+
+dcw =15 m crosswalk proximity. Activation: crosswalk in map, VRU present, vehicle moving. 
+
+L1.R6 — Wrong-way driving. Let ϕt be the heading mismatch between the ego heading and the lane centerline direction, vt ego speed, and ∆tviol the continuous duration of heading mismatch. The proxy severity is: 
+
+VL1.R6 = ϕmax ,t /90 ◦ · 0.4 + min(1 , ∆tviol /2) · 0.4 (26) 
+
++ min(1 , v t/10) · 0.2.
+
+Activation: lane centerline available, ego speed ≥ 0.5 m/s. 
+
+Tier 2 — Road 
+
+L2.R0 — Drivable surface. Let δt be the signed distance from the nearest drivable-surface boundary (negative = outside). The proxy severity is: 
+
+VL2.R0 =
+
+> T
+
+X
+
+> t=1
+
+max  0, −δt − 0.5, (27) with a 0.5 m buffer inside the boundary. Activation: lane centerline data available, vehicle moving. 
+
+L2.R1 — Lane departure. Let dlat  
+
+> t
+
+be the signed lateral offset from the lane centerline and w the half-lane width (1.75 m). The proxy severity is: 
+
+VL2.R1 =
+
+> T
+
+X
+
+> t=1
+
+max  0, |dlat  
+
+> t
+
+| − w − m, (28) where m=0 .05 m is a soft margin. Activation: lane centerline and boundary type available. 
+
+Tier 3 — Comfort 
+
+L3.R0 — Smooth longitudinal acceleration. Let along  
+
+> t
+
+be the longitudinal acceleration at timestep t and jt the longitudinal jerk ( ∆a/ ∆t). The proxy severity is: 
+
+VL3.R0 =
+
+> T
+
+X
+
+> t=1
+
+max  0, |along  
+
+> t
+
+| − 2.0 + max  0, |jt| − 2.0. (29) 
+
+Activation: ego speed ≥ 0.5 m/s, ≥ 3 frames of data. 
+
+L3.R1 — Smooth braking deceleration. Let adec  
+
+> t
+
+=max(0 , −along  
+
+> t
+
+) be the deceleration magnitude. The proxy 19 
+
+TABLE XVII: Trajectory Decoder Architecture 
+
+Component / Hyper-parameter Value 
+
+Mode configuration 
+
+Number of modes ( K) 6Planning horizon ( T ) 50 steps (5.0 s at 10 Hz) Output state (x, y, θ, v ) per timestep Decoding type Single-shot (non-autoregressive) 
+
+Goal query network (GoalNet) 
+
+Input escene ∈ R256 + mode query q(k) ∈ R256 
+
+MLP layers 2 ( 512 → 256 , GELU) Output goal embedding g(k) 
+
+> emb
+
+∈ R256 
+
+CVAE latent variable 
+
+Latent dimension ( dz ) 64 Prior network MLP ( 256 → 128 → 128 , GELU) → (μ, log σ2)
+
+Posterior network MLP ( 256+256 → 128 → 128 , GELU) [training only] Sampling (inference) z(k) ∼ N (μprior , diag (σ2
+
+> prior
+
+)) , independent per mode 
+
+Transformer decoder 
+
+Input dimension 256 + 256 + 64 = 576 (scene + goal + latent) Number of layers 4Attention heads 8FFN dimension 1024 FFN activation GELU Dropout 0.1 
+
+Output heads 
+
+Regression head 2 layers ( 256 → 256 → 4T , GELU + linear) Trajectory scale 50.0 (output multiplier) Confidence head Linear ( 256 → K) followed by softmax Total parameters 5,182,165 
+
+severity accumulates excess deceleration relative to a comfort limit acomfort =1 .5 m/s 2:
+
+VL3.R1 =
+
+> T
+
+X
+
+> t=1
+
+max  0, a dec  
+
+> t
+
+− acomfort 
+
+ · ∆t. (30) 
+
+Activation: ego speed ≥ 1.0 m/s. 
+
+L3.R2 — Smooth lateral steering. Let ˙ψt be the heading rate (rad/s) and ¨ψt the angular jerk. The proxy severity is: 
+
+VL3.R2 =
+
+> T
+
+X
+
+> t=1
+
+max  0, | ˙ψt|(180 /π ) − 15  (31) 
+
++ max  0, | ¨ψt|(180 /π ) − 15 .
+
+Activation: turning ( | ˙ψt| > 0.01 rad/s), vehicle moving. 
+
+L3.R3 — Speed consistency. Let vt be ego speed and σ2
+
+> t,W
+
+its variance over a rolling 2 s window of size W . The proxy severity penalises excess variance and oscillation: 
+
+VL3.R3 =
+
+> T
+
+X
+
+> t=W
+
+max  0,σ t,W − 2.0 (32) 
+
++ λosc · ⊮[sign-changes > 6] ,
+
+where λosc =1 .0. Activation: ego speed ≥ 0.5 m/s, ≥ W
+
+frames. 
+
+L3.R4 — Lane-change smoothness (jerk). Let alat  
+
+> t
+
+be lateral acceleration. The proxy severity is: 
+
+VL3.R4 =
+
+> T
+
+X
+
+> t=1
+
+max  0, |alat  
+
+> t
+
+| − 1.5. (33) 
+
+Activation: lateral velocity ≥ 0.1 m/s. 
+
+L3.R5 — Left-turn gap acceptance. Let TTC jt be the time-to-collision with oncoming vehicle j during a left turn at timestep t. The proxy severity is: 
+
+VL3.R5 = X
+
+> t∈T turn
+
+X
+
+> j∈A oncoming
+> t
+
+max  0, 1/TTC jt − 1/4, (34) where the safe TTC threshold is 4 s. Activation: left turn (heading change ≥ 15 ◦), oncoming vehicles within 50 m. 
+
+L3.R9 — Cooperative lane change. Let gjt be the time gap to vehicle j and alat  
+
+> t
+
+lateral acceleration during a lane change. The proxy severity is: 
+
+VL3.R9 = 0 .5 X
+
+> t
+
+⊮[gjt < 2.0] + 0 .2 X
+
+> t
+
+⊮[|alat  
+
+> t
+
+| > 0.5] . (35) 
+
+Activation: lateral displacement ≥ 2.5 m (lane change de-tected). 
+
+L3.R10 — Following distance. Let gtime  
+
+> t
+
+be the time gap to the nearest lead vehicle. The proxy severity is: 
+
+VL3.R10 =
+
+> T
+
+X
+
+> t=1
+
+max  0, 1 − gtime  
+
+> t
+
+/2.0, (36) where 2.0 s is the two-second rule threshold. Activation: lead vehicle in scene, ego speed ≥ 0.3 m/s. 20 
+
+TABLE XVIII: Applicability Head Architecture 
+
+Component / Hyper-parameter Value 
+
+TierAwareBlock (one per rule) 
+
+Rule query dimension 256 (learned, one per rule) Cross-attention heads 4Cross-attention input qr ∈ R256 , keys/values from escene 
+
+Per-rule MLP 
+
+Layer 1 256 → 384 (GELU) Layer 2 384 → 1 (linear) Output activation Sigmoid 
+
+Binarization thresholds 
+
+Safety (Tier 0) 0.05 Legal (Tier 1) 0.15 Road (Tier 2) 0.30 Comfort (Tier 3) 0.50 
+
+Bias initialization (per tier) 
+
+Safety (Tier 0) +2 .0 (strong prior toward active detection) Legal (Tier 1) +1 .0 (moderate prior toward active) Road (Tier 2) 0.0 (neutral) Comfort (Tier 3) −1.0 (prior toward inactive) 
+
+Training 
+
+Loss Focal binary cross-entropy, γ=2 .0
+
+FN penalty multipliers Safety 8×, Legal 4×, Road 2×, Comfort 1×
+
+Total parameters (head + scorer) 3,327,289    
+
+> The tiered scorer (24 proxy evaluations + lexicographic aggregation) has zero trainable parameters; the 3.33 M count is entirely the applicability head. The recommended deployment policy uses always-on activation ( ˆar=1 for all r) for Safety and Legal tiers, bypassing the head for those rules; the head is used only for Road and Comfort tiers where false-positive activation incurs an accuracy cost (see Section VI).
+
+L3.R11 — Intersection negotiation. Let gjt be the entry gap to intersecting vehicle j and vt ego speed through the intersection (radius r=20 m). The proxy severity is: 
+
+VL3.R11 = 0 .5 X
+
+> t
+
+⊮[gjt < 3.0] + 0 .2 X
+
+> t
+
+⊮[vt > 8.0] . (37) 
+
+Activation: ≥ 2 agents, sustained intersection presence. 
+
+L3.R12 — Pedestrian interaction. Let djt be the ego-to-pedestrian edge distance and vt ego speed. The proxy severity is: 
+
+VL3.R12 = X
+
+> j∈V ped
+> t
+
+max  0, 1.5−djt
+
++⊮[djt < 3.0] ·max  0, v t−6.7.
+
+(38) 
+
+Activation: pedestrians within 10 m. 
+
+L3.R13 — Cyclist interaction. Identical structure to L3.R12 with type-specific clearance (1.5 m) and speed limit near cyclists (8.9 m/s): 
+
+VL3.R13 = X
+
+> j∈V cyc
+> t
+
+max  0, 1.5 − djt
+
+ (39) 
+
++ ⊮[djt < 3.0] · max  0, v t − 8.9.
+
+Activation: cyclists within 10 m. APPENDIX CEXPERIMENTAL SUBSET SAMPLING PROCEDURES 
+
+This appendix specifies the exact sampling procedure and random seed for every evaluation subset used in the paper. All subsets are drawn from WOMD v1.3.0 
+
+validation_interactive unless stated otherwise. The canonical evaluation uses the augmented validation split; all subset sizes below refer to base scenarios (before per-rule augmentation). 
+
+A. Canonical Validation Benchmark (12,800 Scenarios) 
+
+The primary selector benchmark evaluates on the full augmented validation_interactive split, producing 43,219 evaluation instances.  
+
+> •
+
+Source: All 150 WOMD v1.3.0 validation shards (validation_interactive/*.tfrecord ).  
+
+> •
+
+Base scenarios: 12,800 (all interactive scenarios, no downsampling).  
+
+> •
+
+Augmented instances: 43,219 (augmentation factor ≈
+
+3.4×; see Table V).  
+
+> •
+
+Seed: Not applicable (all scenarios used). 
+
+B. Proxy–Full Evaluator Alignment Subset (1,000 Scenarios) 
+
+Used in Table ?? and Section VI.  
+
+> •
+
+Source: validation_interactive base scenarios.  
+
+> •
+
+Sampling: Stratified random sample with 
+
+random.seed(42) ; strata defined by interaction type (v2v, v2p, v2c, other) in proportion to their occurrence in the full split.  
+
+> •
+
+Coordinate alignment: World-frame trajectories; no ego-centric re-centering applied, to match the coordinate frame of the full evaluator. 21  
+
+> •
+
+Evaluation: All 24 proxy rules + full-evaluator counter-parts for all  62
+
+=15 candidate pairs per scenario. 
+
+C. Perturbation Robustness Subset (500 Scenarios) 
+
+Used in Table XV and Section VII.  
+
+> •
+
+Source: validation_interactive base scenarios.  
+
+> •
+
+Sampling: Random sample with 
+
+numpy.random.seed(42) , selecting the first 500 scenarios after shuffle.  
+
+> •
+
+Perturbation protocol: Each scenario evaluated 10 times per perturbation type (position: 3 noise levels; velocity: 3 noise levels; heading: 3 noise levels; map: 4 error types). Results averaged across repetitions within each perturbation type.  
+
+> •
+
+Reported metric: Change in per-rule violation rate (per-centage points) relative to unperturbed evaluation. 
+
+D. Protocol B Audit Subset (337 Scenarios; Diagnostic Only) 
+
+This subset was used for early spot-checking and diagnostic auditing of Protocol B (full 28 rules, oracle applicability). The main-text Protocol B tables and ablations now report the full 43,219-instance augmented validation benchmark defined in Appendix C-A.  
+
+> •
+
+Source: validation_interactive base scenarios.  
+
+> •
+
+Sampling: Seeded random sample ( seed=42 ) ensuring representation of all rule-triggering scenario types iden-tified during dataset analysis.  
+
+> •
+
+Rationale for size: 337 scenarios provides > 97% 
+
+statistical power to detect a 5 pp compliance difference at α=0 .05 (two-sided McNemar, π0=0 .20 ).  
+
+> •
+
+Oracle labels: Per-rule applicability ground truth from 
+
+waymo_rule_eval metadata. 
+
+E. Applicability Head Diagnostic Sample (500 GT / 337 RECTOR Scenarios) 
+
+Used in Section IV-A and Figure 7 (diagnostic analysis only). Note: This sample was historically used to compute applicability F1 scores, but Table III now reports applicability status (18 invoked, 10 never invoked) based on the full 43,219-instance evaluation set.  
+
+> •
+
+GT sample: 500 randomly sampled 
+
+validation_interactive scenarios (seed=42 ) with oracle applicability labels from 
+
+waymo_rule_eval . 
+
+> •
+
+RECTOR sample: The 337-scenario Protocol B subset, for which RECTOR predicted-applicability labels and oracle labels are both available.  
+
+> •
+
+F1 computation (diagnostic): Macro F1 per rule; binary positive = rule applies. Rules with zero positive support in the sample report F1 = 0.0%. This diagnostic F1 is superseded by the full-set support counts in Table III and Figure 7. 
+
+F. Edge-Case Regression Suite (367 Cases) 
+
+Used in Section VII (99.5% pass rate).  
+
+> •
+
+Composition: Manually constructed edge cases covering: zero-length segments (42), degenerate bounding boxes (31), track discontinuities (78), out-of-map queries (56), stationary ego (38), missing map prerequisites (67), high-acceleration profiles (55).  
+
+> •
+
+Pass criterion: Rule evaluation returns a finite, non-negative severity without triggering NaN/Inf propagation or assertion failures.  
+
+> •
+
+Residual failures (0.5%): Logged with diagnostic traces; do not propagate to tier scores. 
+
+G. Lexicographic Selection Verification (100 Instances) 
+
+Used in Table XIII (“Lexicographic selection: Verified across 100 selection instances”).  
+
+> •
+
+Sampling: 100 randomly drawn scenarios (seed=0 )from the 12,800-scenario validation split, with all K=6 
+
+candidates and their tier-score vectors.  
+
+> •
+
+Verification: The selector output is compared ex-haustively against all possible candidate orderings; enumeration-order invariance is checked by re-running with permuted candidate indices. APPENDIX DSTATISTICAL METHODS 
+
+This appendix documents the hypothesis tests, confidence interval procedures, and software references used in Sec-tions V and VI. 
+
+A. McNemar’s Test (Paired Binary Compliance) 
+
+McNemar’s test is applied to compare whether two selectors (e.g., lexicographic vs. confidence-only) differ significantly in binary rule compliance on the same set of scenarios. 
+
+Setup. For each scenario i, let bi = ⊮[selector A violates ] and 
+
+ci = ⊮[selector B violates ]. The discordant counts are B =P 
+
+> i
+
+bi(1 − ci) (A violates, B complies) and C = P 
+
+> i
+
+ci(1 − bi)
+
+(B violates, A complies). 
+
+Statistic. For B + C ≥ 25 , the continuity-corrected statistic is: 
+
+χ2 = (|B − C| − 1) 2
+
+B + C , (40) which is compared against χ21. For small B+C < 25 , the exact binomial test is used ( p-value = 2 · Binomial (B; B + C, 0.5) 
+
+two-sided). 
+
+Significance threshold. α = 0 .05 (two-sided). All reported p-values are uncorrected; with 28 rules the Bonferroni threshold is α′ = 0 .0018 .
+
+B. Wilcoxon Signed-Rank Test (Paired Continuous Metrics) 
+
+The Wilcoxon signed-rank test is applied to compare per-scenario selADE or tier scores between two selectors. It is preferred over the paired t-test because selADE distributions are heavy-tailed (Section II). 
+
+Statistic. Let di = xAi − xBi be per-scenario differences. Ties (di = 0 ) are excluded; ranks are assigned to |di| and the signed-rank sum W + is computed. 
+
+Significance threshold. α = 0 .05 (two-sided). 22 
+
+C. Kolmogorov–Smirnov Test (Distribution Comparison) 
+
+The two-sample KS test is used to compare the distribution of per-scenario compliance scores between evaluation subsets (e.g., validation vs. test split, or protocol-A vs. protocol-B). 
+
+Statistic. D = sup x |F1(x) − F2(x)|, where F1, F 2 are empirical CDFs. 
+
+D. Bootstrap Confidence Intervals 
+
+Bootstrap 95% confidence intervals are reported for viola-tion rates and selADE. 
+
+Procedure. 
+
+1) Draw B=10 ,000 bootstrap resamples (with replacement) from the N per-scenario measurements. 2) Compute the statistic (e.g., violation rate) on each resam-ple. 3) Report the 2.5th and 97.5th percentiles of the bootstrap distribution as the 95% CI. 
+
+E. Spearman Rank Correlation 
+
+Spearman ρ is used to measure rank correlation between proxy severity and full-evaluator severity across all K=6 
+
+candidates per scenario (Table ?? ). 
+
+Note on zero-variance rules. When one or both evaluators return zero variance (a constant value across all candidates), ρ
+
+is undefined and reported as “—”. These rules achieve pairwise concordance = 1 .0 trivially and are excluded from the mean ρ
+
+computation; the mean ρ=0 .25 is computed over the 10 rules with measurable variance in both evaluators.

@@ -1,0 +1,498 @@
+Title: GEM-4D: Geometry-Enhanced Video World Models for Robot Manipulation
+
+URL Source: https://arxiv.org/pdf/2605.22882v1
+
+Published Time: Mon, 25 May 2026 00:06:20 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# GEM-4D: Geometry-Enhanced Video World Models for Robot Manipulation 
+
+Kaichen Zhou 1,2,∗ Yuzhen Chen 1,∗ Fangneng Zhan 2
+
+Hang Hua 5 Grace Chen 1 Xinhai Chang 2 Ao Qu 2
+
+Yilun Du 1 Zhuang Liu 3 Paul Pu Liang 2,† Mengyu Wang 1,†
+
+1Harvard AI and Robotics Lab, Harvard University 
+
+2Media Lab and EECS, MIT 
+
+3Computer Science, Princeton University 
+
+4MIT-IBM Watson AI Lab 
+
+No Institute Given GEM -4D (Ours)     
+
+> Input Prompt: Franka Emika Panda Touch the Mouse
+> Generated RGB Frames
+> Task Failed & Body Deformation
+> Inverse
+> Dynamics
+> Generated RGB Frames
+> Tesseract
+> Motion & Geometry Consistency
+> Initial
+> Generated 3D Point Cloud Generated 3D Point Cloud
+
+Fig. 1: Teaser. Given an instruction and an initial observation, our model predicts fu-ture frames while preserving geometric consistency. Compared with the baseline (left), our approach produces more realistic and structurally coherent scene evolution. 
+
+Abstract. Video world models can generate realistic futures from a sin-gle instruction, but they often fail to preserve consistent point-level mo-tion over time. As a result, the generated videos appear plausible, yet lack the physical grounding required for reliable action execution, such as robot manipulation. We present GEM-4D , a geometry-grounded video world model that resolves this limitation by injecting dense 4D corre-spondence supervision—distilled from a pretrained geometry foundation model—into the video generative backbone during training. This super-vision enables the model to jointly capture appearance and geometric structure while retaining a single-stream architecture with no additional inference cost. We further introduce an inverse dynamics module that converts correspondence-consistent video rollouts into executable robot 
+
+> ∗
+
+Equal contribution as first authors. †Joint supervision.     
+
+> arXiv:2605.22882v1 [cs.CV] 20 May 2026 2K. Zhou et al. trajectories, enabling direct deployment in both real-world and simulated manipulation. GEM-4D achieves state-of-the-art performance on both video prediction and geometric consistency across both simulation and realistic scenarios and improves real-world manipulation success from 61% to 81%. Additional results are available at the project page: Link .
+
+## 1 Introduction 
+
+Video world models have emerged as a compelling foundation for general-purpose robotic manipulation [1, 14, 15, 20, 61, 70, 74, 75]. By generating multi-frame futures from a single observation and a language instruction, a single model can generalize across tasks, environments, and embodiments —capabilities that even generalist vision-language-action policies [4, 30] typically achieve only after large-scale embodiment-specific training, while generic video generation models [49, 65] lack embodiment-aware dynamics and action grounding. Yet deploying a video world model as a robot planner demands more than photorealism: the robot must extract precise motions from predicted futures [2], which requires that pixels depicting the same 3D surface point evolve across frames—i.e., that the generated video maintains faithful inter-frame correspon-dences [24]. Current video diffusion models [5, 41], trained with pixel-level objectives, offer no such guarantee [38, 59]. They produce photorealistic videos in which objects warp non-rigidly, contacts drift, and depth changes arbitrarily between frames [69]—errors that are often imperceptible visually yet fundamentally break action extraction. The root cause is structural: inter-frame correspondences are governed by camera motion, scene depth, and object motion, and pixel-space losses are agnostic to all three. Many visually plausible videos are consistent with incorrect 3D structure, so minimizing reconstruction error alone does not enforce physically meaningful correspondences [21, 36]. Existing remedies address this only partially. Pure video generation methods [49, 65] rely on the RGB objective and hope that correspondences emerge as a byproduct of photorealism; they do not. Explicit 4D supervision [70, 75] predicts RGB, depth, and surface normals, directly constraining some geometric quantities—but this requires large-scale annotations and still does not unify camera motion, depth, and object motion into a single coherent correspondence signal. Our key observation is that these geometric factors—and thus correspondences—are already captured by modern 4D geometry founda-tion models. Models such as PAGE-4D [72] and Depth-anything V3 [35], VGGT [51], and VGGT4D [22] predict dense depth and camera pose from video, meaning their learned feature representations encode the complete inter-frame correspondence structure in geometric form. This leads to asimple principle: geometry supervision is correspondence supervision . If the video backbone’s intermediate features must be sufficient to predict the geometry foundation model’s representations [66], then those features are forced to internalize camera motion, depth, and object motion—and therefore correspondences—as a prerequisite for accurate generation. GEM-4D 3
+
+We present GEM-4D , a world model that operationalizes this principle via feature-level distillation. During training, a video diffusion transformer is paired with a geometry branch that predicts representations from a pretrained 4D geom-etry foundation model, conditioned on intermediate video features. This forces the backbone to internalize correspondence-consistent geometric structure with-out modifying its output space or adding parameters. The coupling is asymmetric and efficient: the geometry branch reads from video features but never writes back, and is discarded entirely at inference, yielding a single-stream generator with zero additional cost. Because the generated videos now carry faithful geometric correspondences— consistent depth, coherent camera-relative motion, rigid-body-compliant structure—it becomes possible to extract robot actions directly from them, a capability that prior video world models could not support. We introduce an inverse dynamics module that converts correspondence-consistent rollouts into executable 6-DoF end-effector trajectories using off-the-shelf vision foundation models, closing the loop from language instruction to real-world manipulation without task-specific training. 
+
+GEM-4D achieves state-of-the-art performance on both video prediction and geometric consistency across both simulation and realistic scenarios and im-proves real-world manipulation success from 61% to 81%. Our contributions are summarized as follows: 1. Principle. We formalize the connection between geometry foundation model representations and inter-frame correspondences, showing that geometry su-pervision acts as a representation-level regularizer that encourages the video backbone to encode correspondence-consistent structure. 2. Architecture. We introduce GEM-4D , a dual flow-matching framework that distills 4D geometry features into a video backbone via asymmetric conditioning, thereby achieving correspondence-aware generation at zero ad-ditional inference cost. 3. System. We close the loop from world model to robot control: an in-verse dynamics module extracts executable trajectories from generated roll-outs, achieving 81% success on real-world Droid tasks (+20 points over the strongest baseline) and 63–82% success on RLBench. 
+
+## 2 Related Work 
+
+2.1 Video World Models for Embodied Control 
+
+Learning world models that predict future observations has become a central paradigm for embodied decision-making [1, 3, 8, 9, 12, 14, 15, 18, 19, 23, 25, 34, 42, 43, 60, 61, 64, 74]. A common approach treats video generation as a planning substrate: UniPi [15] generates future frames using video diffusion and recovers actions via inverse dynamics, while Uni-Sim [64] and Genie [7] leverage world models to synthesize interaction data for downstream policy learning. These methods demonstrate strong generalization across tasks and environments, but 4 K. Zhou et al. 
+
+operate purely in pixel space and provide no mechanism to enforce geometric consistency in predicted futures. Recent work addresses this limitation by in-corporating explicit geometric structure. TesserACT [70] jointly generates RGB, depth, and surface normals to enable spatiotemporal reconstruction and action prediction. 3DFlowAction [71] represents actions as 3D flow fields, grounding planning in scene geometry. WristWorld [43] synthesizes wrist-view observations through reconstruction, while RoboTransfer [37] enforces multi-view geometric constraints via cross-view feature interactions. Related approaches impose geo-metric consistency through pointmap alignment or multi-view supervision [39], and multi-modal world models such as iMoWM [67] and MinD [11] jointly model video and action generation. Despite their effectiveness, these approaches share a common limitation: they modify the output space of the video model to ex-plicitly predict geometric quantities (e.g., depth, normals, or flow), which re-quires large-scale geometric annotations and constrains the expressive capacity of pretrained video backbones. In contrast, GEM-4D does not alter the output space. Instead, it distills geometric structure into the model’s internal representa-tions during training, enabling correspondence-aware generation while retaining a single-stream architecture with zero additional inference cost. 
+
+2.2 Feed-Forward 3D and 4D Geometry Models 
+
+Feed-forward geometry models infer dense 3D structure directly from vi-sual observations, avoiding iterative optimization. DUSt3R [53] introduced this paradigm by predicting pixel-aligned pointmaps from image pairs, enabling unconstrained stereo reconstruction. MASt3R [33] improves geometric fidelity through local feature matching, while Fast3R [63] scales to multi-view recon-struction via global fusion. Spann3R [50] introduces a spatial memory mechanism for incremental reconstruction, and and π3 [54] further removes reference-view bias through permutation-equivariant visual geometry learning. Extending these methods to dynamic scenes introduces additional challenges, as both camera and object motion must be disentangled. MonST3R [68] estimates temporally consistent pointmaps and recovers global geometry and camera poses via opti-mization, while DAS3R [62] accelerates this process. CUT3R [52] enables feed-forward dynamic reconstruction through large-scale training, and Easi3R [10] explores training-free generalization. PAGE-4D [72] further improves robustness by disentangling static and dynamic components via motion-aware masking. These models are typically used as standalone perception modules for geometry estimation. In contrast, GEM-4D repurposes them as correspondence teachers :their learned representations encode depth, camera motion, and scene dynamics, providing a supervision signal that enforces geometrically consistent inter-frame correspondences within a video world model. To our knowledge, this is the first work to use 4D geometry foundation models as training-time regularizers for video generation, rather than as direct predictors of geometric outputs. GEM-4D 5Video   
+
+> Velocity
+> Video VAE
+> Video
+> Image
+> Video DiT
+> Image VAE
+> Video Feature
+> Geometry Feature
+> Noised Video Feature
+> Noised Geometry Feature
+> Geometry
+> Foundation Model Geometry DiT
+> Geometry
+> Velocity
+> Image Feature
+> latent feature
+> Geometry Flow Branch
+> Video Flow Branch
+> add noise
+> add noise
+> Text Instruction
+
+Fig. 2: GEM-4D During training, a video DiT predicts the velocity of the noised video latent, while its intermediate features guide a geometry DiT to predict geom-etry velocity. This coupled training enforces geometry-consistent generation. During inference, only the video branch is used for efficient generation. 
+
+## 3 GEM-4D 
+
+3.1 Problem Formulation 
+
+Given an initial observation I0 and a language instruction c, we learn a world model M : ( I0, c ) → { It}Nt=1 that predicts future frames, and a policy extraction module P : {It}Nt=0 → { at}N −1 
+
+> t=0
+
+that extracts executable actions from the pre-dicted rollout. For P to succeed, the generated rollout must preserve inter-frame correspondences : pixels depicting the same 3D surface point must evolve con-sistently across time. When this property is violated—even if the video appears photorealistic—action extraction becomes unreliable because the underlying 3D structure no longer reflects physically realizable motion [2, 57]. We enforce cor-respondence consistency during training via Geometry-Enhanced Velocity Alignment (Sec. 3.2) shown in Fig. 2, and convert correspondence-consistent rollouts into actions via an Inverse Dynamic System (Sec. 3.3). 
+
+3.2 Geometry-Enhanced Velocity Alignment What Governs Inter-Frame Correspondence We begin by formalizing what determines whether two pixels in adjacent frames correspond to the same physical point. Let Xt ∈ R3 be a scene point observed at pixel pt in frame t. Un-der relative camera motion (Rt→t+1 , Tt→t+1 ) and scene flow ∆Xt, its projection in frame t+1 is: 
+
+pt+1  ∼ K
+
+h
+
+Rt→t+1  D(pt) K−1 pt + Tt→t+1  + ∆Xt
+
+i
+
+. (1)   
+
+> Pixel in next frame Intrinsic matrix
+> Inverse intrinsic matrix
+> Pixel in current frame
+> Camera translation
+> Camera rotation
+> Depth at pt
+> Scene flow / object motion
+
+This has two immediate consequences. First, pixel-level reconstruction losses can-not enforce correspondences: the mapping from scene geometry to pixel values is many-to-one, so different configurations of (D, R, T, ∆ X) can produce visually 6 K. Zhou et al. 
+
+indistinguishable frames. A pixel loss can reach zero while the underlying corre-spondences are entirely wrong. Second, a model whose internal representations correctly encode (D, R, T, ∆ X) necessarily produces correct correspondences, since Eq. 1 leaves no remaining degree of freedom. 
+
+Geometry foundation models as correspondence encoders. Models such as PAGE-4D [72], Depth Anything V3 [35],VGGT [51],and DUSt3R-family mod-els [52, 53, 68] employ cross-frame transformers supervised on two tasks: dense depth estimation and camera pose regression. These are precisely the dominant factors in Eq. 1: given per-frame depth D and relative camera pose (R, T), the correspondence of any static scene point is fully determined. For dynamic points, the model must additionally capture how depth changes across frames—which implicitly encodes object motion ∆X, since a point whose depth evolves in-consistently with the estimated camera motion must be moving independently. The learned feature representations of these models therefore encode the com-plete correspondence structure of Eq. 1, despite being supervised only on depth and pose. Supervising the video backbone to predict these representations is thus equivalent to supervising it for correspondence consistency—without re-quiring an explicit correspondence loss. This is the principle that GEM-4D 
+
+implements, instantiating the representation-alignment paradigm of REPA [66] through geometry-foundation-model representations. 
+
+Flow Matching for Latent Video Generation We adopt flow matching [36] for latent video generation. Let z0 be the VAE-encoded video latent [31] and 
+
+z1 ∼ N (0, I) be noise. A velocity field vvid  
+
+> θ
+
+transports z1 to z0 via the ODE 
+
+dzt/dt = vvid  
+
+> θ
+
+(zt, t, c ), trained by regressing against an analytically derived target velocity v∗:
+
+Lvid  
+
+> FM
+
+= Ez0,z1,t 
+
+ ∥vvid  
+
+> θ
+
+(zt, t, c ) − v∗(zt, t )∥22
+
+ . (2) We parameterize the velocity through a Video DiT [41] with backbone Evid  
+
+> θ
+
+and output head U vid  
+
+> θ
+
+:
+
+mt = Evid  
+
+> θ
+
+(zt, t, c ), vvid  
+
+> θ
+
+= U vid  
+
+> θ
+
+(mt), (3) where mt denotes the intermediate features extracted at a mid-level layer. Under standard flow matching, mt is optimized only for appearance transport. The next section describes how we additionally shape mt to encode correspondence structure. 
+
+Correspondence Distillation via Geometry Flow Given a video sequence 
+
+{It}Tt=0 , a frozen geometry foundation model G extracts a dense geometric rep-resentation: 
+
+g0 = G {It}Tt=0 
+
+ ∈ RT × HP × WP ×C . (4) As established in Sec. 3.2, g0 encodes the factors (D, R, T, ∆ X) in Eq. 1—it is a dense correspondence representation of the input video. G remains frozen GEM-4D 73D scene grounding  Tracker  Pose Fallback  Action Synthesis 
+
+> Object
+> Mask
+> EE
+> Mask
+> Tracking
+> Mask
+> 6D
+> Pose
+> Wrong
+> Grasp
+> Pose
+> Right
+> Grasp
+> Pose
+> 6D
+> Pose
+> Tracking
+> Mask
+
+Fig. 3: Adaptive Inverse Dynamic System. Given a generated video as input, this system extracts a robot policy through the four steps illustrated in the figure. Initial Generated RGB Frames UF Robot Arm Action 
+
+Fig. 4: Generated Frames to Arm Action. From an initial observation, through 
+
+GEM-4D -predicted future frames, to executed UF arm actions. 
+
+throughout; it serves as a correspondence teacher whose knowledge we distill into the video backbone. To perform this distillation, we introduce a parallel flow-matching process over the geometry representation space. A Geometry DiT, con-ditioned on the video backbone’s intermediate features mt, predicts the velocity field of the geometry latent: 
+
+Lgeo  
+
+> FM
+
+= Eg0,g1,t 
+
+h
+
+∥vgeo  
+
+> ψ
+
+(gt, t, mt) − v∗
+
+> geo
+
+(gt, t )∥22
+
+i
+
+, (5) where gt interpolates between g0 and noise g1 ∼ N (0, I). The critical design choice is that the Geometry DiT receives mt as its only scene-level conditioning signal. It has no direct access to pixels, camera parameters, or depth maps—all scene information must arrive through mt. Minimizing Lgeo  
+
+> FM
+
+therefore requires 
+
+mt to contain sufficient information about the geometric factors (D, R, T, ∆ X)
+
+to predict how the geometry representation evolves over time. Since these factors fully determine correspondences (Eq. 1), the geometry loss is a correspondence loss—imposed not on the video output, but on the video backbone’s internal representations. 
+
+Joint Objective and Geometric Grounding The overall training objective is: 
+
+L = Lvid  
+
+> FM
+
++ α Lgeo 
+
+> FM
+
+, (6) where α balances the two terms. Because both losses share the intermediate representation mt, the gradient with respect to the video backbone parameters 
+
+θ decomposes as: 
+
+∇θ L = ∇θ Lvid  
+
+> FM
+
++ α · ∂Lgeo 
+
+> FM
+
+∂mt
+
+· ∂mt
+
+∂θ  (7)  
+
+> Total gradient
+> Appearance supervision
+> Geometry-induced gradient
+> Balancing weight 8K. Zhou et al.
+
+Because both losses share the intermediate representation mt, the gradient decomposes into an appearance term and a geometry-induced term. The latter propagates correspondence structure into the video backbone through mt. The first term drives mt to encode how pixels move over time—appearance transport. The second, which is non-zero by construction since Lgeo  
+
+> FM
+
+depends on mt (Eq. 3), drives mt to additionally encode why they move that way: the depth, camera pose, and scene flow that determine correspondences (Eq. 1). At convergence, mt
+
+must satisfy both objectives, eliminating representations that explain appearance but violate geometric consistency. 
+
+3.3 Adaptive Inverse Dynamic System 
+
+Given generated frames {It}Nt=0 , we make use of Adaptive Inverse Dy-namic System (AIDS) to convert it into executable 6-DoF action trajectories 
+
+{at}N −1 
+
+> t=0
+
+, as illustrated in Fig. 3. AIDS introduces two mechanisms that together make action extraction robust to these artifacts in generated results without any task-specific training: (i) a dual-criterion confidence-gated tracker that sep-arates gradual drift from catastrophic collapse and invokes heavyweight VLM re-grounding only when warranted, and (ii) a geometry–kinematics pose fallback 
+
+that decouples translation (well-observed from depth) from rotation (temporally smoothed in SE (3) ) whenever learned pose estimation becomes unreliable. 
+
+3D scene grounding. We first localize the target object and end-effector (EE) in 3D. Given the instruction, depth map, and camera intrinsics, Qwen3.5-VL [58] and SAM-2 [32, 44] produce masks for the object and EE, which are used to extract their point clouds. We then align the EE CAD model to the EE point cloud with FoundationPose [56] to recover the initial EE pose  R0
+
+> ee
+
+, T0
+
+> ee
+
+ ∈
+
+SE (3) .
+
+Dual-Criterion Confidence-Gated Tracker. With initial EE pose, we propagate dense keypoints sampled from the mask of end effector Mee through the rollout using CoTracker3 [27, 28]. Let Vt0 ⊆ M ee be the anchor keypoint set at initial frame, and Vt ⊆ V t0 the subset still reliably tracked at frame t. We monitor two statistics, 
+
+st = |V t||V t0 | ∈ [0 , 1] , ∆s t = st − st−1, (8) where st denotes the anchor retention ratio ( st = 1 means all anchors remain reliably tracked, st→0 means tracker failure) and ∆s t denotes the frame-to-frame change (negative value signals a loss of correspondence). These two signals separate two qualitatively different failure modes. A gradual drift manifests as st
+
+decaying smoothly below the retention threshold τ ∈ (0 , 1) ; an abrupt collapse ,typically caused by frame-level generative artifacts, manifests as a sharp drop 
+
+∆s t < −δ, where δ > 0 is the drop threshold. We handle these two failure modes GEM-4D 9
+
+with different interventions: 
+
+ˆM t 
+
+> ee
+
+=
+
+
+
+re-anchor tracker at t, if st < τ, 
+
+Qwen3 .5-VL( It, c ), if ∆s t < −δ, 
+
+M t
+
+> ee
+
+, otherwise. 
+
+(9) The first branch corresponds to a gradual drift (resampling fresh keypoints from the most recent reliable mask), and the second to an abrupt collapse (re-grounding the EE mask itself via vision-language semantics). 
+
+Geometry–kinematics pose fallback. Given the mask of end effector M t
+
+> ee
+
+, the frame It , the depth Dt, and the EE CAD model, FoundationPose [56] predicts the pose of end effector (Rt
+
+> ee
+
+, Tt
+
+> ee
+
+) together with a confidence κt ∈ [0 , 1] for each frame. 
+
+(Rt
+
+> ee
+
+, Tt
+
+> ee
+
+, κ t) = FoundationPose  It, Dt, M t
+
+> ee
+
+, CAD , (10) When κt < κ ∗, where κ∗ ∈ [0 , 1] is a FoundationPose acceptance confidence threshold, we apply a temporal consistency check and reject the Foundation-Pose estimate if either the translation jump or the rotation jump exceeds its corresponding threshold: 
+
+∥Tt 
+
+> ee
+
+− Tt−1ee ∥2 > ϵ t, dgeo (Rt
+
+> ee
+
+, Rt−1ee ) > ϵ R. (11) Where dgeo (·, ·) denotes the geodesic distance on SO (3) . For rejected frames, we recover the EE translation by back-projecting valid depth pixels within the EE mask and taking their 3D centroid, while the missing rotation is estimated by spherical linear interpolation [45] between the nearest accepted poses in time. Finally, we’ll have the recovered EE trajectory {(R t
+
+> ee
+
+, T t
+
+> ee
+
+)}Nt=0 .
+
+Grasp insertion and action synthesis. From the recovered EE trajectory, we first select the pose closest to the target object as a reference pose, de-noted by (Rref , Tref ). GraspGen [40] then predicts a set of grasp candidates 
+
+{(Ri
+
+> grasp
+
+, Ti
+
+> grasp
+
+)}Mi=0 on the target object point cloud. We rank these candidates by their weighted pose deviation from reference pose, combining translation and rotation errors, and select the best-scoring candidate as the final grasp pose: 
+
+T∗ 
+
+> grasp
+
+= arg min 
+
+> T(i)grasp
+
+
+
+λt ∥t(i)grasp − tref ∥2 + λR dgeo 
+
+ R(i)grasp , Rref 
+
+
+
+, (12) where λt and λR balance translation and rotation consistency, respectively. We then insert T∗ 
+
+> grasp
+
+into the recovered EE trajectory as an intermediate target and smooth the resulting motion via interpolation. Inverse kinematics then con-verts the smoothed trajectory into an executable action sequence {at}N −1 
+
+> t=0
+
+for controlling the robot arm, as illustrated in Fig. 4. 10 K. Zhou et al. Droid  RLBENCH  
+
+> GT Tesseract Ours
+> Fig. 5: Qualitative 4D scene generation results on Droid (real) and RLBench (synthetic). Top: ground truth. Middle: TesserAct generates plausible RGB but pro-duces inconsistent depth — note the warping on the manipulator and the noisy depth strip on Droid. Bottom: GEM-4D preserves geometric structure across frames, yielding cleaner depth and tighter object boundaries.
+
+## 4 Experiments 
+
+Overview. Overview. Our experiments are structured around two research questions. First, does geometry distillation improve 4D scene prediction in terms of appearance, depth, and correspondence consistency? Second, can the result-ing geometry-consistent rollouts improve downstream robot manipulation when converted into executable actions? We therefore organize the evaluation into two parts: Sec. 4.1 studies 4D scene reconstruction quality, while Sec. 4.2 evaluates whether the generated rollouts support more reliable robot action planning and execution. 
+
+Datasets. We train our model on tasks simulated in ManiSkill3 [46] and RL-Bench [26], as well as on the Bridge [48] and RT-1 [6] datasets. To evaluate both video generation quality and robotic modeling capability, we conduct ex-periments in real-world and synthetic domains. In the real-world setting, we use 400 unseen samples from the Droid dataset [29], where depth is estimated using Depth Anything V3 [35] and the point tracking is estimated using Co-Tracker3 [27]. In the synthetic setting, we evaluate on 780 unseen samples from RLBench [26], where ground-truth depth is directly available and the point track-ing is estimated using CoTracker3 [27]. 
+
+Baselines. Our method is compared against the following: (1) CogVideoX [65], a large-scale image-to-video generation model based on a diffusion transformer GEM-4D 11 
+
+Table 1: Quantitative comparison on 4D scene generation. We evaluate RGB reconstruction, depth reconstruction and points correspondence quality across both real and synthetic domains. The best results are highlighted in bold , and the second-best results are underlined. D denotes dataset; R denote realistic dataset and S denote simulation dataset. Std. dev. across 20 generations is around 1% − 2% .                                                                                                 
+
+> D Method RGB Depth Points Tracking
+> FVD ↓SSIM ↑PSNR ↑AbsRel ↓δ1↑δ2↑Chamfer ↓δvis avg ↑
+> R
+> CogVideoX [65] 35.56 75.91 20.18 22.33 68.32 83.17 0.2670 66.22 Wan 2.2-14B [49] 33.43 76.24 20.70 21.39 71.18 84.35 0.2349 68.18 TesserAct [70] 33.28 75.66 20.08 22.07 66.80 82.60 0.2630 67.14 Geometry-Forcing [59] 33.17 76.12 20.53 21.96 69.74 83.83 0.2443 67.97
+> GEM-4D 31.82 82.05 21.11 20.13 78.19 88.21 0.2001 71.23 S
+> CogVideoX [65] 40.21 75.51 20.03 15.41 70.99 92.90 0.2913 58.32 Wan 2.2-14B [49] 49.20 73.01 19.87 17.81 67.07 90.16 0.1762 61.99 TesserAct [70] 41.97 76.72 19.71 16.02 69.26 93.03 0.1813 61.15 Geometry-Forcing [59] 34.06 77.92 19.48 15.34 68.96 92.80 0.1488 60.84
+> GEM-4D 27.94 80.27 23.36 14.11 74.13 95.01 0.0702 68.18
+
+architecture, pretrained on approximately 35M video clips. We fine-tune it on our training set. (2) WAN 2.2-14B [49], a large-scale image-to-video genera-tion model built upon a spatio-temporal variational autoencoder. We fine-tune it on our training set. (3) TesserAct [70], a CogVideoX-based 4D embod-ied world model that further fine-tunes CogVideoX on robotics datasets while jointly modeling depth and surface normals. (4) Geometry Forcing [59], a representation-alignment-based method that incorporates geometric prior knowl-edge into the generative model through feature alignment. We do not compare directly against RoboTransfer [37] (multi-view RGB with depth/normal con-ditioning), 3DFlowAction [71] (predicts 3D flow rather than RGB), or Liu et al. [39] (stereo RGB-D with cross-view pointmap supervision), as their input modalities and output spaces differ from our single-view RGB-only setting. 
+
+4.1 4D Scene Prediction Metrics. We evaluate video generation quality using FVD [47], SSIM [55], and PSNR [73]; depth estimation accuracy using AbsRel, δ1, and δ2 [16]. To assess 3D reconstruction quality, we compute the L1 Chamfer Distance [17] between the predicted and ground-truth point clouds. The correspondence quality is measured by using δvis avg (fraction of visible points tracked within 1, 2, 4, 8 and 16 pixels, averaged over thresholds) [13] Each sample is generated 20 times, and we report the averaged results. 
+
+Results and analysis. Table 1 reports quantitative comparisons on both real and synthetic datasets. Qualitative results are shown in Fig 5. Our method con-sistently achieves the best overall performance across most RGB appearance metrics and depth reconstruction metrics. In particular, GEM-4D achieves the lowest FVD and the highest SSIM/PSNR on the real-world dataset, indicating that it generates videos with higher visual quality and temporal consistency than 12 K. Zhou et al.                                 
+
+> Table 2: Quantitative comparison on task success rates. Comparison of task success rates across Droid and RLBench tasks. For the real-world Droid dataset, success rates are measured through a human study. For the simulated RLBench dataset, success rates are measured by executing the generated trajectories in simulation. Droid (Real) RLBench (Simulator) AUTOLab CLVR RAIL Lift Numbered Block Put Rubbish InBin Reach Target Lamp On Pick Up Cup Slide Block ToTarget Solve Puzzle CogVideoX 49 64 39 -------Tesseract 58 65 59 21 0236 49 18 33 Ours 75 83 87 78 75 82 67 81 80 63
+
+the baseline models. More importantly, when evaluating geometric quality using DA3 [35] for depth estimation, our method significantly outperforms existing baselines. On the real dataset, GEM-4D achieves the lowest AbsRel and the highest δ1 and δ2, demonstrating that the generated frames preserve more ac-curate scene geometry across time. A similar trend is observed on the synthetic dataset, where our method produces the most accurate depth reconstruction. These results suggest that the proposed geometry-aware training effectively im-proves both appearance generation and geometric consistency. By incorporating geometry dynamics during training, the model learns to generate videos that not only look realistic but also maintain coherent 3D structure, which further leads to improved downstream reconstruction quality [24] when processed by DA3. 
+
+4.2 Embodied Action Planning Quantitative Experiment Dataset. We evaluate our model on 7 challeng-ing manipulation tasks from RLBench [26] and unseen realistic dataset from Droid [29]. These tasks are selected for their requirements of precise grasping and complex spatial reasoning. Metric. To ensure a fair evaluation, we adopt two complementary evaluation protocols. For realistic dataset, we conduct a hu-man study to assess the quality of generated videos, focusing on task success, object and robot-arm deformation, and instruction following. (Averaged over 15 participants; detailed survey results are provided at the link in the abstract.) For simulation dataset, we convert generated videos into executable action trajectories, and measure task success rate by replaying the resulting trajectories in the simulator. 
+
+Realistic Dataset. The left part of Tab. 2 reports task success rates evaluated by human assessment. On real-world Droid tasks, GEM-4D consistently out-performs the baseline, improving success rates from 58% → 75% on AUTOLab, 
+
+65% → 83% on CLVR, and 59% → 87% on RAIL. Action planning performance. 
+
+The right part of Tab. 2 further evaluates policy extraction by re-executing predicted trajectories in simulation. Compared with TesserAct and CogVideoX, GEM-4D achieves higher planning success across most tasks. As the inverse dy-GEM-4D 13 GT  Our RGB  Our 3D 
+
+Fig. 6: Real-robot rollouts. From left: ground-truth video, GEM-4D-generated RGB, and the back-projected 3D point cloud. The model produces realistic and geo-metrically coherent rollouts under unseen backgrounds, supporting transfer to UF Arm manipulation. 
+
+Table 3: Ablation studies on 4D scene generation. Domain Method RGB (Appearance) Depth (Geometry) P (Geometry)                                                
+
+> FVD ↓SSIM ↑PSNR ↑AbsRel ↓δ1↑δ2↑Chamfer ↓
+> Real CogVideoX 35.56 75.91 20.18 22.33 68.32 83.17 0.2670 Wan 2.2-14B 33.43 76.24 20.70 21.39 71.18 84.35 0.2349
+> GEM-4D (Dep) 32.91 78.58 20.75 20.89 74.60 86.67 0.2229
+> GEM-4D (VGGT) 33.68 75.89 20.64 21.73 71.03 83.80 0.2370
+> GEM-4D 31.82 82.05 21.11 20.13 78.19 88.21 0.2001
+
+namics module of TesserAct is not open-source, we use our AIDS to process its generated videos. Because most videos generated by CogVideoX cannot be reli-ably processed by our AIDS, we do not report task success rates for this baseline. While TesserAct frequently fails to produce executable trajectories, GEM-4D reaches 63% –82% success on RLBench tasks and consistently improves per-formance on long-horizon manipulation benchmarks. This demonstrates that geometry-consistent world modeling significantly improves downstream action planning. 
+
+Qualitative Experiment To evaluate our model in realistic settings, we con-ducted several tasks using a UF robot arm in real-world scenarios. The results are shown in Fig. 4 and Fig. 6. We observe that, even under unseen backgrounds and real-world conditions, our method generates realistic visual results and rea-sonable geometry, demonstrating strong potential for transfer to real robot ma-nipulation. 
+
+4.3 Ablation Studies 
+
+We conduct a series of ablation studies to examine the contributions of the proposed geometry flow branch and different geometry priors. The results are summarized in Table 3. First, we consider a baseline obtained by directly 14 K. Zhou et al. 
+
+fine-tuning Generation backbone without any geometry guidance, in order to test whether fine-tuning alone is sufficient to improve 4D generation. Second, we replace the proposed geometry representation with explicit depth supervi-sion, training the model to predict depth velocity rather than geometry features (GEM-4D (Dep) ). This setting evaluates whether direct depth constraints can provide comparable geometric guidance. Third, we compare different geometry foundation models, including VGGT, to study how the choice of geometry prior influences learning ( GEM-4D (VGGT) ). The results reveal several consistent trends. Directly incorporating VGGT features slightly degrades performance, which may stem from the fact that VGGT is primarily trained for static or quasi-static scenes and is therefore less well matched to the dynamic scene evo-lution required in robotic manipulation. Using depth as a geometric constraint, by contrast, yields competitive performance. Notably, unlike Tesseract, which conditions on first-frame depth and predicts future depth, our depth ablation receives only noise as input and learns depth through the flow-matching objec-tive alone. 
+
+## 5 Conclusion 
+
+We presented GEM-4D, a geometry-enhanced video world model for robot manipulation. Unlike prior video world models that often generate visually plau-sible but geometrically inconsistent futures, GEM-4D incorporates supervision from geometry foundation models to enforce correspondence-consistent scene evolution during training, while retaining a single-stream architecture with no additional inference cost. Our approach improves both appearance generation and geometric fidelity, enabling predicted rollouts to support downstream action extraction. To close the loop from generation to control, we further introduced an adaptive inverse dynamics system that converts generated videos into exe-cutable robot trajectories. Experiments across real-world and simulated bench-marks demonstrate consistent gains in video prediction, geometric consistency, and manipulation success. Overall, our results suggest that distilling geometric structure into video world models is a simple and effective step toward more reliable world models for embodied AI. Bibliography 
+
+[1] Bharadhwaj, H., Dwibedi, D., Gupta, A., Tulsiani, S., Doersch, C., Xiao, T., Shah, D., Xia, F., Sadigh, D., Kirmani, S.: Gen2act: Human video gen-eration in novel scenarios enables generalizable robot manipulation. arXiv preprint arXiv:2409.16283 (2024) [2] Bharadhwaj, H., Mottaghi, R., Gupta, A., Tulsiani, S.: Track2act: Predict-ing point tracks from internet videos enables generalizable robot manipula-tion. In: European Conference on Computer Vision (ECCV) (2024) [3] Björck, J., Castañeda, F., Cherniadev, N., Da, X., Ding, R., Fan, L., Fang, Y., Fox, D., Hu, F., Huang, S., et al.: GR00T N1: An open foundation model for generalist humanoid robots. arXiv preprint arXiv:2503.14734 (2025) [4] Black, K., Brown, N., Driess, D., Esmail, A., Equi, M., Finn, C., Fusai, N., Groom, L., Hausman, K., Ichter, B., et al.: pi0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 (2024) [5] Blattmann, A., Dockhorn, T., Kulal, S., Mendelevitch, D., Kilian, M., Lorenz, D., Levi, Y., English, Z., Voleti, V., Letts, A., et al.: Stable video dif-fusion: Scaling latent video diffusion models to large datasets. arXiv preprint arXiv:2311.15127 (2023) [6] Brohan, A., Brown, N., Carbajal, J., Chebotar, Y., Dabis, J., Finn, C., Gopalakrishnan, K., Hausman, K., Herzog, A., Hsu, J., et al.: Rt-1: Robotics transformer for real-world control at scale. arXiv preprint arXiv:2212.06817 (2022) [7] Bruce, J., Dennis, M.D., Edwards, A., Parker-Holder, J., Shi, Y., Hughes, E., Lai, M., Mavalankar, A., Steigerwald, R., Apps, C., et al.: Genie: Gener-ative interactive environments. In: Forty-first International Conference on Machine Learning (2024) [8] Chen, B., Martí Monsó, D., Du, Y., Simchowitz, M., Tedrake, R., Sitzmann, V.: Diffusion forcing: Next-token prediction meets full-sequence diffusion. Advances in Neural Information Processing Systems 37 , 24081–24125 (2024) [9] Chen, B., Zhang, T., Geng, H., Song, K., Zhang, C., Li, P., Freeman, W.T., Malik, J., Abbeel, P., Tedrake, R., et al.: Large video planner enables gen-eralizable robot control. arXiv preprint arXiv:2512.15840 (2025) [10] Chen, X., Chen, Y., Xiu, Y., Geiger, A., Chen, A.: Easi3r: Estimating disentangled motion from dust3r without training. In: Proceedings of the IEEE/CVF International Conference on Computer Vision. pp. 9158–9168 (2025) [11] Chi, X., Ge, K., Liu, J., Zhou, S., Jia, P., He, Z., Liu, Y., Li, T., Han, L., Han, S., et al.: Mind: Learning a dual-system world model for real-time planning and implicit risk analysis. arXiv preprint arXiv:2506.18897 (2025) [12] Chi, X., Zhang, H., Fan, C.K., Qi, X., Zhang, R., Chen, A., Chan, C.m., Xue, W., Luo, W., Zhang, S., et al.: Eva: An embodied world model for future video anticipation. arXiv preprint arXiv:2410.15461 (2024) 16 K. Zhou et al. 
+
+[13] Doersch, C., Gupta, A., Markeeva, L., Recasens, A., Smaira, L., Aytar, Y., Carreira, J., Zisserman, A., Yang, Y.: TAP-Vid: A benchmark for tracking any point in a video. In: Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track (2022) [14] Du, Y., Yang, M., Florence, P., Xia, F., Wahid, A., Ichter, B., Sermanet, P., Yu, T., Abbeel, P., Tenenbaum, J.B., et al.: Video language planning. arXiv preprint arXiv:2310.10625 (2023) [15] Du, Y., Yang, S., Dai, B., Dai, H., Nachum, O., Tenenbaum, J., Schuurmans, D., Abbeel, P.: Learning universal policies via text-guided video generation. Advances in neural information processing systems 36 , 9156–9172 (2023) [16] Eigen, D., Puhrsch, C., Fergus, R.: Depth map prediction from a single image using a multi-scale deep network. In: Advances in Neural Information Processing Systems (NeurIPS) (2014) [17] Fan, H., Su, H., Guibas, L.J.: A point set generation network for 3d ob-ject reconstruction from a single image. In: IEEE Conference on Computer Vision and Pattern Recognition (CVPR). pp. 605–613 (2017) [18] Feng, Y., Xiang, C., Mao, X., Tan, H., Zhang, Z., Huang, S., Zheng, K., Liu, H., Su, H., Zhu, J.: Vidarc: Embodied video diffusion model for closed-loop control. arXiv preprint arXiv:2512.17661 (2025) [19] Fu, X., Wang, X., Liu, X., Bai, J., Xu, R., Wan, P., Zhang, D., Lin, D.: Learning video generation for robotic manipulation with collaborative tra-jectory control. arXiv preprint arXiv:2506.01943 (2025) [20] Guo, Y., Shi, L.X., Chen, J., Finn, C.: Ctrl-world: A controllable genera-tive world model for robot manipulation. arXiv preprint arXiv:2510.10125 (2025) [21] Ho, J., Jain, A., Abbeel, P.: Denoising diffusion probabilistic models. Ad-vances in neural information processing systems 33 , 6840–6851 (2020) [22] Hu, Y., Cheng, C., Yu, S., Guo, X., Wang, H.: Vggt4d: Mining motion cues in visual geometry transformers for 4d scene reconstruction. arXiv preprint arXiv:2511.19971 (2025) [23] Huang, A., Chen, J., Cheng, J., Song, R., Pan, W., Zhang, W.: Skill-aware diffusion for generalizable robotic manipulation. arXiv preprint arXiv:2601.11266 (2026) [24] Huang, W., Chao, Y.W., Mousavian, A., Liu, M.Y., Fox, D., Mo, K., Fei-Fei, L.: Pointworld: Scaling 3d world models for in-the-wild robotic manipula-tion. arXiv preprint arXiv:2601.03782 (2026) [25] Huang, X., Li, Z., He, G., Zhou, M., Shechtman, E.: Self forcing: Bridg-ing the train-test gap in autoregressive video diffusion. arXiv preprint arXiv:2506.08009 (2025) [26] James, S., Ma, Z., Arrojo, D.R., Davison, A.J.: Rlbench: The robot learn-ing benchmark & learning environment. IEEE Robotics and Automation Letters 5(2), 3019–3026 (2020) [27] Karaev, N., Makarov, Y., Wang, J., Neverova, N., Vedaldi, A., Rupprecht, C.: Cotracker3: Simpler and better point tracking by pseudo-labelling real videos. In: Proceedings of the IEEE/CVF International Conference on Com-puter Vision. pp. 6013–6022 (2025) GEM-4D 17 
+
+[28] Karaev, N., Rocco, I., Graham, B., Neverova, N., Vedaldi, A., Rupprecht, C.: Cotracker: It is better to track together. In: European conference on computer vision. pp. 18–35. Springer (2024) [29] Khazatsky, A., Pertsch, K., Nair, S., Balakrishna, A., Dasari, S., Karam-cheti, S., Nasiriany, S., Srirama, M.K., Chen, L.Y., Ellis, K., et al.: Droid: A large-scale in-the-wild robot manipulation dataset. arXiv preprint arXiv:2403.12945 (2024) [30] Kim, M.J., Pertsch, K., Karamcheti, S., Xiao, T., Balakrishna, A., Nair, S., Rafailov, R., Foster, E., Lam, G., Sanketi, P., et al.: Openvla: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 (2024) [31] Kingma, D.P., Welling, M.: Auto-encoding variational bayes. arXiv preprint arXiv:1312.6114 (2013) [32] Kirillov, A., Mintun, E., Ravi, N., Mao, H., Rolland, C., Gustafson, L., Xiao, T., Whitehead, S., Berg, A.C., Lo, W.Y., et al.: Segment anything. In: Proceedings of the IEEE/CVF international conference on computer vision. pp. 4015–4026 (2023) [33] Leroy, V., Cabon, Y., Revaud, J.: Grounding image matching in 3d with mast3r. In: European Conference on Computer Vision. pp. 71–91. Springer (2024) [34] Li, Z., Wu, P., Han, X., Cai, R., Du, Y.: 4d latent world model for robot planning. arXiv preprint arXiv:????.???? (2025) [35] Lin, H., Chen, S., Liew, J., Chen, D.Y., Li, Z., Shi, G., Feng, J., Kang, B.: Depth anything 3: Recovering the visual space from any views. arXiv preprint arXiv:2511.10647 (2025) [36] Lipman, Y., Chen, R.T., Ben-Hamu, H., Nickel, M., Le, M.: Flow matching for generative modeling. arXiv preprint arXiv:2210.02747 (2022) [37] Liu, L., Wang, X., Zhao, G., Li, K., Qin, W., Zhu, J., Qiu, J., Zhu, Z., Huang, G., Su, Z.: Robotransfer: Controllable geometry-consistent video diffusion for manipulation policy transfer. arXiv preprint arXiv:2505.23171 (2025) [38] Liu, Y., Zhang, K., Li, Y., Yan, Z., Gao, C., Chen, R., Yuan, Z., Huang, Y., Sun, H., Gao, J., et al.: Sora: A review on background, technol-ogy, limitations, and opportunities of large vision models. arXiv preprint arXiv:2402.17177 (2024) [39] Liu, Z., Li, S., Cousineau, E., Feng, S., Burchfiel, B., Song, S.: Geometry-aware 4d video generation for robot manipulation. arXiv preprint arXiv:2507.01099 (2025) [40] Murali, A., Sundaralingam, B., Chao, Y.W., Yamada, J., Yuan, W., Carlson, M., Ramos, F., Birchfield, S., Fox, D., Eppner, C.: GraspGen: A diffusion-based framework for 6-DOF grasping with on-generator training. arXiv preprint arXiv:2507.13097 (2025) [41] Peebles, W., Xie, S.: Scalable diffusion models with transformers. In: Pro-ceedings of the IEEE/CVF international conference on computer vision. pp. 4195–4205 (2023) 18 K. Zhou et al. 
+
+[42] Qi, H., Yin, H., Du, Y., Yang, H.: Strengthening generative robot policies through predictive world modeling. arXiv preprint arXiv:2502.00622 (2025) [43] Qian, Z., Chi, X., Li, Y., Wang, S., Qin, Z., Ju, X., Han, S., Zhang, S.: Wristworld: Generating wrist-views via 4d world models for robotic manip-ulation. arXiv preprint arXiv:2510.07313 (2025) [44] Ravi, N., Gabeur, V., Hu, Y.T., Hu, R., Ryali, C., Ma, T., Khedr, H., Rädle, R., Rolland, C., Gustafson, L., et al.: Sam 2: Segment anything in images and videos. arXiv preprint arXiv:2408.00714 (2024) [45] Shoemake, K.: Animating rotation with quaternion curves. In: Proceedings of the 12th Annual Conference on Computer Graphics and Interactive Tech-niques (SIGGRAPH). pp. 245–254. ACM (1985) [46] Tao, S., Xiang, F., Shukla, A., Qin, Y., Hinrichsen, X., Yuan, X., Bao, C., Lin, X., Liu, Y., Chan, T.k., et al.: Maniskill3: Gpu parallelized robotics simulation and rendering for generalizable embodied ai. arXiv preprint arXiv:2410.00425 (2024) [47] Unterthiner, T., Van Steenkiste, S., Kurach, K., Marinier, R., Michalski, M., Gelly, S.: Fvd: A new metric for video generation (2019) [48] Walke, H.R., Black, K., Zhao, T.Z., Vuong, Q., Zheng, C., Hansen-Estruch, P., He, A.W., Myers, V., Kim, M.J., Du, M., et al.: Bridgedata v2: A dataset for robot learning at scale. In: Conference on Robot Learning. pp. 1723– 1736. PMLR (2023) [49] Wan, T., Wang, A., Ai, B., Wen, B., Mao, C., Xie, C.W., Chen, D., Yu, F., Zhao, H., Yang, J., et al.: Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 (2025) [50] Wang, H., Agapito, L.: 3d reconstruction with spatial memory. In: Interna-tional Conference on 3D Vision (3DV) (2025) [51] Wang, J., Chen, M., Karaev, N., Vedaldi, A., Rupprecht, C., Novotny, D.: Vggt: Visual geometry grounded transformer. In: Proceedings of the Com-puter Vision and Pattern Recognition Conference. pp. 5294–5306 (2025) [52] Wang, Q., Zhang, Y., Holynski, A., Efros, A.A., Kanazawa, A.: Continuous 3d perception model with persistent state. In: Proceedings of the Computer Vision and Pattern Recognition Conference. pp. 10510–10522 (2025) [53] Wang, S., Leroy, V., Cabon, Y., Chidlovskii, B., Revaud, J.: Dust3r: Geo-metric 3d vision made easy. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. pp. 20697–20709 (2024) [54] Wang, Y., Zhou, J., Zhu, H., Chang, W., Zhou, Y., Li, Z., Chen, J., Pang, J., Shen, C., He, T.: π3: Scalable permutation-equivariant visual geometry learning. arXiv preprint arXiv:2507.13347 (2025) [55] Wang, Z., Bovik, A.C., Sheikh, H.R., Simoncelli, E.P.: Image quality as-sessment: from error visibility to structural similarity. IEEE transactions on image processing 13 (4), 600–612 (2004) [56] Wen, B., Yang, W., Kautz, J., Birchfield, S.: Foundationpose: Unified 6d pose estimation and tracking of novel objects. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. pp. 17868–17879 (2024) GEM-4D 19 
+
+[57] Wen, C., Lin, X., So, J., Chen, K., Dou, Q., Gao, Y., Abbeel, P.: Any-point trajectory modeling for policy learning. In: Robotics: Science and Systems (RSS) (2024) [58] Wu, C., Li, J., Zhou, J., Lin, J., Gao, K., Yan, K., Yin, S.m., Bai, S., Xu, X., Chen, Y., et al.: Qwen-image technical report. arXiv preprint arXiv:2508.02324 (2025) [59] Wu, H., Wu, D., He, T., Guo, J., Ye, Y., Duan, Y., Bian, J.: Geometry forcing: Marrying video diffusion and 3d representation for consistent world modeling. arXiv preprint arXiv:2507.07982 (2025) [60] Wu, H., Yu, J., Zou, Y., Liu, X.: Multiworld: Scalable multi-agent multi-view video world models. arXiv preprint arXiv:2604.18564 (2026) [61] Wu, J., Yin, S., Feng, N., He, X., Li, D., Hao, J., Long, M.: ivideogpt: Inter-active videogpts are scalable world models. Advances in Neural Information Processing Systems 37 , 68082–68119 (2024) [62] Xu, K., Tse, T.H.E., Peng, J., Yao, A.: Das3r: Dynamics-aware gaussian splatting for static scene reconstruction. arXiv preprint arXiv:2412.19584 (2024) [63] Yang, J., Sax, A., Liang, K.J., Henaff, M., Tang, H., Cao, A., Chai, J., Meier, F., Feiszli, M.: Fast3r: Towards 3d reconstruction of 1000+ images in one forward pass. arXiv preprint arXiv:2501.13928 (2025) [64] Yang, M., Du, Y., Ghasemipour, K., Tompson, J., Schuurmans, D., Abbeel, P.: Learning interactive real-world simulators. arXiv preprint arXiv:2310.06114 (2023) [65] Yang, Z., Teng, J., Zheng, W., Ding, M., Huang, S., Xu, J., Yang, Y., Hong, W., Zhang, X., Feng, G., et al.: Cogvideox: Text-to-video diffusion models with an expert transformer. arXiv preprint arXiv:2408.06072 (2024) [66] Yu, S., Kwak, S., Jang, H., Jeong, J., Huang, J., Shin, J., Xie, S.: Repre-sentation alignment for generation: Training diffusion transformers is easier than you think. In: International Conference on Learning Representations (ICLR) (2025) [67] Zhang, C., Wu, Z., Lu, G., Tang, Y., Wang, Z.: imowm: Taming inter-active multi-modal world model for robotic manipulation. arXiv preprint arXiv:2510.09036 (2025) [68] Zhang, J., Herrmann, C., Hur, J., Jampani, V., Darrell, T., Cole, F., Sun, D., Yang, M.H.: Monst3r: A simple approach for estimating geometry in the presence of motion. In: ICLR (2025) [69] Zhang, X., Liao, J., Zhang, S., Meng, F., Wan, X., Yan, J., Cheng, Y.: Vide-orepa: Learning physics for video generation through relational alignment with foundation models. arXiv preprint arXiv:2505.23656 (2025) [70] Zhen, H., Sun, Q., Zhang, H., Li, J., Zhou, S., Du, Y., Gan, C.: Tesseract: learning 4d embodied world models. arXiv preprint arXiv:2504.20995 (2025) [71] Zhi, H., Chen, P., Zhou, S., Dong, Y., Wu, Q., Han, L., Tan, M.: 3dflowac-tion: Learning cross-embodiment manipulation from 3d flow world model. arXiv preprint arXiv:2506.06199 (2025) [72] Zhou, K., Wang, Y., Chen, G., Chang, X., Beaudouin, G., Zhan, F., Liang, P.P., Wang, M.: Page-4d: Disentangled pose and geometry estimation for 4d perception. arXiv preprint arXiv:2510.17568 (2025) 20 K. Zhou et al. 
+
+[73] Zhou, K., Zhong, J.X., Shin, S., Lu, K., Yang, Y., Markham, A., Trigoni, N.: Dynpoint: Dynamic neural point for view synthesis. Advances in Neural Information Processing Systems 36 , 69532–69545 (2023) [74] Zhou, S., Du, Y., Chen, J., Li, Y., Yeung, D.Y., Gan, C.: Robodreamer: Learning compositional world models for robot imagination. arXiv preprint arXiv:2404.12377 (2024) [75] Zhu, H., Wang, Y., Zhou, J., Chang, W., Zhou, Y., Li, Z., Chen, J., Shen, C., Pang, J., He, T.: Aether: Geometric-aware unified world modeling. In: Pro-ceedings of the IEEE/CVF International Conference on Computer Vision. pp. 8535–8546 (2025)

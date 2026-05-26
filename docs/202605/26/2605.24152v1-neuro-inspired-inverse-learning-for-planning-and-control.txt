@@ -1,0 +1,1712 @@
+Title: Neuro-Inspired Inverse Learning for Planning and Control
+
+URL Source: https://arxiv.org/pdf/2605.24152v1
+
+Published Time: Tue, 26 May 2026 00:18:16 GMT
+
+Number of Pages: 47
+
+Markdown Content:
+# Neuro-Inspired Inverse Learning for Planning and Control 
+
+Maryna Kapitonova 1,2 and Tonio Ball *1,2 
+
+> 1
+
+NeuroMentum AI 
+
+> 2
+
+IMBIT, University of Freiburg, Germany 
+
+Abstract. We present a neuro-inspired framework for embodied planning and control. Build-ing on three principles that enable fast and highly effective goal-directed behavior in the mammalian brain — paired forward/inverse internal models, open-loop multi-step motor commands, and sequential, hierarchical organization of action — our Inverter framework uses learned components, trained end-to-end through Inverse Learning ( IL ) and supplemented where natural by analytic or algorithmic modules; we formalize IL and delineate it from supervised, reinforcement, and imitation learning. IL bridges Reinforcement Learning ( RL )-style amortization, which runs in a single forward pass but emits only one action at a time, and Optimal Control ( OC )-style sequence planning over whole trajectories, but with iter-ative test-time computation. Single Inverters or hierarchical n=2 Inverter stacks match or improve on offline- RL and diffusion-planner baselines on all 3 maze2d and 6 antmaze 
+
+D4RL variants by an average of +24 .2% (range −1.9% to +78 .2% ), at one-to-two orders of magnitude less inference compute time. Distinctively, optimizing through the Forward model ( FoM ) over the entire T -step action sequence – rather than per step – lets Inverters produce smooth, goal-coherent, trajectory-wide structure and reach control policies closer to the analytic optimum than the policy underlying the training data itself. We also identify a failure mode of IL : FoM hacking under narrow training-data coverage, which we mitigate by using random training data with broader coverage. As an application example, a Pulse Inverter synthesizes arbitrary single-qubit quantum gates with fidelity matching the standard iterative numerical baseline ( GRAPE ), at more than 1000 × lower per-gate compute time. In summary, we conclude that IL enables a versatile class of world-interfaces, especially for latency- and resource-critical embodied AI. 
+
+1 Introduction 
+
+Humans are able to generate explicit plans on multiple timescales even before we start acting on them. Imagine, for example, planning a trip to Paris. Even before we lift a finger, we might already think about booking a train and finding a hotel. We also might already know how we will approach each of these steps — for example, how to navigate the booking site of our choice to find a suitable accommodation. And when we reach for our laptop, eager to begin, our hand may sweep along a smooth, pre-shaped trajectory — a “ballistic” movement planned as a whole. Human goal-directed behavior is thus fundamentally organized as a hierarchy of planning and control across widely separated timescales, often laid out, in some form, before any action is taken. 
+
+> *Correspondence: tonio.ball@neuromentum.ai
+
+1
+
+> arXiv:2605.24152v1 [cs.AI] 22 May 2026
+
+Inverse Learning for Planning and Control c1 : K
+
+a(1) 1 : T a(2) 1 : T a(3) 1 : T                                   
+
+> t0,s0tT,s1,c1t2T,s2,c2t3T,s3,c3
+> chunk 1 chunk 2 chunk 3
+> hψ:Inverter network 2, parameters ψ
+> s0:initial state
+> G:overall goal
+> c1 : K:sequence of subgoals
+> gϕ:Inverter network 1, parameters ϕ
+> sk:state at time tkT
+> ck:k-th subgoal
+> a(k)1 : T:k-th action chunk, Tsteps
+
+Level 2 Inverter: Planning 
+
+hψ(s0, G) → c1 : K  
+
+> •Inverse problem:
+> find subgoal sequence reaching goal
+> •Deployment: emits sequence of subgoals
+
+Level 1 Inverter: Control 
+
+gϕ(sk − 1 , ck) → a(k)1 : T  
+
+> •Inverse problem:
+> find action sequence reaching subgoal
+> •Deployment: emits sequence of actions
+
+G       
+
+> t0
+> subgoal c1at tT
+> Full action sequence to reach c1
+> rolled out with single gϕforward pass
+> at time t0
+
+Figure 1: The Inverter planning and control framework. (A) Schematic with two paired Inverters at different abstraction levels. The Level 1 Inverter (Control) gφ (sk−1, ck) → a(k) 
+
+> 1: T
+
+is trained by IL through a FoM and produces each T -step action chunk in a single feedforward pass per chunk—no inner optimization loop, no autoregressive decoding, no iterative denoising. The Level 2 Inverter (Planning) hψ (s0, G) → c1: K emits a sequence of K subgoals, one per chunk. The framework extends naturally to deeper hierarchies ( n ≥ 3 , as discussed in the Outlook). The chunks tile the time axis and ultimately drive the agent to the goal G. (B) Illustrative single-shot example. From the start state ( •), the Inverter emits a full action sequence in one feedforward pass; the green arrows are the planned per-step actions; the curve is the trajectory that emerges from executing those actions through the environment dynamics, with instantaneous speed color-coded. Mirroring the optimal-feedback-control account of neurobiological motor control [ 1], our framework thus rejects the notion of a “desired trajectory”: The properties of the observed motion emerge from the action sequence. 
+
+Such multi-timescale, pre-optimized plans over whole sequences of actions are not the central focus of dominant learning-based paradigms for continuous control such as RL , which is designed to emit a single reactive action at a time, or OC , which aims to optimize over whole trajectories but typically iteratively at runtime — a property also shared by related frameworks such as active inference. Here we present a paradigm for learning planning and control whose principles are inspired by the functional organization of the mammalian brain, and whose conceptual center is the fast and effective pre-generation of such hierarchical, multi-timescale plans and action sequences for goal-directed, embodied behavior. We start by considering the brain as an inversion machine. 
+
+The brain as an inversion machine. The dominant Bayesian-brain view has conceptualized the brain as an inference machine [ 2 , 3]. We conceptualize the brain first and foremost as an inversion machine: goal-directed behavior poses the inverse problem “given a desired outcome, which actions realize it?” ; solving 
+
+2Inverse Learning for Planning and Control 
+
+this inverse problem minimizes the discrepancy between desired and actual outcomes. The computational core is inversion of a model of how the world responds to action — a problem admitting a rich landscape of implementations: iterative or amortized (a learned direct inverse mapping in one feedforward pass); probabilistic or deterministic; over fully or partially observable, single- or multi-agent dynamics; with continuous, discrete, or hybrid state and action spaces; and realized through closed-form, algorithmic, or learned components. We presume the brain flexibly uses whichever solution fits the task, timescale, and resources [ 4– 6]. Here we focus on the amortized, deterministic, single-agent, and fully observable direct mapping variant, following the classical motor control concepts of Jordan & Rumelhart’s distal-teacher framework [ 7] and Kawato’s internal-model theory [ 8, 9]. The combination of three essential principles organizes our approach: • Paired Forward models ( FoM s) and Inverse models ( IM s) , with the FoM 1 providing the instructive error signal [7–9]. • Open-loop multi-step motor commands ballistically executable in pre-planned chunks too fast for sensory correction (10, 11). • Sequential, hierarchical organization of action , segmenting behaviors into sequential sub-plans and nesting them across levels of timescales and abstraction, with higher-order areas issuing subgoals to lower-level loops [12–15].                                                          
+
+> Table 1: The five Inverters in this paper. Each level inverts a different forward process and emits its multi-step output sequence in one feedforward pass; four are neural Inverters trained by IL , one is a simple algorithmic BFS Path Inverter.
+> Inverter Level Inverse problem Emitted sequence IM type
+> Motor 1Reach subgoal cfrom state s0un-der maze2d point-mass dynam-ics 2-dim continuous forces
+> (ax,ay)1: T,T∈{ 16 ,128 }
+> Neural Locomotion 1Reach subgoal cfrom state s0un-der MuJoCo Ant dynamics 8-dim continuous joint torques a1: T,T=16 Neural Path 2Route from s0to goal Gthrough long maze corridors
+> c1: Ksubgoals, one per chunk Algorithmic Game 2Maximize pellets in AntMan game from game state s0
+> c1:32 waypoint directions Neural Pulse 1Synthesize target unitary U∈
+> U(2)on a noisy 3-level transmon 2-channel (Ωx,Ωy)1:80
+> pulse slices Neural
+
+The Inverter planning and control framework. We organize the three principles above into a plan-ning/control framework (Fig. 1) consisting of a hierarchy of Inverters at n = 1, 2, 3, . . . abstraction levels, all sharing the same building block (an inverse-learning network through a FoM ). In this paper we focus on the two levels we evaluate empirically (Tab. 1): • Level 1 Inverter (Control) : emits sequences of actions – continuous and physical in our experiments (motor torques, control pulses), or discrete signals (e.g., API calls) in other domains. • Level 2 Inverter (Planning) : emits sequences of subgoals consumed by Level 1. The same recursive shape extends naturally to n ≥ 3 Inverters, each specifying how the level immediately below generates its output – for instance by selecting a subgoal-emission strategy, by composing sequences-of-sequences of subgoals, or by other context-dependent forms; we do not evaluate n≥3 here (see Outlook). 
+
+> 1Abbreviations used throughout the paper are listed in App. A.1.
+> 3Inverse Learning for Planning and Control
+
+Neural architectures used within the framework can vary by domain — all maze FoM s and Inverters in this paper are transformers, while the quantum Pulse Inverter is an Multilayer perceptron ( MLP ), which suits its compact target without a temporal context. Where an analytic or algorithmic solution is natural and more useful, we substitute it for the Neural network (NN): • Lindblad channel as FoM (Pulse Inverter, Sec. 4.5): the noisy-transmon dynamics are governed by a known master equation, so a learned FoM would only approximate physics we already have in closed form. • Breadth-first search ( BFS )-based Path Inverter on the offline-data occupancy grid (maze2d -medium /large , Sec. 4.2): waypoint routing through long corridors is a discrete shortest-path subprob-lem that a simple algorithmic BFS already solves on the data’s support, so a learned Level 2 Inverter would add complexity without benefit. This strategy corresponds to the task-, timescale-, and resource-dependent flexibility we presume in the brain [ 4– 6]. Interestingly, in practice, this implementation approach gave rise to neurosymbolic patterns across several of our Inverters – which we revisit as a fourth, emergent organizing principle in the Discussion (Sec. 5). Next, we formalize the IL paradigm including training rules. 
+
+2 Neuro-Inspired Inverse Learning 
+
+As a paradigm here we formalize Inverse Learning –training a network by differentiating a task objective through a learned FoM (as a form of self-supervised learning through a trained FoM ), delineated from supervised, reinforcement, and imitation learning (Table 2). At the algorithm level we then formalize the concrete training rule (Eq. 2) that this paradigm yields when applied to the Inverter’s role specification. Acting to achieve a goal admits a direct formulation as action optimization: given state s0 and a task conditioning c (the framework’s per-chunk subgoal ck at Level 1, the overall goal G at Level 2), find 
+
+a∗ 
+
+> 1: T
+
+= arg min 
+
+> a1: T
+
+J (s0: T , a1: T , c)
+
+s.t. s1: T = f (s0, a1: T ),
+
+(1) a discrete-time Bolza problem of classical OC [ 16 , 17 ] parameterized by (s0, c), in chunked form (equiva-lent to the per-step recursion st = f (st−1, at )), with J any differentiable combination of terminal cost, running reward, and action regularizer. Each term in J may be a closed-form function of the predicted state-action trajectory (e.g., an analytic terminal cost, a support-region indicator, an action regularizer), an 
+
+additional learned reward model – a separate differentiable critic, or dedicated reward heads of the FoM itself – or any sum of such terms. Closed-form and learned components compose freely within a single J ;the only requirement is differentiability in a1: T . This compositional freedom lets a single Inverter target arbitrary differentiable multi-axis specifications. Pontryagin’s costate equation – backpropagation through 
+
+f , predating its neural use – solves Eq. (1) iteratively per (s0, c) query, with no learned amortization across queries. In contrast, the value-recursive Bellman equation V ∗(s) = max a[r(s, a) + γV ∗( f (s, a))] [18 ] does not produce action sequences, but one reactive action at one step at a time. 
+
+Amortizing the planner. IL amortizes classical per-query trajectory optimization into a two-component 
+
+learned solver : (1) a Forward model ( FoM ) fθ , the learned approximation of f in Eq. 1, trained as a chunked sequence model with chunk length L ≤ T and stitched across chunks when L < T (per-task 
+
+L in Apps. A.2, A.9), and (2) an Inverse model ( IM ) gφ (s0, c) → a1: T that emits the full T -step action sequence in one feedforward pass. In the work presented here, the two are trained sequentially: first fθ
+
+supervised on offline (st , at , st+1) transitions (or supplied analytically when the physics is known, e.g., the Lindbladian in Sec. 4.5); then, with fθ frozen, gφ is trained by backpropagating a Bolza objective 
+
+> 4Inverse Learning for Planning and Control
+
+through it (joint ( fθ , gφ ) training, as well as joint training across hierarchy levels, is equally natural and is discussed in Sec. 4.4): min  
+
+> φ
+
+E(s0,c)
+
+h
+
+J
+
+
+
+f (1: T )
+
+> θ
+
+ s0, gφ (s0, c), gφ (s0, c), c
+
+ i 
+
+(2) Jordan & Rumelhart [ 7 ] introduced this training pattern for single-step distal control; IL extends it to multi-step, H>1 level hierarchical planning and control through learned forward and inverse models for embodied control (Secs. 4.1–4.4). At T =1 and H=1 the Bolza objective collapses to a terminal cost and the recipe reduces to a non-hierarchical Jordan–Rumelhart-style distal teacher; the framework’s richness lives at T >1 and H>1 , where running cost and global trajectory structure enter J , sequence-level optimization over the whole chunk becomes possible, hierarchy allows solving more complex tasks, and chunked open-loop emission yields per-episode inference compute time reductions (see Sec. 5 on the empirical consequences). We refer to the T >1 regime of this paradigm as Inverse Sequence Learning ( ISL ). All experiments and architectures in this paper operate in the ISL regime; we retain the broader “ IL ” term for both the 
+
+T =1 and T >1 cases. The practical advantage of the ISL regime is the gradient structure: where RL attributes a scalar reward across all da×T action dimensions through estimators like Policy Gradient ( PG )and Temporal Difference ( TD ), ISL backpropagates through fθ to deliver an exact gradient ∂ J /∂ at,i at every action dimension i and every timestep t across the whole T -step sequence. Table 2 delineates IL from supervised, reinforcement, and imitation learning, indexed by the training signal each paradigm relies on. Inverters combine RL ’s training-time amortization with the multi-step, sequence-level scope of optimal control, without iterative deployment-time optimization. Unlike imitation learning, they learn predictable task structure (e.g., physics) through a FoM and invert it, rather than cloning behavior.                                      
+
+> Table 2: Inverse learning delineated from the three major established learning paradigms in their typical form: supervised, reinforcement, and imitation of which Behavior Cloning ( BC ) is the supervised special case. The defining axis – and the key requirement of each paradigm – is the nature of the training signal.
+> Supervised Reinforcement Imitation Inverse
+> Training signal Label yReward (scalar) Expert action a∗Action gradient ∂J/∂a
+> Gradient quality Exact Estimated Exact Exact Temporal scope One- or multi-step One step (recursive) One- or multi-step One- or multi-step Output ˆy(prediction) at(reaction) ator a1: T(cloned) a1: T(actions) Objective Differentiable loss Additive reward Fixed to expert Differentiable (Bolza)
+
+3 Related work 
+
+Deep Learning ( DL ) for inverse problems. IL belongs to the broader research field of amortizing inverse problems with neural networks [ 19 , 20 ], in which an NN is trained to map measurements (or, more generally, conditioning) to a solution of a forward operator equation; IL sits specifically in the 
+
+self-supervised / measurement-only branch of that taxonomy, with backpropagation through the forward operator providing the training signal (no ground-truth solution labels). This tradition is most developed in imaging and physics: linear inverse problems ( CT /MRI reconstruction, compressed sensing, super-resolution), unrolled iterative solvers ( LISTA -style) [ 21 ], and more recently non-amortized diffusion-prior posterior sampling [ 22 ]. IL specializes this pattern to embodied planning and control: the (itself learned) “forward operator” is, e.g., a dynamics model unrolled in time, the “solution” is a multi-step action 
+
+> 5Inverse Learning for Planning and Control
+
+sequence rather than a static signal, and the objective is a Bolza functional (terminal cost + running cost + regularizer). In this view, IL is the planning-and-control instance of the broader DL -for-inverse-problems agenda, extending it from analytical to learned forward operators and from static signals to time-extended action sequences. 
+
+Amortized optimal control. IL is an instance of amortized optimal control that allows training a network to emit a multistep OC solution in a single feedforward pass. Related instances differ in either output shape or in whether deployment-time iteration is avoided: explicit Model Predictive Control ( MPC ) [ 23 ]offline-precomputes MPC into a piecewise-affine state-feedback function for linear-quadratic problems (with modern NN -approximate variants for nonlinear settings), but emits a single action per call in receding-horizon fashion; guided-policy-search / coupled trajopt distillation into a policy ( 24 ; 25 ; 26 )supervises policy training with the trajectories of a separate, non-differentiable offline OC solver; value-gradient backprop through learned dynamics [ 27 ] differentiates the value through model rollouts but emits one action at a time; differentiable optimization and MPC layers ( 28 ; 29 ) embed a constrained QP solver as a differentiable layer and so retain test-time iterative optimization. 
+
+Differentiable world-model control. Backpropagating a control objective through a learned world model (the agent-in-environment composite, not just body kinematics) has a long lineage [ 30 , 7, 31 ]– Schmidhuber even explicitly proposed using the learned model to plan multi-step action sequences via simulated gradient descent, while flagging its high inference cost; concrete algorithmic variants – PILCO [32 ], Dreamer [ 33 ], Universal Planning Networks [ 34 ], TD-MPC2 [35 ] – retain test-time iteration, value bootstrapping, or one-step outputs. IL differs in output shape and query cost as it allows inverse networks to emits the full T -step action sequence in one feedforward pass. 
+
+Trajectory-level sequence models and iterative planners. A parallel line treats the action sequence as the object: autoregressive sequence modeling [ 36 ], return-conditioned autoregressive policies [ 37 ], iterative trajectory denoising [ 38 ], online tree search over a learned model [ 39 ], test-time-iterative latent planners [ 40 , 41 ], and—outside RL —learned step-by-step motion planners such as MPNet [42 ], which autoregressively emits next configurations from an imitation-trained network; broader hierarchical-planning agendas with learned predictive world models [ 31 ] share these commitments. IL collapses both step-by-step autoregression and test-time iterative optimization into a single feedforward emission of the 
+
+H-step action chunk, folding trajectory optimization into training. Action Chunking Transformers [ 43 ]and Diffusion Policy [ 44 ] share our chunked output shape but are supervised on expert demonstrations, restricting data and objective to imitation. 
+
+Hierarchical control and hybrid symbolic-continuous planning. Hierarchical RL builds on the options framework [ 45 ], typically mixing level-specific mechanisms (e.g., high-level policy gradient over low-level actor-critic); hierarchical latent world models have been used for visual humanoid control but still rely on test-time planning [ 46 ]. The amortization perspective extends beyond purely continuous problems: hybrid symbolic-continuous control is traditionally handled by iterative task-and-motion planning [ 47 ], mixed-integer MPC over hybrid systems [ 48 ], or signal-temporal-logic MPC compiled to MILP [49 ]. Our AntMan Game Inverter (Sec. 4.4) is in this hybrid regime but emits its symbolic plan in a single feedforward pass through a differentiable FoM , positioning IL as an amortized counterpart in the neurosymbolic OC space currently dominated by iterative methods. 
+
+Reinforcement Learning of generative models via frozen learned critics. A recent line of work in generative modeling performs RL of pretrained samplers against a learned reward model: DRaFT [ 50 ], and ReFL [ 51 ] for image diffusion; DRAKES [ 52 ] for discrete diffusion via soft-token embeddings; and Adjoint Matching [ 53 ], which casts fine-tuning as stochastic optimal control over the denoising trajectory. Following the classical Jordan & Rumelhart distal-teacher pattern [ 7], these methods replace the variance-
+
+> 6
+
+Inverse Learning for Planning and Control 
+
+prone gradient estimators of classical RL with an exact gradient obtained by backpropagating through a frozen, differentiable critic (Gumbel-relaxed or straight-through for discrete cases). The objective, however, remains single-step ( T =1 ) reward maximization on the generator’s terminal output (one image / molecule / text sample) as RL methods rather than IL in the sense used here. 
+
+Inverse Reinforcement Learning ( IRL ) addresses a different inverse problem: recovering the reward function from expert demonstrations [ 54 ]. IL in the sense of this paper instead amortizes the goal →action inversion through a forward model, in the Jordan & Rumelhart distal-teacher lineage [ 7] extended to T >1 .The two paradigms are complementary and could in principle compose – e.g., an IRL -recovered reward used as the terminal cost in IL’s Bolza objective. 
+
+4 Planning and control with Inverters: properties, performance, failure modes 
+
+We organize the experiments in three steps of increasing structural complexity: a single Level 1 Inverter (maze2d -umaze -v1 ; Sec. 4.1), a Level 1 Inverter coupled with a (simple) algorithmic Path Inverter at Level 2 (larger maze2d layouts and all six antmaze -v2 variants; Secs. 4.2–4.3), and finally the full 
+
+n = 2 hierarchical Setup with two paired learned Inverters (AntMan on antmaze -large -diverse -v2 ; Sec. 4.4). 
+
+4.1 Single Motor Inverter ( maze2d -umaze ): best D4RL at less inference compute time 0 1 2 3                
+
+> qpos x
+> 0
+> 1
+> 2
+> 3
+> qpos y
+> Training data CQL score -8.9 ±6.1 BC score 0.4 ±8.7
+> data support
+> TD3+BC score 29.4 ±12.3 IQL score 42.1 ±0.6
+> AWAC score 82.7 ±28.3 ReBRAC score 106.9 ±22.2 Diffuser score 113.9 ±3.1 SAC-N score 130.6 ±16.5 Inverter score 161.6 ±2.2
+
+Figure 2: Trajectory comparison on maze2d -umaze -v1 . Top-left: training data heatmap (blue to red: low to high density) showing the U-shaped corridor coverage. Remaining panels: 100 evaluation trajectories per method, ordered by D4RL score. ⋆ = goal; red × = timeout (episode did not reach the goal). The Inverter (ours) produces smooth, direct paths that are not restricted to the angular data support. Baselines trained with CORL [55]. 
+
+We evaluate maze2d -umaze -v1 with a frozen causal Transformer FoM paired with a causal Transformer IM that emits a 128 -step action sequence from the current state and goal in one forward pass (architectures, dataset, baselines: App. A.2). 
+
+Performance and inference compute time: Table 3 summarizes D4RL and per-episode compute time across all three maze2d variants. Throughout, “inference compute time” refers to per-episode wall time on a single device at batch 1; in a launch-overhead-limited small-model regime this is the deployment-relevant metric, distinct from FLOPs (App. A.3). On umaze -v1 a one-shot K = 128 plan delivers 161 .6±2.2 in just 3 NN forward passes (one to reach the goal, two to stay at the goal until the end of the fixed 300 time step evaluation window) and 11 .4 ms total per episode – 37 × less than Diffuser, 
+
+47 × less than SAC-N , and estimated nearly three orders of magnitude less than DecisionLLM [ 56 ]. The 
+
+7Inverse Learning for Planning and Control 
+
+advantage is not a faster single forward pass (the Inverter transformer sits at the same ∼ 2 ms-per-pass floor as the baseline MLP s) but emitting a full 128 -step action sequence per forward, not just one at a time, reducing per-episode passes by 30–100 × (App. A.3).                                                     
+
+> Table 3: Maze2d summary: Motor Inverter vs. best D4RL baseline per maze and fastest PyTorch baseline (BC -10%). Top :D4RL score (mean ±std over 100 episodes with 4 seeds). Bottom :NN forward passes and total wall time per episode ( NN passes plus algorithmic overhead, single A40 GPU, PyTorch, batch 1, CUDA-synced). Best-per-column bolded; the Inverter row reports the K=128 one-shot configuration on umaze (Tab. 5, App. A.4) and K=16 on medium/large (Tabs. 7, 8). Full per-method tables (10+ baselines, including JAX+JIT ReBRAC and Diffuser): App. A.4.
+> umaze -v1 medium -v1 large -v1
+> D4RL score
+> Best D4RL baseline (per maze) SAC-N: 130 .6±16 .5Diffuser: 130 .1±22 .7AWAC: 209 .1±8.2
+> Inverter (ours) 161 .6±2.2166 .8±1.2220 .7±0.2
+> # NN forward passes per episode / total wall time per episode (ms)
+> BC-10% (fastest PyTorch) 300 / 374 .9600 / 749 .8800 / 999 .7
+> Inverter (ours) 3/11 .438 /72 .950 /93 .7
+
+Smooth, coherent trajectories. Figure 2 shows that the motor Inverter produces smooth, direct paths through the maze, while every baseline yields visibly noisier, more angular, or more constrained motion. Figure 3 confirms this quantitatively via per-sequence displacement directions and curvature variance: the Inverter achieves the lowest peak curvature and, by a large margin, the lowest curvature variance, demonstrating the by-design ability of Inverters for more holistic sequence-level optimization. The IM achieves this not by mimicking any individual training trajectory, but by learning to invert the forward dynamics globally: gradients flow through the frozen FoM across the entire horizon, enabling the network to discover action sequences whose integrated trajectory has favorable geometric properties that local, step-wise optimization cannot guarantee. 
+
+Approaching the analytic optimum outside the data support. Under viscous damping with a bounded action box, the minimum-time control problem on maze2d -umaze -v1 is approximately bang-bang (App. A.5): the time-optimal policy saturates each actuator to ±umax – an optimum that lies outside the training data’s action-space support. Figure 4 reveals this structure directly: every baseline populates the interior with unsaturated actions, while the Inverter concentrates mass at the four edges and corners. Its action saturation substantially exceeds that of the training data – a necessary structural component of bang-bang time-optimal control. This is not sufficient on its own (a misdirected bang-bang policy can saturate without speed gain, as shown by CQL ), but the Inverter also reaches the highest average speed and consecutively the highest D4RL score (Table 3); together an empirical signature of approach to the analytic optimum. This illustrates that the Inverter uses learned physics through gradients flowing through the frozen FoM , rather than to clone dataset actions, leaving the Inverter structurally free to leave the data’s support and to find better solutions beyond it. 
+
+4.2 Motor Inverter + simple algorithmic Path Inverter on maze2d -medium /large : confirming best D4RL at substantially less compute time 
+
+On maze2d -medium -v1 and maze2d -large -v1 , the dataset’s longest corridor paths exceed the Level 1 Inverter’s 128 -step horizon, so a single feedforward plan is insufficient. At the same time, waypoint routing through the maze is a discrete shortest-path sub-problem on which a full-fledged learned Planning Inverter would be overkill. We therefore add a simple algorithmic Path Inverter ( BFS built 
+
+> 8
+
+Inverse Learning for Planning and Control 0° 
+
+> 45°
+> 90°
+> 135°
+> 180°
+> 225°
+> 270°
+> 315°
+> Training data
+
+A
+
+> 0°
+> 45°
+> 90°
+> 135°
+> 180°
+> 225°
+> 270°
+> 315°
+> CQL
+
+B
+
+> 0°
+> 45°
+> 90°
+> 135°
+> 180°
+> 225°
+> 270°
+> 315°
+> BC-10%
+
+C
+
+> 0°
+> 45°
+> 90°
+> 135°
+> 180°
+> 225°
+> 270°
+> 315°
+> ReBRAC
+
+D
+
+> 0°
+> 45°
+> 90°
+> 135°
+> 180°
+> 225°
+> 270°
+> 315°
+> Diffuser
+
+E
+
+> 0°
+> 45°
+> 90°
+> 135°
+> 180°
+> 225°
+> 270°
+> 315°
+> Inverter
+
+F
+
+> BC
+> Diffuser
+> AWAC
+> BC-10%
+> TD3+BC
+> Training data
+> IQL
+> ReBRAC
+> CQL
+> SAC-N
+> Inverter
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> κmax
+> Peak Curvature
+
+G
+
+> BC
+> Diffuser
+> Training data
+> ReBRAC
+> BC-10%
+> CQL
+> AWAC
+> IQL
+> SAC-N
+> TD3+BC
+> Inverter
+> 10 1
+> 10 2
+> variance (log)
+> Curvature Variance
+
+H
+
+Figure 3: Directional movement spectrum and sequence-level optimization. Panels A–F show polar histograms of T =16 -step chunk-displacement directions for the training data and a representative subset of methods; angles indicate 0◦ = + x, 90 ◦ = + y in raw maze data coordinates, based on each method’s per-episode rollout until the first step where the agent enters a goal-ball of radius 0.5 , or time out. Panel G and H shows median peak curvature κmax ,and median curvature variance (log scale) over the same trajectory data, respectively. Whiskers: +/- Standard Error of the Mean ( SEM ). The Inverter produces the lowest peak curvature and lowest curvature variance (Panels G, H). Similar to Diffusor, and unlike the other baseline methods, the inverter produces all of the major movement directions required to solve the task (up, down, and leftwards), but no movements with a dominating rightward component, which are not needed to reach the goal (Panel A-E). These observations together quantitatively confirm the sequence-level optimization that the smooth trajectories of Fig. 2 suggested qualitatively: optimizing over the 
+
+entire action sequence – rather than per step – yield smooth trajectories which allow to reach the goal faster. 
+
+exclusively on the offline-data density) at Level 2: it builds a free-space occupancy grid from the training-data density alone, runs a 4-connected BFS , and emits one sub-goal per corridor elbow; the Level 1 Inverter then executes chunk by chunk toward the current sub-goal. No maze geometry, simulator, or FoM call enters the planner. App. A.6 gives the full construction; Fig. 9 shows a representative plan overlaid on the data heatmap. Main numbers for medium and large at K = 16 (highest D4RL across our K-sweep on medium and large; Suppl. Tab. 10) appear in Table 3; full per-method breakdowns are in App. A.4. The stacked Inverter reaches 166 .8±1.2 D4RL on medium and 220 .7±0.2 on large at 100 /100 success across 4 seed IM s – strictly ahead of every CORL baseline and Diffuser – spending 72 .9 and 93 .7 ms of NN compute per episode, roughly 10 –30 × faster than step-wise offline- RL baselines and 39 –51 × faster than Diffuser (DecisionLLM reference for this task not available). The only compute-competitive method is ReBRAC †
+
+(JAX+JIT, ∼ 0.2 ms/pass), which still lags the Inverter on D4RL by 63 points on medium and 137 on large. Sweeping K ∈ { 16 , 32 , 64 , 128 , 256 } exposes a clean speed–accuracy trade-off (App. A.7): smaller 
+
+K gives higher D4RL at higher per-episode wall-time, and accuracy collapses once K crosses the IM ’s 128 -step training horizon – interestingly reminiscent of Fitts’ law and submovement / iterative-correction motor psychophysics [59–61]. 
+
+9Inverse Learning for Planning and Control −1.0 −0.5 0.0 0.5 1.0 
+
+> ax
+> −1.00
+> −0.75
+> −0.50
+> −0.25
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> ay
+> Training data
+
+A    
+
+> −1.0 −0.5 0.0 0.5 1.0
+> ax
+> −1.00
+> −0.75
+> −0.50
+> −0.25
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> ay
+> BC-10%
+
+B    
+
+> −1.0 −0.5 0.0 0.5 1.0
+> ax
+> −1.00
+> −0.75
+> −0.50
+> −0.25
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> ay
+> CQL
+
+C    
+
+> −1.0 −0.5 0.0 0.5 1.0
+> ax
+> −1.00
+> −0.75
+> −0.50
+> −0.25
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> ay
+> ReBRAC
+
+D    
+
+> −1.0 −0.5 0.0 0.5 1.0
+> ax
+> −1.00
+> −0.75
+> −0.50
+> −0.25
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> ay
+> Diffuser
+
+E    
+
+> −1.0 −0.5 0.0 0.5 1.0
+> ax
+> −1.00
+> −0.75
+> −0.50
+> −0.25
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> ay
+> Inverter
+
+F
+
+> CQL
+> Diffuser
+> ReBRAC
+> AWAC
+> TD3+BC
+> BC
+> BC-10%
+> IQL
+> Training data
+> Inverter
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> 4.0
+> avg speed
+> Average Speed to Goal
+
+G     
+
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> avg | ax|
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> avg | ay|
+> Action Saturation
+> Training data
+> BC
+> BC-10%
+> TD3+BC
+> AWAC
+> IQL
+> ReBRAC
+> CQL
+> Inverter
+> Diffuser
+
+H
+
+Figure 4: Action-space structure and control optimality. Per-step action scatter plots (ax, ay) for the training data and a representative subset of methods (Panels A–F). Note that BC -10% [ 57 ] lands below the training data on action saturation (Panel H), even though it is trained to imitate it: a unimodal Gaussian policy head contracts the action distribution toward the interior – the multimodal-action BC failure mode [ 58 , 44 ]. Panel H: ⋆ at (1, 1)
+
+marks the analytically optimal action saturation – pure bang-bang, derived from Pontryagin’s maximum principle for the damped point-mass minimum-time problem (App. A.5). Panel H: average speed to goal, using the same trajectory data as in Figure 2. The Inverter shows both joint signatures of the analytic time-optimal control: high action saturation, beyond the training data – and high average speed to goal (Panel G). Note that CQL outputs highly saturated actions, but missing action switching times, it fails the task at a negative D4RL score, showing that action saturation alone is a necessary but not sufficient condition for approaching control optimality. 
+
+Table 4: Antmaze summary: Inverter vs. strongest CORL D4RL competitor ( ReBRAC ) and fastest PyTorch baseline ( BC -10%). Top : D4RL score (%) over 100 episodes on each antmaze -v2 variant; both ReBRAC and Inverter are mean ± std over 4 seeds. Bottom : ms per environment step (single A40 GPU, PyTorch, batch 1, cuda-synced). Best-per-column bolded. Full 10-baseline breakdown including JAX+JIT ReBRAC timing: Tab. 9, App. A.4. u-umaze u-divrs m-play m-divrs l-play l-divrs 
+
+D4RL score (%) 
+
+ReBRAC 97 .8 ± 1.5 83 .5 ± 7.0 89 .5 ± 3.4 83 .5 ± 8.2 52 .2 ± 29 .0 64 .0 ± 5.4
+
+Inverter (ours) 99 .5 ± 0.9 99 .8 ± 0.4 87 .8 ± 8.0 96 .5 ± 5.0 93 .0 ± 2.6 94 .0 ± 5.0
+
+ms / env step 
+
+BC-10% (fastest PyTorch) 1.25 1.25 1.25 1.25 1.25 1.25 
+
+Inverter (ours) 0.14 0.14 0.13 0.13 0.13 0.13 
+
+4.3 antmaze -v2 : Scaling to locomotion and first encounter with FoM hacking 
+
+We find that the same setup (Level 1 Locomotion Inverter + simple algorithmic Path Inverter at Level 2) successfully transfers to all six antmaze -v2 variants – 29-dim Multi-Joint dynamics with Contact ( MuJoCo ) ant locomotion with 8-dim torque actions on the same topologies plus play/diverse goal distributions – and matches within error bars or improves the strongest CORL baseline ( ReBRAC ) on 
+
+10 Inverse Learning for Planning and Control 
+
+every variant, with the gap widening on the large mazes (Tab. 4 and App. A.4; for comparison to published model-based offline RL baselines see App. A.8). In compute, the Locomotion Inverter emits a 16 -step chunk per call at ∼ 2 ms, so the total per-env-step cost ( ∼ 0.13 – 0.14 ms on every variant) amortizes a small number of chunk-level passes over the ∼ 600–700 steps to the goal – ∼ 9× faster per step than the fastest PyTorch baseline (BC-10%) on every antmaze variant. One important new observation from antmaze suggested that a plain task-reward Locomotion Inverter on antmaze may be forward-model hackable – while the FoM predicts successful task completion, in simulation the ant may tip, jam, or fall – a failure we suspected to be related to the fact that the offline training data contains relatively few failure cases and the FoM is therefore uncalibrated off-support. We compensated with two additive, per-time-step auxiliary losses – a BC action-fidelity anchor and a body-yaw regularizer – which compose linearly with the task gradient (ablations in App. A.9, Suppl. Tab. 12). These additions work in practice but are conceptually unsatisfactory: anchoring toward dataset actions partially compromises IL ’s defining property of being FoM -gradient-driven rather than data-anchored. These observations motivated designing the new AntMan task (Sec. 4.4), which lets us (i) control the offline training data ourselves and therefore study FoM hacking and its mitigations systematically, and (ii) demonstrate a full n = 2 Hierarchical Inverter – two trained Inverters, one for planning and one for control. MuJoCo ant trajectory               
+
+> ghost path
+> start position
+> A
+> 1
+> 2
+> 3
+> 1. Step 100 | Pellets 3/46 2. Step 400 | Pellets 9/46 3. Step 800 | Pellets 11/46
+> No ghosts 1 ghost 2 ghosts 3 ghosts
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> Mean replans per episode  BHighlevel Inverter Replans
+> Heuristic training
+> Random-mixed training
+> No ghosts 1 ghost 2 ghosts 3 ghosts
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Pellets per 1k steps
+> CPellet Collection Efficiency
+> Random highlevel control
+> No ghosts 1 ghost 2 ghosts 3 ghosts
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Mean pellets eaten
+> DGame Score
+
+Figure 5: Simultaneous planning and control with a coupled Game and Locomotion Inverter on the AntMan task. Panel A shows a representative rollout in the MuJoCo maze with an abstract rendering of the game situation and 3 snapshots showing the underlying motion of the MuJoCo Ant through the maze. Successful planning and control was achieved when training on random training data, but not on training data only reflecting a heuristic game controller (Panels B–D). Metrics are averaged over 100 evaluation games (25 each for no, 1, 2, and 3 ghosts). Only random training yields above-chance pellet-collection efficiency and pellet counts at every difficulty, while replanning is comparable or lower. 
+
+4.4 Hierarchical Inverse Learning for planning and control 
+
+To study a fully learned n = 2 Hierarchical Inverter, we designed the new AntMan task, which requires pure offline learning of both low-level locomotion control of the MuJoCo Ant and a Pac-Man-style game embodied through the same Ant placed in the antmaze -large -v2 setup. 
+
+11 Inverse Learning for Planning and Control 0 5 10 15 20 25          
+
+> Game reward (actual)
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Forward model reward (predicted)
+> ARandom training data
+> Mean ± std rewards
+> Actual: 7.54 ± 6.71
+> Predicted: 8.41 ± 6.57
+> OOD: 1.40x
+> Spearman ρ: 0.87
+> Pearson r: 0.92
+> 010 20 30 40 50 60 70
+> Game reward (actual)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> BExpert training data
+> Mean ± std rewards
+> Actual: 4.48 ± 4.48
+> Predicted: 37.98 ± 10.14
+> OOD: 5.97x
+> Spearman ρ: 0.13
+> Expert x-range
+> Random x-range
+> Pearson r: 0.14
+> Expert data episodes
+> Random data episodes
+> Highest predicted reward
+> Max game reward expert data
+> Max game reward random data
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> OOD score
+
+Figure 6: Random training data yields calibrated FoM rewards; narrow expert data induces FoM hacking. 
+
+Each panel compares FoM -predicted reward to realized game reward over 1000 sampled start states for the final high-level IM checkpoints; point color encodes the Out-of-Distribution ( OOD ) score OOD (x) = d1(x, T ) / ed1(T ),where d1(x, T ) = min y∈T ∥x − y∥ is each sampled start state x’s nearest-neighbor distance to the training set T ,and ed1(T ) = median x′∈T min y∈T \{ x′} ∥x′ − y∥ is the typical nearest-neighbor distance between training points themselves – so OOD = 1 means the sample is no further from the training set than a typical training point is from its own nearest neighbor, and OOD > 1 indicates an increasingly off-support sample, the pink diagonal marks perfect calibration, and dashed red lines show linear fits with 95% confidence bands. Panel A (random training data) stays near the training support, has low OOD values, and shows strong correlation between FoM reward and actual game reward. Panel B (expert training data, without additional stabilizers such as a BC -style loss) shows the opposite failure mode: the Inverter generates highly OOD plans and the FoM assigns them large rewards that are no longer predictive of actual outcomes. The green and gray x-axis projections in Panel B show the realized game-reward ranges for expert-data and random-data plans, with dashed connectors and circles marking the maximum game-reward sample from each group; these ranges are very similar. Thus the failure is not that expert-data training removes high-game-reward plans from the sample, but that FoM reward becomes decoupled from actual reward. For example, the highest FoM -reward sample in Panel B (red circle) achieves zero game reward. 
+
+We solve this challenge with a Level 1 Locomotion Inverter which controls the Ant in antmaze -large -diverse -v2 , while a paired Level 2 Game Inverter controls the Locomotion Inverter by outputting 32 -step waypoint directions from a 58-dim game state (ant pose, ghost states, pellet map, mode indicators). A causal-transformer FoM is trained on simulated AntMan games; the Game Inverter is then trained purely through FoM reward to collect as many pellets as possible. Structurally, the Game FoM instantiates the FoM -with-reward-heads option introduced in Sec. 2: a dynamics head for ghost positions plus per-step reward heads for pellet-eaten and alive probabilities. The Game Inverter’s Bolza loss backpropagates through the reward heads, L = −E ∑t σ (ℓpel ,t ) σ (ℓalive ,t ) over the H=32 chunk. In our n=2 AntMan stack, the Bolza loss therefore flows through next-state dynamics at the low level and through learned reward heads at the high level – two instances of the same FoM /IM building block. To isolate the training-distribution effect, two matched FoM / IM pairs differ only in the offline training data generating behavior policy: (i) heuristic (chases pellets, avoids ghosts) and (ii) random (uniform random neighbor-cell moves). 
+
+End-to-end hierarchical Inverse Learning for planning and control. The AntMan task demonstrates that a full n = 2 Hierarchical Inverter, trained using FoM -predicted game reward, successfully plays AntMan games well above chance – proof of principle for increasing hierarchical depth and for extending the framework from continuous physics to symbolic/discrete planning. Here we train each level separately, but the Inverter stack is end-to-end differentiable: jointly optimizing (g(1)
+
+φ , g(2)
+
+φ ) – propagating Level-2 task 
+
+12 Inverse Learning for Planning and Control 
+
+loss through Level-1, and conversely allowing Level-1 execution constraints to reshape Level-2 waypoint emission – is a natural extension for regimes in which optimal plans depend on what the body can execute, or optimal motor commands depend on the upcoming plan. 
+
+Forward-model hacking and how to mitigate it. A second observation reverses the offline-learning intuition that more competent demonstrations make better training data (Fig. 5). With heuristic training data the FoM is severely hacked – predicted 37 .98 pellets vs. 4.48 realized ( 8.48 ×) – and the Game Inverter drops to chance at 2–3 ghosts. With random training data the FoM is calibrated and the Inverter stays above chance across all difficulty levels. The failure mechanism (Fig. 6; extended discussion in App. A.10) is that under expert-skewed data, the Inverter generates off-support plans for which the FoM -predicted reward decorrelates from the actual game outcome. The implication: inverse-learning data has different optimality criteria than RL /imitation – not demonstrator competence but safely diverse dynamics coverage . Our findings thus suggest that Inverters are particularly suited to settings where learning must proceed from random rather than expert data; the converse – combining Inverters with imitation learning beyond plain BC – is an interesting open future direction. In this context, as another topic for future work, joint ( fθ , gφ ) training (Sec. 2) would be an adaptive alternative to broad-coverage data: it might keep the FoM accurate on the Inverter’s evolving action distribution as the two co-evolve. 0 1/4 1/2 3/4 1         
+
+> time t/Tgate
+> −0.2
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Ωx(t) / Ω max
+> GRAPE
+> Inverter
+> GRAPE
+> Inverter
+> |0⟩
+> |1⟩
+> | + ⟩
+> | + i⟩̂
+> x̂ŷ
+> z
+> 1−̄ Favg σinputs (1− F)wall-clock
+> time per pulse
+> 10 −4
+> 10 −3
+> mean over 250 Haar targets
+> GRAPE
+> Inverter
+> 10 −3
+> 10 −2
+> 10 −1
+> 10 0
+> 10 1
+> 10 2
+> wall-clock time per pulse (s)
+> ABC
+
+Figure 7: Single-shot quantum gate synthesis on a 3-level transmon under a known Lindbladian with a Pulse Inverter. (A) Pulse Ωx(t), Ωy(t) for one Haar-sampled target U; Inverter: solid orange, GRAPE : dashed blue. 
+
+(B) Bloch trajectories from four axis-aligned input states; stars mark U|ψ⟩. (C) Over 250 Haar U(2) targets: 1− ¯Favg ,per-input fidelity uniformity, and median wall-clock per pulse on the same 128-core CPU – ∼ 2700 × speedup over GRAPE (App. A.11). 
+
+4.5 Application example: Quantum gate synthesis 
+
+The standard iterative-numerical baseline for quantum gate synthesis, Gradient Ascent Pulse Engineering ( GRAPE ) [ 62 ], is normally run offline to precompute a fixed gate library ( X, H, T, CNOT , . . . ). An Inverter that emits pulses in one feedforward would be helpful for quantum computing applications where arbitrary unitaries are needed at μs timescales – variational/parameterized algorithms, Quantum Error Correction (QEC), or for adaptive feedback. Quantum gate synthesis exemplifies a regime where the FoM is available in closed form (the Lindblad channel of a given device). We train an Inverter gφ (U)→Ω to synthesize an 80 -slice (Ωx, Ωy) pulse for arbitrary single-qubit targets U ∈ U(2) on a noisy 3-level transmon, by minimizing 1− ¯Favg through the analytic Lindblad channel as in Eq. 2 (no GRAPE -pulse supervision; full setup, baselines, per-target statistics, and the U(2)/ SU (2) sampling convention in App. A.11). On 250 held-out Haar U(2) targets (Fig. 7), the Inverter ties GRAPE at the dissipation floor – the irreducible infidelity set by Lindbladian decoherence over the gate duration – ( 1− ¯Favg =4.26 ×10 −4 vs. 4.69 ×10 −4) and matches its per-input 
+
+13 Inverse Learning for Planning and Control 
+
+fidelity uniformity (within 1.12 ×), at ∼ 2700 × lower per-gate cost ( 2.1 ms vs. 5.6 s). The GRAPE wall-time here reflects the open-system dynamical map (vectorized 9×9 propagator on the 3×3 density matrix), 4-input fidelity averaging, and convergence to the dissipation floor; closed-system unitary-synthesis benchmarks on small Hilbert spaces typically run faster [ 63 ]. First two-qubit results on Haar SU(4) reach ¯Favg =0.957 (vs. a GRAPE floor at 0.998 ) at the same ∼ 4×10 4× inference speedup; closing the remaining fidelity gap is open and is discussed in App. A.12. Concurrent work [ 64 ] reports a related NN pulse compiler on a closed-system NMR platform with an added risk-averse re-optimization layer, but with a restricted axis-angle gate family and without a GRAPE accuracy / compute-time comparison. 
+
+5 Discussion, limitations, and outlook 
+
+The mammalian brain achieves fast, highly effective goal-directed behavior leveraging paired forward/in-verse internal models, open-loop multi-step motor commands, and the hierarchical organization of action. Our findings show that the Inverter framework, built on the same three principles, enables fast and effective planning and control through a feedforward, sequence-level FoM -and- IM core that emits entire action sequences in single forward passes. We find that Inverters offer consistently high task performance at a fraction of the inference compute time used by step-wise RL or iterative planners (Suppl. Fig. 8). Across the 9 D4RL maze variants, Inverters closely matches or improves the strongest reported baseline on every task, by an average of +24 .2% (+19 .9 D4RL points; range −1.9% to +78 .2% ); per-task summary in Suppl. Tab. 6. First, we discuss the contribution of the three initial, a priori brain-inspired principles to these results. 
+
+(1) Paired FoM /IM with exact gradients. Because the Inverter is trained by backpropagating an objective through a frozen FoM rather than imitating dataset actions, the action-space gradient ∂ J /∂ at,i
+
+is exact in every dimension (Tab. 2). This gradient quality is what allows the Inverter to leave the data’s action support and find more optimal solutions (Fig. 4), such as synthesize match-to-dissipation-floor pulses on arbitrary Haar U(2) gates without ever seeing a GRAPE solution (Sec. 4.5). The matched failure mode – FoM hacking under narrow expert data (Sec. 4.4) – is the same mechanism turning counter-productive, and motivates the data-coverage strategy (App. A.10). 
+
+(2) Open-loop multi-step action sequences ( T >1). A T -step Inverter optimizing a Bolza objective propagates gradients across the whole action sequence and can optimize it holistically, and emits the whole action sequence in a single forward pass. Holistic "gestalt-level" optimization is reflected in the lowest curvature variance and lowest peak curvature trajectories (Fig. 3, Panels G, H), and the smoothest, most goal-coherent rollouts (Fig. 2). Second, ballistic execution of action sequences allows an inference compute time reduction from O(horizon ) to O(horizon /T ) NN forward passes per episode, yielding the observed substantial per-episode speedup. 
+
+(3) Sequenced chunks (hierarchical composition). Chaining chunks lets a higher-level Inverter target a lower-level one. Empirically this is what makes Secs. 4.2–4.4 work: a simple algorithmic Path Inverter routes chunks through long corridors on maze2d -medium /large once a single chunk no longer spans the path; and the fully learned n=2 AntMan stack – Game Inverter atop Locomotion Inverter, communicating via 32 -step waypoint plans on a 58-dimensional symbolic game state – carries the framework from continuous physics into hybrid symbolic/discrete planning. In summary, all 3 of our a-priori principles proved to be indispensable, each with a distinct failure mode when dropped : dropping (1) collapses to behavior cloning; dropping (2) reduces to Jordan & Rumelhart’s single-step distal teacher, paying the full T -fold inference overhead and losing access to sequence-level beyond-data structure; dropping (3) caps the framework at a single Inverter, losing the hierarchical setups required to solve more complex, long-horizon tasks. 
+
+> 14 Inverse Learning for Planning and Control
+
+Neurosymbolic composition. A fourth principle also emerged post-hoc from our implementations: 
+
+neurosymbolic composition . Three of our five Inverters pair a symbolic substrate with a neural amortized inverter: (i) the algorithmic Path Inverter discretizes the data-support occupancy into a cardinal grid and routes through it by BFS over a finite cell vocabulary (Sec. 4.2); (ii) the AntMan Game Inverter emits a sequence over a finite cardinal-direction alphabet {U, D, L, R } via Gumbel-softmax composed with a precomputed cell × direction transition table, with wall-validity entering as a hard logical mask (Sec. 4.4); (iii) the Pulse Inverter is conditioned on a discrete unitary-gate identity and inverts through a closed-form Lindblad master equation rather than a learned FoM (Sec. 4.5). Therefore, we add neurosymbolic composition as a fourth, candidate organizing principle to the framework (Suppl. Tab. 14). Notably, our emergent use of symbolic structure is on the representation-and-constraint end of the neurosymbolic spectrum (discrete alphabets, FSM transitions, BFS search) rather than the inference-and-synthesis end (differentiable logical deduction, theorem proving, or program synthesis; e.g. DeepProbLog, NS-CL ). The Inverter framework is in principle compatible with the latter – a Level-3 meta-Inverter performing differentiable program synthesis over Level-2 subgoal specifications is a natural extension. Neurosymbolic components emerged for engineering reasons, and algorithmic-level similarity does not by itself imply a deeper neuro-analogy [ 65 ]; yet it seems interesting to note that the neurosymbolic components which turned out to be useful here all have parallels in symbolic processing the mammalian brain: discretization of continuous space by place and grid cells [ 66 , 67 ], sequential motor primitives organized in higher-order motor areas and reflected in muscle synergies and option-level chunking [ 14 , 68 , 69 , 12 , 45 ], and categorical, invariant single-cell representations in medial temporal cortex [70]. 
+
+Task-specificity vs. generalization. In addition to neurosymbolic composition, a complementary axis along which the implementations of different Inverters in our framework vary is task-specific adaptation vs. architectural generality. Across the 9 maze2d /antmaze -v2 benchmarks alone, the strongest offline- RL scores require switching among three structurally distinct algorithms ( AWAC , SAC-N ,ReBRAC ), each selected per benchmark. Our framework uses a single universal architecture (universal causal-transformer FoM and Inverter PyTorch classes plus a simple Path Inverter) across all 9 maze variants, but with the auxiliary-loss setup as the main per-task adaptation. The quantum case required an MLP -based rather than transformer-based Pulse Inverter. A full list is given in Suppl. Tab. 15. Such per-task adaptations may be useful and practical, but moving the framework toward more fully 
+
+learnable , differentiable , and neural-substrate-unified versions – replacing remaining algorithmic, analytic, or non-neural components with learned differentiable neural alternatives – is a natural direction for future work, paralleled in RL by meta-RL , learned RL algorithms, and reformulations as conditional sequence modeling. IL is a well-suited substrate for this aim: its Inverter core is differentiable end-to-end and its slots ( FoM , IM , objective J , hierarchy depth) are modular and well-defined. Suppl. Tab. 13 outlines four complementary strategy classes – Data, Model, Objective, Deployment – along which this direction can be approached. This way, shared organizational principles may be balanced with specialized instances, as in mammalian motor organization: The same paired forward/inverse-internal-model brain architecture supports radically different motor niches: primates carry a direct corticomotor neuronal pathway for independent finger control [ 71 , 72 ], echolocating bats overlay a ms-scale audio-motor loop on the same paired forward/inverse architecture [ 73 ], rodents add a dedicated brainstem Central Pattern Generator ( CPG ) for ∼5–12 Hz whisking [ 74 ], and elephants control a hydrostatic trunk via a massively expanded facial motor nucleus [ 75 ] – without departing from the unifying planning and control framework. 
+
+Compute-time. The 30 – 100 × per-episode compute-time reduction that we observed reflects a reduction in the number of NN forward passes per episode; whether and how this transfers to practical advantages depends on the deployment regime. At batch 1 on a single device – our measured setup, 
+
+> 15 Inverse Learning for Planning and Control
+
+and the relevant one for many edge applications or embedded targets – small models are kernel-launch-limited rather than FLOPs-limited [ 76 , 77 ] (App. A.3), so the reduction in NN invocations transfers directly into wall time. E.g., in batched cloud serving the regime flips to FLOPs-bound, and our 1.5 M-parameter T =128 transformer performs ∼ 4 – 10 × more FLOPs per episode than a small step-wise MLP . The practically interesting scenarios therefore include: (i) saving energy per episode on edge devices, dominated by NN invocations rather than raw FLOPs at our model size; (ii) resource sharing 
+
+on a real robot, where most control ticks become NN -free action playback, freeing the GPU/CPU for perception, Simultaneous Localization and Mapping ( SLAM ), or online learning; and (iii) iterative-numerics replacement , where the comparison is to non-amortized solvers and the speedups are largest (e.g. ∼ 4×10 4 for the Pulse Inverter over GRAPE , Sec. 4.5). Across these regimes, the framework’s deployment-relevant compute-time advantage is carried by the per-episode reduction in NN invocations – a lever that can be compounded by the engineering directions outlined next. 
+
+Accelerating real-time applications. Two natural directions could push the framework toward sub-millisecond per-invocation inference on embedded targets. First, inference-engine compilation :
+
+torch .compile [78 ], CUDA graphs, ONNX/TensorRT export, or porting to JAX with jit [ 79 ] – the latter being what makes ReBRAC the fastest per-pass entry in Tab. 5 – can collapse the kernel-launch floor by another 5 –10 ×, architecture-agnostically. Second, long-horizon-friendly architectures : structured state-space models [ 80 ] such as Mamba [ 81 ] or linear-attention transformers [ 82 ] replace attention’s 
+
+O(T 2) cost with linear-in-T scaling and admit streaming inference at constant per-step state. At the chunk lengths explored here ( T =16 – 128 ) the asymptotic advantage of linear-scan architectures is small, but it may become crucial once IL is scaled to T ≫ 10 3 – the regime relevant for long-horizon symbolic planning, dexterous manipulation, or long-range locomotion. 
+
+Ballistic execution. A second implication of chunked emission, distinct from the per-call latency budget above, is that the emitted action sequence can be played out at the actuator’s native rate, indepen-dently of NN -inference latency or the sensory-feedback loop rate. This open-loop ballistic regime mirrors how mammalian motor control handles actions too fast for closed-loop correction — saccades, ballistic reaching, drumming, the kHz audio–motor loop of bats, and defensive reflexes. On the engineering side, the same decoupling becomes crucial whenever the closed loop is the bottleneck rather than the actuator: high-speed manipulation or insect-scale flight, where flight dynamics do not admit a full perception– NN –actuation round-trip; surgical robotics combining kHz haptic loops with ∼ 100 Hz vision; and reactive collision avoidance requiring sub-tens-of-ms responses. Closed-loop replanning with Inverters would enter at the sequence boundary rather than at every tick, leveraging the same coarse-feedback / fine-feedforward division biological motor systems use for fast skilled behavior. 
+
+Extensions. Our experiments in the present work are deterministic, fully-observable, and single-agent; when extending to stochastic, partially-observable, and multi-agent settings, Inverters must accom-modate the added uncertainty. A natural first direction therefore is probabilistic Inverters , in which any of the four Inverter components can independently become stochastic – the forward model fθ , the inverse model gφ , the task context c, or the input state s0 (the POMDP / belief case) – with two cross-cutting axes parameterizing the objective: where preferences live (Bolza cost vs. prior over outcomes) and how uncertainty enters (pragmatic, risk-sensitive, or epistemic-aware). Stochastic optimal control, control-as-inference, Bayes-adaptive / posterior-sampling, and variational Inverters then appear as cells of that grid; active-inference Inverters would occupy the specific outcome-prior × expected-free-energy corner [ 3 ]. A second direction is latent Inverters , e.g., with bidirectional latent world models [ 40 , 46 ] as a more 
+
+> 16 Inverse Learning for Planning and Control
+
+abstract planning substrate. A third direction is deeper hierarchies : For example, a Level 3 Inverter above Level 2, treating the choice of subgoal specification for Level 2 as itself an inverse problem given a task description. On the neuro-side, among others, two natural next candidate principles for integration into our framework would be predictive coding [83 , 84 ] and active sensing [85 , 86 ] – both particularly relevant to the move from the offline regime studied here to online learning and control: predictive coding as an error-correction signal driven by FoM prediction errors, and active sensing as an alternative principled remedy for the narrow-data FoM -hacking failure mode (Sec. 4.4). A third, complementary candidate is 
+
+dual-process organization along the lines of the fast/slow distinction [ 87 ]: having established FoM s/ IM sfor a fast ‘System 1’ that emits a plan in a single feedforward pass, the same trained modules could be repurposed as differentiable substrates for a slower, deliberative ‘System 2’ — e.g., iterative rollouts, inner-loop search, or test-time refinement through the FoM — when accuracy or safety budgets justify the additional cost. The same neural infrastructure would then span a continuum from amortized reactive control to iterative deliberation. 
+
+Inverse World Models. Together these extensions form a trajectory scaling the present FoM /IM core up to paired forward and inverse world models . Such inverse world models would apply the IL paradigm not to a deterministic, fully-observable dynamics model but to a world model in the modern sense – latent, stochastic, partially observable, possibly multi-agent, language-conditioned where useful – yielding an Inverter that, in a single feedforward pass, emits an action plan that inverts the forward world model to guide goal-directed behavior. In summary, we propose that the Inverter framework, based on the principles of neuro-inspired Inverse Learning, paths a way to a versatile class of world-interfaces, particularly for latency- and resource-critical embodied AI. 
+
+> 17
+
+Inverse Learning for Planning and Control 
+
+References 
+
+[1] Emanuel Todorov and Michael I. Jordan. Optimal feedback control as a theory of motor coordination. Nature Neuroscience , 5(11):1226–1235, 2002. doi: 10.1038/nn963. [2] David C. Knill and Alexandre Pouget. The Bayesian brain: The role of uncertainty in neural coding and computation. Trends in Neurosciences , 27(12):712–719, 2004. doi: 10.1016/j.tins.2004.10.007. [3] Karl Friston. The free-energy principle: A unified brain theory? Nature Reviews Neuroscience , 11(2): 127–138, 2010. doi: 10.1038/nrn2787. [4] Samuel J. Gershman, Eric J. Horvitz, and Joshua B. Tenenbaum. Computational rationality: A converging paradigm for intelligence in brains, minds, and machines. Science , 349(6245):273–278, 2015. doi: 10.1126/ science.aac6076. [5] Falk Lieder and Thomas L Griffiths. Resource-rational analysis: Understanding human cognition as the optimal use of limited computational resources. Behavioral and brain sciences , 43:e1, 2020. [6] Gerd Gigerenzer and Henry Brighton. Homo heuristicus: Why biased minds make better inferences. Topics in cognitive science , 1(1):107–143, 2009. [7] Michael I. Jordan and David E. Rumelhart. Forward models: Supervised learning with a distal teacher. 
+
+Cognitive Science , 16(3):307–354, 1992. doi: 10.1207/s15516709cog1603_1. [8] Mitsuo Kawato. Internal models for motor control and trajectory planning. Current Opinion in Neurobiology ,9(6):718–727, 1999. doi: 10.1016/S0959-4388(99)00028-8. [9] Daniel M. Wolpert and Mitsuo Kawato. Multiple paired forward and inverse models for motor control. 
+
+Neural Networks , 11(7–8):1317–1329, 1998. doi: 10.1016/S0893-6080(98)00066-5. [10] E Paul Zehr and Digby G Sale. Ballistic movement: muscle activation and neuromuscular adaptation. 
+
+Canadian Journal of applied physiology , 19(4):363–378, 1994. [11] Michel Desmurget and Scott Grafton. Forward modeling allows feedback control for fast reaching movements. 
+
+Trends in Cognitive Sciences , 4(11):423–431, 2000. [12] Ann M. Graybiel. The basal ganglia and chunking of action repertoires. Neurobiology of Learning and Memory , 70(1–2):119–136, 1998. doi: 10.1006/nlme.1998.3843. [13] Jörn Diedrichsen and Katja Kornysheva. Motor skill learning between selection and execution. Trends in Cognitive Sciences , 19(4):227–233, 2015. [14] Tonio Ball, Axel Schreiber, Bernd Feige, Michael Wagner, Carl Hermann Lücking, and Rumyana Kristeva-Feige. The role of higher-order motor areas in voluntary movement as revealed by high-resolution eeg and fmri. Neuroimage , 10(6):682–694, 1999. [15] Uri Hasson. Uncovering a timescale hierarchy by studying the brain in a natural context. The Journal of Neuroscience , 45(12):e2368242025, 2025. [16] Lev S. Pontryagin, Vladimir G. Boltyansky, Revaz V. Gamkrelidze, and Evgenii F. Mishchenko. The Mathematical Theory of Optimal Processes . Interscience Publishers, New York, 1962. [17] Oskar Bolza. Vorlesungen über Variationsrechnung . B. G. Teubner, Leipzig and Berlin, 1909. [18] Richard E. Bellman. Dynamic Programming . Princeton University Press, 1957. [19] Simon Arridge, Peter Maass, Ozan Öktem, and Carola-Bibiane Schönlieb. Solving inverse problems using data-driven models. Acta numerica , 28:1–174, 2019. 18 Inverse Learning for Planning and Control 
+
+[20] Gregory Ongie, Ajil Jalal, Christopher A Metzler, Richard G Baraniuk, Alexandros G Dimakis, and Rebecca Willett. Deep learning techniques for inverse problems in imaging. IEEE Journal on Selected Areas in Information Theory , 1(1):39–56, 2020. [21] Karol Gregor and Yann LeCun. Learning fast approximations of sparse coding. In Proceedings of the 27th international conference on international conference on machine learning , pages 399–406, 2010. [22] Hyungjin Chung, Jeongsol Kim, Michael T Mccann, Marc L Klasky, and Jong Chul Ye. Diffusion posterior sampling for general noisy inverse problems. arXiv preprint arXiv:2209.14687 , 2022. [23] Alberto Bemporad, Manfred Morari, Vivek Dua, and Efstratios N. Pistikopoulos. The explicit linear quadratic regulator for constrained systems. Automatica , 38(1):3–20, 2002. doi: 10.1016/S0005-1098(01)00174-1. [24] Sergey Levine and Vladlen Koltun. Guided policy search. In International conference on machine learning ,pages 1–9. PMLR, 2013. [25] Igor Mordatch and Emo Todorov. Combining the benefits of function approximation and trajectory optimiza-tion. In Robotics: Science and Systems , 2014. doi: 10.15607/RSS.2014.X.052. [26] Jan Carius, Farbod Farshidian, and Marco Hutter. Mpc-net: A first principles guided policy search. IEEE Robotics and Automation Letters , 5(2):2897–2904, 2020. [27] Nicolas Heess, Gregory Wayne, David Silver, Timothy Lillicrap, Tom Erez, and Yuval Tassa. Learning continuous control policies by stochastic value gradients. In Advances in Neural Information Processing Systems , 2015. [28] Brandon Amos and J. Zico Kolter. OptNet: Differentiable optimization as a layer in neural networks. In 
+
+Proceedings of the 34th International Conference on Machine Learning (ICML) , 2017. [29] Brandon Amos, Ivan Jimenez, Jacob Sacks, Byron Boots, and J Zico Kolter. Differentiable mpc for end-to-end planning and control. Advances in neural information processing systems , 31, 2018. [30] Jürgen Schmidhuber. Making the world differentiable: On using self-supervised fully recurrent neural networks for dynamic reinforcement learning and planning in non-stationary environments. Technical Report FKI-126-90, Institut für Informatik, Technische Universität München, 1990. [31] Yann LeCun. A path towards autonomous machine intelligence, version 0.9.2. OpenReview position paper, 2022. 2022-06-27. [32] Marc Peter Deisenroth and Carl Edward Rasmussen. PILCO: A model-based and data-efficient approach to policy search. In Proceedings of the 28th International Conference on Machine Learning , pages 465–472, 2011. [33] Danijar Hafner, Timothy Lillicrap, Jimmy Ba, and Mohammad Norouzi. Dream to control: Learning behaviors by latent imagination. In International Conference on Learning Representations , 2020. [34] Aravind Srinivas, Allan Jabri, Pieter Abbeel, Sergey Levine, and Chelsea Finn. Universal planning networks: Learning generalizable representations for visuomotor control. In Proceedings of the 35th International Conference on Machine Learning , volume 80 of Proceedings of Machine Learning Research , pages 4732– 4741, 2018. [35] Nicklas Hansen, Hao Su, and Xiaolong Wang. TD-MPC2: Scalable, robust world models for continuous control. In International Conference on Learning Representations , 2024. [36] Michael Janner, Qiyang Li, and Sergey Levine. Offline reinforcement learning as one big sequence modeling problem. In Advances in Neural Information Processing Systems , volume 34, pages 1273–1286, 2021. 19 Inverse Learning for Planning and Control 
+
+[37] Lili Chen, Kevin Lu, Aravind Rajeswaran, Kimin Lee, Aditya Grover, Michael Laskin, Pieter Abbeel, Aravind Srinivas, and Igor Mordatch. Decision Transformer: Reinforcement learning via sequence modeling. In Advances in Neural Information Processing Systems , volume 34, 2021. [38] Michael Janner, Yilun Du, Joshua B. Tenenbaum, and Sergey Levine. Planning with diffusion for flexible behavior synthesis. In Proceedings of the 39th International Conference on Machine Learning (ICML) ,volume 162 of Proceedings of Machine Learning Research , pages 9902–9915. PMLR, 17–23 Jul 2022. [39] Julian Schrittwieser, Ioannis Antonoglou, Thomas Hubert, Karen Simonyan, Laurent Sifre, Simon Schmitt, Arthur Guez, Edward Lockhart, Demis Hassabis, Thore Graepel, Timothy P. Lillicrap, and David Silver. Mastering Atari, Go, chess and shogi by planning with a learned model. Nature , 588(7839):604–609, 2020. doi: 10.1038/s41586-020-03051-4. [40] Vlad Sobal, Wancong Zhang, Kyunghyun Cho, Randall Balestriero, Tim G. J. Rudner, and Yann LeCun. Learning from reward-free offline data: A case for planning with latent dynamics models, 2025. [41] Amir Bar, Gaoyue Zhou, Danny Tran, Trevor Darrell, and Yann LeCun. Navigation world models, 2024. URL https://arxiv.org/abs/2412.03572 .[42] Ahmed H. Qureshi, Anthony Simeonov, Mayur J. Bency, and Michael C. Yip. Motion planning networks. In 
+
+IEEE International Conference on Robotics and Automation , pages 2118–2124, 2019. doi: 10.1109/ICRA. 2019.8793889. [43] Tony Z. Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained bimanual manipulation with low-cost hardware. In Robotics: Science and Systems , 2023. doi: 10.15607/RSS.2023.XIX.016. [44] Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. The International Journal of Robotics Research , 44(10-11):1684–1704, 2025. [45] Richard S. Sutton, Doina Precup, and Satinder Singh. Between MDPs and semi-MDPs: A framework for temporal abstraction in reinforcement learning. Artificial Intelligence , 112(1–2):181–211, 1999. doi: 10.1016/S0004-3702(99)00052-1. [46] Nicklas Hansen, Jyothir S V, Vlad Sobal, Yann LeCun, Xiaolong Wang, and Hao Su. Hierarchical world models as visual whole-body humanoid controllers. In International Conference on Learning Representations ,2025. [47] Caelan Reed Garrett, Rohan Chitnis, Rachel Holladay, Beomjoon Kim, Tom Silver, Leslie Pack Kaelbling, and Tomás Lozano-Pérez. Integrated task and motion planning. Annual review of control, robotics, and autonomous systems , 4(1):265–293, 2021. [48] Tobia Marcucci and Russ Tedrake. Warm start of mixed-integer programs for model predictive control of hybrid systems. IEEE Transactions on Automatic Control , 66(6):2433–2448, 2020. [49] Vasumathi Raman, Alexandre Donzé, Mehdi Maasoumy, Richard M Murray, Alberto Sangiovanni-Vincentelli, and Sanjit A Seshia. Model predictive control with signal temporal logic specifications. In 53rd IEEE Conference on Decision and Control , pages 81–87. IEEE, 2014. [50] Kevin Clark, Paul Vicol, Kevin Swersky, and David Fleet. Directly fine-tuning diffusion models on differen-tiable rewards. In International Conference on Learning Representations , volume 2024, pages 4793–4822, 2024. [51] Jiazheng Xu, Xiao Liu, Yuchen Wu, Yuxuan Tong, Qinkai Li, Ming Ding, Jie Tang, and Yuxiao Dong. Imagereward: Learning and evaluating human preferences for text-to-image generation. Advances in Neural Information Processing Systems , 36:15903–15935, 2023. 20 Inverse Learning for Planning and Control 
+
+[52] Chenyu Wang, Masatoshi Uehara, Yichun He, Amy Wang, Avantika Lal, Tommi Jaakkola, Sergey Levine, Aviv Regev, Hanchen Wang, and Tommaso Biancalani. Fine-tuning discrete diffusion models via reward optimization with applications to dna and protein design. In International Conference on Learning Represen-tations , volume 2025, pages 47871–47899, 2025. [53] Carles Domingo i Enrich, Michal Drozdzal, Brian Karrer, and Ricky TQ Chen. Adjoint matching: Fine-tuning flow and diffusion generative models with memoryless stochastic optimal control. In International Conference on Learning Representations , volume 2025, pages 53791–53846, 2025. [54] Andrew Y Ng, Stuart Russell, et al. Algorithms for inverse reinforcement learning. In Icml , volume 1, page 2, 2000. [55] Denis Tarasov, Alexander Nikulin, Dmitry Akimov, Vladislav Kurenkov, and Sergey Kolesnikov. CORL: Research-oriented deep offline reinforcement learning library. In Advances in Neural Information Processing Systems , volume 36, 2023. [56] Xiaowei Lv, Zhilin Zhang, Yijun Li, Yusen Huo, Siyuan Ju, Xuyan Li, Chunxiang Hong, Tianyu Wang, Yongcai Wang, Peng Sun, Chuan Yu, Jian Xu, and Bo Zheng. DecisionLLM: Large language models for long sequence decision exploration, 2026. URL https://arxiv.org/abs/2601.10148 .[57] Aviral Kumar, Joey Hong, Anikait Singh, and Sergey Levine. When should we prefer offline reinforcement learning over behavioral cloning? In International Conference on Learning Representations , 2022. [58] Pete Florence, Corey Lynch, Andy Zeng, Oscar A Ramirez, Ayzaan Wahid, Laura Downs, Adrian Wong, Johnny Lee, Igor Mordatch, and Jonathan Tompson. Implicit behavioral cloning. In 5th Annual Conference on Robot Learning , 2021. URL https://openreview.net/forum?id=rif3a5NAxU6 .[59] Paul M. Fitts. The information capacity of the human motor system in controlling the amplitude of movement. 
+
+Journal of Experimental Psychology , 47(6):381–391, 1954. [60] E. R. F. W. Crossman and P. J. Goodeve. Feedback control of hand-movement and Fitts’ law. The Quarterly Journal of Experimental Psychology Section A , 35(2):251–278, 1983. doi: 10.1080/14640748308402133. [61] David E. Meyer, Richard A. Abrams, Sylvan Kornblum, Charles E. Wright, and J. E. Keith Smith. Optimality in human motor performance: Ideal control of rapid aimed movements. Psychological Review , 95(3): 340–370, 1988. doi: 10.1037/0033-295X.95.3.340. [62] Navin Khaneja, Timo Reiss, Cindie Kehlet, Thomas Schulte-Herbrüggen, and Steffen J Glaser. Optimal control of coupled spin dynamics: design of nmr pulse sequences by gradient ascent algorithms. Journal of magnetic resonance , 172(2):296–305, 2005. [63] Marco Dall’Ara, Martin Koppenhöfer, Florentin Reiter, Thomas Wellens, Simone Montangero, and Wal-ter Hahn. Random layers for quantum optimal control with exponential expressivity. arXiv preprint arXiv:2603.08948 , 2026. [64] Arash Fath Lipaei, Ebrahim Khaleghian, Selin Aslan, Gani Göral, Zidong Lin, and Özgür E Müstecaplıo˘ glu. Fidelity-informed neural pulse compilation of a continuous family of quantum gates with uncertainty-margin analysis. arXiv preprint arXiv:2604.11314 , 2026. [65] Demis Hassabis, Dharshan Kumaran, Christopher Summerfield, and Matthew Botvinick. Neuroscience-inspired artificial intelligence. Neuron , 95(2):245–258, 2017. [66] John O’Keefe and Jonathan Dostrovsky. The hippocampus as a spatial map: preliminary evidence from unit activity in the freely-moving rat. Brain research , 1971. [67] Torkel Hafting, Marianne Fyhn, Sturla Molden, May-Britt Moser, and Edvard I Moser. Microstructure of a spatial map in the entorhinal cortex. Nature , 436(7052):801–806, 2005. 21 Inverse Learning for Planning and Control 
+
+[68] Jun Tanji and Keisetsu Shima. Role for supplementary motor area cells in planning several movements ahead. 
+
+Nature , 371(6496):413–416, 1994. [69] Andrea d’Avella, Philippe Saltiel, and Emilio Bizzi. Combinations of muscle synergies in the construction of a natural motor behavior. Nature neuroscience , 6(3):300–308, 2003. [70] R Quian Quiroga, Leila Reddy, Gabriel Kreiman, Christof Koch, and Itzhak Fried. Invariant visual represen-tation by single neurons in the human brain. Nature , 435(7045):1102–1107, 2005. [71] Roger N. Lemon. Descending pathways in motor control. Annual Review of Neuroscience , 31:195–218, 2008. doi: 10.1146/annurev.neuro.31.060407.125547. [72] Jean-Alban Rathelot and Peter L. Strick. Subdivisions of primary motor cortex based on cortico-motoneuronal cells. Proceedings of the National Academy of Sciences , 106(3):918–923, 2009. doi: 10.1073/pnas. 0808362106. [73] Hans-Ulrich Schnitzler and Annette Denzinger. Auditory fovea and Doppler shift compensation: Adaptations for flutter detection in echolocating bats using CF-FM signals. Journal of Comparative Physiology A , 197(5): 541–559, 2011. doi: 10.1007/s00359-010-0569-6. [74] David Kleinfeld and Martin Deschênes. Neuronal basis for object location in the vibrissa scanning sensori-motor system. Neuron , 72(3):455–468, 2011. doi: 10.1016/j.neuron.2011.10.009. [75] Jeheskel Shoshani, William J. Kupsky, and Gary H. Marchant. Elephant brain: Part I: Gross morphology, functions, comparative anatomy, and evolution. Brain Research Bulletin , 70(2):124–157, 2006. doi: 10.1016/j.brainresbull.2006.03.016. [76] Samuel Williams, Andrew Waterman, and David Patterson. Roofline: an insightful visual performance model for multicore architectures. Communications of the ACM , 52(4):65–76, 2009. [77] Reiner Pope, Sholto Douglas, Aakanksha Chowdhery, Jacob Devlin, James Bradbury, Jonathan Heek, Kefan Xiao, Shivani Agrawal, and Jeff Dean. Efficiently scaling transformer inference. Proceedings of machine learning and systems , 5:606–624, 2023. [78] Jason Ansel, Edward Yang, Horace He, Natalia Gimelshein, Animesh Jain, Michael Voznesensky, Bin Bao, Peter Bell, David Berard, Evgeni Burovski, et al. Pytorch 2: Faster machine learning through dynamic python bytecode transformation and graph compilation. In Proceedings of the 29th ACM international conference on architectural support for programming languages and operating systems, volume 2 , pages 929–947, 2024. [79] James Bradbury, Roy Frostig, Peter Hawkins, Matthew James Johnson, Chris Leary, Dougal Maclaurin, George Necula, Adam Paszke, Jake VanderPlas, Skye Wanderman-Milne, et al. Jax: composable transforma-tions of python+ numpy programs. 2018. [80] Albert Gu, Karan Goel, and Christopher Ré. Efficiently modeling long sequences with structured state spaces. 
+
+arXiv preprint arXiv:2111.00396 , 2021. [81] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. arXiv preprint arXiv:2312.00752 , 2023. [82] Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and François Fleuret. Transformers are rnns: Fast autoregressive transformers with linear attention. In International conference on machine learning , pages 5156–5165. PMLR, 2020. [83] Rajesh P. N. Rao and Dana H. Ballard. Predictive coding in the visual cortex: A functional interpretation of some extra-classical receptive-field effects. Nature Neuroscience , 2(1):79–87, 1999. doi: 10.1038/4580. 22 Inverse Learning for Planning and Control 
+
+[84] Andre M. Bastos, W. Martin Usrey, Rick A. Adams, George R. Mangun, Pascal Fries, and Karl J. Friston. Canonical microcircuits for predictive coding. Neuron , 76(4):695–711, 2012. doi: 10.1016/j.neuron.2012.10. 038. [85] Scott Cheng-Hsin Yang, Daniel M. Wolpert, and Máté Lengyel. Theoretical perspectives on active sensing. 
+
+Current Opinion in Behavioral Sciences , 11:100–108, 2016. doi: 10.1016/j.cobeha.2016.06.009. [86] Jacqueline Gottlieb, Pierre-Yves Oudeyer, Manuel Lopes, and Adrien Baranes. Information-seeking, curiosity, and attention: Computational and neural mechanisms. Trends in Cognitive Sciences , 17(11):585–593, 2013. doi: 10.1016/j.tics.2013.09.001. [87] Daniel Kahneman. Thinking, fast and slow . macmillan, 2011. [88] Justin Fu, Aviral Kumar, Ofir Nachum, George Tucker, and Sergey Levine. D4RL: Datasets for deep data-driven reinforcement learning, 2020. URL https://arxiv.org/abs/2004.07219 .[89] Scott Fujimoto and Shixiang Shane Gu. A minimalist approach to offline reinforcement learning. In Advances in Neural Information Processing Systems , volume 34, pages 20132–20145, 2021. [90] Aviral Kumar, Aurick Zhou, George Tucker, and Sergey Levine. Conservative Q-learning for offline reinforcement learning. In Advances in Neural Information Processing Systems , volume 33, pages 1179– 1191, 2020. [91] Ilya Kostrikov, Ashvin Nair, and Sergey Levine. Offline reinforcement learning with implicit Q-learning. In International Conference on Learning Representations , 2022. URL https://openreview.net/ forum?id=68n2s9ZJWF8 .[92] Ashvin Nair, Abhishek Gupta, Murtaza Dalal, and Sergey Levine. AWAC: Accelerating online reinforcement learning with offline datasets, 2020. [93] Denis Tarasov, Vladislav Kurenkov, Alexander Nikulin, and Sergey Kolesnikov. Revisiting the minimalist approach to offline reinforcement learning. In Advances in Neural Information Processing Systems , volume 36, 2023. [94] Gaon An, Seungyong Moon, Jang-Hyun Kim, and Hyun Oh Song. Uncertainty-based offline reinforcement learning with diversified Q-ensemble. In Advances in Neural Information Processing Systems , 2021. [95] Michael Athans and Peter L Falb. Optimal control: an introduction to the theory and its applications .McGraw-Hill, 1966. [96] Donald E Kirk. Optimal control theory: an introduction . Prentice-Hall, 1970. [97] Zhengyao Jiang, Tianjun Zhang, Michael Janner, Yueying Li, Tim Rocktäschel, Edward Grefenstette, and Yuandong Tian. Efficient planning in a compact latent action space. In 3rd Offline RL Workshop: Offline RL as a ”Launchpad” , 2022. URL https://openreview.net/forum?id=pVBETTS2av .[98] Patrick Kidger. On neural differential equations. arXiv preprint arXiv:2202.02435 , 2022. [99] Pauli Virtanen, Ralf Gommers, Travis E Oliphant, Matt Haberland, Tyler Reddy, David Cournapeau, Evgeni Burovski, Pearu Peterson, Warren Weckesser, Jonathan Bright, et al. Scipy 1.0: fundamental algorithms for scientific computing in python. Nature methods , 17(3):261–272, 2020. [100] Vladislav Kurenkov and Sergey Kolesnikov. Showing your offline reinforcement learning work: Online evaluation budget matters. In Proceedings of the 39th International Conference on Machine Learning ,volume 162 of Proceedings of Machine Learning Research , pages 11729–11752, 2022. [101] Matthew Thomas Jackson, Uljad Berdica, Jarek Liesen, Shimon Whiteson, and Jakob Nicolaus Foerster. A clean slate for offline reinforcement learning, 2025. URL https://arxiv.org/abs/2504.11453 .[102] Tom Le Paine, Cosmin Paduraru, Andrea Michi, Caglar Gulcehre, Konrad Zolna, Alexander Novikov, Ziyu Wang, and Nando de Freitas. Hyperparameter selection for offline reinforcement learning, 2020. 23 Inverse Learning for Planning and Control 
+
+A Technical appendices and supplementary material 
+
+A.1 Abbreviations AWAC Advantage-Weighted Actor-Critic 
+
+AWG Arbitrary Waveform Generator 
+
+BC Behavior Cloning 
+
+BFGS Broyden–Fletcher–Goldfarb–Shanno (quasi-Newton optimizer) 
+
+BFS Breadth-first search 
+
+CBOP Conservative Bayesian Model-based Value Expansion for Offline Policy Optimization 
+
+CNOT Controlled-NOT 
+
+COMBO Conservative Offline Model-Based Policy Optimization 
+
+CORL Clean Offline Reinforcement Learning 
+
+CPG Central Pattern Generator 
+
+CQL Conservative Q-Learning 
+
+CT Computed Tomography 
+
+D4RL Datasets for Deep Data-Driven Reinforcement Learning 
+
+DL Deep Learning 
+
+DP Dynamic Programming 
+
+DT Decision Transformer 
+
+EDAC Ensemble-Diversified Actor-Critic 
+
+EMA Exponential Moving Average 
+
+FoM Forward model 
+
+FSM Finite State Machine 
+
+GRAPE Gradient Ascent Pulse Engineering 
+
+IL Inverse Learning 
+
+IM Inverse model 
+
+IQL Implicit Q-Learning 
+
+IRL Inverse Reinforcement Learning 
+
+ISL Inverse Sequence Learning 
+
+KAK Cartan (KAK) decomposition 
+
+KL Kullback–Leibler (divergence) 
+
+LEQ Lower Expectile Q-learning 
+
+LISTA Learned Iterative Shrinkage-Thresholding Algorithm 
+
+MAML Model-Agnostic Meta-Learning 
+
+MAPLE Model-based Adaptable Policy LEarning 
+
+MBRL Model-Based Reinforcement Learning 
+
+> 24 Inverse Learning for Planning and Control
+
+MILP Mixed-Integer Linear Programming 
+
+MLP Multilayer perceptron 
+
+MOBILE MOdel-Bellman Inconsistency penalized offLinE Policy Optimization 
+
+MOPO Model-based Offline Policy Optimization 
+
+MOReL Model-based Offline Reinforcement Learning 
+
+MPC Model Predictive Control 
+
+MPNet Motion Planning Networks 
+
+MPPI Model Predictive Path Integral 
+
+MRI Magnetic Resonance Imaging 
+
+MuJoCo Multi-Joint dynamics with Contact 
+
+NeSy Neuro-Symbolic AI 
+
+NMR Nuclear Magnetic Resonance 
+
+NN Neural network 
+
+NS-CL Neuro-Symbolic Concept Learner 
+
+OC Optimal Control 
+
+OOD Out-of-Distribution 
+
+PD Proportional–Derivative 
+
+PG Policy Gradient 
+
+PILCO Probabilistic Inference for Learning Control 
+
+POMDP Partially Observable Markov Decision Process 
+
+QEC Quantum Error Correction 
+
+QP Quadratic Programming 
+
+RAMBO Robust Adversarial Model-Based Offline RL 
+
+ReBRAC Re-evaluated Behavior-Regularized Actor Critic 
+
+RL Reinforcement Learning 
+
+SAC-N Soft Actor-Critic with N-critic ensemble 
+
+SEM Standard Error of the Mean 
+
+SLAM Simultaneous Localization and Mapping 
+
+SNR Signal-to-Noise Ratio 
+
+SR Success Rate 
+
+TAP Trajectory Autoencoding Planner 
+
+TD Temporal Difference 
+
+TD-MPC2 Temporal Difference Learning for Model Predictive Control 2 
+
+TD3+BC Twin Delayed DDPG + Behavior Cloning 
+
+TT Trajectory Transformer 
+
+> 25 Inverse Learning for Planning and Control
+
+A.2 Experimental details for maze2d -umaze -v1 
+
+The maze2d -umaze -v1 benchmark from D4RL [ 88 ] is a continuous-control navigation task in which a point mass must reach a goal position in a U-shaped corridor. The offline dataset consists of undirected trajectories generated by a Proportional–Derivative ( PD ) controller navigating between random waypoints; these follow the angular U-shaped geometry of the maze walls, visible in the heatmap in Figure 2. Our final FoM is a chunked causal Transformer with chunk length L = 16 , dmodel = 128 , 4 attention heads, 4 layers, and 847k parameters, trained for 300 epochs with Gaussian state noise σ = 0.01 . We then freeze this model and train the final causal Transformer IM for 2000 epochs through it, using segment length 16 , dmodel = 192 , 6 heads, 4 layers. The IM maps (s0, sg) 7 → a1:128 in one forward pass. Training goal sampling : each minibatch sample is a (s0, sg) pair with s0 = st drawn uniformly from the offline buffer and sg = st+H taken at a fixed horizon offset H = 128 ahead in the same trajectory; the sampler is episode-aware (pairs that would cross an episode boundary are rejected). This matches the deployment query distribution: at test time the Path Inverter emits sub-goals at wp_spacing = 6 m on maze2d -medium /large and the goal directly on umaze , both well within one IM -horizon of typical dataset displacement. 
+
+Maze2d IM training objective. Let ˆa1: H = gφ (s0, sg) be the IM output, ˆs1: H = f (1: H) 
+
+> θ
+
+(s0, ˆa1: H ) the seg-mented FoM rollout (the rollout is chained across ⌈H/T ⌉ chunks of length T = 16 so the gradient flows end-to-end through the frozen FoM), and ˆ pt = ˆs(xy ) 
+
+> t
+
+the predicted positions. We train gφ to minimize 
+
+LIM-2d = λterm ˆsH − sg 2 + λdense 
+
+h
+
+− 1
+
+> HH
+
+# ∑
+
+> t=1
+
+exp  −∥ ˆpt − pg∥i
+
++ λbnd 1
+
+> HH
+
+# ∑
+
+> t=1
+
+ 1 − O( ˆpt ), (3) with λterm = 0 , λdense = λbnd = 5 in the final runs (the terminal term is absorbed into the dense reward via the exponential profile and was set to 0 on umaze ). O : [xmin , xmax ]×[ymin , ymax ] → [0, 1] is a precomputed support map of the offline data, queried at the FoM -rolled-out positions by bilinear interpolation ( F.grid_sample , differentiable in ˆpt ). Construction: discretize the data’s (x, y) extent into a 64 ×64 grid, count visits per cell, apply the chosen occupancy mode (binary : ⊮[count > 0] in published runs, or 
+
+frequency : log (1 + count )), Gaussian-smooth with σcells = 1.5 for sub-cell gradients, and rescale to 
+
+[0, 1].
+
+Loss-balance toggle. The Table 16 entry “boundary mode: {binary, z-score}” is unrelated to the occupancy mode above; “z-score” refers to a separate, orthogonal balance toggle in which each raw loss term ( Lterm , Ldense , Lbnd , Lfid ) is divided by its running Exponential Moving Average ( EMA ) standard deviation (momentum 0.99 , 100 -batch warm-up) before its λ weight is applied – so λ operates on unit-variance signals. The published maze2d runs leave this toggle off (raw losses) and use binary 
+
+occupancy. At evaluation time we consider two execution modes for the same final IM checkpoint. In one-shot 
+
+mode, the controller executes the generated 128 -step action sequence open-loop and only requests a new plan once that horizon has been consumed. In replanning mode, it executes the first K = 64 actions, observes the new state, and replans if the goal has not yet been reached. For comparison we trained eight offline RL baselines with the CORL library [ 55 ]: BC , TD3+BC [89 ], CQL [90 ], IQL [ 91 ], AWAC [ 92 ], ReBRAC [93 ], SAC-N [94 ], and Diffuser [ 38 ]. We verified that our reproduced scores are consistent with the reference values reported by CORL and evaluated all methods on 100 episodes under the D4RL -official protocol (env-default goal, random initial state per env .reset() , score computed via env .get_normalized_score() ). 
+
+> 26
+
+Inverse Learning for Planning and Control 
+
+Supplementary Table 5: Per-episode inference compute on maze2d -umaze -v1 (100 episodes, 300 step-s/ep). Each cell reports the number of NN forward passes per episode, mean wall time per pass (CUDA-synced, GPU, PyTorch, batch 1), other — per-episode non- NN overhead inside the algorithm (Inverter: per-chunk replan dispatch only (no Path Inverter on this maze); Diffuser: the PD tracker running at every env step; step-wise RL baselines: 0), the sum = #NN-passes × ms/NN-pass + other, and × slower relative to our fastest configuration on this maze. † JAX+JIT; all other PyTorch. Inverter rows are mean ± std over 4 seed IM s; the FoM is not used at deployment, only the IM -related compute time is counted. ‡ DecisionLLM sum is an order-of-magnitude estimate from the paper. Method score ↑ std #NN-passes ms/NN-pass other sum × slower BC [55] 0.36 8.69 300 1.70 ms — 511 .3 ms 44 .7×
+
+CQL [90] −8.90 6.11 300 1.84 ms — 551 .2 ms 48 .2×
+
+BC-10% [55] 12 .18 4.29 300 1.25 ms — 374 .9 ms 32 .8×
+
+AWAC [92] 82 .67 28 .30 300 1.28 ms — 382 .5 ms 33 .4×
+
+IQL [91] 42 .11 0.58 300 1.69 ms — 508 .4 ms 44 .4×
+
+TD3+BC [89] 29 .41 12 .31 300 1.67 ms — 502 .1 ms 43 .9×
+
+ReBRAC [93] 106 .87 22 .16 300 0.21 ms † — 63 .0 ms † 5.5×
+
+SAC-N [94] 130 .59 16 .52 300 1.80 ms — 539 .3 ms 47 .1×
+
+EDAC [94] 95 .26 6.39 300 1.74 ms — 522 .1 ms 45 .6×
+
+DT [37] 18 .08 25 .42 300 3.57 ms — 1.07 s 93 .7×
+
+Diffuser [38] 116 .32 34 .70 64 6.64 ms 3 .0 ms 427 .8 ms 37 .4×
+
+DecisionLLM [56] 145 .20 35 .32 300 33 .30 ms — 10 .00 s ‡ 873 .9×
+
+Inverter K = 16 164 .25 0.54 19 3.36 ms 9 .3 ms 73 .2 ms 6.4×
+
+Inverter K = 32 164 .77 0.34 10 2.67 ms 4 .3 ms 31 .0 ms 2.7×
+
+Inverter K = 64 165 .19 0.80 5 3.14 ms 2 .9 ms 18 .7 ms 1.6×
+
+Inverter K = 128 161 .64 2.17 3 3.19 ms 1 .9 ms 11 .4 ms 1.0×
+
+A.3 Timing measurement protocol 
+
+This appendix gives the exact protocol behind Table 5 and explains why the Inverter transformer is not meaningfully slower than the baselines’ MLPs on a single forward pass. 
+
+Terminology. Throughout this paper, “inference compute time” refers to per-episode wall time on a single device at batch 1; in a launch-overhead-limited small-model regime this is the deployment-relevant metric, distinct from FLOPs. Per-pass parity between the Inverter transformer and the baseline MLP s (see “Why isn’t a transformer slower than an MLP ?” below) confirms we are in this regime on the architectures evaluated here. 
+
+Hardware and software. All timings are measured on a single GPU (cuda:0) with PyTorch in eval 
+
+mode under torch .no_grad . ReBRAC is the sole exception: its inference is measured from JAX+JIT code and is therefore marked with † in Table 5. MuJoCo stepping uses the default single-thread CPU implementation. 
+
+Per-pass wall time. Each neural-network forward pass is timed using time .perf_counter() 
+
+wrapped by torch .cuda .synchronize() on both sides, so the reported wall time reflects the actual completion of the GPU work, not just the kernel-launch queue. Before the 100 -episode evaluation starts we run 10 warm-up forward passes on dummy inputs (to flush kernel autotuning and CUDA graph compilation) and then clear the timing buffers. The same CUDA-sync wrapper is used around env 
+
+27 Inverse Learning for Planning and Control 
+
+.step (to time the MuJoCo physics), around each denoising step for Diffuser, and around each IM and FoM forward for the Inverter. 
+
+Per-episode accounting. We decompose an episode’s wall time into four additive components: (i) NN forward passes, (ii) other algorithmic overhead – Python control loop, tensor prep, .cpu() .numpy() 
+
+transfers, replan dispatch (the Inverter) or the PD tracker (Diffuser), (iii) env .step , and (iv) a residual of a few milliseconds for episode-level bookkeeping. Table 5’s sum column reports (i) + ( ii ), i.e. the algorithm’s inference compute time budget. Environment stepping and framework glue are excluded on purpose: we want a quantity that is invariant to the simulator and portable to real-robot deployment, where 
+
+env .step is replaced by physical dynamics. 
+
+Evaluation protocol. All methods are evaluated on exactly 100 episodes of maze2d -umaze -v1 
+
+under the D4RL -official protocol – env-default fixed target, random initial states from env .reset() ,fixed evaluation seed so the 100 starts are reproduced across runs – with a hard cap of 300 environment steps per episode. Inverter numbers average over 4 independently-trained seed IM s (and their matching FoMs). 
+
+Transformer vs. MLP compute time. A natural question is how a 1.5 M-parameter, 4-layer / 192 -d-model transformer (the Inverter) ends up at essentially the same ∼ 1.5 ms-per-forward floor as a 
+
+∼ 200 k-parameter 3 -layer / 256 -hidden MLP ( BC , IQL , SAC-N , TD3+BC , . . . ). The answer is that, at batch 1 GPU inference, neither network is compute-bound: both run a small number of dense kernels whose wall time is dominated by CUDA kernel-launch overhead ( ∼ 10 μs per launch) rather than by floating-point work. A 4-layer transformer incurs roughly 4 – 8× more launches than a 3-layer MLP , but on a modern GPU those extra launches still fit inside the same ∼ 1– 2 ms fixed floor. Concretely, Table 5 shows the MLP baselines clustered between 0.21 and 3.57 ms/pass ( BC at 1.70 , IQL at 1.69 , SAC-N at 1.80 , TD3+BC at 1.67 ), and the Inverter transformer at 1.51 – 1.68 ms/pass – inside that same band. The per-pass parity is also what makes the Inverter’s sum-per-episode advantage so large: because the transformer is not paying an extra order of magnitude per forward, the benefit of emitting a full 128 -step action chunk per forward (instead of one action per env step) translates directly into a 30 –100 × reduction in total forwards per episode, and a matching reduction in sum wall time. 
+
+A.4 Detailed performance tables ( maze2d -medium /large and antmaze )
+
+This appendix collects the per-method performance tables for maze2d -medium -v1 (Table 7) and 
+
+maze2d -large -v1 (Table 8) referenced in Sec. 4.2, and for the six antmaze -v2 variants (Table 9) referenced in Sec. 4.3. Table 6 below summarizes the per-task improvement of the Inverter over the strongest reported baseline on each variant, both in absolute D4RL -score points and as a percentage of the baseline, with the row-wise mean across all 9 tasks. 
+
+Protocol for maze2d -medium /large . Same D4RL -official protocol as Table 5: 100 episodes, env-default fixed target, random initial states from env .reset() with a fixed evaluation seed, 600 -step cap on medium, 800 -step cap on large. CORL numbers are taken from the Tarasov et al. [55] “Last Scores” benchmark (we did not train our own medium/large CORL checkpoints); per-pass times come from our local umaze benchmark (same actor architectures) and are scaled by the target maze’s step count for the 
+
+sum column. Diffuser timings on medium/large are estimated from our measured umaze per-denoise-step timing scaled by horizon, since we do not yet have a pretrained Diffuser checkpoint for those mazes locally (flagged ∗); the Diffuser D4RL numbers are from Janner et al. [38] Table 2. The other column (per-episode non-NN overhead) is ∼ 27 ms on medium and ∼ 36 ms on large because the algorithmic Path Inverter runs a 4-connected BFS on a ∼ 100 -cell grid once per replan event and occasionally performs a full re-plan when the stuck-check triggers (App. A.6); even so, this is an order of magnitude below the 
+
+> 28
+
+Inverse Learning for Planning and Control 
+
+Supplementary Table 6: Per-task D4RL improvement of the Inverter over the strongest reported baseline, summarized across all 9 maze2d /antmaze -v2 variants. Baselines per variant: SAC-N / Diffuser / AWAC are the per-maze winners on maze2d (Table 3); ReBRAC is used as the comparator on every antmaze -v2 
+
+variant (Table 4). ∆ pts = Inverter − baseline; ∆ % = ∆ / baseline. ∗On antmaze -medium -play the Inverter is nominally 1.7 points behind ReBRAC ( 87 .8±8.0 vs. 89 .5±3.4), well within the joint errorbar. Final row: mean across all 9 tasks (D4RL points and %, equally weighted). Task Baseline Baseline Inverter ∆ pts ∆ %
+
+maze2d -umaze -v1 SAC-N 130 .6 161 .6 +31 .0 +23 .7
+
+maze2d -medium -v1 Diffuser 130 .1 166 .8 +36 .7 +28 .2
+
+maze2d -large -v1 AWAC 209 .1 220 .7 +11 .6 +5.5
+
+antmaze -umaze -v2 ReBRAC 97 .8 99 .5 +1.7 +1.7
+
+antmaze -umaze -diverse -v2 ReBRAC 83 .5 99 .8 +16 .3 +19 .5
+
+antmaze -medium -play -v2 ∗ ReBRAC 89 .5 87 .8 −1.7 −1.9
+
+antmaze -medium -diverse -v2 ReBRAC 83 .5 96 .5 +13 .0 +15 .6
+
+antmaze -large -play -v2 ReBRAC 52 .2 93 .0 +40 .8 +78 .2
+
+antmaze -large -diverse -v2 ReBRAC 64 .0 94 .0 +30 .0 +46 .9
+
+Mean (n=9) +19 .9 +24 .2Supplementary Table 7: Per-episode inference compute on maze2d -medium -v1 (100 episodes, 600 steps/ep). Each cell reports the number of NN forward passes per episode, mean wall time per pass (CUDA-synced, GPU, PyTorch, batch 1), other — per-episode non- NN overhead inside the algorithm (Inverter: replan dispatch + the data-derived BFS Path Inverter; Diffuser: the PD tracker running at every env step; step-wise RL baselines: 0), the sum = #NN -passes × ms/ NN -pass + other, and × slower relative to our fastest configuration on this maze.  
+
+> †
+
+JAX+JIT; all other PyTorch. CORL baselines have no trained medium checkpoint in our local benchmark; per-pass time is measured on umaze (same actor architectures) and the sum column scales it by 600 environment steps. The Diffuser row is measured locally on a checkpoint we trained on maze2d -medium -v1 for 2M steps matching the configuration of Janner et al. [38] ; the reported D4RL score is the locally measured one. Inverter row is mean ± std over 4 seed IM s; other here is the per-episode cost of the data-derived cardinal-BFS Path Inverter (Appendix A.6). Method score ↑ std #NN-passes ms/NN-pass other sum × slower BC 0.79 3.25 600 1.70 ms — 1.02 s 14 .0×
+
+BC-10% 14 .25 2.33 600 1.25 ms — 749 .8 ms 10 .3×
+
+DT 31 .71 26 .33 600 3.57 ms — 2.14 s 29 .4×
+
+IQL 34 .85 2.72 600 1.69 ms — 1.02 s 14 .0×
+
+AWAC 52 .88 55 .12 600 1.28 ms — 765 .0 ms 10 .5×
+
+EDAC 57 .04 3.45 600 1.74 ms — 1.04 s 14 .3×
+
+TD3+BC 59 .45 36 .25 600 1.67 ms — 1.00 s 13 .8×
+
+CQL 86 .11 9.68 600 1.84 ms — 1.10 s 15 .1×
+
+SAC-N 88 .61 18 .72 600 1.80 ms — 1.08 s 14 .8×
+
+ReBRAC 105 .11 31 .67 600 0.21 ms † — 126 .0 ms † 1.7×
+
+Diffuser 130 .07 22 .70 256 14 .54 ms 14 .5 ms 3.74 s 51 .3×
+
+Inverter K = 16 166 .82 1.20 38 1.62 ms 11 .2 ms 72 .9 ms 1.0×
+
+MLP cost of every step-wise baseline. 
+
+29 Inverse Learning for Planning and Control antmaze (play)                 
+
+> antmaze-umaze 100/100 antmaze-medium-play 98/100
+> antmaze-large-play 97/100
+> antmaze (diverse)
+> antmaze-umaze-diverse 99/100 antmaze-medium-diverse 100/100
+> antmaze-large-diverse 99/100
+> maze2d
+> maze2d-umaze 100/100 maze2d-medium 100/100 maze2d-large 100/100
+> success fail start goal
+
+Figure 8: Per-episode trajectory overlays for the Inverter on every maze variant we evaluate. 3×3 grid: rows 
+
+= (antmaze play / antmaze diverse / maze2d ); columns = small / medium / large maze. Each panel overlays 100 evaluation trajectories from a single representative IM seed (number-of-successes printed in the panel title). Antmaze evaluations (top two rows) use a fixed corner goal, giving tight beam-like overlays; maze2d evaluations (bottom row) randomize start/goal pairs per episode, giving fan-of-paths through the corridor graph. 30 Inverse Learning for Planning and Control 
+
+Supplementary Table 8: Per-episode inference compute on maze2d -large -v1 (100 episodes, 800 step-s/ep). Each cell reports the number of NN forward passes per episode, mean wall time per pass (CUDA-synced, GPU, PyTorch, batch 1), other — per-episode non- NN overhead inside the algorithm (Inverter: replan dispatch + the data-derived BFS Path Inverter; Diffuser: the PD tracker running at every env step; step-wise RL baselines: 0), the sum = # NN -passes × ms/ NN -pass + other, and × slower relative to our fastest configuration on this maze. †
+
+JAX+JIT; all other PyTorch. CORL baselines have no trained large checkpoint in our local benchmark; per-pass time is measured on umaze (same actor architectures) and the sum column scales it by 800 environment steps. The Diffuser row is measured locally on a checkpoint we trained on maze2d -large -v1 for 2M steps matching the configuration of Janner et al. [38] ; the reported D4RL score is the locally measured one. Inverter row is mean ± std over 4 seed IM s; other here is the per-episode cost of the data-derived cardinal- BFS Path Inverter (Appendix A.6). Method score ↑ std #NN-passes ms/NN-pass other sum × slower BC 2.26 4.39 800 1.70 ms — 1.36 s 14 .6×
+
+BC-10% 11 .32 5.10 800 1.25 ms — 999 .7 ms 10 .7×
+
+CQL 23 .75 36 .70 800 1.84 ms — 1.47 s 15 .7×
+
+DT 35 .66 28 .20 800 3.57 ms — 2.86 s 30 .5×
+
+IQL 61 .72 3.50 800 1.69 ms — 1.36 s 14 .5×
+
+ReBRAC 78 .33 61 .77 800 0.21 ms † — 168 .0 ms † 1.8×
+
+EDAC 95 .60 22 .92 800 1.74 ms — 1.39 s 14 .9×
+
+TD3+BC 97 .10 25 .41 800 1.67 ms — 1.34 s 14 .3×
+
+Diffuser 123 .07 62 .22 256 14 .32 ms 17 .0 ms 3.68 s 39 .3×
+
+SAC-N 204 .76 1.19 800 1.80 ms — 1.44 s 15 .4×
+
+AWAC 209 .13 8.19 800 1.28 ms — 1.02 s 10 .9×
+
+Inverter K = 16 220 .66 0.20 50 1.59 ms 14 .3 ms 93 .7 ms 1.0×
+
+A.5 Minimum-time control under viscous damping 
+
+To interpret the smoother IM trajectories in Figure 2, it is useful to separate the geometry of the state trajectory from the structure of the control signal . Consider the idealized one-dimensional point-mass model ˙x = v, ˙v = −β v + u, |u| ≤ umax , β > 0, (4) where β is a viscous damping coefficient. This captures bounded actuation and linear damping while abstracting away maze walls, goal radii, and replanning. We consider the minimum-time transfer from an initial state (x0, v0) to the terminal state (0, 0).The minimum-time transfer to the origin for this damped double integrator is a standard textbook result in optimal control [ 95 , 96 ]. Pontryagin’s maximum principle dictates that the time-optimal input is strictly bang-bang ( u ∈ { +umax , −umax }) with at most one switch. Furthermore, the exact switching curve is given in closed form by: 
+
+x = − sgn (v)
+
+ |v|
+
+β − umax 
+
+β 2 log 
+
+
+
+1 + β |v|
+
+umax 
+
+ 
+
+. (5) The optimal policy accelerates maximally toward the goal until it hits this curve, then brakes maximally to arrive at the target with zero velocity. In the limit β → 0 , Eq. (5) reduces to the familiar undamped switching parabola x = − 12umax |v|v. Thus, viscous damping changes the shape of the switching condition from a parabola to a logarithmic curve, but it does not alter the fundamental bang-bang nature of the minimum-time input. 
+
+31 Inverse Learning for Planning and Control 
+
+Supplementary Table 9: Antmaze: D4RL score and per-step inference compute. Top : D4RL success-rate score (%) over 100 episodes on each antmaze -v2 variant ( CORL baselines [ 55 ]: mean ± std over 4 training seeds; Inverter: mean ± std over 4 IM seeds; best-per-column in bold). Bottom : × slower per env step against the fastest method on each maze, measured on a single A40 GPU (PyTorch, batch 1, CUDA-synced). For step-wise actors ms/step = ms/pass (the NN runs once per env step) and is env-independent; ms/pass values are reported in Table 5. For the Inverter, ms/step = (# NN -pass × ms/pass + BFS -Path Inverter overhead) / mean steps-to-goal, averaged across the 4 IM seeds. † ReBRAC: JAX+JIT timing. Best-per-column ( 1.0×) bolded. 
+
+D4RL score (%) on antmaze-v2 
+
+Method u-umaze u-divrs m-play m-divrs l-play l-divrs BC 55 .2 ± 4.2 47 .2 ± 4.1 0.0 0.8 ± 0.8 0.0 0.0BC-10% 65 .8 ± 5.3 44 .0 ± 1.0 2.0 ± 0.7 5.8 ± 9.4 0.0 0.8 ± 0.8
+
+TD3+BC 70 .8 ± 39 .2 44 .8 ± 11 .6 0.2 ± 0.4 0.2 ± 0.4 0.0 0.0AWAC 57 .8 ± 10 .3 58 .0 ± 7.7 0.0 0.0 0.0 0.0CQL 92 .8 ± 1.9 37 .2 ± 3.7 65 .8 ± 11 .6 67 .2 ± 3.6 20 .8 ± 7.3 20 .5 ± 13 .2
+
+IQL 77 .0 ± 5.5 54 .2 ± 5.5 65 .8 ± 11 .7 73 .8 ± 5.5 42 .0 ± 4.5 30 .2 ± 3.6
+
+ReBRAC 97 .8 ± 1.5 83 .5 ± 7.0 89 .5 ± 3.4 83 .5 ± 8.2 52 .2 ± 29 .0 64 .0 ± 5.4
+
+SAC-N 0.0 0.0 0.0 0.0 0.0 0.0EDAC 0.0 0.0 0.0 0.0 0.0 0.0DT 57 .0 ± 9.8 51 .8 ± 0.4 0.0 0.0 0.0 0.0
+
+Inverter (ours) 99 .5 ± 0.9 99 .8 ± 0.4 87 .8 ± 8.0 96 .5 ± 5.0 93 .0 ± 2.6 94 .0 ± 5.0
+
+× slower per env step on antmaze-v2 
+
+Method u-umaze u-divrs m-play m-divrs l-play l-divrs BC 12 .0× 12 .1× 12 .8× 13 .0× 12 .7× 12 .7×
+
+BC-10% 8.8× 8.9× 9.4× 9.5× 9.3× 9.3×
+
+TD3+BC 11 .8× 11 .8× 12 .6× 12 .7× 12 .5× 12 .5×
+
+AWAC 9.0× 9.1× 9.6× 9.8× 9.6× 9.6×
+
+CQL 13 .0× 13 .0× 13 .8× 14 .0× 13 .7× 13 .7×
+
+IQL 11 .9× 12 .0× 12 .7× 12 .9× 12 .6× 12 .6×
+
+ReBRAC 1.5×† 1.5×† 1.6×† 1.6×† 1.6×† 1.6×†
+
+SAC-N 12 .7× 12 .8× 13 .5× 13 .7× 13 .4× 13 .4×
+
+EDAC 12 .3× 12 .3× 13 .1× 13 .3× 13 .0× 13 .0×
+
+DT 25 .1× 25 .3× 26 .8× 27 .3× 26 .6× 26 .6×
+
+Inverter (ours) 1.0× 1.0× 1.0× 1.0× 1.0× 1.0×
+
+This result should be interpreted as a local straight-segment model , not as an exact theorem for the full 
+
+maze2d benchmark. The benchmark only requires entry into a finite goal region, not arrival with zero terminal velocity, and the full maze introduces walls and path constraints. In that setting the exact optimal law can differ, and the braking phase may disappear if first arrival to the goal set is all that matters. 
+
+A.6 Simple algorithmic Path Inverter (Level 2): data-driven BFS over offline-data density 
+
+For the larger maze2d and antmaze layouts, a single Inverter chunk no longer reaches the goal: corridors contain multiple 90 ◦ turns and the longest shortest path through free space exceeds the IM ’s training horizon. We therefore couple the (unchanged) Inverter with a trivial algorithmic Path Inverter at 
+
+32 Inverse Learning for Planning and Control 0 1 2 3 4 5 6 7                                   
+
+> xqpos (m)
+> −1
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> yqpos  (m)
+> maze2d-medium-v1 —1,988,111 training points
+> start
+> goal
+> 02468
+> xqpos (m)
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> yqpos  (m)
+> maze2d-large-v1 —3,983,273 training points
+> 0510 15 20
+> xworld (m)
+> 0
+> 5
+> 10
+> 15
+> 20
+> yworld  (m)
+> antmaze-medium-play-v2 —1,000,000 training points
+> 0510 15 20 25 30 35
+> xworld (m)
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> yworld  (m)
+> antmaze-large-play-v2 —1,000,000 training points
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> training-data visits per bin (log scale)
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> training-data visits per bin (log scale)
+> Data-derived waypoint sequencer on maze2d (top) and antmaze (bottom): no maze geometry, no simulator — only the offline training-data distribution
+
+Figure 9: The simple algorithmic Path Inverter uses only the offline training-data distribution, no maze geometry. Background: log-density of the training-data states (shared colorbars on the right; top row in qpos coordinates, bottom row in world coordinates). No maze walls or simulator information is drawn or provided to the Path Inverter – the corridors are visible purely because the offline data concentrates there. A cardinal- BFS waypoint chain produced by our data-derived Path Inverter is overlaid in orange (circle markers = intermediate sub-goals); start and goal are shown in blue and orange. Top row : maze2d -medium -v1 (1,988,111 training points) and 
+
+maze2d -large -v1 (3,983,273 points), with the maze2d planner settings ( resolution = 0.5 m, τ = 2000 visits, min_leg = 1 m). Bottom row : antmaze -medium -play -v2 and antmaze -large -play -v2 (1,000,000 points each), with the antmaze planner settings ( resolution = 1.0 m, τ = 100 , min_leg = 0); same code path otherwise. In all four panels the chain turns through exactly those corners where the data concentration itself turns, demonstrating that deployment-time routing can be driven by training-data support alone. 
+
+Level 2 that emits intermediate sub-goals along a feasible corridor. The key constraint: the planner must be buildable from the offline training data alone – no access to maze geometry, simulator, or the underlying occupancy grid. A single class ( common .cardinal_bfs_planner .CardinalBFSPlanner )drives both task families through different hyperparameters (Fig. 9). 
+
+Construction. Five stages: (i) Data-derived occupancy grid : discretize qpos into a 2-D grid with density-aligned origin (sub-cell phase set to the 1-D marginals’ dominant peak, aligning corridor centerlines with cell centers; SNR jumps ∼10 ×); call a cell free if it received ≥ τ training points (true corridors get 10 4– 10 5 visits, wall-adjacent strays 10 1–10 3, so τ = 2000 cleanly separates them); cell “centers” are the density-weighted qpos mean. (ii) 4-connected BFS from start to goal cell, tie-breaking equally-short paths by maximum cumulative distance-to-wall via a single backward Dynamic Programming ( DP ) pass over the BFS layers (tie-break weight 0 recovers plain BFS). (iii) Turn-based polyline : keep only corner cells (where the BFS direction changes) plus start and goal, collapsing straight runs to their endpoints. (iv) Perpendicular snap : between consecutive corner cells the BFS moves on a single axis; snap segment endpoints to their shared perpendicular coordinate so segments become exactly axis-aligned. (v) L-corner 
+
+33 Inverse Learning for Planning and Control 
+
+insertion and final-approach axis lock : split any residual diagonal into two perpendicular legs (longer-axis-first, so the corner stays in free cells); project the goal onto the last axis-aligned segment if the final step would otherwise be diagonal. Optional min_leg filter (default 1 m on maze2d ) drops wobble waypoints whose incoming and outgoing legs are both shorter than the threshold. 
+
+Per-chunk control loop ( maze2d ). Polyline emitted once at episode start. Every K = 16 env .step sthe controller (a) advances wp_idx while the agent lies within wp_advance_dist = 0.5 m of the current waypoint, (b) sets the IM target to the current sub-goal (never the final goal directly), (c) runs one IM forward and executes the first K of its 128 -step plan. Terminal regulation: wp_idx clamps at the last waypoint and the loop keeps re-planning, parking the agent at the goal until MAX_STEPS – no separate PD tracker. If wp_idx fails to advance for ν consecutive chunks, BFS reruns from the current state and replaces the remaining polyline (a few hundred microseconds). On maze2d with ν = 3 the fallback fires 5 –13 times per episode on average; disabling it drops large Success Rate ( SR ) from 100 /100 to 93 /100 on the same seeds. 
+
+Antmaze differences. Pipeline is byte-identical; only constructor arguments change to address antmaze’s coarser data and the ant’s wider body / slower per-step displacement: resolution = 1.0 m, 
+
+τ = 100 , min_leg = 0, centerline tie-break enabled (data_center_weight = 1.0), 
+
+wp_advance_dist = 1.5 m, stuck_threshold = 10 with ≤ 5 replans/episode, 
+
+wp_skip_dist = 0.8 m (look-ahead skip when the wide ant body has cleared a corner), and 
+
+target_dist_min /max = 1.0/2.0 m (carrot-on-a-stick along the heading, keeping the IM input in its calibrated reach). Terminal regulation: goal_reached_dist = 0.5 m breaks the outer loop. 
+
+What this Path Inverter is not . Not a learned module: plain BFS on a data-derived grid, no parameters, no gradients. Not an MPC : no FoM call at deployment, no inner optimization loop. Its only job is to cut long corridors into chunks that fit inside the Inverter’s training horizon. 
+
+A.7 Replan-horizon ( K) sweep on maze2d -medium -v1 and maze2d -large -v1 
+
+The summary rows of Tables 7 and 8 report a single operating point ( K = 16 ). Table 10 shows how D4RL and wall-clock cost trade off as K varies across {16 , 32 , 64 , 128 , 256 }. K ∈ { 16 , 32 , 64 , 128 } all use the same paper-summary IM (training horizon h = 128 ); the K = 256 row uses a separately-trained 
+
+h = 256 IM so it genuinely measures a 256 -step open-loop commitment rather than collapsing to K = 128 .Three features stand out: (i) D4RL and success rate are high and essentially flat for K ≤ 64 , drop sharply at K = 128 where the agent commits to a full 128 -step plan with no in-horizon replanning, and drop further still at K = 256 as errors compound across twice as many open-loop steps; (ii) the gap between 
+
+K = 128 and K = 256 is informative: a longer IM training horizon is not a free lunch when the cost is foregoing replan opportunities – in-horizon course-correction is what matters; (iii) the wall-time sum drops monotonically with K (fewer IM calls amortize the per-chunk overhead) but the difference between 
+
+K = 16 and K = 64 is under a factor of four, so accuracy – not compute – is the binding constraint on this family of mazes. We pick K = 16 for the summary rows because it matches the Inverter’s per-pass floor at the highest achievable accuracy. 
+
+A.8 Comparison to model-based offline RL baselines 
+
+The performance tables above (Tables 5–9) compare against the CORL [55 ] offline- RL benchmark and Diffuser [ 38 ]. This subsection compares to Model-Based Reinforcement Learning ( MBRL ) methods on these specific D4RL tasks. Citations in this subsection are listed in App. A.16 (separate reference list). 
+
+Coverage gap on maze2d . To our knowledge, none of the canonical MBRL papers ( MOPO [S1], MOReL [S2], COMBO [S3], RAMBO [S4], MOBILE [S5], CBOP [S6], MAPLE [S7], ARMOR [S8], 
+
+> 34
+
+Inverse Learning for Planning and Control 
+
+Supplementary Table 10: Inverter K-sweep on maze2d -medium -v1 and maze2d -large -v1 (100 episodes per seed, D4RL -official protocol; D4RL and SR reported as mean ± std over 4 IM seeds). Each row is a single replan horizon K: the Inverter emits a fresh plan every K env steps toward the current data-derived BFS sub-goal. K ∈ { 16 , 32 , 64 , 128 } uses the same paper-headline IM (training horizon h = 128 ); the K = 256 row uses a separately-trained h = 256 IM so the row genuinely measures a 256 -step open-loop commitment instead of collapsing to K = 128 . #pass is the number of IM forward passes per episode; ms/pass is the CUDA-synced mean wall time per pass (batch 1); other is per-episode overhead outside the IM forward (the data- BFS Path Inverter + replan dispatch + CPU transfers); sum = #pass × ms/pass + other. D4RL score and SR are high and flat up to 
+
+K = 64 , drop sharply at K = 128 where the agent commits to a full 128 -step plan with no in-horizon replanning, and drop further still at K =256 as errors compound across twice as many open-loop steps. Runtime drops monotonically as K grows because fewer IM calls pay the per-chunk overhead, but the K ≥ 64 runs are all within one order of magnitude of each other in sum wall time — i.e., accuracy is the binding constraint, not speed.                                                                                                                         
+
+> maze2d -medium -v1 (600 steps/ep) maze2d -large -v1 (800 steps/ep)
+> KD4RL ↑SR #pass ms/pass other sum D4RL ↑SR #pass ms/pass other sum
+> 16 166 .8±1.2100 ±038 1.62 ms 11 .2 ms 72 .9 ms 220 .7±0.2100 ±050 1.59 ms 14 .3 ms 93 .7 ms 32 157 .9±0.8100 ±019 1.57 ms 5.5 ms 35 .3 ms 202 .3±2.8100 ±025 1.88 ms 8.7 ms 55 .6 ms 64 141 .1±1.0100 ±010 2.21 ms 3.8 ms 25 .9 ms 191 .8±3.1100 ±013 2.33 ms 5.4 ms 35 .7 ms 128 76 .0±1.884 ±352.79 ms 2.6 ms 16 .6 ms 95 .6±5.286 ±272.34 ms 2.9 ms 19 .3 ms 256 41 .7±4.032 ±10 32.42 ms 1.5 ms 8.7ms 27 .5±7.127 ±742.27 ms 1.7 ms 10 .7ms
+
+TT [S9], TAP [S10], LEQ [S12]) report results on the single-task maze2d -umaze /medium /large -v1 benchmarks in their published evaluation tables; their evaluations focus on D4RL MuJoCo locomotion and (less often) Adroit / NeoRL. The only widely-cited “model-based planner” with published 
+
+maze2d -v1 numbers is Diffuser, which is already in our main tables (113.9 / 121.5 / 123.0 D4RL on umaze / medium / large from [S11] Table 1, vs. our Inverter at 164.25 / 166.82 / 220.66 D4RL ). We did not re-run MOPO /MOReL /COMBO / RAMBO /MOBILE / CBOP /TT /TAP /LEQ on maze2d -v1 ourselves under our compute envelope (App. A.16); we flag this as a missing baseline rather than fabricate numbers. 
+
+Coverage gap on antmaze : v0 vs. v2. Every published MBRL number we could locate on antmaze 
+
+is for the antmaze -v0 datasets, not the antmaze -v2 datasets that we and the CORL benchmark use. RAMBO ’s authors explicitly state “we used the AntMaze-v0 datasets” (App. B.7 of [S4]); TAP states “v2 version of the datasets for locomotion control and v0 for the other tasks” (Sec. 6 of [S10]). The v0 vs. v2 distinction matters – v2 corrected reward-shaping and termination handling that affected v0 long-horizon evaluations – so a same-row comparison would not be apples-to-apples. We therefore report the v0 numbers in Table 11 with an explicit footnote, alongside our v2 Inverter row reproduced from Table 9, and leave it to the reader to apply the appropriate caveat. 
+
+Results. Two patterns are visible across the antmaze suite. First, four canonical MBRL methods ( MOPO ,MOReL , MOBILE , CBOP ) do not report antmaze in their original published evaluation tables, so the public MBRL coverage on this benchmark is sparse. Second, the methods that do report antmaze-v0 – COMBO (via RAMBO ’s baseline table), RAMBO itself, TT +Q, TAP +G, and LEQ [S12] – reach moderate-to-strong performance on a subset of variants, with TT +Q strong on the umaze/medium variants (100 on u-umaze) and TAP +G strong on the large variants ( 74 .0 /82 .0 on l-play/l-divrs). On the umaze and medium variants the Inverter on antmaze -v2 sits in a comparable D4RL band to TT +Q on antmaze -v0 ( TT +Q nominally ahead by ≤ 12 points on each, the v0/v2 caveat going both ways). On the two 
+
+large variants the Inverter clearly leads ( 93 .0 /94 .0 vs. TAP +G’s 74 .0 /82 .0 – a 19 .0 /12 .0 absolute-points gap), and beats TT +Q and LEQ on every large variant. The ∼ 12 –20 point lead on large is larger than typical v0 →v2 score shifts. We emphasize the v0/v2 caveat once more: a clean comparison would re-run 
+
+35 Inverse Learning for Planning and Control 
+
+Supplementary Table 11: Model-based offline RL baselines on antmaze ( D4RL Normalized Score, % ). Top block: published MBRL numbers, all on antmaze -v0 (rows above the rule), as reported in the cited papers. Bottom block: our Inverter, evaluated on antmaze -v2 (reproduced from Table 9). ∗ Antmaze-v0 vs. v2 mismatch: the v2 datasets we use have corrected reward and termination handling; published MBRL papers as of early 2025 evaluate on v0 only, so cross-row comparison is approximate. † COMBO row is the antmaze-v0 baseline reported in RAMBO [S4] (Table 1); the original COMBO paper [S3] does not report antmaze. § TT result is the TT +Q variant (Q-guided beam search) from [S9] Table 2. ¶ TAP result is the TAP +G variant (goal-conditioned) from [S10] Table 6. ∥ LEQ values are the original LEQ paper’s own results [S12] from Table 11, averaged over 5 seeds (true termination function). n /a entries indicate antmaze-v0 was not reported in the source paper; we list n /a for MOPO [S1], MOReL [S2], MOBILE [S5], and CBOP [S6] rather than impute values, as none of these papers report antmaze in their published evaluation tables. “0.0” entries are reported as such in the source – consistent with the well-known difficulty MBRL methods face on long-horizon sparse-reward tasks. 
+
+D4RL score (%) – antmaze-v0 ∗ for MBRL rows 
+
+Method u-umaze u-divrs m-play m-divrs l-play l-divrs MOPO [S1] n /a n /a n /a n /a n /a n /a 
+
+MOReL [S2] n /a n /a n /a n /a n /a n /a 
+
+COMBO † 80 .3 57 .3 0.0 0.0 0.0 0.0RAMBO [S4] 25 .0 ± 12 .0 0.0 ± 0.0 16 .4 ± 17 .9 23 .2 ± 14 .2 0.0 ± 0.0 2.4 ± 3.3
+
+MOBILE [S5] n /a n /a n /a n /a n /a n /a 
+
+CBOP [S6] n /a n /a n /a n /a n /a n /a 
+
+TT +Q [S9] § 100 .0 ± 0.0 n /a 93 .3 ± 6.4 100 .0 ± 0.0 66 .7 ± 12 .2 60 .0 ± 12 .7
+
+TAP +G [S10] ¶ n /a n /a 78 .0 ± 4.1 85 .0 ± 3.6 74 .0 ± 4.4 82 .0 ± 5.0
+
+LEQ [S12] ∥ 94 .4 ± 6.3 71 .0 ± 12 .3 58 .8 ± 33 .0 46 .2 ± 23 .2 58 .6 ± 9.1 60 .2 ± 18 .3
+
+Our Inverter (antmaze-v2): 
+
+Inverter (data-BFS, ours) 99 .5 ± 0.9 99 .8 ± 0.4 87 .8 ± 8.0 96 .5 ± 5.0 93 .0 ± 2.6 94 .0 ± 5.0
+
+RAMBO , TT +Q, TAP +G, and LEQ on antmaze-v2 ourselves; the public codebases make this tractable but lie outside our 8-GPU / seven-week compute envelope (App. A.16) for this submission. 
+
+Amortized-vs.-iterative. Beyond the summary numbers, TT [36 ] and TAP [ 97 ] differ from the Inverter on two structural axes that organize the related-work paragraph in Sec. 3. (i) Where the optimization runs. 
+
+Both TT and TAP place trajectory optimization at inference : TT runs a beam search over per-timestep tokens (state and action dimensions discretized into a vocabulary, with a Q-function added as a search heuristic in the TT +Q variant on antmaze); TAP runs a beam search over a state-conditioned VQ-VAE’s discrete latent action codes (length-L=3 chunks, codebook size K=512 ). Both therefore retain a sample-time iteration whose cost grows with the search budget. The Inverter folds the equivalent optimization into training ( FoM -gradient amortization) and emits the full T -step plan in a single feedforward pass at deployment, with no inner loop. This is the amortized-vs.-iterative axis our related work draws (Sec. 3). (ii) What the training loss is. Both TT and TAP are behavior-cloning derivatives at the loss level: TT maximizes the trajectory likelihood pθ (τ) on the offline data; TAP minimizes a reconstruction MSE between offline trajectories and their VQ-VAE-decoded reconstructions. Neither uses a FoM gradient. By construction these objectives constrain the learned policy to the data manifold. The Inverter explicitly differentiates a Bolza objective through a frozen FoM , which allows it to leave the data support when the data is sub-optimal – this is the mechanism behind the maze2d -umaze bang-bang result (Sec. 4.1), where the Inverter approaches the analytic time-optimal control while the offline data is located in the interior of the action box. TT and TAP , by contrast, cannot exceed the demonstrator distribution they are 
+
+36 Inverse Learning for Planning and Control 
+
+trained to reproduce. 
+
+A.9 Antmaze: data, forward and inverse models, and training objective 
+
+This appendix gives the technical details behind Sec. 4.3. 
+
+Datasets. We use the six antmaze -v2 variants from D4RL [55 , 88 ]: umaze , umaze -diverse ,
+
+medium -play , medium -diverse , large -play , large -diverse . Each dataset com-prises ∼ 1 M ant-locomotion transitions. 
+
+State and action encoding. Actions are the standard 8-D joint-torque vector a ∈ [−1, 1]8 (8 actuated joints). States are the 29-dim observation supplied by the D4RL env, factored (using Python half-open ranges) as • s0:2 – root (x, y) position; • s2:3 – root z (height); • s3:7 – root quaternion (qw, qx, qy, qz);• s7:15 – 8 hip / ankle joint angles; • s15:18 – root linear velocity ( ˙x, ˙y, ˙z);• s18:21 – root angular velocity (ωx, ωy, ωz);• s21:29 – 8 joint velocities. 
+
+Forward model. AntMazeFull29TransformerFM : causal transformer that maps (s0, a1: L) to ˆs1: L
+
+with chunk length L = 16 , dmodel = 384 , 6 heads, 6 layers, ff-mult 4 , dropout 0.1 , totalling ≈ 11 .1 Mparameters. Trained on the offline transitions for 300 epochs (batch 512 , AdamW with lr = 3×10 −4,weight decay 10 −4, σs0 =0.01 initial-state noise). The training loss is a sum of 7 per-component MSEs ( xy ,
+
+z, quaternion, joint angles, linear velocity, angular velocity, joint velocities), each with unit weight; we use a running-z-score normalizer per dimension (momentum 0.99 , 100 -epoch warm-up) so the per-component losses share a comparable scale. 
+
+Inverse model. AntMazeIWM_L16_Healthy29D : causal transformer mapping (s0, Gxy ) to a 16 -step action chunk ˆa1:16 , with dmodel = 192 , 6 heads, 4 layers, ff-mult 3, dropout 0.1 , totalling ≈ 1.5 Mparameters. Trained for 200 epochs (batch 256 , AdamW with lr = 3×10 −4, weight decay 10 −4, 10 -epoch warm-up) by back-propagation through the frozen FoM. 
+
+Single-pass non-autoregressive decoding. The two-token nominal input (s0, Gxy ) is first reduced to a single conditioning vector c ∈ Rdmodel by a two-layer MLP (Linear-GELU-LN ×2 ). An L = 16 -position token bank is then formed in one shot as xt = c + posemb [t] for t = 0, . . . , L−1 , where posemb ∈ RL×dmodel 
+
+is a learned position embedding; the same conditioning is thus broadcast to every output position. These L
+
+tokens are processed in parallel by a pre-norm Transformer encoder with a triangular causal self-attention mask (token t attends only to tokens 0.. t), and a per-position linear head followed by tanh emits one action vector at every position. The whole chunk ˆa1:16 thus comes out of a single feedforward pass; the “causal” label refers only to the attention pattern – there is no autoregressive sampling, no decoder cross-attention, no iterative refinement. The maze2d Motor Inverter (App. A.2) shares the same architecture pattern with 
+
+L = 128. 
+
+Training goal sampling. Each training minibatch sample is an (s0, Gxy ) pair with s0 =st drawn uniformly from the offline buffer and Gxy = ( st+L)xy , the (x, y) of the state at a fixed horizon offset L = 16 ahead in the same trajectory; the sampler is episode-aware so pairs spanning an episode boundary are rejected. The IM internally encodes the goal as a displacement Gxy −(s0)xy before its first projection layer, so the network never sees a global (x, y) at input. This L-step-ahead distribution is what aligns training with 
+
+> 37 Inverse Learning for Planning and Control
+
+the deployment query distribution: the Sec. 4.3 Path Inverter emits sub-goals at wp_spacing = 1.5 m, which is within the typical 16-step ant displacement in the offline data ( ∼ 1.5 m / chunk for md ≥ 0.5 m / 
+
+z ≥ 0.3 m filtered states). 
+
+Training objective. Let ˆ a1: L = gφ (s0, Gxy ) be the IM output, ˆ s1: L = f (1: L) 
+
+> θ
+
+(s0, ˆa1: L) the FoM rollout, and 
+
+adata 1: L the corresponding offline action chunk for the same (s0, Gxy ) pair. We train gφ to minimize 
+
+LIM = λterm ∥ ˆs(xy ) 
+
+> L
+
+− Gxy ∥ + λyaw ( ˆs(qw) 
+
+> 1: L
+
+, ˆs(qz) 
+
+> 1: L
+
+) − (1, 0) 2 + λfid ˆa1: L − adata 1: L
+
+> 2
+
+, (6) with λterm = λyaw = λfid = 5 in the final runs. Note: the FoM ’s training loss (above) and the IM ’s loss in Eq. 6 are distinct losses for distinct networks; the IM ’s terminal term is intentionally unsquared, see explanation below. The first term is the FoM -gradient task signal: minimize the predicted final-distance to the goal. The use of the un-squared L2 norm here is intentional: ∂ ∥x∥/∂ x = x/∥x∥ has unit magnitude independent of ∥x∥, so the goal-reaching gradient remains effective whether the sub-goal is 1.5 or 6 maway; a squared ∥x∥2 would yield gradient 2x that vanishes as the agent approaches the sub-goal and over-weights distant ones. The second term is the body-yaw regularizer : it pushes the predicted body orientation across the chunk toward (qw, qz) = ( 1, 0), which corresponds to yaw = 0 and the upright orientation overwhelmingly represented in the offline data. The third term is the BC action-fidelity anchor :it pulls each predicted action ˆat toward the recorded data action adata  
+
+> t
+
+at the same time index t within the chunk. Since ˆa1: L is generated open-loop from s0, the matching is purely temporal, not state-based — the open-loop predicted states ˆst will in general drift from sdata  
+
+> t
+
+, and the anchor still penalizes deviations of ˆat
+
+from adata  
+
+> t
+
+at every t regardless of that drift. Both regularizers act on bounded per-step quantities, where squared-norm scaling is harmless; the asymmetry between the terminal ∥ · ∥ and the regularizer ∥ · ∥ 2 is therefore deliberate. All three terms are per-action, per-time-step, differentiable, and additive – no value function, no sample-time guidance, no KL trust region. 
+
+Level 2 substitute (deployment). The data-only Path Inverter follows the maze2d construction (Ap-pendix A.6: density-aligned origin, noise-floor threshold, turn-based polyline) with one antmaze-specific addition: among all equally-short shortest paths, we pick the one whose interior cells have the maximum cumulative cardinal distance-to-wall, so the resulting waypoint chain stays on the corridor centerline rather than along the edges. This is implemented as a single backward DP pass over the BFS layers and remains pure BFS in the sense that path length is always the minimum cell-step count. Antmaze-specific hyper-parameters: resolution = 1.0 m (one antmaze cell), τ = 100 visits, data_center_weight = 1.0(centerline tie-break enabled), min_leg =0 (sub-cell wobble filter disabled, not needed at this grid resolu-tion), wp_spacing = 1.5 m, wp_advance_dist = 1.5 m, wp_skip_dist = 0.8 m, target-distance window (1.0, 2.0) m, stuck_threshold = 10 chunks, ≤ 5 full BFS replans per episode. 
+
+Per-chunk waypoint-tracking and sub-goal logic (deployment). The BFS produces a polyline wp [0: N]
+
+once at episode start. At every chunk boundary (every K = 16 env .step calls), the controller executes the following loop, with the agent’s current (x, y) position p:1. Advance. While ∥p − wp [wp_idx ]∥2 ≤ wp_advance_dist = 1.5 m, increment wp_idx by 1 (skip waypoints the ant has already cleared). 2. Look-ahead skip. If wp_idx +1 < N, ∥p − wp [wp_idx +1]∥2 < ∥p − wp [wp_idx ]∥2, and ∥p −
+
+wp [wp_idx +1]∥2 ≤ wp_skip_dist = 0.8 m, increment wp_idx by an additional 1 (the wide ant body has effectively cleared a corner before the strict advance test fires). 3. Target shaping (carrot-on-a-stick). Let ˆu = ( wp [wp_idx ] − p)/∥wp [wp_idx ] − p∥. Sample d ∼
+
+U (target_dist_min , target_dist_max ) = U (1.0, 2.0) m and set the IM target Gxy ← p +
+
+d ˆu. This keeps the IM input distance inside its calibrated locomotion-reach window even when the 
+
+> 38 Inverse Learning for Planning and Control
+
+agent sits on top of a waypoint, where a literal target wp [wp_idx ] would degenerate to zero distance and collapse joint-torque magnitudes. 4. Plan. Run one IM forward pass conditioned on (p, Gxy ) to obtain a 16-step action chunk ˆ a1:16 .5. Execute. Apply ˆ a1:16 to the env (16 env .step calls), updating p.6. Stuck check. If wp_idx has not advanced for stuck_threshold = 10 consecutive chunks and the global cap of ≤ 5 replans/episode is not exhausted, re-run BFS from the current p and replace the remaining polyline with the fresh plan. 7. Terminate. If ∥p − Gepisode ∥2 ≤ goal_reached_dist = 0.5 m, exit the outer loop; otherwise loop back to step 1. The wp_skip_dist test in step 2 is the only condition that can advance wp_idx by more than one per chunk; the carrot-on-a-stick in step 3 is the only deviation from passing the literal current waypoint into the IM as a target. Both are off ( wp_skip_dist = 0 , target_dist_min /max = 0) on maze2d 
+
+where the point-mass dynamics do not require them. 
+
+Evaluation protocol. 100 episodes per maze, default D4RL env resets and targets, 700 -step cap on 
+
+umaze* variants and 1000 -step cap on medium* /large* . All runs sequential on a single A40 GPU so per-pass and per-step timings are directly comparable. CORL D4RL scores in Table 9 are taken from Tarasov et al. [55] (mean over 4 training seeds); per-pass time for the PyTorch CORL actors is measured on maze2d -umaze (same actor architectures), since per-pass NN cost is architecture-bound, not env-bound. ReBRAC is JAX+JIT (marked †); all other baselines are PyTorch. 
+
+Per-step compute breakdown. The Inverter is the fastest method per env step on 5 of 6 variants (Table 9, bottom block). Its per-step cost is the per-episode NN compute ( ∼ 100 ms total, dominated by ∼ 40 chunk-level IM passes at ∼2.4 ms each plus ∼20 ms of BFS -planner overhead) divided by the ∼600 –700 env steps the agent takes to reach the goal – ∼ 0.18 ms/step on every variant other than u -umaze . The other PyTorch step-wise baselines run their actor every env step at 1.25 – 3.57 ms/pass and are uniformly 7– 20 × slower per step. ReBRAC ’s JAX+JIT actor at 0.21 ms/pass is the one tight contender: it narrowly beats the Inverter on the short u -umaze trajectories ( 1.4× slower for the Inverter there, because ∼ 289 steps don’t fully amortize the chunked planning cost), but on every other variant the Inverter is ∼1.1– 1.2×
+
+faster per step. 
+
+Loss-component ablation. Table 12 quotes the contribution of λyaw on top of λfid on large -diverse -v2 . The two ablated checkpoints share architecture, optimizer, and dataset with the published runs and differ only in the value of λyaw (0 vs 5 ); both were evaluated under the canonical Path Inverter config above. Specific run directories are listed in the code-release manifest accompanying the paper.                                        
+
+> Supplementary Table 12: Loss-component ablation on antmaze -large -diverse -v2 .100 episodes per seed, canonical waypoint config ( wp_spacing =1.5, target-distance window 1 .0–2 .0 m); D4RL reported as mean ±std over 4 IM seeds. Removing the body-yaw regularizer drops D4RL by 11 points; the BC anchor alone is not sufficient. We do not separate λfid =0configurations on antmaze because the offline-data generation process is fixed by the benchmark; we instead study the underlying FoM -hacking mechanism in AntMan (Sec. 4.4), where the data distribution is under our control. Loss configuration on large -diverse -v2 D4RL BC anchor only ( λfid =5, λyaw =0) 83 .0±3.5
+> BC anchor + body-yaw ( λfid =5, λyaw =5) 94 .0±5.0
+> 39 Inverse Learning for Planning and Control
+
+A.10 AntMan forward-model calibration scatter and extended discussion 
+
+This appendix shows the predicted-vs-realized reward scatter referenced in Sec. 4.4 and unpacks the implication for inverse-learning data design. 
+
+A.11 Quantum gate synthesis: setup and GRAPE baseline Sampling convention ( U(2) vs. SU (2)). We sample targets Haar-uniformly on U(2). Because ¯Favg is invariant under a global U(1) phase on Utarget , this is equivalent for the learning objective to sampling on PU (2) = U(2)/U(1) = SU (2)/Z2. The phrases “Haar U(2)” and “Haar SU (2)” are therefore used interchangeably in the paper in this sense. The encodings (App. A.12) differ in whether they bake the global-phase quotient in ( trig6 , ck4 factor through PU (2)) or not ( real8 is a direct U (2) encoding). 
+
+System. 3-level transmon, anharmonicity α=−4 Ωmax , energy relaxation T1=10 4, pure dephasing 
+
+Tφ =8×10 3, gate time Tgate =2π (units of 1/Ωmax ). Pulses are 80 piecewise-constant slices in (Ωx, Ωy),each squashed by Ωmax tanh (·). The FoM is the dynamical map (per-slice matrix-exponential of the Lindbladian, applied to a 4-state axis-aligned input set {| 0⟩, |1⟩, |+⟩, | + i⟩} used for the per-input fidelity uniformity diagnostic; the reported ¯Favg is computed analytically over the full Haar measure and does not depend on this set); ¯Favg is the analytic average gate fidelity. The simulator is implemented from scratch in JAX [ 79 ] with adaptive-step ODE integration via the diffrax library [ 98 ] (Tsit5; trace and hermiticity preserved to ∼ 10 −8); we do not use external quantum-simulation packages such as QuTiP, Qiskit, or Cirq. 
+
+GRAPE baseline. scipy .optimize .minimize [99 ] with Broyden–Fletcher–Goldfarb–Shanno (quasi-Newton optimizer) ( BFGS ) (or specifically L-BFGS-B for box-constrained problems) at 
+
+complex128 /float64 ; nrestarts =10 , maxiter =500 , ftol =10 −12 , gtol = 10 −9, init scale 0.1 ,restart selection on the best-of-trajectory iterate (Adam can drift past the optimum; the best step is not always the last). We also run a lean variant ( nrestarts =3 , maxiter =200 , ftol =10 −9) that produces statistically indistinguishable infidelity but is faster – this is the configuration used for the speed compari-son reported in the main text. Per-target single-process median wall time on a 128-core CPU (50-target sample): lean 5 .64 s/gate, heavy 56 s/gate. 
+
+Inverter. 4 -layer MLP , hidden width 512 , real8 input encoding (real and imaginary parts of the 2×2matrix flattened, 8 -dim; not global-phase invariant), trained for 4000 Adam steps at lr 2×10 −3 (cosine to 10 −5), batch 128 of fresh Haar U(2) samples per step. Loss is 1 − ¯Favg computed by the same analytic Lindblad channel as GRAPE ; no GRAPE -pulse supervision (the Inverter never sees a GRAPE pulse during training). Median forward-pass time 2 .1 ms (JIT-cached, 50-call median, same machine). 
+
+Per-target paired statistics ( n=250 Haar U(2)). Both methods saturate the dissipation floor. GRAPE :median 1− ¯Favg =4.26 ×10 −4, σacross targets =2.9×10 −5. Inverter: median 4.69 ×10 −4. Per-input fidelity uniformity ( σacross 4 inputs (1−F)): GRAPE 1 .14 ×10 −4, Inverter 1.28 ×10 −4 (1.12 ×). Leakage to |2⟩:GRAPE 1 .30 ×10 −5, Inverter 7.97 ×10 −6 (Inverter 0.61 ×). Pulse bandwidth f95 (frequency below which 95% of |Ωx|2+|Ωy|2 spectral power lies, in units of Ωmax ): GRAPE 1 .91 , Inverter 4.09 ( 2.14 ×). Abandwidth-penalty term λ ∑t |∆Ω t |2 added to J is the natural countermeasure if Arbitrary Waveform Generator ( AWG ) bandwidth becomes a deployment constraint; we leave a quantitative sweep to future work. 
+
+What was tried beyond the main experiments. The main single-qubit result above is one slice of a larger design-space exploration that we report in App. A.12: an input-encoding ablation comparing real8 
+
+/ trig6 / ck4 on Haar U(2) targets (geometry-respecting encodings, which bake in the global-phase U(1) quotient, dominate convergence at fixed compute); and a first two-qubit Haar SU(4) extension that already reaches ¯F=0.957 ( GRAPE floor 0.998 ) at the same ∼ 4×10 4 inference speedup – a promising starting point given the much wider symmetry surface of two-qubit Haar SU(4), with several concrete 
+
+> 40 Inverse Learning for Planning and Control
+
+paths to close the remaining gap to GRAPE belonging to the standalone gate-synthesis project this work has spun off into. 
+
+A.12 Quantum gate synthesis: encoding ablation and two-qubit extension 
+
+This appendix collects the design-space exploration sitting behind the main single-qubit result of App. A.11: three target-encoding alternatives compared on the single-qubit problem (which one we use is the dominant factor at fixed compute); and a first extension to two-qubit Haar SU(4) gate synthesis with its own GRAPE baseline. 
+
+Single-qubit input-encoding ablation. Three encodings of the single-qubit target were compared at identical training budget (4-layer GeLU MLP , hidden 256 , 4000 Adam steps, batch 128 of fresh Haar U(2) samples, cosine LR 2×10 −3→10 −5). The encodings differ in whether they bake in the global-phase U(1) quotient that ¯Favg is invariant to: real8 (real and imaginary parts of the 2×2 matrix flattened, 8 -dim, a direct U(2) encoding – not global-phase invariant); trig6 ({cos (θ /2), sin (θ /2)· ˆn}, 6-dim, sign-canonicalized so it factors through SU (2)/Z2 = PU (2)); and ck4 (Cayley–Klein parameters, 4-dim, also sign-canonicalized to PU (2)). On the same 100 -target reference set, after 4000 steps mean ref fidelity was trig6 0.99953 (100% at ≥ 0.999 ), ck4 0.99948 (98% ), real8 0.99875 (46% ); the GRAPE floor for the same set sits at 0.99952 . trig6 matches GRAPE within 1500 steps, ck4 reaches it by ∼3000 steps, real8 is still 5× further from the floor at the end of training. Reading: at fixed compute, geometry-respecting encodings that bake in the U(1) global-phase quotient remove an entire invariance the network would otherwise have to learn from data – this is the dominant lever on convergence speed. In the long-training/longer-batched regime reported in App. A.11 the simpler real8 also reaches the dissipation floor, but at a much higher compute cost; we keep real8 in the main run for parameter-counting parity with the GRAPE pulse parameterization rather than because it is the recommended choice. 
+
+Two-qubit extension. As a first step toward two-qubit gate synthesis, we extend the same Inverter recipe to a two-qubit transmon (Hilbert dim 4 , no leakage approximation, drift Hamiltonian Hdrift = J 
+
+> 2
+
+σz⊗σz with always-on ZZ coupling J=0.3 chosen so JT gate ≈ 2π, four independent drive channels (Ω(i) 
+
+> x
+
+, Ω(i) 
+
+> y
+
+)i=1,2,Lindblad operators with T1=10 4, Tφ =8×10 3 on each qubit, gate time Tgate =4π, 80 piecewise-constant slices; simulator validated against analytic T1/T2/ZZ references to ≤ 10 −5). GRAPE on a 100 -target Haar SU(4) reference set converges to a target-independent decoherence floor at ¯ F=0.998. The Inverter, trained end-to-end against the same Lindblad simulator with no GRAPE supervision ( real32_su4 
+
+SU(4)-projected encoding, 4-layer MLP , batch 64 , 4000 steps), reaches ¯F=0.957 on the reference set at 421 μs per gate vs. GRAPE ’s 18 .5 s ( ∼ 4.4×10 4 speedup, in line with single-qubit) – a promising first result given the much wider symmetry surface of two-qubit Haar SU(4) (under uniform Lindblad noise the Haar-average channel itself sits at F=1/d=0.25 , a saddle that initial sequence architectures with weight-sharing across the slice axis tend to fall into, while MLP and U-Net escape it from random init). Initial recipe sweeps ( KAK / Cartan-decomposition encoding; longer training and larger batches; GRAPE -pretrain + simulator-in-the-loop fine-tune; multi-seed ensembles) all reach the ∼ 0.96 band without yet closing the gap to GRAPE ; promising next steps include U-conditioned per-position output heads (which retain the parameter efficiency of sequence architectures while breaking the Haar-average symmetry per slice), curriculum from a single fixed target to Haar SU(4), and longer training combined with KAK encoding (the only ablation whose training curve was still trending toward the GRAPE floor at our compute budget). 
+
+A.13 Summary of task-specific adaptations 
+
+This subsection inventories the framework components that were specified per task family in this pa-per, alongside how each could become more general. Three groups: (A) auxiliary loss terms used in 
+
+> 41
+
+Inverse Learning for Planning and Control 
+
+maze2d /antmaze ; (B) Level 2 Inverter slot instances; (C) per-task architecture and parameterization. The rightmost column of Tab. 15 maps each item to one of four broad strategy classes (Tab. 13) that organize the route toward more general solutions – operating on the FoM ’s training data (1), the FoM and Inverter as models (2), the Bolza objective J (3), or the deployment-time hierarchical / adaptive control structure (4). 
+
+Supplementary Table 13: Four strategy classes for the path toward more general adaptations. Each class operates on a different lever of the inverse-learning framework. Classes are complementary, not alternatives: most concrete strategies combine two or more (e.g., the AntMan strategy combines Class 1 with Class 4).                                        
+
+> Class Framework lever Mechanisms Status in this paper 1. Data FoM training distribu-tion Broaden coverage to expose the dynamics the Inverter is incentivized to explore; safely-diverse exploration scaffolding; active data ac-quisition near low-density regions. Demonstrated by AntMan’s random-mixed condition (Sec. 4.4, App. A.10).
+> 2. Model FoM ,Inverter, and their I/O representa-tions Uncertainty-aware FoM (Bayesian / ensemble / conformal); foundation-style pretraining of the FoM -and-Inverter core with task-specific adapter heads; meta-learned initializations / hypernetworks / in-context adaptation; equiv-ariant encodings; analytic+residual FoM hy-brids. Foundation-model direc-tion outlined in the Dis-cussion; meta-learning, equivariance, and residual hybrids open.
+> 3. Objective Bolza objective J
+> (bridge to OC and RL) Meta-learning Jacross task families; RL value function as cost-to-go in J; standard OC regularizers (bandwidth, smoothness, en-ergy) replace task-specific loss terms. Outlined in App. A.14.
+> 4. Deployment Level 2 Inverter slot; chunk-boundary / re-plan policy Learned Level 2 Inverter replaces algorith-mic ones; adaptive replan conditioned on FoM uncertainty; learned termination predic-tor; deeper hierarchies (meta-Inverter selecting the subgoal specification, (V)LLMs as a top-layer substrate). AntMan Level 2 Inverter (Sec. 4.4) demonstrates one level of recursion; adaptive replanning, deeper hierarchies, and (V)LLM meta-Inverters open.
+
+A.14 Relation to Optimal Control and Reinforcement Learning 
+
+The Inverse Learning paradigm composes naturally with the two paradigms it sits between. On the OC side, for example, an Inverter may emit a feedforward warm start that an MPC / MPPI optimizer can reactively adapt at deployment. Similarly, on the RL side, an RL actor may use the Inverter’s output as a behavior prior for online fine-tuning. Both would preserve the Inverter’s amortized forward pass. 
+
+A.15 Hyperparameters 
+
+Our Inverter stack is assembled from two kinds of components: components designed to be shared across tasks (the chunked Transformer FoM and the Transformer inverse model), and components that are explicitly task-specific (the auxiliary loss terms and the Level 2 instance such as the Path Inverter). 
+
+What we actually tuned. Table 16 lists the task-specific hyperparameters that were actively tuned during this project (via manual scans of 3 –6 settings on a single seed), while most architectural knobs (e.g., transformer depth, width, batch size, learning rates) were set once from standard defaults and kept fixed across all tasks. 
+
+42 Inverse Learning for Planning and Control                                               
+
+> Supplementary Table 14: Neurosymbolic components of the five Inverters (parallel to Tab. 1). For each Inverter we list its symbolic substrate, neural amortized component, the differentiable coupling between them, and the cumulative levels of the neurosymbolic spectrum (representation ⊆composition ⊆search ⊆inference ⊆synthesis) the symbolic piece occupies. The Motor and Locomotion Inverters are purely continuous, showing that the IL paradigm itself is not necessarily neurosymbolic; neurosymbolic structure enters at the implementation level in the other three.
+> Inverter Symbolic substrate Neural compo-nent Symbolic ↔neural coupling NeSy levels
+> Motor — (purely continuous) Transformer over ˆa1: T+learned FoM ——Locomotion — (purely continuous) Transformer over ˆa1: T+learned FoM ——Path Cardinal grid over data occupancy; BFS ; axis-aligned polyline gram-mar — (algorithmic) Discrete waypoints consumed by the Motor / Locomotion Inverter Repr. +Comp. +Search Game 4-way alphabet
+> {U,D,L,R };pre-computed cell ×dir. FSM transition; wall-validity mask Transformer over H=32 direction logits Gumbel-softmax composed with the FSM lookup table Repr. + Comp. Pulse Discrete gate library
+> {X,Y,Z,H,T, . . . }
+> MLP
+> →(Ωx,Ωy)1:80
+> Discrete gate condi-tioning at input Repr.
+
+Counting methodology and comparison. While the actively tuned subset per task is small, the complete Inverter stack has more total configuration hyperparameters than any single offline RL baseline. To quantify this precisely, we count the algorithmically active hyperparameters in each method’s maze2d -umaze -v1 YAML or config .json : learning rates, architectural sizes, loss weights, temperature/entropy/ KL coefficients, target-update rates, normalization flags, and any algorithm-specific quantity. We exclude purely bookkeeping fields (seed, device, checkpoint path, project/group names, evaluation-episode counts, eval-frequency). Table 17 summarizes this total capacity budget. The Inverter stack factorizes its larger knob count into independently optimized modules ( FoM , IM , Path Inverter) rather than a single end-to-end actor-critic objective. 
+
+Online tuning budget (in the sense of Kurenkov and Kolesnikov [100] , Jackson et al. [101] ). To audit our implicit online tuning budget [ 102 , 100 , 101 ], we enumerate every deployment-time hyperparameter-selection run in this project by scanning all generated run directories and uniformly assigning the nominal 100 online evaluation episodes to each run. On average, we consumed ∼ 900 episodes per task cell for hyperparameter selection. 
+
+Where this stands in the literature. At ∼ 900 episodes per task cell, our hyperparameter-selection budget operates within the 10 2– 10 3 episodes-per-cell regime proposed as a deployment-realistic target by Paine et al. [102] . This is computationally well below the implicit budgets of many offline RL methods audited by Kurenkov and Kolesnikov [100]. 
+
+> 43 Inverse Learning for Planning and Control
+
+A.16 Compute environment and project timeline 
+
+All experiments reported in this paper (Inverter FoM and IM training, ILHL fine-tuning and reward modeling, the full 8 -baseline × 4 -layout × 3 -seed CORL baseline sweep, the AntMan - IM experiments, and every timing measurement in Table 5) were run on a single internal 8-GPU node between 2026-03-18 
+
+and 2026-05-06 ( 50 days of wall-clock project time, or roughly 7 calendar weeks). No external cluster, TPU, or cloud GPU was used. 
+
+Hardware and software. 
+
+• GPUs : 8 × NVIDIA A40 (GA102GL, 48 GB GDDR6 per card, driver 535.274), all on one PCIe host. • CPU : 2 × AMD EPYC 7513 ( 32 physical cores / 64 threads each; 64 physical cores / 128 threads total). • RAM : 503 GiB DDR4 shared across sockets. • Software : Ubuntu 24.04, Linux 6.8.0; PyTorch + CUDA for all learned components; JAX + JIT for the ReBRAC baseline only (marked † in Table 5); MuJoCo 2.3 for maze2d /antmaze , a MuJoCo -based 
+
+AntMan environment for Sec. 4.4. 
+
+> 44
+
+Inverse Learning for Planning and Control 
+
+Supplementary Table 15: Inventory of task-specific adaptations in this paper. The rightmost column maps each item to the strategy classes defined in Tab. 13. 
+
+Component What is task-specific Toward more general Class 
+
+A. Auxiliary loss terms 
+
+maze2d boundary loss, 
+
+λboundary =5 (App. A.2) Support-derived per-step penalty pushing predicted states onto the data manifold near walls. Broader FoM training data with wall-grazing trajectories; uncertainty-aware FoM regularization (same recipe as AntMan’s random-mixed condition). 1, 2 
+
+antmaze body-yaw regular-izer, λyaw =5 (Eq. 6) Per-step pull of predicted body quaternion toward upright. Broader FoM training data including falls and recoveries (AntMan’s random-mixed condition is the direct demonstration). 1
+
+antmaze BC action-fidelity anchor, λfid =5 (Eq. 6) Per-step pull of predicted actions to-ward recorded data actions. Broader FoM training data; in AntMan, the random-mixed condition removes the need for an action anchor entirely. 1
+
+maze2d dense intermediate-goal loss, λdense =5(App. A.2) Per-step state-vs-goal supervi-sion over the chunk (denser than terminal-only). Value / cost-to-go term in the Bolza ob-jective J (noted in App. A.14). 3
+
+B. Level 2 Inverter slot 
+
+Simple algorithmic Path Inverter (maze2d -medium /large + all six antmaze -v2 variants, App. A.6) 4-connected BFS on a data-density occupancy grid with polyline extrac-tion, perpendicular snap, L-corner insertion, sub-cell wobble filter. Learned closed-loop Level 2 Inverter (Sec. 4.4, AntMan); the algorithmic Path Inverter is the cheaper slot filling for static corridors with abundant data. 4Per-chunk dispatch controller between the two Inverter lev-els (App. A.6) Thresholds for waypoint progress, target-distance window, stuck-recovery, and goal-region behavior. Closed-loop Level 2 Inverter re-queried per chunk; broader low-level train-ing data with near-target conditions, or direction-conditioning instead of position-conditioning. 4, 2, 1 Replan-horizon K choice (K=128 maze2d -umaze 
+
+one-shot; K=16 maze2d -medium /large + all six antmaze-v2 variants; K=80 pulse slices for quantum, no deployment replan; App. A.7) Per-task constant value chosen by sweep. Adaptive K conditioned on FoM uncer-tainty estimates. 4, 2 
+
+C. Per-task architecture and parameterization 
+
+Per-task Inverter / FoM net-works (Apps. A.2, A.9, A.11; Sec. 4.4) 
+
+maze2d /antmaze : causal-transformer FoM +Inverter at Level 1 (sized to state/action dim). AntMan: reuses Level-1 antmaze pair plus a causal-transformer Level-2 FoM and Transformer Level-2 Inverter ( 32 -step waypoint-direction sequence). Quantum: 4-layer MLP Inverter, analytic Lindblad FoM (no learned FoM). Cross-task pretraining of the FoM -and-Inverter core with task-specific adapter heads (foundation-model pattern); or a meta-learned core ( MAML , hypernet-works, in-context adaptation) for few-shot specialization. 2Quantum: 80 -slice piecewise-constant pulse, Ωmax tanh (·)
+
+squash (App. A.11) Trotterized piecewise-constant con-trol parameterization with bounded amplitude (matches GRAPE 1-to-1). Continuous-time spline / Fourier-basis pa-rameterizations; bandwidth-penalty term in J if AWG bandwidth becomes a de-ployment constraint. 3Quantum: real8 U(2) input encoding, 8-dim (App. A.11) Target unitary flattened to 8 real components. Equivariant encodings (Bloch-vector, quaternion, Lie-algebra) that scale to higher-dim systems. 2
+
+45 Inverse Learning for Planning and Control 
+
+Supplementary Table 16: Task-specific hyperparameters tuned during this project. “Range explored” shows the set of values checked before fixing the final value. Component Knob Final value Range explored FoM state noise σs0 0.01 {0.005 , 0.01 , 0.015 , 0.02 , 0.025 , 0.03 }
+
+FoM chunk length L 16 {16 , 32 , 64 }
+
+IM λdense 5 {5, 10 , 15 }
+
+IM λboundary 5 {5, 10 , 20 , 30 , 40 , 45 , 50 , 60 , 100 }
+
+IM boundary mode binary {binary , z-score }
+
+IM segment length / horizon 16 / 128 horizon ∈ { 64 , 128 }
+
+IM epochs 2000 {500 , 1000 , 2000 }
+
+Deploy replan chunk size K reported across all {16 , 32 , 64 , 128 } (Tab. 5) Deploy goal threshold 0.45 (D4RL default) fixed Seq. occupancy threshold τ 2000 visits / 0 .5 m cell {500 , 1000 , 2000 , 5000 }
+
+Seq. cell size 0.5 m {0.25 , 0.5, 1.0} mSeq. origin alignment density-aligned {floor -min , density-aligned }
+
+Seq. stuck-check window 4 chunks {2, 4, 8}
+
+Seq. min-leg filter 1.0 m {0, 1.0} m
+
+Supplementary Table 17: Number of algorithmically active hyperparameters per maze2d -umaze -v1 
+
+configuration. Counts exclude purely bookkeeping fields. Method # HPs Source BC / BC-10 7 bc/maze2d/umaze_v1.yaml 
+
+AWAC 8 awac/maze2d/umaze_v1.yaml 
+
+TD3+BC 12 td3_bc/maze2d/umaze_v1.yaml 
+
+IQL 13 iql/maze2d/umaze_v1.yaml 
+
+SAC-N 13 sac_n/maze2d/umaze_v1.yaml 
+
+EDAC 14 edac/maze2d/umaze_v1.yaml 
+
+DT 18 dt/maze2d/umaze_v1.yaml 
+
+ReBRAC 20 rebrac/maze2d/umaze_v1.yaml 
+
+CQL 27 cql/maze2d/umaze_v1.yaml 
+
+FoM (ours) 12 scripts/train_maze2d_fm_universal.py 
+
+IM (ours) 17 scripts/train_iwm_maze2d_v1.py 
+
+Deployment (ours) 6 maze2d/navigate_maze2d.py 
+
+Path Inverter (medium / large) 5 App. A.6 
+
+Total stack – umaze 35 FoM + IM + deployment 
+
+Total stack – medium,large 40 + Path Inverter 46 Inverse Learning for Planning and Control 
+
+Supplementary references (model-based RL comparison) 
+
+The following references are cited by the model-based-RL comparison in App. A.8 (Table 11). 
+
+[S1] T. Yu, G. Thomas, L. Yu, S. Ermon, J. Y. Zou, S. Levine, C. Finn, T. Ma. MOPO: Model-based Offline Policy Optimization . NeurIPS 2020. arXiv:2005.13239. 
+
+[S2] R. Kidambi, A. Rajeswaran, P. Netrapalli, T. Joachims. MOReL: Model-Based Offline Reinforcement Learning . NeurIPS 2020. arXiv:2005.05951. 
+
+[S3] T. Yu, A. Kumar, R. Rafailov, A. Rajeswaran, S. Levine, C. Finn. COMBO: Conservative Offline Model-Based Policy Optimization . NeurIPS 2021. arXiv:2102.08363. 
+
+[S4] M. Rigter, B. Lacerda, N. Hawes. RAMBO-RL: Robust Adversarial Model-Based Offline Reinforce-ment Learning . NeurIPS 2022. arXiv:2204.12581. Antmaze numbers in Table 1; v0 caveat in Appendix B.7. 
+
+[S5] Y. Sun, J. Zhang, C. Jia, H. Lin, J. Ye, Y. Yu. Model-Bellman Inconsistency for Model-based Offline RL . ICML 2023. 
+
+[S6] J. Jeong, X. Wang, M. Coskun, Q. Kong. CBOP: Conservative Bayesian Model-Based Value Expansion for Offline Policy Optimization . ICLR 2023. arXiv:2210.03802. 
+
+[S7] X. Chen, Y. Yu, Q. Zhu, Z. Liu, L. Yang, Y. Li, P. Zhao. MAPLE: Offline Model-based Adaptable Policy Learning . NeurIPS 2021. 
+
+[S8] M. Bhardwaj, T. Xie, B. Boots, N. Jiang, C. Cheng. Adversarial Model for Offline Reinforcement Learning (ARMOR) . NeurIPS 2023. arXiv:2302.11048. 
+
+[S9] M. Janner, Q. Li, S. Levine. Offline Reinforcement Learning as One Big Sequence Modeling Problem (Trajectory Transformer) . NeurIPS 2021. arXiv:2106.02039. Antmaze-v0 numbers: Table 2. 
+
+[S10] Z. Jiang, T. Zhang, M. Janner, Y. Li, T. Rocktäschel, E. Grefenstette, Y. Tian. Efficient Planning in a Compact Latent Action Space (TAP) . ICLR 2023. arXiv:2208.10291. Antmaze-v0 numbers in Table 6; mixed v0/v2 protocol described in Sec. 6. 
+
+[S11] M. Janner, Y. Du, J. B. Tenenbaum, S. Levine. Planning with Diffusion for Flexible Behavior Synthesis (Diffuser) . ICML 2022. arXiv:2205.09991. Maze2D-v1 numbers: Table 1. 
+
+[S12] K. Park, J. Lee, M. Tomar, V. Naik, S. Kadavath, B. Eysenbach. Tackling Long-Horizon Tasks with Model-Based Offline Reinforcement Learning (LEQ) . ICLR 2025. arXiv:2407.00699. Re-runs of MOBILE and CBOP on antmaze-v0 in Table 1.

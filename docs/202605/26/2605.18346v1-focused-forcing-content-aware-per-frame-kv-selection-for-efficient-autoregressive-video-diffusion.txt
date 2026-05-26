@@ -1,0 +1,1504 @@
+Title: Focused Forcing: Content-Aware Per-Frame KV Selection for Efficient Autoregressive Video Diffusion
+
+URL Source: https://arxiv.org/pdf/2605.18346v1
+
+Published Time: Tue, 19 May 2026 03:00:11 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+# Focused Forcing: Content-Aware Per-Frame KV Selection for Efficient Autoregressive Video Diffusion 
+
+Peiliang Cai 1 Evelyn Zhang 1 Jiacheng Liu 1,2 Hao Lin 3 Ruiqi Zhang 4 Weile Mo 1
+
+Yue Ma 5 Shikang Zheng 1,6 Jiehang Huang 1 Dongrui Liu 7 Linfeng Zhang 1†
+
+1SJTU 2SDU 3HUST 4UTokyo 5HKUST 6SCUT 7Shanghai AI Lab Key                  
+
+> Query  0.80
+> 0.20
+> 0.15
+> 0.50
+> 0.05
+> 0.30
+> Per -Frame
+> Per -Frame History Selection
+> 0.20 0.50 0.30
+> 0.05 0.15 0.80
+> 0.20 0.50 0.30
+> Attention Score
+> Diversity Score
+> 0.60 0.30 0.10
+> 0.20 0.40 0.40
+> Weighted Avg.
+> Content -Aware Scoring
+> …
+> Less Important
+> Head
+> Head -Wise Budget
+> 70%
+> 50%
+> 20%
+> Key
+> Query  0.80
+> 0.20
+> 0.15
+> 0.50
+> 0.05
+> 0.30
+> Avg.
+> 0.50 0.33 0.18
+> Shared History Selection
+> 0.50 0.33 0.18
+> Query  Key
+> Low
+> Similarity
+> High
+> Similarity
+> 0.50 0.33 Redundant !
+> Attention -Only Scoring
+> …
+> Head
+> Uniform Budget
+> 50% 50% 50%
+> Self
+> Forcing
+> Long
+> Live
+> Rolling
+> Forcing
+> Causal
+> Forcing
+> 1.45
+> ×
+> Speedup
+> 1.31 ×
+> Speedup
+> 1.43 ×
+> Speedup
+> 1.48 ×
+> Speedup
+> + Ours
+
+(b) Key Advantages of Our Method 
+
+(a) Limitations of Prior Work 
+
+(c) Overall Performance 
+
+> Previous
+
+Figure 1: Overview of Focused Forcing. (a) Existing methods use shared history selection, attention-only scoring, and coarse head budgeting, illustrated here with uniform budgets. (b) Focused Forcing uses per-frame history selection, content-aware scoring, and head-adaptive budgets. (c) Focused Forcing achieves up to 1.48 × speedup across multiple paradigms while preserving quality. 
+
+Abstract 
+
+Recent advances in autoregressive video diffusion have enabled sequential and streaming video generation. However, long-horizon generation requires increas-ingly large KV caches, making efficient compression without sacrificing quality challenging. Existing methods mostly select historical frames based on attention scores, but their context decisions remain coarse. When multiple frames are gen-erated in the same chunk, these methods often apply a shared history selection to the whole chunk, score historical frames solely by attention, and assign head-wise budgets either uniformly or by attention-pattern heuristics rather than explicit head-importance estimation. We show that frames within the same generated chunk can depend on distinct historical frames, that the same historical frame can receive different attention scores as its relative temporal distance to the current frames changes, and that masking different heads induces unequal generation degradation. Motivated by these findings, we propose Focused Forcing , a training-free KV selection method that focuses cached history along both generated-frame and head dimensions. For each generated frame, Focused Forcing preserves the most relevant and distinctive historical frames by combining attention scores with diversity scores of historical frames, while assigning larger budgets to heads with higher estimated importance. Across multiple autoregressive generation paradigms, Focused Forcing achieves up to 1.48 × end-to-end acceleration without training, while improving visual quality and text alignment . Our code will be released on GitHub. 
+
+> †
+
+Corresponding author. Preprint. 
+
+> arXiv:2605.18346v1 [cs.CV] 18 May 2026
+
+1 Introduction 
+
+Recent advances in video diffusion models [ 4, 17 , 30 , 41 , 47 ] have greatly improved visual fidelity and motion coherence, making long-form, interactive, and streaming video generation increasingly practical. Unlike bidirectional paradigms that synthesize an entire clip jointly, autoregressive video diffusion [6, 51] generates video sequentially, often in chunks, and naturally supports online rollout with KV caching [ 21 , 26 , 59 ]. However, long-horizon rollout requires maintaining an ever-growing cache of previously generated frames, making later attention operations increasingly expensive in memory and computation. To improve efficiency, existing methods typically restrict or compress the accessible history with sliding-window or rolling-KV designs [ 8, 9, 21 , 59 ]. Some preserve temporal continuity through structured cache rules such as attention sinks or cache re-caching [ 46 , 48 ], while others select or prune cached frames by attention scores [ 48 ]. Recent work also explores head-specific cache strategies [ 16 ]. Despite these advances, as illustrated in Fig. 1(a), existing methods still make coarse-grained context decisions in three aspects: 1) Shared Chunk-Level Selection , where all frames in a generated chunk share the same history selection; 2) Attention-Only Ranking , ranking historical frames mainly by attention scores; and 3) Coarse Head-Wise Budgeting , allocating head-wise budgets uniformly or heuristically without explicit head-importance estimation. These designs reduce cache overhead, but do not fully match the fine-grained context requirements of autoregressive video generation. 11.84                                   
+
+> 5.20
+> -1.45
+> -8.09
+> 11.73
+> 5.24
+> -1.25
+> -7.75
+> 21
+> Absolute Key Frame (Chunk 7)
+> Query  Frame
+> 22 23
+> 0
+> 1
+> 2
+> 18192015161712131410113456789
+> Query  Frame  0
+> 1
+> 2
+> 24 25 26 212223 18 19 2015 16 17 1314 6789101112
+> Absolute Key Frame (Chunk 8)
+
+Figure 2: Attention is generated-frame-dependent and relative-temporal-distance-sensitive. 
+
+Rows denote query frames in the current generated chunk, and columns denote historical key frames. Attention varies across query frames and changes with relative temporal distance. Attention patterns in autoregressive video diffusion suggest that history selection should be performed at a finer granularity. As shown in Fig. 2, frames within the same generated chunk can attend to different historical frames, indicating that context demand is generated-frame-dependent rather than shared by the whole chunk. Moreover, the same historical frame can receive different attention scores as its relative temporal distance to the current frames changes, suggesting that attention reflects not only content relevance but also temporal position. Therefore, selecting history with a single aggregated attention score may discard frames that are important for specific generated frames, while attention-only ranking can be unstable as relative temporal distance affects attention scores. Beyond selecting historical frames for each generated frame, fine-grained cache compression also requires allocating appropriate history budgets across attention heads. Existing head-specific strategies mainly rely on aggregated attention scores or heuristic attention patterns, but they do not explicitly estimate head importance for generation quality. As a result, they lack a direct criterion for head-wise KV budget allocation. This motivates assigning larger historical budgets to more important heads. Taken together, these observations motivate fine-grained KV compression across two dimensions: per-frame history selection and per-head budget allocation. Instead of pruning historical frames with a single aggregated attention score, KV compression should determine which historical frames each generated frame should access and how much history each attention head should retain. Meanwhile, the selection criterion should go beyond attention alone, since attention scores can be affected by relative temporal distance. Motivated by this formulation, we propose Focused Forcing , a training-free KV compression method for autoregressive video generation. As shown in Fig. 1(b), Focused Forcing addresses fine-grained 2context allocation with three key designs: 1) Generated-Frame-Wise History Selection. Focused Forcing selects historical frames separately for each generated frame, rather than using one shared selection for the whole generated chunk. 2) Content-Aware Scoring. Focused Forcing combines attention relevance with diversity scores of historical frames, preserving distinctive historical frames when attention scores are affected by relative temporal position. 3) Head-Wise Budget Allocation. 
+
+Focused Forcing estimates head importance by masking each attention head during denoising rollout and measuring the resulting degradation with a distribution-matching loss, then assigns larger KV budgets to more influential heads. Experiments across multiple autoregressive generation paradigms show that Focused Forcing consis-tently reduces cache overhead without additional training. As shown in Fig. 1(c), it achieves up to 1.48 × end-to-end acceleration while also improving visual quality and text alignment, demonstrat-ing that fine-grained KV compression enhances both efficiency and quality in long-horizon video generation. Our contributions are summarized as follows: • We observe that attention-based history selection in autoregressive video generation is generated-frame-dependent and relative-position-sensitive, and that different attention heads have unequal impact on generation quality. • We propose Focused Forcing , a training-free KV compression method that performs fine-grained context allocation through generated-frame-wise history selection, content-aware scoring with attention and diversity scores of historical frames, and head-wise differentiated KV budgets. • Experiments across multiple autoregressive generation paradigms show that Focused Forcing achieves up to 1.48 × end-to-end acceleration without training, while improving visual quality and text alignment .
+
+2 Related Work 
+
+Video Diffusion Models. Diffusion models [ 3 , 19 , 31 – 33 ] have set a strong baseline for image and video generation. Benefiting from scaled data and compute, recent video generators achieve high visual fidelity and temporal consistency, e.g., Wan [ 41 ], HunyuanVideo 1.5 [ 42 ], LTX Video [ 18 ], and Seedance2 [ 36 ], most of which rely on bidirectional spatiotemporal attention that ensures global consistency but is costly for long-form or interactive use. To support long-horizon and online generation, causal autoregressive video diffusion synthesizes future frames sequentially with historical context maintained through KV caching, via causal conversion from bidirectional models [ 51 ], rollout-aware training [ 21 ], streaming rolling-window generation [ 26 , 46 , 55 ], and AR diffusion distillation [ 59 ], and has been scaled in industrial world-modeling and game-content systems [39, 40, 52]. 
+
+Efficient Video Generation. Efficient video diffusion typically reduces denoising steps, per-step cost, or redundant computation along the trajectory. Better samplers accelerate inference via deterministic non-Markovian sampling [ 38 ], high-order ODE solvers [ 27 ], and unified predictor-corrector schemes [ 57 ]. Distillation and consistency training compress trajectories into few- or one-step generation [ 14 , 15 , 28 , 35 ]. Per-step cost is cut by memory-efficient or low-bit attention, structured attention for real-time video [ 1], and multi-GPU parallelism [ 10 , 11 , 13 , 23 , 53 , 54 ]. Training-free diffusion caching exploits feature redundancy across adjacent denoising steps, evolving from reusing slow features in U-Net/DiT [ 29 , 37 ] to finer-grained or video-aware reuse [ 24 , 60 ], and to predictive caching that extrapolates future activations [5, 25]. 
+
+KV Cache Compression for Autoregressive Generation. In autoregressive language models, KV cache compression prunes or allocates history via attention salience, recency, sink tokens, or head-wise specialization [ 20 , 43 , 44 , 56 ]. Video counterparts must further cope with rollout-growing caches and strong spatiotemporal redundancy. Dummy Forcing [ 16 ] studies head-level dependence on long-range context and applies aggressive head-wise KV compression. Relax Forcing [ 58 ] organizes temporal memory into functional components such as Sink, History, and Tail, and dynamically selects informative historical frames for long-horizon generation. These methods improve cache efficiency and rollout stability, while their context decisions are mainly defined at the head level or over coarse temporal regions. Query-frame-level variation within multi-frame attention remains less explored. 33 Method (b) Query -Frame -wise Key Selection  (c) Pac 
+
+> Token
+> Frame
+
+Query  Key 
+
+Token Pool 
+
+0.20  0.50  0.30 
+
+Attention Score 
+
+0.15 0.80  0.05 
+
+Key  Per -Token 
+
+> Mean
+
+Diversity Score 
+
+0.60  0.30  0.10 
+
+0.20 0.40 0.40 
+
+0.07 0.23 0.70 
+
+Total Score  
+
+> Weighted Avg.
+> Packed Key
+> 01
+> Packed Query
+> Query Frame
+> Mask
+> Head
+> Generate
+
+…𝑧 0 𝑧 1 𝑧 L−1
+
+> Latent Trajectory
+
+Evaluator  DM     
+
+> Loss
+> Per -
+> Head
+> 012…
+> 0
+> 1
+> 2
+> ……
+
+Head 
+
+> Layer
+> …
+> …
+
+0.40 0.40 
+
+0.23 0.70 0        
+
+> 0
+> 1
+> 1
+> 0：
+> 1：
+> 01
+> 010
+> Packe
+> 0
+> Pack Packe
+> Selection
+> Input Causal DiT
+> VarLen A
+> …
+> L0H10
+> DM Loss
+> Max
+> …
+> Min
+> L20H8
+> L0H0
+
+(a) Head Importance & Budget Allocation 
+
+(b) Query -Frame -wise Key Scoring 
+
+Key 
+
+> Query
+
+0.20 0.40 0.40 
+
+0.07 0.23 0.70 0 
+
+> 0
+> 1
+> 21
+> Input Output
+> Ca
+
+usa l DiT 
+
+VarLen Attn         
+
+> Key/Value Frame
+> Select & Pack
+> 0：
+> 1：
+> 0
+> 01
+> 01
+> Packed Query
+> 01
+> Packed Key
+> 01
+> 01
+> Packed Value
+> 01
+> Matched
+> 1
+
+(c) Packed QKV for VarLen Attn 
+
+> Budget
+
+Figure 3: Overview of Focused Forcing. (a) We estimate head importance by masking each head and measuring the DM loss, then allocate larger KV budgets to more important heads. (b) For each query frame and head, we score historical frames by combining attention scores with their diversity scores. (c) The selected QKV rows are packed and computed by variable-length FlashAttention. 
+
+3.1 Preliminary Autoregressive Video Diffusion. Autoregressive video diffusion generates videos causally, where each frame or chunk is conditioned on previously generated context. Given a video decomposed into autoregressive units x1: N = ( x1, x 2, . . . , x N ), the joint distribution is factorized as p(x1: N ) = 
+
+QNi=1 p(xi | x<i ), where each xi can denote either a frame or a chunk. In chunk-wise generation, tokens are grouped into Fq query frames from the current chunk and Fh
+
+historical frames from the KV cache: 
+
+Q = [ Q(1) , . . . , Q (Fq )], K = [ K(1) , . . . , K (Fh)], (1) where Q(f ) and K(t) denote tokens from the f -th query frame and the t-th historical frame. 
+
+Distribution Matching Loss. Following distribution matching distillation [ 49 , 50 ], the distribution matching gradient is given by the difference between fake and real score functions. We use its surrogate loss form: 
+
+LDM (x) = 12 ∥x − sg( x − gDM (xt, t )) ∥22 , gDM (xt, t ) = wtαt (sfake (xt, t ) − sreal (xt, t )) , (2) where xt is obtained by adding noise to x, sfake and sreal denote the score functions of the generated and target distributions, wt is a timestep-dependent weight, αt denotes the signal scaling coefficient at timestep t, and sg( ·) denotes stop-gradient. A larger LDM indicates stronger distributional deviation and is used to measure generation degradation. 
+
+Variable-Length FlashAttention. For samples with different sequence lengths {Lb}Bb=1 , where 
+
+Qb, K b, V b ∈ R1×Lb×H×D , variable-length FlashAttention [ 10 , 11 ] concatenates them along the token dimension: 
+
+Qpack = [ Q1; . . . ; QB ], Kpack = [ K1; . . . ; KB ], Vpack = [ V1; . . . ; VB ]. (3) Let cq 
+
+> 0
+
+= ck 
+
+> 0
+
+= 0 , cqb = Pbi=1 Lqi , and ckb = Pbi=1 Lki denote the cumulative boundaries for query and key-value sequences. The attention output is written back to the packed query layout: 
+
+Opack [cqb−1 : cqb ] = softmax Qpack [cqb−1 : cqb ] Kpack [ckb−1 : ckb ]⊤
+
+√D
+
+!
+
+Vpack [ckb−1 : ckb ], (4) where Opack denotes the packed attention output, and D is the attention head dimension. 43.2 Head-Wise Budget Allocation 
+
+Different attention heads can have unequal impact on generation quality, so assigning the same KV budget to all heads may over-compress important heads while wasting cache on less important ones. As shown in Fig. 3(a), we estimate head importance by masking each layer-head pair during denoising rollout and measuring the induced DM loss. For a layer-head pair m = ( ℓ, h ), we mask the output of this head while keeping other computations unchanged, obtaining a perturbed latent trajectory ˜z(m). The importance of head m is measured by the average DM loss over prompts and sampled temporal windows: 
+
+Im = 1
+
+|P| |W| 
+
+X
+
+> p∈P
+
+X
+
+> w∈W
+
+LDM 
+
+
+
+˜z(m)
+
+> p,w
+
+
+
+, (5) where P denotes the number of prompts, and W denotes sampled temporal windows from the generated latent trajectory. A larger Im indicates that masking head m causes stronger generation degradation. The detailed algorithmic procedure is provided in App. B.1. Number  of  Heads 
+
+Mean DM Loss                  
+
+> 25
+> 10
+> 20
+> 15
+> 5
+> 00.17 0.18 0.19 0.20 0.21 0.22 0.23 0.24 0.25 0.26 0.27 0.28 0.29 0.30
+> Median = 0.2253
+> Min = 0.1701
+> Max = 0.3006
+
+Figure 4: Head-wise importance is non-uniform. Each bar counts the number of heads falling into its DM-loss interval, and the vertical lines mark the minimum, median, and maximum values. The DM loss distribution in Fig. 4 is clearly non-uniform. For each head, we average the DM loss over sampled temporal windows and prompts, and report the resulting mean DM loss as its importance score. The histogram shows that most heads cluster in a narrow range around the median, while a few heads have much higher or lower mean loss, forming a long-tailed distribution. The mean loss reflects the expected degradation caused by masking a head and is used as the head-importance score for budget allocation. After obtaining {Im} for all layer-head pairs, we normalize the importance scores: 
+
+ˆIm = Im − Imin 
+
+Imax − Imin + ϵ . (6) We then map each normalized score to a discrete KV budget: 
+
+bm = round 
+
+
+
+bmin + ˆIγm (bmax − bmin )
+
+
+
+, (7) where bmin and bmax are the minimum and maximum budgets, and γ controls the curvature of the mapping. More important heads therefore retain more historical frames. 
+
+3.3 Query-Frame-Wise History Scoring and Selection 
+
+Frames within the same generated chunk may require different historical context. Focused Forcing therefore selects historical frames separately for each query frame and head by combining attention scores with diversity scores under the assigned head-wise budget, as shown in Fig. 3(b). 
+
+Attention Scores. For efficiency, we group tokens within each frame into P groups. The grouped query and key features are represented as ¯Q ∈ RB×QF ×P ×H×D and ¯K ∈ RB×KF ×P ×H×D. Let 
+
+¯Qb,q f ,u,h and ¯Kb,k f ,v,h denote the pooled features for query frame qf , historical frame kf , group indices u, v , and head h. The frame-level attention score is defined as: 
+
+Ab,q f ,h,k f = 1
+
+P 2
+
+> P
+
+X
+
+> u=1
+> P
+
+X
+
+> v=1
+
+¯Qb,q f ,u,h , ¯Kb,k f ,v,h 
+
+√D , (8) 5where D is the head dimension. We standardize Ab,q f ,h,k f along the historical-frame dimension for each batch, query frame, and head, so that scores over candidate historical frames have zero mean and unit variance, yielding ˜Ab,q f ,h,k f .
+
+Diversity Scores of Historical Frames. Attention scores may not fully capture frame distinctive-ness, especially when they vary with relative temporal distance, as proved in App. B.2. We therefore compute diversity scores from historical key frames. Let K(kf ) ∈ RB×L×H×D denote the key of the kf -th historical frame, where L is the number of tokens per frame. For each batch index b, token index l, and head index h, we compute the average key representation over historical frames and measure the redundancy of historical frame kf by its average cosine similarity to this representation: 
+
+¯Kmean  
+
+> b,l,h
+
+= 1
+
+FhFhX 
+
+> kf=1
+
+K(kf )
+
+> b,l,h
+
+, Rb,h,k f = 1
+
+L
+
+> L
+
+X
+
+> l=1
+
+* K(kf )
+
+> b,l,h
+
+K(kf ) 
+
+> b,l,h 2
+
++ ϵ,
+
+¯Kmean 
+
+> b,l,h
+
+¯Kmean  
+
+> b,l,h 2
+
++ ϵ
+
++
+
+. (9) Here, ϵ is a small constant for numerical stability. A historical frame is less distinctive if it is closer to the average historical representation. We therefore define the diversity score of historical frame kf
+
+as negative redundancy: 
+
+Db,h,k f = −Rb,h,k f . (10) After standardization along the historical-frame dimension, the diversity score of each historical frame is broadcast to each query frame, yielding ˜Db,q f ,h,k f .5                       
+
+> 01560 3120 4680 6240 7800 9360 10920 12480 14040 15600 17160 18720 20280 21840 23400 24960 26520 28079
+> Key Token Index
+> 0.0
+> -0.5
+> -1.0
+> Diversity
+> 0127 139 150 162 174
+> Frame Index
+
+Figure 5: Diversity scores highlight changing regions. Historical frames with high diversity scores often contain regions that differ from the average historical representation. As shown in Fig. 5, high diversity scores highlight regions that differ across historical frames, while static regions stay close to the average representation. Thus, diversity scores complement attention scores by preserving distinctive historical frames that may be under-ranked by attention alone. 
+
+Final Score and Selection. We compute the final score by weighting the attention score and the diversity score of each historical frame, and select historical frames under the assigned budget: 
+
+Sb,q f ,h,k f = λ ˜Ab,q f ,h,k f + (1 − λ) ˜Db,q f ,h,k f , Sb,q f ,h = TopK kf
+
+ Sb,q f ,h,k f , b ℓ,h 
+
+ . (11) where λ controls the trade-off between the two scores, and bℓ,h is the budget of the current layer-head pair. In practice, we reserve anchor and generated frames, and use the remaining budget for the highest-scoring historical frames to preserve reference and consistency. 
+
+3.4 Packed QKV for Variable-Length FlashAttention 
+
+Because the selected historical frames vary across query frames and heads, the resulting KV lengths are irregular. As shown in Fig. 3(c), we pack the corresponding QKV rows into variable-length sequences. For each query frame and head, the query length is fixed, while the key-value length is determined by the assigned budget. We compute attention only over the retained historical frames: 
+
+Opack = VarLenFlashAttn ( Qpack , K pack , V pack , cu _q, cu _k) , (12) where cu _q and cu _k record the cumulative sequence boundaries of the packed query and key-value tensors, so that variable-length FlashAttention can separate different query-frame and head groups. The packed output is then scattered back to the original query layout. This execution preserves the selection across query frames and heads while avoiding dense attention. 64 Experiments 
+
+4.1 Settings Baselines and comparisons. We evaluate Focused Forcing under two settings. To verify compat-ibility across autoregressive paradigms, we plug it into Self Forcing [ 21 ], LongLive [ 46 ], Rolling Forcing [ 26 ], and Causal Forcing [ 59 ], comparing against their original baselines as well as representa-tive autoregressive diffusion models NOVA [ 12 ], SkyReels-V2 [ 7 ], and MAGI-1 [ 2]. For acceleration, we take chunk-wise Self Forcing as the base model and compare with its Attention Sink variant, MonarchRT [ 1], TaylorSeer [ 25 ], and Dummy Forcing [ 16 ], which respectively represent structured sparse attention, cached-feature-based prediction, and head-wise KV cache pruning. Implementation details are provided in App. C.1. 
+
+Evaluation. Following prior work [ 9], we evaluate long video generation on VBench-Long [ 22 ]using the first 128 prompts from MovieGen [ 34 ] refined by Qwen2.5-7B-Instruct [ 45 ]. We follow the VBench-Long protocol to assess generation quality, and further evaluate inference efficiency using the average generation latency, average self-attention latency, and their corresponding speedups. Detailed metric definitions are provided in App. C.2. 
+
+4.2 Comparison with Autoregressive Video Diffusion Models Quantitative results. We compare Focused Forcing with state-of-the-art autoregressive video models on VBench-Long. As shown in Tab. 1, Focused Forcing consistently improves the efficiency-quality trade-off across different autoregressive paradigms. On Self Forcing, it achieves 1.45 × end-to-end speedup, improves visual quality from 76.58 to 80.00, and substantially increases Dynamic Degree from 41.55 to 61.39. Similar improvements on LongLive, Rolling Forcing, and Causal Forcing show that Focused Forcing generalizes across different autoregressive backbones. Table 1: Quantitative comparison for long video generation on VBench-Long.                                                                                                                          
+
+> Methods Gen. Latency/s Gen. Speedup Subject Consistency Background Consistency Motion Smoothness Dynamic Degree Aesthetic Quality Imaging Quality Visual Quality Text Alignment
+> Autoregressive Diffusion Models
+> NOVA 2558.21 1.00 ×90.15 93.35 98.81 34.08 44.14 38.81 66.56 24.63 SkyReels-V2 1244.40 1.00 ×96.93 96.15 98.68 38.22 58.86 63.42 75.38 27.54 MAGI-1 6740.65 1.00 ×97.29 96.53 99.10 39.10 57.93 59.24 74.87 29.41
+> Distilled Autoregressive Diffusion Models
+> CausVid 61.69 1.00 ×97.88 96.82 98.08 48.61 59.94 65.79 77.85 27.19 Self Forcing 78.06 1.00 ×96.61 96.17 98.27 41.55 58.83 68.04 76.58 28.03
+> + Ours 53.90 1.45 ×95.84 95.49 98.04 61.39 60.59 68.62 80.00 28.75 LongLive 90.06 1.00 ×97.60 96.36 98.90 35.42 60.74 68.06 76.18 29.06
+> + Ours 68.60 1.31 ×96.26 95.79 98.30 46.03 61.51 69.58 77.91 29.40 Rolling Forcing 83.35 1.00 ×97.88 96.47 98.77 29.67 60.69 70.76 75.71 28.85
+> + Ours 58.20 1.43 ×96.21 95.40 97.91 50.03 59.77 68.47 77.97 28.99 Causal Forcing 77.99 1.00 ×95.66 94.34 97.56 94.05 56.46 68.35 84.40 26.80
+> + Ours 52.68 1.48 ×94.53 94.11 96.63 97.77 57.54 68.29 84.81 28.27
+
+Qualitative results. As shown in Fig. 6, Self Forcing suffers from noticeable long-horizon degra-dation, with the dog appearance and background details becoming increasingly unstable over time. Although Long-Live better preserves the overall scene layout, it exhibits evident color degradation in later frames. Focused Forcing leads to more stable visual results in these cases, with the corgi’s ap-pearance and background better preserved. For Rolling Forcing and Causal Forcing, whose baselines already produce relatively stable results, the visual improvement is less pronounced. Nevertheless, Fo-cused Forcing preserves comparable visual quality while substantially improving inference efficiency, indicating its effectiveness as a general acceleration module for long-video generation. 
+
+4.3 Comparison with Acceleration Methods Quantitative results. We further compare Focused Forcing with representative acceleration meth-ods on chunk-wise Self Forcing. Shown in Tab. 2, Focused Forcing achieves 2.77 × attention speedup and 1.45 × end-to-end speedup, while delivering the best visual quality among all acceleration meth-ods. It improves visual quality over Attention Sink from 79.2 to 80.0 with substantial speedup, 70 30s A vibrant and lively vlog -style photo of a corgi in tropical Maui, showcasing the dog     
+
+> energetically filming itself on a sandy beach. The corgi stands on the shore, one …
+> Self
+> Forcing
+> 1.00 ×
+> Long
+> Live
+> 1.00 ×
+> +Ours
+> 1.31 ×
+> Rolling
+> Forcing
+> 1.00 ×
+> Causal
+> Forcing
+> 1.00 ×
+> +Ours
+> 1.43 ×
+> +Ours
+> 1.48 ×
+> +Ours
+> 1.45 ×
+
+Figure 6: Qualitative comparison on 30s video generation across different autoregressive paradigms. surpasses MonarchRT and TaylorSeer in both quality and end-to-end speedup, and remains competi-tive with Dummy Forcing in efficiency while achieving higher visual quality. Fig. 8 further highlights its strong Dynamic Degree and competitive performance across other quality dimensions, confirming a stronger speed-quality trade-off through selective KV-context compression. Table 2: Efficiency comparison for long video generation on VBench-Long.                                                  
+
+> Methods Attn. Latency/s Attn. Speedup Gen. Latency/s Gen. Speedup Temporal Quality Frame-wise Quality Visual Quality Text Alignment
+> Self Forcing 37.29 1.00 ×78.06 1.00 ×83.15 63.44 76.58 28.03 + Attention Sink 37.15 1.00 ×78.07 1.00 ×86.46 64.68 79.20 28.42 MonarchRT 33.13 1.13 ×72.61 1.08 ×85.95 64.04 78.65 29.24 TaylorSeer 29.77 1.25 ×68.88 1.13 ×85.67 64.38 78.57 28.85 Dummy Forcing 13.35 2.79 ×53.64 1.46 ×84.79 65.55 78.38 28.57
+> Ours 13.48 2.77 ×53.90 1.45 ×87.69 64.61 80.00 28.75
+
+Qualitative results. As shown in Fig. 7, Attention Sink preserves the overall scene layout, whereas Self Forcing and TaylorSeer both exhibit glass-shape drift and physically implausible milk-flow positions, and MonarchRT and Dummy Forcing introduce visible artifacts and quality degradation, respectively. In contrast, Focused Forcing yields a more coherent trajectory, with the object stream evolving smoothly throughout the rollout, indicating that our method removes redundant historical information while preserving motion-relevant temporal cues. 
+
+4.4 Ablation Studies 
+
+We ablate the KV budget and attention weight, with detailed results provided in App. C.3. 
+
+Ablation on KV budget. As shown in Fig. 9, Self Forcing is the uncompressed baseline. For Focused Forcing, each colored curve represents a fixed minimum KV budget bmin , as indicated by the legend, e.g., “min 4” denotes bmin = 4 . The markers on the same curve correspond to different maximum KV budgets bmax , which are decreased from 15 with a step size of 3. Moving along a 80 30s A close -up shot of someone carefully pouring milk into a cup, with the milk flowing 
+
+smoothly and filling the cup with a milky white color. The person's hand is … 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Ours 
+
+1.45 ×
+
++ Attention 
+
+Sink 
+
+1.00 ×
+
+MonarchRT 
+
+1.08 ×
+
+TaylorSeer 
+
+1.13 ×
+
+Dummy 
+
+Forcing 
+
+1.46 ×Figure 7: Qualitative comparison of inference acceleration methods on 30s video generation. curve toward larger attention speedup therefore indicates stronger KV compression. The results show that moderate budget settings achieve the best trade-off, substantially improving attention speedup over Self Forcing while maintaining high visual quality, whereas overly aggressive compression leads to noticeable quality degradation. 
+
+Ablation on attention weight. As shown in Fig. 10, all settings outperform Self Forcing in both visual quality and text alignment. Visual quality improves as the attention weight increases and peaks at a moderate value, while larger weights slightly reduce both metrics. This indicates that combining attention with diversity is important for selecting useful yet non-redundant historical context. 20                      
+
+> Subject
+> Consistency
+> Motion
+> Smoothness
+> [70, 100]
+> Aesthetic Quality [40, 70]
+> Overall
+> Consistency
+> [20, 40]
+> Clip Score
+> [20, 40]
+> Dynamic Degree
+> [40, 70]
+> Imaging Quality
+> [40, 70]
+> Background
+> Consistency
+> [70, 100]
+> Self Forcing +Attention Sink MonarchRT
+> TaylorSeer Dummy Forcing Ours
+> [70, 100]
+
+Figure 8: Metric comparison with acceleration methods. 81                 
+
+> 80
+> 79
+> 78
+> 77
+> 76
+> 75
+> 74
+> Visual  Quality
+> min 4
+> min 5
+> min 6
+> min 7
+> min 8
+> 11.8 2.0 2.2 2.4 2.6 2.8 3.0 3.2 3.4
+> Attn. Speedup
+> Self Forcing
+> 76.58
+
+Figure 9: Ablation study on the KV budget. 20       
+
+> 28.00
+> 28.25
+> 28.50
+> 28.75
+> 29.00
+> 76.0
+> 76.5
+> 80.0
+> 77.0
+> 77.5
+> 78.0
+> 78.5
+> 79.0
+> 79.5
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Attention Weight
+> Visual Quality
+> Text Alignment
+> Visual
+> Quality
+> Text
+> Alignment
+> Self
+> Forcing
+> 76.58
+> 28.02
+
+Figure 10: Ablation study on the attention weight. 
+
+5 Conclusion 
+
+In this paper, we present Focused Forcing , a training-free KV compression method for autoregressive video generation. By reformulating KV compression as fine-grained context allocation, Focused Forcing selects historical frames separately for each query frame, combines attention scores with diversity scores of historical frames, and assigns differentiated KV budgets according to head importance. This design preserves relevant and distinctive historical context under compact KV budgets. Experiments on VBench-Long across multiple autoregressive paradigms show that Focused Forcing consistently improves the efficiency-quality trade-off, achieving up to 1.48 × end-to-end acceleration without training while improving visual quality and text alignment . These results show that fine-grained and content-aware KV selection is an effective strategy for scalable long-horizon autoregressive video generation. 9References 
+
+[1] Krish Agarwal, Zhuoming Chen, Cheng Luo, Yongqi Chen, Haizhong Zheng, Xun Huang, Atri Rudra, and Beidi Chen. Monarchrt: Efficient attention for real-time video generation, 2026. URL https://arxiv.org/abs/2602.12271 .[2] Sand. ai, Hansi Teng, Hongyu Jia, Lei Sun, Lingzhi Li, Maolin Li, Mingqiu Tang, Shuai Han, Tianning Zhang, W. Q. Zhang, Weifeng Luo, Xiaoyang Kang, Yuchen Sun, Yue Cao, Yunpeng Huang, Yutong Lin, Yuxin Fang, Zewei Tao, Zheng Zhang, Zhongshu Wang, Zixun Liu, Dai Shi, Guoli Su, Hanwen Sun, Hong Pan, Jie Wang, Jiexin Sheng, Min Cui, Min Hu, Ming Yan, Shucheng Yin, Siran Zhang, Tingting Liu, Xianping Yin, Xiaoyu Yang, Xin Song, Xuan Hu, Yankai Zhang, and Yuqiao Li. Magi-1: Autoregressive video generation at scale, 2025. URL 
+
+https://arxiv.org/abs/2505.13211 .[3] Andreas Blattmann, Tim Dockhorn, Sumith Kulal, Daniel Mendelevitch, Maciej Kilian, Do-minik Lorenz, Yam Levi, Zion English, Vikram Voleti, Adam Letts, et al. Stable video diffusion: Scaling latent video diffusion models to large datasets. arXiv preprint arXiv:2311.15127 , 2023. [4] Tim Brooks, Bill Peebles, Connor Holmes, Will DePue, Yufei Guo, Leo Jing, David Schnurr, Joe Taylor, Troy Luhman, Eric Luhman, et al. Video generation models as world simulators. 
+
+OpenAI Blog , 1(8):1, 2024. [5] Peiliang Cai, Jiacheng Liu, Haowen Xu, Xinyu Wang, Chang Zou, and Linfeng Zhang. Lesa: Learnable stage-aware predictors for diffusion model acceleration, 2026. URL https:// arxiv.org/abs/2602.20497 .[6] Boyuan Chen, Diego Martí Monsó, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitzmann. Diffusion forcing: Next-token prediction meets full-sequence diffusion. Advances in Neural Information Processing Systems , 37:24081–24125, 2024. [7] Guibin Chen, Dixuan Lin, Jiangping Yang, Chunze Lin, Junchen Zhu, Mingyuan Fan, Hao Zhang, Sheng Chen, Zheng Chen, Chengcheng Ma, Weiming Xiong, Wei Wang, Nuo Pang, Kang Kang, Zhiheng Xu, Yuzhe Jin, Yupeng Liang, Yubing Song, Peng Zhao, Boyuan Xu, Di Qiu, Debang Li, Zhengcong Fei, Yang Li, and Yahui Zhou. Skyreels-v2: Infinite-length film generative model, 2025. URL https://arxiv.org/abs/2504.13074 .[8] Shuo Chen, Cong Wei, Sun Sun, Ping Nie, Kai Zhou, Ge Zhang, Ming-Hsuan Yang, and Wenhu Chen. Context forcing: Consistent autoregressive video generation with long context. arXiv preprint arXiv:2602.06028 , 2026. [9] Justin Cui, Jie Wu, Ming Li, Tao Yang, Xiaojie Li, Rui Wang, Andrew Bai, Yuanhao Ban, and Cho-Jui Hsieh. Self-forcing++: Towards minute-scale high-quality video generation. In 
+
+The Fourteenth International Conference on Learning Representations , 2026. URL https: //openreview.net/forum?id=DzvPiqh23f .[10] Tri Dao. Flashattention-2: Faster attention with better parallelism and work partition-ing. In B. Kim, Y. Yue, S. Chaudhuri, K. Fragkiadaki, M. Khan, and Y. Sun, edi-tors, International Conference on Learning Representations , volume 2024, pages 35549– 35562, 2024. URL https://proceedings.iclr.cc/paper_files/paper/2024/file/ 98ed250b203d1ac6b24bbcf263e3d4a7-Paper-Conference.pdf .[11] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. Flashattention: Fast and memory-efficient exact attention with io-awareness. In S. Koyejo, S. Mo-hamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh, editors, Advances in Neu-ral Information Processing Systems , volume 35, pages 16344–16359. Curran Associates, Inc., 2022. URL https://proceedings.neurips.cc/paper_files/paper/2022/file/ 67d57c32e20fd0a7a302cb81d36e40d5-Paper-Conference.pdf .[12] Haoge Deng, Ting Pan, Haiwen Diao, Zhengxiong Luo, Yufeng Cui, Huchuan Lu, Shiguang Shan, Yonggang Qi, and Xinlong Wang. Autoregressive video generation without vector quantization. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=JE9tCwe3lp .10 [13] Jiarui Fang, Jinzhe Pan, Aoyu Li, Xibo Sun, and WANG Jiannan. Pipefusion: Patch-level pipeline parallelism for diffusion transformers inference. In The Thirty-ninth Annual Conference on Neural Information Processing Systems (NeurIPS) , 2025. [14] Kevin Frans, Danijar Hafner, Sergey Levine, and Pieter Abbeel. One step diffusion via shortcut models, 2025. URL https://arxiv.org/abs/2410.12557 .[15] Zhengyang Geng, Mingyang Deng, Xingjian Bai, J. Zico Kolter, and Kaiming He. Mean flows for one-step generative modeling, 2025. URL https://arxiv.org/abs/2505.13447 .[16] Hang Guo, Zhaoyang Jia, Jiahao Li, Bin Li, Yuanhao Cai, Jiangshan Wang, Yawei Li, and Yan Lu. Efficient autoregressive video diffusion with dummy head. arXiv preprint arXiv:2601.20499 ,2026. [17] Yoav HaCohen, Nisan Chiprut, Benny Brazowski, Daniel Shalem, Dudu Moshe, Eitan Richard-son, Eran Levin, Guy Shiran, Nir Zabari, Ori Gordon, et al. Ltx-video: Realtime video latent diffusion. arXiv preprint arXiv:2501.00103 , 2024. [18] Yoav HaCohen, Benny Brazowski, Nisan Chiprut, Yaki Bitterman, Andrew Kvochko, Avishai Berkowitz, Daniel Shalem, Daphna Lifschitz, Dudu Moshe, Eitan Porat, Eitan Richardson, Guy Shiran, Itay Chachy, Jonathan Chetboun, Michael Finkelson, Michael Kupchick, Nir Zabari, Nitzan Guetta, Noa Kotler, Ofir Bibi, Ori Gordon, Poriya Panet, Roi Benita, Shahar Armon, Victor Kulikov, Yaron Inger, Yonatan Shiftan, Zeev Melumian, and Zeev Farbman. Ltx-2: Efficient joint audio-visual foundation model, 2026. URL https://arxiv.org/abs/2601. 03233 .[19] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models, 2020. URL https://arxiv.org/abs/2006.11239 .[20] Connor Holmes, Masahiro Tanaka, Michael Wyatt, Ammar Ahmad Awan, Jeff Rasley, Samyam Rajbhandari, Reza Yazdani Aminabadi, Heyang Qin, Arash Bakhtiari, Lev Kurilenko, and Yux-iong He. Deepspeed-fastgen: High-throughput text generation for llms via mii and deepspeed-inference, 2024. URL https://arxiv.org/abs/2401.08671 .[21] Xun Huang, Zhengqi Li, Guande He, Mingyuan Zhou, and Eli Shechtman. Self forcing: Bridging the train-test gap in autoregressive video diffusion. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. URL https://openreview. net/forum?id=mSiN7i0BYH .[22] Ziqi Huang, Fan Zhang, Xiaojie Xu, Yinan He, Jiashuo Yu, Ziyue Dong, Qianli Ma, Nattapol Chanpaisit, Chenyang Si, Yuming Jiang, Yaohui Wang, Xinyuan Chen, Ying-Cong Chen, Limin Wang, Dahua Lin, Yu Qiao, and Ziwei Liu. Vbench++: Comprehensive and versatile benchmark suite for video generative models. IEEE Transactions on Pattern Analysis and Machine Intelligence , 48(3):3268–3285, 2026. doi: 10.1109/TPAMI.2025.3633890. [23] Muyang Li, Tianle Cai, Jiaxin Cao, Qinsheng Zhang, Han Cai, Junjie Bai, Yangqing Jia, Ming-Yu Liu, Kai Li, and Song Han. Distrifusion: Distributed parallel inference for high-resolution diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2024. [24] Feng Liu, Shiwei Zhang, Xiaofeng Wang, Yujie Wei, Haonan Qiu, Yuzhong Zhao, Yingya Zhang, Qixiang Ye, and Fang Wan. Timestep embedding tells: It’s time to cache for video diffusion model. arXiv preprint arXiv:2411.19108 , 2024. [25] Jiacheng Liu, Chang Zou, Yuanhuiyi Lyu, Junjie Chen, and Linfeng Zhang. From reusing to forecasting: Accelerating diffusion models with taylorseers. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , pages 15853–15863, October 2025. [26] Kunhao Liu, Wenbo Hu, Jiale Xu, Ying Shan, and Shijian Lu. Rolling forcing: Autoregressive long video diffusion in real time. In The Fourteenth International Conference on Learning Representations , 2026. URL https://openreview.net/forum?id=IAyzXjbfwo .11 [27] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver++: Fast solver for guided sampling of diffusion probabilistic models. Machine Intelligence Re-search , 22(4):730–751, June 2025. ISSN 2731-5398. doi: 10.1007/s11633-025-1562-4. URL 
+
+http://dx.doi.org/10.1007/s11633-025-1562-4 .[28] Simian Luo, Yiqin Tan, Longbo Huang, Jian Li, and Hang Zhao. Latent consistency models: Synthesizing high-resolution images with few-step inference. arXiv preprint arXiv:2310.04378 ,2023. [29] Xinyin Ma, Gongfan Fang, and Xinchao Wang. Deepcache: Accelerating diffusion models for free. In The IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2024. [30] Yue Ma, Yingqing He, Xiaodong Cun, Xintao Wang, Siran Chen, Xiu Li, and Qifeng Chen. Follow your pose: Pose-guided text-to-video generation using pose-free videos. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 38, pages 4117–4125, 2024. [31] Yue Ma, Kunyu Feng, Zhongyuan Hu, Xinyu Wang, Yucheng Wang, Mingzhe Zheng, Bingyuan Wang, Qinghe Wang, Xuanhua He, Hongfa Wang, et al. Controllable video generation: A survey. arXiv preprint arXiv:2507.16869 , 2025. [32] Yue Ma, Yulong Liu, Qiyuan Zhu, Ayden Yang, Kunyu Feng, Xinhua Zhang, Zexuan Yan, Zhifeng Li, Sirui Han, Chenyang Qi, et al. Follow-your-motion: Video motion transfer via efficient spatial-temporal decoupled finetuning. arXiv preprint arXiv:2506.05207 , 2025. [33] William Peebles and Saining Xie. Scalable diffusion models with transformers, 2023. URL 
+
+https://arxiv.org/abs/2212.09748 .[34] Adam Polyak, Amit Zohar, Andrew Brown, Andros Tjandra, Animesh Sinha, Ann Lee, Apoorv Vyas, Bowen Shi, Chih-Yao Ma, Ching-Yao Chuang, David Yan, Dhruv Choudhary, Dingkang Wang, Geet Sethi, Guan Pang, Haoyu Ma, Ishan Misra, Ji Hou, Jialiang Wang, Kiran Ja-gadeesh, Kunpeng Li, Luxin Zhang, Mannat Singh, Mary Williamson, Matt Le, Matthew Yu, Mitesh Kumar Singh, Peizhao Zhang, Peter Vajda, Quentin Duval, Rohit Girdhar, Roshan Sumbaly, Sai Saketh Rambhatla, Sam Tsai, Samaneh Azadi, Samyak Datta, Sanyuan Chen, Sean Bell, Sharadh Ramaswamy, Shelly Sheynin, Siddharth Bhattacharya, Simran Motwani, Tao Xu, Tianhe Li, Tingbo Hou, Wei-Ning Hsu, Xi Yin, Xiaoliang Dai, Yaniv Taigman, Yaqiao Luo, Yen-Cheng Liu, Yi-Chiao Wu, Yue Zhao, Yuval Kirstain, Zecheng He, Zijian He, Albert Pumarola, Ali Thabet, Artsiom Sanakoyeu, Arun Mallya, Baishan Guo, Boris Araya, Breena Kerr, Carleigh Wood, Ce Liu, Cen Peng, Dimitry Vengertsev, Edgar Schonfeld, Elliot Blan-chard, Felix Juefei-Xu, Fraylie Nord, Jeff Liang, John Hoffman, Jonas Kohler, Kaolin Fire, Karthik Sivakumar, Lawrence Chen, Licheng Yu, Luya Gao, Markos Georgopoulos, Rashel Moritz, Sara K. Sampson, Shikai Li, Simone Parmeggiani, Steve Fine, Tara Fowler, Vladan Petrovic, and Yuming Du. Movie gen: A cast of media foundation models, 2025. URL 
+
+https://arxiv.org/abs/2410.13720 .[35] Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. In International Conference on Learning Representations (ICLR) , 2022. [36] Team Seedance, De Chen, Liyang Chen, Xin Chen, Ying Chen, Zhuo Chen, Zhuowei Chen, Feng Cheng, Tianheng Cheng, Yufeng Cheng, Mojie Chi, Xuyan Chi, Jian Cong, Qinpeng Cui, Fei Ding, Qide Dong, Yujiao Du, Haojie Duanmu, Junliang Fan, Jiarui Fang, Jing Fang, Zetao Fang, Chengjian Feng, Yu Gao, Diandian Gu, Dong Guo, Hanzhong Guo, Qiushan Guo, Boyang Hao, Hongxiang Hao, Haoxun He, Jiaao He, Qian He, Tuyen Hoang, Heng Hu, Ruoqing Hu, Yuxiang Hu, Jiancheng Huang, Weilin Huang, Zhaoyang Huang, Zhongyi Huang, Jishuo Jin, Ming Jing, Ashley Kim, Shanshan Lao, Yichong Leng, Bingchuan Li, Gen Li, Haifeng Li, Huixia Li, Jiashi Li, Ming Li, Xiaojie Li, Xingxing Li, Yameng Li, Yiying Li, Yu Li, Yueyan Li, Chao Liang, Han Liang, Jianzhong Liang, Ying Liang, Wang Liao, J. H. Lien, Shanchuan Lin, Xi Lin, Feng Ling, Yue Ling, Fangfang Liu, Jiawei Liu, Jihao Liu, Jingtuo Liu, Shu Liu, Sichao Liu, Wei Liu, Xue Liu, Zuxi Liu, Ruijie Lu, Lecheng Lyu, Jingting Ma, Tianxiang Ma, Xiaonan Nie, Jingzhe Ning, Junjie Pan, Xitong Pan, Ronggui Peng, Xueqiong Qu, Yuxi Ren, Yuchen Shen, Guang Shi, Lei Shi, Yinglong Song, Fan Sun, Li Sun, Renfei Sun, Wenjing Tang, Boyang Tao, Zirui Tao, Dongliang Wang, Feng Wang, Hulin Wang, Ke Wang, Qingyi Wang, Rui Wang, Shuai Wang, Shulei Wang, Weichen Wang, Xuanda Wang, Yanhui Wang, Yue 12 Wang, Yuping Wang, Yuxuan Wang, Zijie Wang, Ziyu Wang, Guoqiang Wei, Meng Wei, Di Wu, Guohong Wu, Hanjie Wu, Huachao Wu, Jian Wu, Jie Wu, Ruolan Wu, Shaojin Wu, Xiaohu Wu, Xinglong Wu, Yonghui Wu, Ruiqi Xia, Xin Xia, Xuefeng Xiao, Shuang Xu, Bangbang Yang, Jiaqi Yang, Runkai Yang, Tao Yang, Yihang Yang, Zhixian Yang, Ziyan Yang, Fulong Ye, Bingqian Yi, Xing Yin, Yongbin You, Linxiao Yuan, Weihong Zeng, Xuejiao Zeng, Yan Zeng, Siyu Zhai, Zhonghua Zhai, Bowen Zhang, Chenlin Zhang, Heng Zhang, Jun Zhang, Manlin Zhang, Peiyuan Zhang, Shuo Zhang, Xiaohe Zhang, Xiaoying Zhang, Xinyan Zhang, Xinyi Zhang, Yichi Zhang, Zixiang Zhang, Haiyu Zhao, Huating Zhao, Liming Zhao, Yian Zhao, Guangcong Zheng, Jianbin Zheng, Xiaozheng Zheng, Zerong Zheng, Kuan Zhu, and Feilong Zuo. Seedance 2.0: Advancing video generation for world complexity, 2026. URL 
+
+https://arxiv.org/abs/2604.14148 .[37] Pratheba Selvaraju, Tianyu Ding, Tianyi Chen, Ilya Zharkov, and Luming Liang. Fora: Fast-forward caching in diffusion transformer acceleration, 2024. URL https://arxiv.org/abs/ 2407.01425 .[38] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In 
+
+International Conference on Learning Representations (ICLR) , 2021. [39] Junshu Tang, Jiacheng Liu, Jiaqi Li, Longhuang Wu, Haoyu Yang, Penghao Zhao, Siruis Gong, Xiang Yuan, Shuai Shao, Linfeng Zhang, and Qinglin Lu. Hunyuan-gamecraft-2: Instruction-following interactive game world model, 2026. URL https://arxiv.org/abs/2511.23429 .[40] Robbyant Team, Zelin Gao, Qiuyu Wang, Yanhong Zeng, Jiapeng Zhu, Ka Leong Cheng, Yixuan Li, Hanlin Wang, Yinghao Xu, Shuailei Ma, Yihang Chen, Jie Liu, Yansong Cheng, Yao Yao, Jiayi Zhu, Yihao Meng, Kecheng Zheng, Qingyan Bai, Jingye Chen, Zehong Shen, Yue Yu, Xing Zhu, Yujun Shen, and Hao Ouyang. Advancing open-source world models. arXiv preprint arXiv:2601.20540 , 2026. [41] Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, Jianyuan Zeng, Jiayu Wang, Jingfeng Zhang, Jingren Zhou, Jinkai Wang, Jixuan Chen, Kai Zhu, Kang Zhao, Keyu Yan, Lianghua Huang, Mengyang Feng, Ningyi Zhang, Pandeng Li, Pingyu Wu, Ruihang Chu, Ruili Feng, Shiwei Zhang, Siyang Sun, Tao Fang, Tianxing Wang, Tianyi Gui, Tingyu Weng, Tong Shen, Wei Lin, Wei Wang, Wei Wang, Wenmeng Zhou, Wente Wang, Wenting Shen, Wenyuan Yu, Xianzhong Shi, Xiaoming Huang, Xin Xu, Yan Kou, Yangyu Lv, Yifei Li, Yijing Liu, Yiming Wang, Yingya Zhang, Yitong Huang, Yong Li, You Wu, Yu Liu, Yulin Pan, Yun Zheng, Yuntao Hong, Yupeng Shi, Yutong Feng, Zeyinzi Jiang, Zhen Han, Zhi-Fan Wu, and Ziyu Liu. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. [42] Bing Wu, Chang Zou, Changlin Li, Duojun Huang, Fang Yang, Hao Tan, Jack Peng, Jianbing Wu, Jiangfeng Xiong, Jie Jiang, Linus, Patrol, Peizhen Zhang, Peng Chen, Penghao Zhao, Qi Tian, Songtao Liu, Weijie Kong, Weiyan Wang, Xiao He, Xin Li, Xinchi Deng, Xuefei Zhe, Yang Li, Yanxin Long, Yuanbo Peng, Yue Wu, Yuhong Liu, Zhenyu Wang, Zuozhuo Dai, Bo Peng, Coopers Li, Gu Gong, Guojian Xiao, Jiahe Tian, Jiaxin Lin, Jie Liu, Jihong Zhang, Jiesong Lian, Kaihang Pan, Lei Wang, Lin Niu, Mingtao Chen, Mingyang Chen, Mingzhe Zheng, Miles Yang, Qiangqiang Hu, Qi Yang, Qiuyong Xiao, Runzhou Wu, Ryan Xu, Rui Yuan, Shanshan Sang, Shisheng Huang, Siruis Gong, Shuo Huang, Weiting Guo, Xiang Yuan, Xiaojia Chen, Xiawei Hu, Wenzhi Sun, Xiele Wu, Xianshun Ren, Xiaoyan Yuan, Xiaoyue Mi, Yepeng Zhang, Yifu Sun, Yiting Lu, Yitong Li, You Huang, Yu Tang, Yixuan Li, Yuhang Deng, Yuan Zhou, Zhichao Hu, Zhiguang Liu, Zhihe Yang, Zilin Yang, Zhenzhi Lu, Zixiang Zhou, and Zhao Zhong. Hunyuanvideo 1.5 technical report, 2025. URL 
+
+https://arxiv.org/abs/2511.18870 .[43] Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models with attention sinks. In B. Kim, Y. Yue, S. Chaudhuri, K. Fragkiadaki, M. Khan, and Y. Sun, editors, International Conference on Learning Representations , volume 2024, pages 21875–21895, 2024. URL https://proceedings.iclr.cc/paper_files/ paper/2024/file/5e5fd18f863cbe6d8ae392a93fd271c9-Paper-Conference.pdf .[44] Guangxuan Xiao, Jiaming Tang, Jingwei Zuo, junxian guo, Shang Yang, Haotian Tang, Yao Fu, and Song Han. Duoattention: Efficient long-context LLM inference with retrieval and streaming 13 heads. In The Thirteenth International Conference on Learning Representations , 2025. URL 
+
+https://openreview.net/forum?id=cFu7ze7xUm .[45] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayiheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jing Zhou, Jingren Zhou, Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang, Le Yu, Lianghao Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei Zhang, Peng Wang, Qin Zhu, Rui Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao Yin, Xingzhang Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yinger Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui, Zhenru Zhang, Zhipeng Zhou, and Zihan Qiu. Qwen3 technical report, 2025. URL https://arxiv.org/abs/2505.09388 .[46] Shuai Yang, Wei Huang, Ruihang Chu, Yicheng Xiao, Yuyang Zhao, Xianbang Wang, Muyang Li, Enze Xie, Ying-Cong Chen, Yao Lu, Song Han, and Yukang Chen. Longlive: Real-time interactive long video generation. In The Fourteenth International Conference on Learning Representations , 2026. URL https://openreview.net/forum?id=nCAODkpsPJ .[47] Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, et al. Cogvideox: Text-to-video diffusion models with an expert transformer. arXiv preprint arXiv:2408.06072 , 2024. [48] Jung Yi, Wooseok Jang, Paul Hyunbin Cho, Jisu Nam, Heeji Yoon, and Seungryong Kim. Deep forcing: Training-free long video generation with deep sink and participative compression. 
+
+arXiv preprint arXiv:2512.05081 , 2025. [49] Tianwei Yin, Michaël Gharbi, Taesung Park, Richard Zhang, Eli Shechtman, Frédo Du-rand, and William T. Freeman. Improved distribution matching distillation for fast image synthesis. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang, editors, Advances in Neural Information Processing Sys-tems , volume 37, pages 47455–47487. Curran Associates, Inc., 2024. doi: 10.52202/ 079017-1505. URL https://proceedings.neurips.cc/paper_files/paper/2024/ file/54dcf25318f9de5a7a01f0a4125c541e-Paper-Conference.pdf .[50] Tianwei Yin, Michaël Gharbi, Richard Zhang, Eli Shechtman, Frédo Durand, William T. Freeman, and Taesung Park. One-step diffusion with distribution matching distillation. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) ,pages 6613–6623, June 2024. [51] Tianwei Yin, Qiang Zhang, Richard Zhang, William T. Freeman, Fredo Durand, Eli Shechtman, and Xun Huang. From slow bidirectional to fast autoregressive video diffusion models. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) ,pages 22963–22974, June 2025. [52] Shenghai Yuan, Yuanyang Yin, Zongjian Li, Xinwei Huang, Xiao Yang, and Li Yuan. Helios: Real real-time long video generation model. arXiv preprint arXiv:2603.04379 , 2026. [53] Jintao Zhang, Haofeng Huang, Pengle Zhang, Jia Wei, Jun Zhu, and Jianfei Chen. Sageat-tention2: Efficient attention with thorough outlier smoothing and per-thread int4 quantization, 2025. URL https://arxiv.org/abs/2411.10958 .[54] Jintao Zhang, Jia Wei, Haofeng Huang, Pengle Zhang, Jun Zhu, and Jianfei Chen. Sageattention: Accurate 8-bit attention for plug-and-play inference acceleration, 2025. URL https://arxiv. org/abs/2410.02367 .[55] Songchun Zhang, Zeyue Xue, Siming Fu, Jie Huang, Xianghao Kong, Y Ma, Haoyang Huang, Nan Duan, and Anyi Rao. Astrolabe: Steering forward-process reinforcement learning for distilled autoregressive video models. arXiv preprint arXiv:2603.17051 , 2026. [56] Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, Zhangyang "Atlas" Wang, and Beidi Chen. H2o: Heavy-hitter oracle for efficient generative inference of large language models. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, editors, Advances in 
+
+14 Neural Information Processing Systems , volume 36, pages 34661–34710. Curran Associates, Inc., 2023. URL https://proceedings.neurips.cc/paper_files/paper/2023/file/ 6ceefa7b15572587b78ecfcebb2827f8-Paper-Conference.pdf .[57] Wenliang Zhao, Lujia Bai, Yongming Rao, Jie Zhou, and Jiwen Lu. Unipc: A unified predictor-corrector framework for fast sampling of diffusion models. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. [58] Zengqun Zhao, Yanzuo Lu, Ziquan Liu, Jifei Song, Jiankang Deng, and Ioannis Patras. Relax forcing: Relaxed kv-memory for consistent long video generation, 2026. URL https:// arxiv.org/abs/2603.21366 .[59] Hongzhou Zhu, Min Zhao, Guande He, Hang Su, Chongxuan Li, and Jun Zhu. Causal forcing: Autoregressive diffusion distillation done right for high-quality real-time interactive video generation. arXiv preprint arXiv:2602.02214 , 2026. [60] Chang Zou, Xuyang Liu, Ting Liu, Siteng Huang, and Linfeng Zhang. Accelerating diffusion transformers with token-wise feature caching. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=yYZbZGo4ei .15 A Limitations 
+
+Focused Forcing is designed as a training-free KV selection method for efficient autoregressive video diffusion. Experiments evaluate it under the VBench-Long protocol and several representative autore-gressive video diffusion paradigms, where it demonstrates consistent speed-quality improvements. Broader evaluation on higher resolutions, other model architectures, and more diverse deployment settings would further validate its generality. Moreover, the current implementation adopts fixed KV-budget bounds and a fixed attention-diversity weight, which provide a favorable trade-off in our experiments but may be further adapted to different models, resolutions, or latency targets. The realized acceleration may also vary across hardware platforms and attention kernel implementations. 
+
+B Method Details 
+
+B.1 Estimation of Head Importance for Budget Allocation Algorithm 1 Head Importance Estimation and KV-Budget Allocation 
+
+Require: Prompt set P = {pm}Mm=1 ; number of layers L; number of heads per layer H; rollout window length 
+
+K; number of sampled windows Nw ; minimum and maximum KV budgets bmin , b max ; budget curvature γ;fake-score model Sfake ; real-score model Sreal ; CFG scale scfg 
+
+Ensure: Fixed per-head KV budget table ΠKV 
+
+1: Initialize head score table S ∈ RL×H to zeros 
+
+2: for m = 1 , . . . , M do 
+
+3: Sample a random seed sm for prompt pm
+
+4: Construct B = L × H rollouts, with rollout b masking head (⌊b/H ⌋, b mod H)
+
+5: Run denoising rollout and obtain masked latent trajectories {Z(b)}B−1
+
+> b=0
+
+6: for b = 0 to B − 1 do 
+
+7: DMsum ← 0 ▷ Accumulates DM losses over sampled windows. 
+
+8: Split Z(b) into Nw temporal windows {W (b) 
+
+> r
+
+}Nw −1 
+
+> r=0
+
+, each with length K
+
+9: for r = 0 to Nw − 1 do 
+
+10: Sample timestep t and Gaussian noise ϵ; add noise W (b) 
+
+> r,t
+
+= AddNoise( W (b) 
+
+> r
+
+, ϵ, t )
+
+11: Predict fake clean window ˆW fake  
+
+> r
+
+= Sfake (W (b) 
+
+> r,t
+
+, p m, t )
+
+12: Predict real clean windows ˆW real  
+
+> r, cond
+
+= Sreal (W (b) 
+
+> r,t
+
+, p m, t ) and ˆW real  
+
+> r, uncond
+
+= Sreal (W (b) 
+
+> r,t
+
+, p ∅, t )
+
+13: Apply CFG: ˆW real  
+
+> r
+
+= ˆW real  
+
+> r, cond
+
++ scfg ( ˆW real  
+
+> r, cond
+
+− ˆW real 
+
+> r, uncond
+
+)
+
+14: Compute DM gradient g(b) 
+
+> r
+
+= ˆW fake  
+
+> r
+
+− ˆW real 
+
+> r
+
+15: Normalize DM gradient g(b) 
+
+> r
+
+← g(b) 
+
+> r
+
+/(|W (b) 
+
+> r
+
+− ˆW real  
+
+> r
+
+|mean + ϵ)
+
+16: Compute DM loss d(b) 
+
+> r
+
+= 12 W (b) 
+
+> r
+
+− sg( W (b) 
+
+> r
+
+− g(b) 
+
+> r
+
+) 22
+
+17: DMsum ← DMsum + d(b)
+
+> r
+
+18: end for 
+
+19: S[ℓb, h b] ← S [ℓb, h b] + DMsum /N w
+
+20: end for 
+
+21: end for 
+
+22: Average head scores over prompts: S ← S /M ▷ Higher score means stronger degradation. 
+
+23: Smin ← min ℓ,h S[ℓ, h ], Smax ← max ℓ,h S[ℓ, h ]
+
+24: for ℓ = 0 to L − 1 do 
+
+25: for h = 0 to H − 1 do 
+
+26: Normalize head importance: 
+
+ˆSℓ,h = S[ℓ, h ] − Smin 
+
+Smax − Smin + ϵ
+
+27: Map importance to KV budget: 
+
+bℓ,h = round 
+
+
+
+bmin + ˆSγℓ,h (bmax − bmin )
+
+
+
+28: end for 
+
+29: end for 
+
+30: Construct fixed per-head KV budget table ΠKV = {bℓ,h }L−1,H −1 
+
+> ℓ=0 ,h =0
+
+▷ The budget table is computed offline. 
+
+31: Freeze ΠKV for subsequent inference 
+
+16 B.2 Proof of the Temporal Effect of Causal RoPE 
+
+We show that causal RoPE makes the attention logit explicitly depend on the relative temporal distance between a query frame and a key frame. This explains why the same historical frame can receive different attention scores as its relative temporal distance to the current frame changes. Let d = 2 m be the dimension of one attention head. RoPE groups a feature vector into m two-dimensional blocks. For the j-th block, define the rotation matrix 
+
+R(θ) := 
+
+ cos θ − sin θ
+
+sin θ cos θ
+
+
+
+.
+
+In causal RoPE, a token at frame index t is assigned a temporal rotary phase. Let T denote the index set of two-dimensional rotary blocks associated with temporal encoding, and let ωj be the temporal frequency for j ∈ T . For a token at frame index t, the j-th temporal block is rotated by angle ωj t.For a query token at frame tq and a key token at frame tk, denote their pre-RoPE representations in the j-th temporal block as 
+
+qj := 
+
+ q2j−1
+
+q2j
+
+
+
+, kj := 
+
+ k2j−1
+
+k2j
+
+
+
+.
+
+After applying temporal RoPE, we have 
+
+eqj = R(ωj tq )qj , ekj = R(ωj tk)kj .
+
+Proposition. The temporal RoPE contribution to the attention logit is an explicit function of the relative temporal distance ∆t = tk − tq . In particular, 
+
+ℓT (∆ t) = 1
+
+√d
+
+X
+
+> j∈T
+
+[Aj cos( ωj ∆t) + Bj sin( ωj ∆t)] ,
+
+where 
+
+Aj = q2j−1k2j−1 + q2j k2j , Bj = q2j k2j−1 − q2j−1k2j .
+
+Proof. The contribution of the j-th temporal block to the attention logit is 
+
+eq⊤ 
+
+> j
+
+ekj = ( R(ωj tq )qj )⊤ (R(ωj tk)kj ) .
+
+Using the identity R(a)⊤R(b) = R(b − a), we obtain 
+
+eq⊤ 
+
+> j
+
+ekj = q⊤ 
+
+> j
+
+R(ωj tq )⊤R(ωj tk)kj = q⊤ 
+
+> j
+
+R(ωj (tk − tq )) kj .
+
+Let ∆t = tk − tq . Then 
+
+eq⊤ 
+
+> j
+
+ekj = q⊤ 
+
+> j
+
+R(ωj ∆t)kj .
+
+Expanding the rotation matrix gives 
+
+q⊤ 
+
+> j
+
+R(ωj ∆t)kj = [ q2j−1 q2j ]
+
+ cos( ωj ∆t) − sin( ωj ∆t)sin( ωj ∆t) cos( ωj ∆t)
+
+  k2j−1
+
+k2j
+
+
+
+= (q2j−1k2j−1 + q2j k2j ) cos( ωj ∆t) + ( q2j k2j−1 − q2j−1k2j ) sin( ωj ∆t).
+
+Substituting the definitions of Aj and Bj , we have 
+
+q⊤ 
+
+> j
+
+R(ωj ∆t)kj = Aj cos( ωj ∆t) + Bj sin( ωj ∆t).
+
+Summing over all temporal rotary blocks and applying the standard attention scaling factor 1/√d,we obtain 
+
+ℓT (∆ t) = 1
+
+√d
+
+X
+
+> j∈T
+
+[Aj cos( ωj ∆t) + Bj sin( ωj ∆t)] .
+
+Therefore, the temporal part of the attention logit explicitly depends on the relative temporal distance 
+
+∆t. This proves the proposition. 17 General case. In the non-degenerate case, there exists at least one temporal block j ∈ T such that 
+
+qj̸ = 0 and kj̸ = 0 . For this block, 
+
+A2 
+
+> j
+
++ B2 
+
+> j
+
+=  q22j−1 + q22j
+
+   k22j−1 + k22j
+
+ = ∥qj ∥2∥kj ∥2 > 0.
+
+Thus, at least one of Aj and Bj is nonzero. Therefore, 
+
+Aj cos( ωj ∆t) + Bj sin( ωj ∆t)
+
+is not a constant function of ∆t. Hence, in general, changing the relative temporal distance changes the attention logit. Since attention weights are computed by a softmax, such logit changes may be further amplified in the final attention distribution. 
+
+Special cases. The temporal effect may disappear or become weak in the following degenerate cases. 
+
+Case 1: Same temporal position. If tq = tk, then ∆t = 0 and R(ωj ∆t) = I. Hence, 
+
+q⊤ 
+
+> j
+
+R(ωj ∆t)kj = q⊤ 
+
+> j
+
+kj .
+
+In this case, temporal RoPE does not alter the inner product. 
+
+Case 2: Zero temporal components. If qj = 0 or kj = 0 for all temporal blocks j ∈ T , then all temporal coefficients vanish, namely Aj = Bj = 0 . Hence, 
+
+ℓT (∆ t) = 0 .
+
+In this case, temporal RoPE has no effect on the attention logit. 
+
+Case 3: Periodic phase alignment. If two temporal distances ∆t1 and ∆t2 satisfy 
+
+ωj (∆ t2 − ∆t1) ∈ { 2πz : z = 0 , ±1, ±2, . . . }
+
+for all active temporal frequencies j, then the temporal phases are identical. Hence, 
+
+ℓT (∆ t1) = ℓT (∆ t2).
+
+Case 4: Frequency cancellation. Different frequency components may partially cancel each other at particular values of ∆t, reducing the overall temporal effect. 
+
+B.3 Computational Complexity and Extra Memory Overhead 
+
+We analyze the computation and extra memory introduced by packed variable-length FlashAttention. In each attention call, the current chunk contains QF = 3 query frames. The model has L = 30 
+
+layers and H = 12 heads per layer. For each layer-head pair (ℓ, h ), Focused Forcing assigns a KV budget bℓ,h , which denotes the number of historical key-value frames retained per query frame. With 
+
+bmin = 4 , bmax = 12 , and γ = 2 , the allocated budgets satisfy 
+
+> 29
+
+X
+
+> ℓ=0 11
+
+X
+
+> h=0
+
+bℓ,h = 1958 .
+
+Thus, the packed frame-level attention cost is 
+
+Cpack = QF X
+
+> ℓ,h
+
+bℓ,h = 3 × 1958 = 5874 .
+
+For dense attention with a 21 -frame KV window, 
+
+Cdense = L × H × QF × Fdense = 30 × 12 × 3 × 21 = 22680 .
+
+Therefore, packed attention uses 
+
+Cpack 
+
+Cdense 
+
+= 5874 22680 = 0 .259 .
+
+of the dense frame-level attention computation, corresponding to a 74 .1% reduction and a theoretical frame-level speedup of 3.86 ×.18 We next estimate the extra QKV packing memory. Each frame contains N = 1560 tokens. The per-head dimension is D = 128 , and BF16 uses s = 2 bytes per element. Thus, one frame in one head occupies 
+
+N × D × s = 1560 × 128 × 2 = 399360 bytes = 0 .381 MiB .
+
+The packed query tensor contains all QF = 3 query frames and all H = 12 heads: 
+
+MQ = QF × H × N × D × s = 13 .71 MiB .
+
+For layer ℓ, let Sℓ = P11  
+
+> h=0
+
+bℓ,h , the packed key and value tensors together require 
+
+M (ℓ) 
+
+> K+V
+
+= 2 × QF × Sℓ × N × D × s. 
+
+Hence the total extra packing memory in layer ℓ is 
+
+M (ℓ)pack = MQ + M (ℓ) 
+
+> K+V
+
+.
+
+From the allocated budgets, the layer-wise sums satisfy 
+
+Smin = 61 , Savg = 1958 30 = 65 .27 , Smax = 72 .
+
+Substituting these values gives 
+
+M min pack = 153 .10 MiB , M avg pack = 162 .86 MiB , M max pack = 178 .24 MiB .
+
+Therefore, when only Qpack , Kpack , and Vpack are counted, the extra packing memory per attention call is 
+
+153 .10 MiB ≤ M (ℓ)pack ≤ 178 .24 MiB ,
+
+with an average of 162 .86 MiB . This overhead is layer-local because the packed tensors are temporary buffers used only during the current attention computation. 
+
+C Experimental Results and Details 
+
+C.1 Implementation Details 
+
+For each prompt, all methods generate an approximately 30s video with 486 frames at 16 FPS and a resolution of 832 × 480 , except that NOVA is evaluated at 768 × 480 due to its fixed training shape. All experiments are conducted on 8 NVIDIA A100 GPUs. For Focused Forcing, unless otherwise specified, we set the KV budget to (bmin , b max ) = (4 , 12) and the attention weight to 0.5.
+
+C.2 Evaluation Metrics 
+
+For generation quality, we report six visual metrics, including Subject Consistency, Background Consistency, Motion Smoothness, Dynamic Degree, Aesthetic Quality, and Imaging Quality. We further report aggregated scores, where Temporal Quality averages the first four metrics, Frame-wise Quality averages the last two, and Visual Quality averages all six. Text Alignment is computed by averaging Overall Consistency and CLIP Score. 
+
+C.3 Detailed Ablation Results Ablation on KV budget. The KV budget defines the head-wise capacity for retaining historical KV entries and therefore controls the trade-off between temporal-context preservation and inference efficiency, as reported in Tab. 3. Smaller budgets yield higher attention speedup by aggressively pruning historical KV entries, but they may discard useful historical context and degrade visual quality. For example, (4 , 6) achieves the highest attention speedup of 3.27 ×, but its visual quality drops to 74.67. In contrast, larger budgets preserve more temporal context and generally improve quality, while reducing the acceleration gain. Among the tested settings, (bmin , b max ) = (4 , 12) 
+
+achieves the best visual quality of 80.00 with 2.77 × attention speedup and 1.45 × generation speedup, offering the most favorable balance between quality and efficiency. 19 Table 3: Ablation experiments of kv budget on VBench-Long. KV Budget                                                                                                                                                         
+
+> (bmin , b max )
+> Attn. Latency/s Attn. Speedup Gen. Latency/s Gen. Speedup Temporal Quality Frame-wise Quality Visual Quality Text Alignment Self Forcing 37.29 1.00 ×78.06 1.00 ×83.15 63.44 76.58 28.02 (4, 6) 11.42 3.27 ×52.11 1.50 ×80.78 62.46 74.67 29.44 (4, 9) 12.84 2.90 ×53.26 1.47 ×87.19 64.76 79.71 29.19 (4, 12) 13.48 2.77 ×53.90 1.45 ×87.69 64.61 80.00 28.75 (4, 15) 14.51 2.57 ×54.96 1.42 ×87.15 64.54 79.61 28.55 (5, 6) 12.79 2.92 ×53.18 1.47 ×87.41 64.66 79.83 28.91 (5, 9) 14.31 2.61 ×54.73 1.43 ×86.97 64.34 79.43 28.61 (5, 12) 14.71 2.54 ×55.12 1.42 ×85.59 64.91 78.70 28.64 (5, 15) 15.74 2.37 ×56.15 1.39 ×85.15 64.88 78.39 28.56 (6, 6) 14.35 2.60 ×54.75 1.43 ×87.03 64.02 79.36 28.40 (6, 9) 15.27 2.44 ×55.69 1.40 ×86.07 64.50 78.88 28.50 (6, 12) 16.01 2.33 ×56.44 1.38 ×85.64 64.53 78.61 28.50 (6, 15) 16.84 2.21 ×57.25 1.36 ×85.50 64.78 78.59 28.57 (7, 9) 15.99 2.33 ×56.43 1.38 ×85.94 64.29 78.72 28.52 (7, 12) 17.39 2.14 ×57.84 1.35 ×85.49 64.59 78.52 28.56 (7, 15) 18.08 2.06 ×58.52 1.33 ×85.54 64.62 78.56 28.48 (8, 9) 17.38 2.15 ×57.86 1.35 ×85.39 64.44 78.41 28.61 (8, 12) 18.88 1.97 ×59.35 1.32 ×85.78 64.56 78.70 28.52 (8, 15) 19.30 1.93 ×59.75 1.31 ×85.25 64.63 78.38 28.58
+
+Ablation on attention weight. The attention weight controls the relative importance of attention relevance and key diversity when selecting historical frames, with detailed results reported in Tab. 4. Compared with Self Forcing, all tested settings improve visual quality, indicating that our historical-frame selection consistently benefits generation quality. However, relying on either factor alone is suboptimal: using only diversity improves visual quality from 76.58 to 77.66 but remains clearly worse than balanced settings, while using only attention reaches 79.31 but can overemphasize redundant high-attention frames. Moderate attention weights achieve a better trade-off. In particular, a balanced setting of 0.5 obtains the best visual quality of 80.00, while also maintaining strong text alignment. These results show that attention relevance and key diversity are complementary, and combining them is important for robust historical-frame selection. Table 4: Ablation experiments of attention weight on VBench-Long. Attention Weight Subject Consistency Background Consistency Motion Smoothness Dynamic Degree Aesthetic Quality Imaging Quality Overall Consistency Clip Score Visual Quality Text Alignment Self Forcing 96.61 96.17 98.27 41.55 58.83 68.04 23.93 32.12 76.58 28.02 0.0 94.12 94.92 97.86 51.95 59.76 67.36 24.77 33.05 77.66 28.91 0.1 94.44 94.99 97.92 53.20 59.86 67.63 24.84 33.03 78.01 28.94 0.2 95.00 95.08 97.96 56.82 59.99 67.99 24.67 32.97 78.81 28.82 0.3 95.38 95.23 97.99 60.90 60.21 68.33 24.75 33.00 79.67 28.88 0.4 95.69 95.34 97.94 61.75 60.10 68.34 24.45 32.93 79.86 28.69 0.5 95.84 95.49 98.04 61.39 60.59 68.62 24.53 32.97 80.00 28.75 0.6 96.12 95.66 98.16 57.23 60.52 68.58 24.53 33.05 79.38 28.79 0.7 96.22 95.62 98.18 58.27 60.63 68.79 24.37 33.00 79.62 28.69 0.8 96.19 95.68 98.19 56.68 60.64 68.65 24.29 32.97 79.34 28.63 0.9 96.24 95.65 98.22 55.65 60.41 68.51 24.26 33.00 79.11 28.63 1.0 96.32 95.64 98.23 56.75 60.55 68.40 24.40 33.09 79.31 28.75 
+
+Ablation on Importance-Aware Budget Allocation. The importance-aware budget allocation controls how historical-frame budgets are distributed across attention heads, as summarized in Tab. 5. Uniform budgets improve over Self Forcing when the budget is sufficiently large, e.g., (8 , 8) and 
+
+(12 , 12) reach visual quality scores of 78.85 and 78.86, respectively, but they do not fully exploit the unequal importance of different heads. In contrast, the proposed normal allocation with (4 , 12) 
+
+achieves the best visual quality of 80.00, showing that assigning larger budgets to more important heads better preserves useful historical context. Reverse and random allocation under the same (4 , 12) 
+
+budget range perform worse, confirming that the gain comes from importance-aware allocation rather than merely using non-uniform budgets. These results validate the effectiveness of head-importance-guided KV budget allocation under compact cache budgets. 20 Table 5: Ablation experiments of head-wise KV budget allocation strategies on VBench-Long. KV Budget 
+
+(bmin , b max ) Mode Subject Consistency Background Consistency Motion Smoothness Dynamic Degree Aesthetic Quality Imaging Quality Overall Consistency Clip Score Visual Quality Text Alignment Self Forcing – 96.61 96.17 98.27 41.55 58.83 68.04 23.93 32.12 76.58 28.02 (4, 4) Normal 91.93 93.88 97.55 42.78 60.15 68.24 25.86 33.78 75.76 29.82 (8, 8) Normal 96.93 95.94 98.23 53.28 59.86 68.88 24.25 32.80 78.85 28.53 (12, 12) Normal 97.13 96.10 98.33 52.03 60.37 69.24 24.22 32.89 78.86 28.55 (4, 12) Normal 95.84 95.49 98.04 61.39 60.59 68.62 24.53 32.97 80.00 28.75 (4, 12) Reverse 97.00 95.90 98.28 52.60 60.11 68.85 24.33 32.87 78.79 28.60 (4, 12) Random 96.82 95.86 98.26 52.93 60.40 69.05 23.92 32.72 78.89 28.32 
+
+C.4 User Study 
+
+We conduct a user study to evaluate the perceptual quality of different acceleration methods under the chunk-wise Self Forcing paradigm. As shown in Fig. 11, each group presents four anonymized videos generated from the same prompt by MonarchRT, TaylorSeer, Dummy Forcing, and our method. Sixteen participants evaluate 10 groups, resulting in 160 preference votes. For each group, participants select the video that best balances visual quality and text alignment. As reported in Tab. 6, our method achieves the highest preference ratio of 57.50%, outperforming MonarchRT, TaylorSeer, and Dummy Forcing. This indicates that our method is also favored in subjective evaluation. Table 6: User study of different acceleration methods. 
+
+Methods User Preference (%) 
+
+MonarchRT 18.12 TaylorSeer 20.00 Dummy Forcing 4.38 
+
+Ours 57.50 Video Preference Survey 
+
+Please watch the four videos corresponding to each prompt. 
+
+The videos are generated by different acceleration methods and are anonymized as Video A, Video B, Video C, and Video D. 
+
+For each prompt, please select the video you prefer, considering both visual quality and text alignment. 
+
+This survey only collects your anonymous video preference choices. 
+
+The collected responses will be used solely for analyzing and comparing the generation quality of different acceleration methods. 
+
+No personal information is collected or used for any other purpose. 
+
+Group 1 
+
+Prompt:  A charming comic-style illustration depicting a cozy living room scene where a fluffy gray cat is waking up its sleeping owner, who lies on the couch with a sleepy, resigned expression. The cat, with large, round eyes and a mischievous look, is pawing at the owner's face and meowing insistently. The owner attempts to ignore the cat, turning away slightly, but the cat persists, jumping onto the owner's chest and nuzzling their hand. Finally, the owner, unable to resist, reaches under the pillow and pulls out a small bag of treats, offering it to the cat with a playful smile. The background shows soft, warm lighting from a nearby lamp, with scattered books and a blanket on the couch. A medium shot from a slightly elevated angle, capturing both the cat and the owner's interaction. 
+
+Play All  Pause All  Reset 
+
+Video A  Video B  Video C  Video D 
+
+Which video best balances visual quality and text alignment? 
+
+Video A  Video B  Video C  Video D 
+
+Group 2 
+
+Prompt:  A nature photography style photo capturing a family of orangutans along the Kinabatangan River in Borneo. The mother orangutan, with long reddish-brown fur and expressive brown eyes, is holding her baby tightly. The baby orangutan, with smaller size and lighter fur, is clinging to its mother’s chest, both gazing curiously at the camera. The father orangutan, larger and more muscular, is standing nearby, looking contemplative. The riverbank is lush with green foliage, and the water reflects the surrounding tropical rainforest. The photo has a vivid and naturalistic style, with the orangutans in focus against a slightly blurred background of dense jungle. A medium shot from a slightly elevated angle, capturing the interaction between the family. 
+
+Play All  Pause All  Reset 
+
+0:00  0:00  0:00  0:00  
+
+> 2026/5/7 14:22 Anonymous Video Preference Survey
+
+Figure 11: User study interface for comparing videos generated by different acceleration methods. 
+
+C.5 Additional Qualitative Results 
+
+21 0 30s 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Long 
+
+Live 
+
+1.00 ×
+
++ Ours 
+
+1.31 ×
+
+Rolling 
+
+Forcing 
+
+1.00 ×
+
+Causal 
+
+Forcing 
+
+1.00 ×
+
++ Ours 
+
+1.43 ×
+
++ Ours 
+
+1.48 ×
+
++ Ours 
+
+1.45 ×
+
+A stylish woman strolls down a bustling Tokyo street, the warm glow of neon lights and 
+
+animated city signs casting vibrant reflections. She wears a sleek black leather jacket … Figure 12: Qualitative examples comparing long-horizon consistency across different paradigms. 0 30s A close -up 3D animated scene of a short, fluffy monster kneeling beside a melting red candle. 
+
+The monster has large, wide eyes and an open mouth, gazing at the flame with a look of … 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Long 
+
+Live 
+
+1.00 ×
+
++ Ours 
+
+1.31 ×
+
+Rolling 
+
+Forcing 
+
+1.00 ×
+
+Causal 
+
+Forcing 
+
+1.00 ×
+
++ Ours 
+
+1.43 ×
+
++ Ours 
+
+1.48 ×
+
++ Ours 
+
+1.45 ×
+
+Figure 13: Qualitative examples comparing long-horizon consistency across different paradigms. 22 0 30s A vibrant illustration in a whimsical cartoon style depicting a flock of paper airplanes 
+
+fluttering through a dense jungle. The airplanes, resembling small birds, weave … 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Long 
+
+Live 
+
+1.00 ×
+
++ Ours 
+
+1.31 ×
+
+Rolling 
+
+Forcing 
+
+1.00 ×
+
+Causal 
+
+Forcing 
+
+1.00 ×
+
++ Ours 
+
+1.43 ×
+
++ Ours 
+
+1.48 ×
+
++ Ours 
+
+1.45 ×Figure 14: Qualitative examples comparing long-horizon consistency across different paradigms. 0 30s A vibrant and lively Chinese Lunar New Year celebration video featuring a majestic 
+
+Chinese dragon performing traditional dance moves. The dragon, made of colorful … 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Long 
+
+Live 
+
+1.00 ×
+
++ Ours 
+
+1.31 ×
+
+Rolling 
+
+Forcing 
+
+1.00 ×
+
+Causal 
+
+Forcing 
+
+1.00 ×
+
++ Ours 
+
+1.43 ×
+
++ Ours 
+
+1.48 ×
+
++ Ours 
+
+1.45 ×
+
+Figure 15: Qualitative examples comparing long-horizon consistency across different paradigms. 23 0 30s A beautifully animated silhouette scene depicts a lone wolf standing on a rocky hilltop, 
+
+howling at the full moon, its expression filled with loneliness and longing. As the … 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Ours 
+
+1.45 ×
+
++ Attention 
+
+Sink 
+
+1.00 ×
+
+MonarchRT 
+
+1.08 ×
+
+TaylorSeer 
+
+1.13 ×
+
+Dummy 
+
+Forcing 
+
+1.46 ×Figure 16: Qualitative examples comparing quality preservation across acceleration methods. 0 30s A close -up portrait of a woman, her face illuminated by the side lighting, capturing her 
+
+delicate features and expressive eyes. As the camera slowly pulls back, it reveals her … 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Ours 
+
+1.45 ×
+
++ Attention 
+
+Sink 
+
+1.00 ×
+
+MonarchRT 
+
+1.08 ×
+
+TaylorSeer 
+
+1.13 ×
+
+Dummy 
+
+Forcing 
+
+1.46 ×
+
+Figure 17: Qualitative examples comparing quality preservation across acceleration methods. 24 0 30s A zoom -in shot focusing on the face of a young woman sitting on a bench in the middle 
+
+of an empty school gym. The woman has long wavy brown hair cascading down … 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Ours 
+
+1.45 ×
+
++ Attention 
+
+Sink 
+
+1.00 ×
+
+MonarchRT 
+
+1.08 ×
+
+TaylorSeer 
+
+1.13 ×
+
+Dummy 
+
+Forcing 
+
+1.46 ×Figure 18: Qualitative examples comparing quality preservation across acceleration methods. 0 30s A dramatic moment captured in a realistic photographic style, depicting a middle -aged 
+
+man transitioning from sadness to happiness. Initially, he appears solemn and … 
+
+Self 
+
+Forcing 
+
+1.00 ×
+
+Ours 
+
+1.45 ×
+
++ Attention 
+
+Sink 
+
+1.00 ×
+
+MonarchRT 
+
+1.08 ×
+
+TaylorSeer 
+
+1.13 ×
+
+Dummy 
+
+Forcing 
+
+1.46 ×
+
+Figure 19: Qualitative examples comparing quality preservation across acceleration methods. 25
