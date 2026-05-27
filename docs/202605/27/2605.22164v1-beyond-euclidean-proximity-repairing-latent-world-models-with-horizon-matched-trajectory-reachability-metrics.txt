@@ -1,0 +1,571 @@
+Title: Beyond Euclidean Proximity: Repairing Latent World Models with Horizon-Matched Trajectory Reachability Metrics
+
+URL Source: https://arxiv.org/pdf/2605.22164v1
+
+Published Time: Fri, 22 May 2026 00:48:22 GMT
+
+Number of Pages: 26
+
+Markdown Content:
+# Beyond Euclidean Proximity: Repairing Latent World Models with Horizon-Matched Trajectory Reachability Metrics 
+
+Liangyu Li Tongji University 
+
+2550703@tongji.edu.cn 
+
+Shengzhi Wang Tongji University 
+
+2311806@tongji.edu.cn 
+
+Qingwen Liu ∗
+
+Tongji University 
+
+qliu@tongji.edu.cn 
+
+Abstract 
+
+Latent world models can contain the state needed for control, yet their terminal-cost in-terface can expose the planner to the wrong decision-relevant information. In common latent 
+
+MPC , candidate action sequences are ranked by Euclidean distance between the predicted ter-minal latent state and the goal latent state; this terminal proximity objective is convenient, but it assumes that raw latent distance weights reachability-relevant variables correctly. We pro-pose trajectory reachability metrics (TRM ), a post-hoc terminal-ranking method for fixed latent world models. TRM trains a small pairwise head from logged trajectory structure and uses it as a replacement or hybrid terminal cost; the encoder, dynamics, candidate sampler, optimizer, and evaluation manifests remain fixed. The key design choice is horizon-aware supervision: the met-ric is trained on broad, balanced temporal separations so that its training distribution matches the long-horizon terminal candidate ranking problem. On a hard TwoRoom benchmark, raw latent planning with LeWorldModel ( LeWM ) reaches 7.0% mean success, while full-horizon 
+
+TRM reaches 97.0%; shuffled temporal-label controls stay at 0.0%. The same recipe improves a PLDM baseline from 32.7% to 84.0% across three seeds, and a short-horizon TRM variant reaches only 35.0% even with the same 100,000 pair budget. Using TwoRoom as a concrete case study, we provide mechanistic evidence for why TRM works: XY position is linearly decodable with R2 = 0 .998, yet raw latent MSE misranks candidates; the XY-probe rowspace accounts for less than 1% of terminal-goal latent MSE but carries most candidate-quality signal; and same-candidate selection audits ( SCSA ) show that TRM improves the ordering and selected endpoint seen by the planner. On PushT go50/go75, TRM -style task-state metrics improve 
+
+SCSA ranking and selected final distance more cleanly than closed-loop success, so they are best treated as auxiliary hybrid costs in continuous manipulation. The resulting paper is both a method and a mechanism study: TRM is the planner-facing repair, and the audits explain when and why terminal reachability metrics should replace or augment raw latent proximity. 
+
+# 1 Introduction 
+
+Latent world models make a compelling promise: learn a compact predictive state from pixels, roll it forward under candidate actions, and choose actions by optimizing in latent space. This promise underlies model-based reinforcement learning and visual planning systems ranging from sampling-based dynamics models to latent-imagination agents and joint-embedding world models [4, 7, 9, 18]. The fragile step is not always prediction. A latent state can be stable, predictive, and linearly probeable, yet the distance exposed to the planner can rank the wrong action sequence. 
+
+> ∗
+
+Corresponding author. 
+
+1
+
+> arXiv:2605.22164v1 [cs.LG] 21 May 2026
+
+The common terminal-cost formulation assumes that Euclidean proximity in the learned latent space is a good proxy for task progress. This assumption is stronger than it first appears. It does not merely require that the latent contain the variables needed for control; it requires that the optimizer’s metric weight those variables in a way that ranks action sequences by future reachability. If the control-relevant variables occupy a small or low-energy subspace, raw latent distance can be dominated by residual directions that are useful for prediction, nuisance variation, or local discrimination but not for choosing actions. This is the latent-proximity trap studied in this paper: the model may know the state, while the planner’s terminal cost exposes the wrong decision-relevant information. We investigate this problem through the surprising behavior of LeWorldModel ( LeWM ), an end-to-end joint-embedding predictive architecture trained from pixels [9]. The puzzle is compar-ative and mechanistic. LeWM is presented as a stable pixel-based JEPA -style world model and can perform competitively in visually rich settings, yet a controlled hard TwoRoom navigation setting exposes a sharp failure. A shallow explanation would blame the environment, the wall, or the door. A second shallow explanation would blame the representation for not encoding position. We show that neither explanation is sufficient: the same hard TwoRoom episodes are solvable by the same CEM planner when the candidate cost is aligned with reachability, and LeWM latent states encode XY position almost perfectly under a linear readout. The immediate failure point is the planner-facing metric. Our method is trajectory reachability metrics (TRM ): a post-hoc terminal-ranking cost for fixed latent world-model planners. TRM learns a scalar pairwise distance from logged trajectory structure and uses it to score predicted terminal latent states against goal latent states. This is not a new world model and not a policy learner. It is a planner-facing metric layer designed for the exact interface where the mismatch appears: the candidate ordering used by the optimizer. The central design principle is that the metric must be trained at the temporal scale where it will be used. A local temporal head can be accurate on short pairs yet fail to rank long-horizon candidate endpoints. We therefore use balanced full-horizon trajectory-pair sampling in TwoRoom 
+
+and evaluate both replacement and hybrid costs. The evidence chain is deliberately causal: first expose a fixed-planner failure, then repair only the terminal selector, then localize why raw MSE underweights the useful state, and finally test where the repair stops helping. We structure the paper as both a method paper and a mechanism study. The method is the terminal reachability metric; the mechanism study asks whether the metric changes the candidate ordering seen by CEM , rather than merely improving an offline auxiliary loss or exploiting hidden task state. This paper makes four contributions. 1. Trajectory reachability metrics for fixed terminal candidate scoring. We propose 
+
+TRM as a post-hoc terminal-ranking layer that replaces or augments raw latent proximity while keeping the world model, sampler, planner budget, optimizer, and evaluation setting fixed. 2. Horizon-aware metric supervision. We show that sampling is part of the method, not an implementation detail: broad trajectory coverage and full-horizon temporal deltas are empirically critical for a terminal metric used by long-horizon candidate selection. 3. Mechanism evidence for planner-metric mismatch. We use SCSA diagnostics and subspace interventions to test whether TRM works by correcting candidate ordering, rather than by changing the fixed model or relying on hidden oracle state. 24. Cross-model gains and boundary conditions. TRM reaches 97.0% on our hard n100 
+
+TwoRoom manifest for LeWM and strongly improves PLDM under the same manifests, while PushT shows that continuous manipulation often requires hybridizing learned reacha-bility metrics with raw latent costs. 
+
+# 2 Related Work 
+
+World models and latent-space control. Model-based control commonly trains a dynamics model and optimizes candidate action sequences through the learned model [4]. Latent world models move this optimization into a compact state space, either to learn policies through imagined rollouts [7] or to perform goal-conditioned planning directly in learned visual features [9, 18]. Our focus is not model-based planning in general, but a specific interface assumption: terminal Euclidean distance in the learned latent is treated as a control objective. 
+
+Reachability-aware representations and distances. Goal-conditioned RL has long recog-nized that raw state or representation distance can be a poor proxy for reachability. Replay-buffer graph search and latent-landmark world models use learned edge costs or value estimates for long-horizon planning [6, 17]; REPlan separates compact representation learning from a reachability module estimating temporal distance [13]; TLDR uses temporal-distance-aware representations for unsupervised goal-conditioned RL [2]; successor-feature temporal-distance methods study met-ric structure for decision-making [11]; and quasimetric approaches connect representation distances to directed goal-reaching distances [12]. These works establish temporal or reachability distance as a useful goal-reaching objective. Our setting goes one step further: we ask how to use reachability-style distance learning as a post-hoc terminal scoring rule for fixed latent world-model planners, and how to verify that it changes the candidate ordering seen by the planner. 
+
+Concurrent views on plannability in joint-embedding world models. The Hokkaido Uni-versity RC-aux paper and our work both point to a similar problem in LeCun and collaborators’ reconstruction-free joint-embedding world-model line: a latent state can be predictive without ex-posing the temporal reachability information needed by downstream search [8, 9]. RC-aux keeps the LeWM backbone architecture unchanged but changes training or continuation training by adding multi-horizon open-loop prediction, budget-conditioned reachability supervision with tem-poral hard negatives, and optionally a reachability-aware planner. Our intervention and evidence target are different. RC-aux aims to make the learned representation itself more plannable; we keep the trained encoder and dynamics fixed and ask whether a horizon-matched terminal metric can repair the planner interface after training. RC-aux uses budget-conditioned reachability sig-nals to shape the model, whereas TRM learns a continuous pairwise ordering signal for candidate endpoints. Thus our contribution is the post-hoc TRM method for fixed latent world-model plan-ners together with mechanism evidence that localizes the terminal metric as the bottleneck in the studied failures, instead of temporal reachability supervision per se. 
+
+From probes to planner interfaces. Linear probes are useful for asking whether information is present in a representation. They do not answer whether the planner’s objective uses that information. Our subspace intervention bridges this gap by turning a probe into a metric surgery. In hard TwoRoom instances, we project terminal latent differences onto the rowspace of the XY readout and separately evaluate the orthogonal residual. The result gives causal evidence about which latent directions the planner needs, rather than merely reporting decodability. 3Mechanistic evidence and latent operations. Recent interpretability work has made progress by combining visualization, localization, and intervention rather than relying on aggregate scores alone [1, 3, 5, 16]. We borrow this evidence style for control: a planner-metric explanation should identify the hidden signal, localize it in the representation, intervene on it, and include negative controls. LEPA offers a related lesson in a different domain: naive linear operations in embedding space can fail, while a learned predictive mapping can recover the intended transformation [15]. Our setting is planning rather than equivariance, but the interface lesson is similar: the operation exposed to downstream computation must be learned and audited, not assumed from raw latent distance. 
+
+# 3 Latent Terminal-Cost Planning with Fixed World Models 
+
+Latent MPC with terminal costs. We denote the observation at time t by ot. Let an encoder map observations to latent states, zt = fθ(ot), and let a latent dynamics model produce a predicted terminal latent ˆzt+H = Fθ(zt, a0: H−1). (1) Given a goal observation og with latent zg = fθ(og), the usual terminal objective is 
+
+clat (a0: H−1) = ∥ˆzt+H − zg∥22 . (2) A sampling optimizer such as CEM [14] samples candidate action sequences, scores them with Eq. 2, executes the first action block, and replans. This objective is justified only when lower terminal latent distance implies higher probability of reaching the goal. 
+
+Planner-facing metric mismatch. We call a failure a planner-facing metric mismatch when three conditions hold. First, the latent state contains task-relevant information. Second, the planner’s metric ranks candidate plans poorly with respect to true task progress. Third, replacing or restricting the metric while keeping the checkpoint, manifest, and planner fixed improves control. This definition is intentionally framed in causal terms: it rules out two insufficient cases, merely observing a weak latent probe and merely obtaining a better downstream score without showing that the score changes the planner’s effective decision interface. 
+
+> z1
+> z2
+> small raw latent distance
+> looks cheap
+
+(a) Latent proximity trap 
+
+> doorway
+> straight plan blocked
+> reachable route
+
+(b) World topology  
+
+> same candidates
+> raw latent TRM
+> straight wall plan
+> doorway route
+> selects bad
+> selects reachable
+
+(c) Terminal selector 
+
+Figure 1: Why terminal proximity is not enough. Panel (a) shows the latent-proximity trap: araw Euclidean terminal cost can make two terminal latent states look close. Panel (b) shows the corresponding world topology: the red straight plan is blocked by the wall, while the reachable route must pass through the doorway. Panel (c) shows the planner-interface repair tested in this paper: on the same sampled candidates, raw latent distance can select the blocked plan, whereas a trajectory reachability metric is trained to rank the reachable route lower. 44 Method: Trajectory Reachability Metrics ( TRM )
+
+Design goal. TRM is a terminal metric layer for fixed CEM -based latent world-model planners. It does not retrain the encoder, dynamics, candidate sampler, or action optimizer. Instead, it changes the scalar cost used to rank predicted terminal latent states against a goal latent state. This isolates a narrow but important interface: if the world model already contains task-relevant state but raw Euclidean distance weights it poorly, a better terminal-ranking metric should change the selected candidate without changing the model. 
+
+Pairwise reachability head. To avoid relying on task-specific oracle information at evaluation time, TRM trains a small pairwise head mϕ(zi, zj ) on encoded state pairs. The default feature map is [zi, zj , zi − zj , |zi − zj |]. (3) We supervise the distance head using same-episode temporal labels, 
+
+yij = |ti − tj |, (4) which serve as a symmetric proxy for reachability along logged trajectories. This supervision is shared across tasks and environments: while the latent state z may encode different task-specific factors, the learned distance head is always trained to predict temporal separation within the same episode. This is because temporal separation captures the accumulated transition gap between two states under the logged dynamics: smaller gaps indicate that the states can be connected by fewer feasible actions, while larger gaps usually imply greater changes in task-relevant configura-tion. Thus, TRM avoids hand-designed task-state distances and instead uses trajectory temporal structure as a generic reachability signal. 
+
+Horizon-matched pair sampling. The sampling rule is part of the method. We sample an episode, sample a temporal separation over the full episode horizon, sample a valid start time, and train on the pair in random order. Balanced full-horizon sampling prevents the head from being dominated by local neighbors and exposes it to the temporal scale at which the terminal selector will score CEM candidates. The ablation in Section 6.2 shows why this matters: broad random full-episode coverage reaches 90.0%, balanced full-episode pairs reach 97.5%, and a short-horizon head with maximum ∆ = 50 reaches only 35.0% even with 100,000 training pairs. 
+
+Replacement and hybrid terminal costs. At planning time, CEM proposes candidates, the fixed world model rolls each candidate to a predicted terminal latent state ˆ z(i) 
+
+> t+H
+
+, and TRM scores it against the goal latent state: 
+
+cTRM (a(i)0: H−1) = mϕ
+
+
+
+ˆz(i) 
+
+> t+H
+
+, zg
+
+
+
+. (5) In reachability-dominated settings, we use cTRM as a replacement terminal cost. In settings where raw latent distance may preserve useful local physics, we use a standardized hybrid: 
+
+chyb = std( clat ) + λ std( mϕ). (6) 
+
+TRM should therefore be read as a scalar terminal-candidate ordering metric for the CEM selection step, not as a directed, budget-conditioned reachability value. This interface is deliberate: it lets us test whether changing the score seen by CEM changes the same fixed checkpoint’s behavior. 5Figure 2 summarizes the method and evidence workflow. The deployed path changes only the terminal scoring rule, while the diagnostic path tests whether the change repairs the claimed candidate-ordering bottleneck rather than exploiting an unrelated artifact.    
+
+> deployed planner path
+> fixed encoder and dynamics
+> CEM samples candidate actions
+> TRM terminal reachability score
+> execute selected first action
+> closed-loop success
+> diagnostic evidence path
+> SCSA : same candidates, different selector
+> subspace surgery: state present, underweighted
+> shuffled labels and weak-search checks
+> PushT boundary: hybrid helps, success capped
+> orders candidates
+
+Figure 2: TRM method and evidence roadmap. The deployed path keeps the encoder, dynamics, sampler, optimizer, and evaluation manifest fixed, then changes only the terminal score used to rank 
+
+CEM candidates. The diagnostic path is not part of deployment: SCSA checks same-candidate ordering, subspace surgery tests whether task state is present but underweighted, shuffled-label and weak-search controls rule out generic learned-cost and planner-budget explanations, and PushT 
+
+marks the boundary where improved ranking does not by itself solve contact-rich control. 
+
+# 5 Experimental Protocol 
+
+TwoRoom manifests. TwoRoom contains two rooms separated by a wall and connected by a doorway. We use balanced and matched start-goal manifests. The matched manifest controls Euclidean distance across same-room and cross-wall cases, preventing the cross-wall split from being explained simply by longer straight-line distance. We also construct a harder n = 100 manifest with 50 same-room and 50 cross-wall episodes in a high-distance bucket; 47 of the 50 cross-wall goals require the doorway. 
+
+Models and scope. The primary subject is LeWM with three seeds. We also evaluate a local 
+
+PLDM world-model baseline from the stable-worldmodel ecosystem [10] under the same full-cache manifests. This baseline is used as a controlled cross-model check of the planner-metric mechanism, not as a full re-evaluation of the original LeWM benchmark suite. 
+
+Evaluation and reporting. Unless otherwise stated, comparisons use the same checkpoint fam-ily, HDF5 cache, manifest, random seed, evaluation budget, and CEM settings. We report success percentages over fixed manifests and means across seeds where available. These are descriptive controlled comparisons rather than population-level claims; the strength comes from paired inter-ventions and negative controls. The evidence chain is organized so that the main table tests whether 
+
+TRM works, ablations test which design choices matter, SCSA diagnostics help explain why the planner changes behavior, and PLDM /PushT runs test generalization and boundary conditions. 
+
+Same-candidate selection audit. For a set of candidates {a(i)0: H−1}Ni=1 , let c(i) be the planner cost and c⋆(i) be an oracle diagnostic cost computed from the actual or simulator-derived ter-minal state. The same-candidate selection audit ( SCSA ) is a counterfactual evaluation in which 6the checkpoint, manifest, sampler, and CEM budget are fixed, and only the selector changes. Candidate-order Spearman is the Pearson correlation between the average-tie ranks of {c(i)}Ni=1 
+
+and {c⋆(i)}Ni=1 , computed within each candidate set and averaged over episodes or seeds as stated in the table captions. Because both quantities are costs to minimize, a larger positive value means lower planner cost tends to coincide with lower diagnostic cost. We also report the rank assigned by c to the oracle-best candidate and the selected final distance after executing the chosen action. These quantities test whether TRM changes the planner’s induced ordering, not merely the offline loss of the metric head. Full details are in Appendix B.1. 
+
+Metric-head implementation. Pairwise heads use two 256-unit hidden layers with SiLU non-linearities and a Softplus scalar output. They are trained with AdamW (learning rate 10 −3, weight decay 10 −4), batch size 1024, and Smooth-L1 loss on distances scaled by 224. The headline balanced temporal heads use 100,000 training pairs and held-out validation pairs sampled from the same full-cache protocol; shuffled controls permute only training labels while preserving architecture, data volume, and evaluation. 
+
+Visualization protocol. We visualize not only aggregate success but also the intermediate quan-tities that make the explanation falsifiable: candidate-ordering correlation, oracle-best rank, se-lected final distance, latent-MSE mass in the control rowspace, failure taxonomy, and horizon sensitivity. These plots are diagnostic artifacts, and each is tied to an intervention that could have falsified the planner-metric hypothesis. 
+
+PushT . For PushT , we use the official LeWM checkpoint converted from the public artifact and the full expert training dataset. We evaluate go25, where the goal offset is 25 steps and raw latent planning is near saturated, and go50, a harder 50-step offset protocol. Both use 50 evaluation episodes and the same evaluation budget. We also run a harder go75 follow-up with 50 closed-loop episodes per evaluation seed and budget 75. Because TRM -style costs improve PushT less cleanly than TwoRoom success, we interpret go50/go75 with the SCSA metrics in Appendix B.1: candidate-order Spearman asks whether the cost orders sampled action sequences by realized final task distance, oracle-best rank asks where the best sampled candidate is placed by the cost, and selected final distance asks whether the chosen action actually moves closer to the goal. 
+
+# 6 Results 
+
+6.1 TRM Repairs Hard TwoRoom in Fixed Terminal Selection 
+
+Does changing only the terminal selector repair hard TwoRoom ? We evaluate TRM under the strict setting it is designed for: fixed checkpoints, the same HDF5 caches, the same hard manifest, the same CEM settings, and the same candidate sampler. Table 1 is the main method result. On hard n100 TwoRoom , raw LeWM latent MSE reaches only 7.0% mean success; full-horizon TRM 
+
+reaches 97.0%. The wrong-room and stuck-at-wall categories nearly disappear. Shuffled-label heads with the same architecture and data volume remain at 0.0%, showing that the gain is not caused by adding an arbitrary learned scalar cost. 7LeWM 
+
+> raw
+> LeWM
+> TRM
+> LeWM
+> shuf.
+> PLDM
+> raw
+> PLDM
+> TRM
+> PLDM
+> shuf.
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Success (%)
+> 7.0
+> 97.0
+> 0.0
+> 32.7
+> 84.0
+> 0.0
+> (A) Hard TwoRoom success (3-seed mean)
+> Raw
+> latent
+> Decoded
+> XY
+> TRM
+> true
+> TRM
+> shuf.
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Candidate-order Spearman
+> 0.018
+> 0.860
+> 0.729
+> 0.119
+> (B) SCSA ranking audit (LeWM seed 3072)
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> 40
+> Best-rank percentile (lower better)
+> 31.7
+> 0.6
+> 3.9
+> 34.0
+
+Figure 3: TRM repairs both control and the candidate ordering that drives control. (A) Hard 
+
+TwoRoom success: all success bars are three-seed means under the hard n100 manifest, matching Table 1. (B) SCSA ranking audit for LeWM seed 3072 on hard n100: the true temporal head improves the ordering seen by CEM , whereas shuffled labels leave the selector near raw latent MSE. Table 1: Main hard n100 TwoRoom test of the fixed-selector repair. Columns report overall success, same-room success, cross-wall success, wrong-room failures, and stuck-at-wall failures; all values are percentages averaged over three seeds under the same checkpoints, manifest, and planner settings. Balanced full-horizon TRM improves LeWM from 7.0% to 97.0% and PLDM from 32.7% to 84.0%, while shuffled-label heads remain at 0.0% across both model families. Cost Success Same Cross Wrong Stuck 
+
+LeWM raw latent MSE 7.0 10.0 4.0 45.3 10.3 
+
+LeWM temporal head 97.0 95.3 98.7 0.0 0.3 
+
+LeWM shuffled head 0.0 0.0 0.0 46.0 8.7 
+
+PLDM raw latent MSE 32.7 4.0 61.3 12.7 14.0 
+
+PLDM temporal head 84.0 79.3 88.7 3.0 2.0 
+
+PLDM shuffled head 0.0 0.0 0.0 50.0 2.7 
+
+TRM is not LeWM -specific in this setting. Across three PLDM seeds under the same hard n100 manifest, the same full-horizon temporal recipe improves success from 32.7% to 84.0%. This supports TRM as a post-hoc terminal-scoring method rather than a LeWM -specific remedy: when raw latent proximity misorders candidate plans, changing the fixed planner’s terminal selector can improve control. Figure 3 summarizes the central success and ranking evidence. The important pattern is not only that TRM improves success, but that the improvement tracks the planner-facing candidate ordering: true temporal labels align with oracle candidate quality, while shuffled temporal labels do not. 8Where each selector places the oracle-best candidate in the same hard n100 candidate pool        
+
+> rank percentile
+> 010 20 30 40
+> top buried
+> Decoded XY
+> TRM true labels
+> Raw latent MSE
+> TRM shuffled labels
+> 0.59
+> 3.86
+> 31.71
+> 34.00
+> same candidates, new selector
+
+Figure 4: Same-candidate ranking anatomy for the hard n100 SCSA audit. The x-axis is the per-centile rank assigned by each selector to the oracle-best candidate in the same sampled candidate pool, so lower is better. Raw latent MSE buries the oracle-best candidate around the 32nd per-centile, while TRM true labels move it into the top few percent; shuffled temporal labels remain near raw latent MSE. Table 2: Hard n100 SCSA candidate-ordering audit for LeWM seed 3072. The audit holds the sampled action candidates fixed and changes only the selector; ρ columns are Spearman correlations with oracle Euclidean/geodesic terminal quality, and Best-rank is the percentile rank assigned to the oracle-best candidate (lower is better). The true temporal selector moves oracle-good candidates toward the top of the same candidate pool. Candidate cost ρ Euclid. ρ geodesic Best-rank pct. Raw latent MSE 0.021 0.018 31.71 Decoded XY 0.876 0.860 0.59 
+
+TRM true labels 0.720 0.729 3.86 
+
+TRM shuffled labels 0.105 0.119 34.00 
+
+SCSA confirms that the success gain is accompanied by a corrected same-candidate order-ing. On the seed-3072 hard n100 audit, TRM raises geodesic Spearman from 0.018 to 0.729 and moves the oracle-best sampled candidate from rank percentile 31.71 to 3.86. Shuffled temporal labels remain near raw latent MSE, with geodesic Spearman 0.119 and best-rank percentile 34.00 (Table 2). 
+
+6.2 Horizon Matching and Temporal Structure Matter 
+
+Is the rescue just a learned scalar head, or does the temporal scale of supervision matter? The method is not simply “train a pairwise MLP .” Table 3 compresses the seed-3072 matched-b50 ablation. Full-episode temporal supervision reaches 90.0% with broad random coverage and 97.5% with balanced 100,000 pairs, whereas max-∆ = 50 reaches only 35.0% at the same pair budget. Thus horizon matching is the strongest factor in this ablation, with coverage and pair count providing additional gains. 9Table 3: Main TRM sampling and horizon ablation for LeWM seed 3072 on matched b50. The table separates three design choices: whether temporal pairs span the full episode, whether sep-arations are balanced across the horizon, and how many training pairs are used. Full-episode supervision is the critical factor; balancing and pair count further improve performance. Sampling Sample rows Train pairs Success Random full episode 20k 100k 42.5 Random full episode 100k 20k 62.5 Random full episode 100k 100k 90.0 Balanced full episode – 100k 97.5 Balanced max ∆ = 50 – 100k 35.0 raw 
+
+> MSE
+> XY rowspace
+> MSE
+> residual
+> MSE
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 1.7
+> 90.8
+> 1.7
+> 100
+> 0.6
+> 99.4
+
+A
+
+> Small subspace, large control effect
+> Planning success (%)
+> MSE share (%)
+> short horizon
+> max Δ t=50
+> random temporal
+> full episode
+> balanced TRM
+> full episode
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Matched b50 success (%)
+> 35.0
+> 90.0
+> 97.5
+
+B
+
+> Supervision horizon must match planning
+
+Figure 5: What makes TRM work. (A) Mechanism evidence: the XY-probe rowspace contributes less than 1% of candidate terminal-goal latent MSE but carries nearly all control usefulness; the residual has the opposite profile. (B) Method ablation: temporal supervision must span the plan-ning horizon to recover this control signal. A short-horizon temporal head fails, while full-episode and balanced full-horizon training recover the planner; Appendix C.5 gives the broader coverage and pair-count ablation. The negative controls support the same conclusion. Shuffled-label temporal heads with the same architecture, data volume, and evaluation protocol reach 0.0% hard n100 success across three 
+
+LeWM seeds and three PLDM seeds. For LeWM , this drops seed-3072 hard n100 success from 99.0% to 0.0%; the seed-3073 and seed-3074 shuffled controls also remain at 0.0%. As Table 2 shows, shuffled labels fail to repair candidate ordering. The rescue comes from temporal structure at the right scale, not from a generic learned cost. 
+
+6.3 Mechanism: Raw Latent MSE Hides the Useful State 
+
+Is the useful state absent, or merely underweighted by raw latent MSE? The motivation for TRM 
+
+is visible in the TwoRoom task. Balanced tasks are moderately solvable by both model families, but matched tasks expose the metric failure: LeWM reaches only 1.7% mean success at budget 50, while the local PLDM baseline reaches 19.2%. Increasing the execution budget improves both 10 Table 4: TwoRoom success across three seeds. Matched tasks control the straight-line distance distribution across same-room and cross-wall cases, so their collapse exposes the planner-metric failure more sharply than balanced tasks. Model Balanced b50 Balanced b150 Matched b50 Matched b150 
+
+LeWM np512 55.0 59.2 1.7 10.0 
+
+PLDM full e10 66.7 76.7 19.2 29.2 Table 5: Three-seed matched b50 planner trace. A useful planner cost should predict lower final distance and higher geodesic progress; LeWM loses this relationship, showing that the failure is in the control signal presented to CEM , not only in aggregate success. Model Success Cost vs final distance Cost vs geodesic progress 
+
+LeWM np512 1.7 -0.054 0.046 
+
+PLDM full e10 19.2 0.504 -0.438 models but does not remove the gap. Planner traces show why success collapses. Across three seeds on matched b50, LeWM ’s selected terminal cost has near-zero relationship with real final distance. PLDM is still far from solving the task, but its selected cost remains directionally meaningful (Table 5). Thus the contrast is not merely success-rate ranking; it is a difference in the control signal presented to CEM .The failure is not that the hard manifest is impossible for the planner. An oracle task-state cost under the same manifest, budget, and CEM settings reaches 100.0% success. Adding an oracle geodesic auxiliary cost to LeWM also reaches 100.0%. Conversely, a seed-3072 solver-stress negative control with 1000 samples, 20 CEM iterations, and top-k 100 remains at 2.5% under raw latent MSE. More search under the wrong objective does not repair the ordering. Table 6 summarizes the main alternative explanations and their controls. The pattern is im-portant: each simple explanation predicts a rescue or failure mode that is not observed. The only intervention family that consistently rescues control is changing the planner-facing metric. 
+
+LeWM ’s latent state is not missing spatial information. A linear XY probe trained on 20,000 full-cache states achieves test RMSE around 1.8 pixels and R2 = 0 .998 for all three seeds. In the local probe audit, PLDM seed 3072 is slightly worse on this metric (2.44 pixel RMSE, R2 = 0 .997). Yet LeWM ’s raw latent planner fails. Decoded-state planning resolves the apparent contradiction. Replacing terminal latent MSE with decoded XY distance raises LeWM matched b50 success from 1.7% to 94.2% mean across seeds (Table 7). This intervention uses the model’s predicted terminal latent and a learned readout, not the terminal state at evaluation time. The stronger intervention is subspace surgery. Let the XY probe be W z + b and define PW =
+
+W ⊤(W W ⊤)†W . We score terminal-goal differences d = ˆ zt+H − zg with either ∥PW d∥22 or ∥(I −
+
+PW )d∥22. On the sampled candidate terminal-goal differences used in the audit, the rowspace of the XY probe accounts for only 0.5–0.7% of total latent MSE, yet planning with rowspace-only latent MSE reaches 90.8% mean success. Planning with the orthogonal residual remains at 1.7% (Table 8). The planner therefore fails not because the relevant coordinate is outside the latent, but because raw Euclidean distance gives it negligible influence. Figure 5A makes this asymmetry explicit: the XY rowspace is tiny under the raw MSE decom-position but dominates control usefulness. This shows that a feature can be present and causally 11 Table 6: Controls ruling out simpler explanations for the hard TwoRoom failure. The tests cover infeasible tasks, weak search, missing spatial state, simple latent scaling, and generic learned-head effects; the consistent rescue is changing the planner-facing metric. Alternative explanation Test Outcome Task infeasible or budget impossible Oracle task-state cost, same manifest and CEM budget 100.0% success Search too weak Seed-3072 raw-latent solver stress: 1000 samples, 20 iterations, top-k
+
+100 2.5% success Spatial state absent Linear XY probe on LeWM latents RMSE ≈1.8 px, 
+
+R2 = 0 .998 Simple latent scale pathology Per-dimension standardization before MSE 2.5% mean success Any learned head would help Shuffled temporal labels, same architecture/data, LeWM and 
+
+PLDM seeds 3072–3074 0.0% success in all six runs Table 7: Decoded-XY cost rescues LeWM under the same matched b50 protocol. This probe-derived terminal cost uses predicted terminal latents, not evaluation-time oracle state, and tests whether spatial information is present but unused by raw MSE. Cost Success Same-room Cross-wall Notes Latent MSE 1.7 1.7 1.7 LeWM 3-seed mean Decoded XY Euclidean 94.2 88.3 100.0 Linear probe readout Decoded XY geodesic 93.3 88.3 98.3 No gain over Euclidean relevant for control while occupying only a small fraction of the raw variance in the representation. Table 8: Latent metric surgery on matched b50. Mean success and cross-wall success are percentages across LeWM seeds; Spearman vs oracle is the mean candidate-level correlation with the oracle diagnostic cost, where larger positive values mean better candidate ordering. Keeping only the tiny XY rowspace rescues planning, while keeping only the residual preserves failure. Cost Mean success Cross-wall success Spearman vs oracle Raw latent MSE 1.7 1.7 0.028 XY-rowspace latent MSE 90.8 95.0 0.779 Residual-only latent MSE 1.7 1.7 0.018 Candidate-ranking audits close the loop. On matched b50, raw LeWM latent MSE has Spear-man correlations near zero with oracle candidate quality, while decoded XY costs reach roughly 0.80–0.86. The oracle-best candidate is buried far down the raw-latent ranking but is almost top-ranked under decoded cost. This shows that good candidates can be present in the sampled set while the planner’s metric systematically selects against them. 12 6.4 PushT Reveals the Boundary Condition 
+
+When does the terminal-metric repair stop being enough? PushT supports TRM -style task-state heads as auxiliary ranking signals, not as a solved-control result. On go25, raw latent planning is already near saturated at 88.0%, and learned replacement or hybrid costs do not improve it. On harder go50/go75, TRM improves SCSA ordering and selected final distance more cleanly than closed-loop success (Table 9). Table 9: PushT boundary summary. Closed-loop result reports success percentages from full evaluation; SCSA ordering reports random-pool candidate-order correlations with realized final distance; SCSA selected distance reports common-random-number CEM diagnostics, where lower selected distance is better. The ranking and selected-distance gains are clearer than the closed-loop success gains, marking PushT as a boundary case for replacement costs.              
+
+> Regime Closed-loop result SCSA ordering SCSA selected distance go25 Raw 88.0; pair-head 78.0; hybrid 86.0 ––go50 Raw 40.0; true hybrid 52.7; shuffled hybrid 42.7 True pair ρ= 0 .957; shuffled 0 .071 Raw 127.3; true hybrid 75.3 go75 Raw 16.0; true hybrid 22.0; shuffled hybrid 17.3 True pair ρ= 0 .941; shuffled 0 .118 Raw 191.6; true hybrid 114.5
+
+The boundary is therefore not that the learned task-state head is meaningless. Its validation RMSE is 10.19 task units versus 95.94 for shuffled labels, and SCSA shows strong candidate ordering on go50/go75. The boundary is that continuous contact manipulation still depends on rollout fidelity, contact execution, action search, and recovery. A matched rollout-calibration audit is consistent with this remaining bottleneck: true-pair costs remain aligned on real terminal latent states (episode-level Spearman about 0.74–0.77) but are less aligned on model-predicted terminal latent states in true-hybrid pools (0.438 on go50 and 0.460 on go75). The safest conclusion is that replacement costs are risky in continuous manipulation, but an auxiliary SCSA -improving metric can help when raw latent cost is no longer sufficient. 13 raw latent pair-head hybrid shuffled    
+
+> hybrid
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Success (%)
+> 88
+> 78
+> 86 84
+> 40 42
+> 52.7
+> 42.7
+> TRM-style costs help only when latent planning is bottlenecked
+> PushT go25 PushT go50
+
+Figure 6: PushT boundary condition. When raw latent planning is already strong (go25), task-state reachability costs do not improve control. In the harder go50 protocol, the hybrid cost improves over raw latent and separates from the shuffled hybrid on average; Appendix B.1 shows the cleaner SCSA ranking and selected-distance gains behind this mixed closed-loop result. The lesson is diagnostic rather than celebratory: use reachability metrics as replacement costs only when raw proximity is the dominant bottleneck, and as auxiliary costs when contact, rollout fidelity, or recovery still cap success. 
+
+# 7 Discussion 
+
+Probeability is not enough. The central empirical fact is that XY position is easy to decode from LeWM latents, but raw latent MSE still fails catastrophically as a planner objective. This separates representation content from planner-facing metric use. A representation can contain the right variables while the optimizer’s distance function assigns them too little weight. 
+
+Topology amplifies the mismatch. TwoRoom walls and doors make metric mistakes visible because the planner must choose a discrete route: go through the doorway or collide with the wall. However, topology is not the sole cause. Same-room matched cases also fail under raw LeWM 
+
+latent MSE, and the same hard episodes are solvable with aligned costs. The best formulation is boundary amplification of a planner-interface mismatch. 
+
+Dynamics error and metric error interact. Long-horizon rollout error is worse for LeWM 
+
+than PLDM in the seed-3072 local mechanism runs, and this likely contributes to the task difficulty. The metric interventions do not deny dynamics error; they show that the candidate ordering sup-plied to CEM is an immediate causal bottleneck. Better dynamics under a bad metric would still misrank plans; a better metric can partially compensate by selecting candidates whose predicted terminal latent states preserve reachability-relevant information. In PushT , final-pixel calibration makes this interaction explicit: the SCSA audit (Appendix B.1) shows improved selected final distance, but task-state structure is clearer after real execution than in predicted terminal latent states, so residual model error can block a distance gain from becoming a success gain. 
+
+Replacement versus hybrid costs. TwoRoom is dominated by reachability, so replacing raw latent MSE with a temporal metric is sufficient to reach 97.0% on our hard n100 manifest. 14 PushT is more continuous, and raw latent cost appears to preserve useful local physical informa-tion. In that setting, replacement can discard signal, while a hybrid can add task-state structure. The go50/go75 SCSA selected-action and rollout-calibration audits (Appendix B.1) sharpen this boundary: metric-aligned selection improves terminal task distance, while contact execution, rollout fidelity, action search, and recovery still cap success. This distinction is essential for generalization: metric learning is a planner-interface tool, not a blanket substitute for learned latent distance. 
+
+A practical diagnostic recipe. The pipeline should be read as an evaluation recommendation for latent-space planners. Report aggregate success only after auditing the candidate ordering: if oracle-good candidates are absent, the bottleneck is likely sampling, dynamics, or planner budget; if they are present but buried, the bottleneck is planner-facing candidate ordering; if a learned metric improves ranking but not success, the remaining bottleneck likely lies in rollout calibration, contact execution, or recovery. The repair should then match the diagnosis: decoded or subspace interventions test whether state is present but underweighted, while replacement or hybrid TRM 
+
+costs should be trained on the horizon at which planning will use them. 
+
+Training environment versus benchmark leakage. A natural concern is that the TRM head is trained on trajectories sampled from the same underlying environment as the evaluation tasks, and that the observed gain could therefore come from benchmark-distribution exposure rather than from a reachability metric. This concern is important, but the relevant distinction is between an environment, a task manifest, and the supervision given to the metric head. In our setting, the environment specifies the transition dynamics and topology, whereas the benchmark manifest consists of randomly sampled start–goal episodes under a fixed evaluation protocol. The TRM 
+
+head is not given evaluation success labels, oracle geodesic labels, or the identities of test start–goal pairs. It is trained only from logged same-episode temporal separations, 
+
+yij = |ti − tj |,
+
+which are used as a generic proxy for reachability under the logged dynamics. Thus, TRM should not be interpreted as an environment-agnostic or zero-shot metric. It is an in-domain, post-hoc planner-interface repair for a fixed latent world model. The stronger question is whether the improvement comes merely from adding a small MLP that has seen samples from the same simulator. Our shuffled-label controls are designed to isolate this alternative explanation: they preserve the head architecture, input distribution, data volume, cache protocol, and evaluation setting, but destroy the temporal structure in the labels. These shuffled heads fail to recover control and fail to repair the same-candidate ordering, while the true temporal head changes the candidate ranking seen by CEM and rescues planning. The gain is therefore not explained by generic exposure to the environment or by a learned scalar cost with a different numerical scale; it depends on preserving trajectory-level temporal structure at the horizon where the terminal metric is used. This also bounds the claim. The result does not show that a TRM head trained in one dynamics family will transfer universally to unrelated environments. Rather, it shows that, within a fixed world-model and evaluation protocol, logged trajectories from the same dynamics can be used without leaking benchmark answers: the useful signal is reachability structure, not memorization of the benchmark manifest. 15 8 Limitations 
+
+Our PLDM experiments are a controlled local baseline, not a full reproduction of the original 
+
+LeWM paper’s benchmark suite. They test whether the same terminal-scoring repair helps another fixed latent world model under the same TwoRoom manifests, evaluator, and CEM budget; claims about PLDM should not be read beyond that matched protocol. The strongest TwoRoom 
+
+evidence covers three LeWM seeds and three PLDM seeds, but additional model families remain future work. PushT go50 has three evaluation seeds, two trained metric-head seeds, and a weight sweep, yet it remains a boundary case rather than a solved domain: SCSA candidate ranking and selected final distance improve more cleanly than closed-loop success, and harder go75 results show improved SCSA distances but only a small low-success closed-loop gain for the true hybrid. The rollout-calibration audit is single-replan and diagnostic; it localizes a residual model/execution bottleneck but does not replace closed-loop evaluation. Temporal metrics also depend on trajectory coverage: low-coverage and short-horizon ablations perform much worse. Finally, the same-episode temporal label is a symmetric scalar proxy for reachability, not a directed or budget-conditioned goal-reaching value; extending terminal metrics toward directed or budget-sensitive reachability objectives is left to future work. Oracle task-state costs are diagnostic upper bounds and should not be read as deployable planners. 
+
+# 9 Conclusion 
+
+We propose horizon-matched trajectory reachability metrics as a post-hoc terminal-ranking method for fixed latent world-model planners. The central lesson is that a latent state can contain the vari-ables needed for control while raw terminal distance still exposes the wrong candidate ordering to the planner. On hard TwoRoom , TRM changes only the planner-facing objective yet moves 
+
+LeWM from 7.0% to 97.0% and improves a PLDM baseline from 32.7% to 84.0%. The mechanism evidence explains why this is possible: raw terminal MSE can bury a small control-relevant subspace and misrank candidate action sequences even when the latent state contains the needed informa-tion. On PushT go50/go75, TRM -style metrics improve SCSA ranking and selected-distance diagnostics primarily as hybrid auxiliary costs, so the method should be deployed according to the diagnosed bottleneck. Learned terminal reachability metrics and planner-interface audits should therefore accompany prediction losses, representation probes, and aggregate success rates when evaluating latent world-model planners. 
+
+# A Appendix: TRM Method Details 
+
+A.1 Training Objective and Pair Sampling 
+
+TRM is a planner-facing metric, not a new dynamics model. Given a fixed world model encoder fθ
+
+and latent rollout model Fθ, we train a pairwise scalar head mϕ(zi, zj ) over encoded latent states. The default feature map is 
+
+ψ(zi, zj ) = [ zi, zj , zi − zj , |zi − zj |] . (7) The head is a two-hidden-layer MLP :
+
+mϕ(zi, zj ) = Softplus ( W3 σ(W2 σ(W1ψ + b1) + b2) + b3) , (8) 16 where σ is SiLU and the hidden width is 256. The Softplus output enforces nonnegative predicted distance. We train with Smooth-L1 loss on scaled labels: min  
+
+> ϕ
+
+E(i,j ) ℓHuber (mϕ(zi, zj ), y ij /s ) , (9) with scale s = 224 for the reported heads. For full-horizon temporal sampling in TwoRoom , we sample an episode e with length Le,sample a temporal separation ∆ uniformly from [1 , L e − 1] or from [1 , min( Le − 1, ∆max )] in the short-horizon ablation, sample a valid start time t ∈ [0 , L e − ∆ − 1], and use rows ( e, t ) and (e, t + ∆) in random order. The label is yij = ∆. Balanced temporal sampling equalizes coverage over separation ranges before drawing pairs. This procedure deliberately exposes the metric to the same long-range reachability scale that the terminal selector will face; the ablation in Appendix C.5 shows that broad coverage, pair count, and especially horizon matching are not interchangeable. Table 10: Implementation details for the TRM heads used in the main experiments. Component Setting Input features [zi, zj , zi − zj , |zi − zj |]Architecture MLP , two 256-unit hidden layers Nonlinearity SiLU hidden layers, Softplus scalar output Optimizer AdamW Learning rate 10 −3
+
+Weight decay 10 −4
+
+Batch size 1024 pairs Loss Smooth-L1 on scaled distances Distance scale 224 Headline train pairs 100,000 Validation pairs Held-out pair split recorded per run Shuffled control Same architecture/data, permuted training labels only 
+
+A.2 Planner Use 
+
+At evaluation time, TRM replaces or augments only the terminal cost. For each CEM replan, the planner proposes candidate action sequences a(i)0: H−1. The fixed world model rolls each sequence forward to a predicted terminal latent state ˆ z(i) 
+
+> t+H
+
+. The goal image is encoded once as zg. The replacement TRM cost is 
+
+cTRM (a(i)0: H−1) = mϕ
+
+
+
+ˆz(i) 
+
+> t+H
+
+, zg
+
+
+
+. (10) For hybrid costs, we standardize raw latent and learned costs within the current candidate batch: 
+
+c(i)hyb = c(i)lat − μlat 
+
+σlat + ϵ + λ c(i)
+
+TRM − μTRM 
+
+σTRM + ϵ . (11) This per-batch standardization prevents arbitrary scale differences between latent MSE and learned distances from dominating the optimizer. 17 A.3 Pseudocode 
+
+Table 11: Pseudocode for training and using TRM .
+
+Train TRM 
+
+1. Freeze the world-model encoder fθ and dynamics Fθ.2. Sample state pairs from logged trajectories using the temporal-horizon rule above. 3. Encode both observations: zi = fθ(oi), zj = fθ(oj ). 4. Build pair features [ zi, zj , zi − zj , |zi − zj |]. 5. Train mϕ to predict scaled temporal distance with Smooth-L1 loss. 
+
+Use TRM in latent CEM planning 
+
+1. Encode the current observation and goal observation. 2. Sample candidate action sequences with the same CEM planner. 3. Roll each candidate forward through the fixed world model. 4. Score each predicted terminal latent state against the goal latent state using mϕ.5. Select candidates by replacement or hybrid cost and execute the first action block. 
+
+# B Appendix: Diagnostic Protocols 
+
+B.1 Same-Candidate Selection Audit 
+
+For each episode, we evaluate multiple costs on the same sampled action candidates. Let c(i) be a candidate cost and c⋆(i) be an oracle diagnostic cost computed from the actual or simulator-derived terminal state. This is the SCSA protocol used throughout the paper whenever success alone is too coarse, especially for PushT . SCSA is not a deployment oracle and not a new training loss; it is a same-candidate counterfactual audit of whether the planner-facing selector would choose better actions if the metric were changed. Candidate-order Spearman is computed by ranking candidates by c(i) and by c⋆(i) within the same episode, using average ranks for ties, then taking the Pearson correlation of the two rank vectors. Since both axes are costs, positive Spearman means that candidates preferred by the planner-facing cost also tend to be preferred by the diagnostic oracle cost; reported multi-episode values are means over the specified episodes or seeds. We report: 
+
+• Candidate-order Spearman : the Spearman correlation between c(i) and c⋆(i) over candi-dates; higher means the planner-facing cost orders sampled actions more like the diagnostic task metric. 
+
+• Oracle-best rank : the percentile rank assigned by c to the oracle-best candidate arg min i c⋆(i); lower means the best sampled candidate is less buried. 
+
+• Selected final distance : the realized terminal task distance after executing the candidate selected by the planner; lower means the metric changes the action actually chosen, not only its offline ranking. 
+
+• Top-k oracle cost under the planner’s selected candidates, when available. This audit is stricter than aggregate success. It can distinguish “the planner never sampled a good candidate” from “the planner sampled good candidates but the metric ranked them badly,” and it can also identify cases where ranking improves but execution, contact, or rollout calibration still prevents a success gain. 18 Table 12: Hard n100 SCSA candidate-ranking audit for LeWM seed 3072. Lower oracle-best rank percentile is better. Candidate cost ρ Euclid. ρ geodesic Best-rank pct. Raw latent MSE 0.021 0.018 31.71 Decoded XY 0.876 0.860 0.59 
+
+TRM true labels 0.720 0.729 3.86 
+
+TRM shuffled labels 0.105 0.119 34.00 
+
+B.2 Subspace Projection Audit 
+
+The XY-rowspace intervention uses the linear probe matrix W only to define a projection. It does not decode the final state or use true simulator state at planning time. We compute 
+
+PW = W ⊤(W W ⊤)†W, (12) then score candidate terminal-goal differences d = ˆ zt+H − zg with either ∥PW d∥22 or ∥(I − PW )d∥22.The rowspace-only cost tests whether the isolated control feature can support the planner-facing latent cost; the residual-only cost tests whether the rest of the latent is sufficient for planning. The observed split is strong: rowspace succeeds, residual fails. Table 13: Per-seed subspace intervention on matched b50. Seed Latent MSE Decoded XY XY-rowspace Residual-only Rowspace MSE share 3072 2.5 95.0 97.5 2.5 0.006 3073 2.5 95.0 92.5 2.5 0.0069 3074 0.0 92.5 82.5 0.0 0.005 
+
+# C Appendix: Experimental Details 
+
+C.1 TwoRoom Manifests and Failure Taxonomy 
+
+The balanced n40 manifest contains 20 same-room and 20 cross-wall goals. The matched n40 manifest also contains 20 same-room and 20 cross-wall goals but controls Euclidean distance across topology classes. The hard n100 manifest contains 50 same-room and 50 cross-wall goals in a high-distance bucket; 47 of 50 cross-wall goals require the doorway. We use the following failure taxonomy. Wrong-room means the final agent location remains in the wrong room relative to the goal. Stuck-at-wall means the trajectory terminates near the separating wall without making the necessary progress. Same-room not precise and crossed-door not precise are near-miss categories used in internal episode reports; the main tables emphasize success, wrong-room, and stuck-at-wall because they diagnose reachability rather than local precision. 
+
+C.2 Task Execution Visualizations 
+
+Figure 7 gives a compact visual legend for the two task families used in the paper. The drawings are intentionally schematic: they show what the planner must make true in the world, while the quantitative claims continue to come from the fixed manifests and SCSA diagnostics. 19 doorway doorway detour  
+
+> shortest line blocked
+> start goal
+
+TwoRoom route  
+
+> pusher current T
+> target T
+
+PushT contact 
+
+Figure 7: Task execution schematics. In TwoRoom , the red straight-line route is shorter in Euclidean distance but is blocked by the wall, so success requires the blue route through the doorway. In PushT , the object is T-shaped and success requires contact-rich object motion, so 
+
+SCSA ranking and selected-distance improvements (Appendix B.1) can be real while closed-loop success remains limited by contact, rollout, and recovery. 
+
+C.3 Full-Cache Per-Seed Matrix 
+
+Table 14: Full-cache TwoRoom per-seed success. Model Seed Balanced b50 Balanced b150 Matched b50 Matched b150 
+
+LeWM np512 3072 55.0 60.0 2.5 17.5 
+
+LeWM np512 3073 57.5 60.0 2.5 7.5 
+
+LeWM np512 3074 52.5 57.5 0.0 5.0 
+
+PLDM full e10 3072 65.0 75.0 15.0 27.5 
+
+PLDM full e10 3073 67.5 77.5 17.5 27.5 
+
+PLDM full e10 3074 67.5 77.5 25.0 32.5 20 C.4 Hard n100 Per-Seed Matrix 
+
+Table 15: Hard n100 TwoRoom per-seed outcomes. Seed Cost Success Same Cross Wrong-room Stuck-wall 3072 LeWM latent MSE 16.0 26.0 6.0 44.0 14.0 3073 LeWM latent MSE 5.0 4.0 6.0 45.0 12.0 3074 LeWM latent MSE 0.0 0.0 0.0 47.0 5.0 3072 LeWM TRM 99.0 100.0 98.0 0.0 1.0 3073 LeWM TRM 99.0 100.0 98.0 0.0 0.0 3074 LeWM TRM 93.0 86.0 100.0 0.0 0.0 3072 LeWM shuffled TRM 0.0 0.0 0.0 39.0 15.0 3073 LeWM shuffled TRM 0.0 0.0 0.0 49.0 11.0 3074 LeWM shuffled TRM 0.0 0.0 0.0 50.0 0.0 3072 PLDM latent MSE 29.0 4.0 54.0 17.0 2.0 3072 PLDM TRM 74.0 58.0 90.0 1.0 2.0 3072 PLDM shuffled TRM 0.0 0.0 0.0 50.0 0.0 3073 PLDM latent MSE 34.0 0.0 68.0 12.0 15.0 3073 PLDM TRM 85.0 90.0 80.0 8.0 2.0 3073 PLDM shuffled TRM 0.0 0.0 0.0 50.0 0.0 3074 PLDM latent MSE 35.0 8.0 62.0 9.0 25.0 3074 PLDM TRM 93.0 90.0 96.0 0.0 2.0 3074 PLDM shuffled TRM 0.0 0.0 0.0 50.0 8.0 
+
+C.5 Temporal Horizon and Data Coverage 
+
+This ablation is the method-side counterpart to the main repair result. It tests whether TRM 
+
+succeeds because it sees enough trajectory coverage, enough pair samples, or the right temporal scale. Coverage matters more than simply resampling the same narrow cache, pair count helps once coverage is broad, and full-episode deltas are the strongest factor for matching the planner’s long-horizon terminal-ranking problem in this ablation. 21 Table 16: TRM coverage and horizon ablations for LeWM seed 3072 on matched b50. Broad trajectory coverage and more pairs both help, but horizon matching is the strongest factor in this ablation: balanced full-episode deltas reach 97.5%, whereas max-∆ = 50 reaches only 35.0% even with 100,000 pairs. Sampling Sample rows Train pairs Temporal horizon Success Random temporal 5k 20k Full episode 17.5 Random temporal 10k 20k Full episode 25.0 Random temporal 20k 20k Full episode 35.0 Random temporal 20k 100k Full episode 42.5 Random temporal 100k 20k Full episode 62.5 Random temporal 100k 100k Full episode 90.0 Balanced temporal – 20k Full episode 80.0 Balanced temporal – 100k Full episode 97.5 Balanced temporal – 20k Max ∆ = 50 5.0 Balanced temporal – 100k Max ∆ = 50 35.0 
+
+C.6 PushT Details 
+
+For PushT , the pair-head target is a task-state distance rather than a temporal label. The state target combines object and end-effector position differences with wrapped object angle difference, using the same pairwise head architecture. Replacement costs use the learned head directly. Hybrid costs use Eq. 6. The go25 protocol is intentionally included as a negative boundary: raw latent planning is already strong, so a learned reachability-like auxiliary signal should not automatically improve control. For go50/go75 we therefore foreground the SCSA audit (Appendix B.1), where candidate-order Spearman and selected final distance reveal the metric’s effect even when binary success is insensitive. Table 17: PushT go50 per-seed results. Because success is a noisy boundary signal here, Ap-pendix B.1 provides the SCSA ranking and selected-distance diagnostics. Seed Raw latent Pair-head Hybrid Shuffled pair-head Shuffled hybrid 3072 40.0 44.0 60.0 26.0 38.0 3073 38.0 40.0 48.0 28.0 40.0 3074 42.0 42.0 50.0 20.0 50.0 Table 18: PushT go75 full follow-up, n = 50, budget 75, mean over eval seeds 3072/3073/3074. The true hybrid improves final task distance more than success, so go75 is treated as a boundary condition; Appendix B.1 defines the SCSA selected-distance metric used to interpret this pattern. Cost λ Success Mean dist. Final succ. Raw latent – 16.0 219.7 4.7 True hybrid 0.50 20.7 149.6 9.3 True hybrid 1.00 22.0 103.7 12.7 Shuffled hybrid 0.50 16.7 215.9 6.7 Shuffled hybrid 1.00 17.3 215.8 6.7 22 Table 19: PushT go50 hybrid-weight and head-seed follow-up. Values are mean success over eval seeds 3072/3073/3074; SCSA diagnostics in Appendix B.1 are used to separate ranking improve-ments from noisy closed-loop success. Head Cost λ Mean success Original Raw latent – 40.0 Original True hybrid 0.25 44.7 Original True hybrid 0.50 46.7 Original True hybrid 0.75 48.0 Original True hybrid 1.00 52.7 Original Shuffled hybrid 0.25 42.7 Original Shuffled hybrid 0.50 38.7 Original Shuffled hybrid 0.75 42.7 Original Shuffled hybrid 1.00 42.7 Seed 4072 True hybrid 0.50 48.0 Seed 4072 True hybrid 1.00 50.0 Seed 4072 Shuffled hybrid 0.50 42.7 Seed 4072 Shuffled hybrid 1.00 43.3 Table 20: PushT go50 SCSA candidate-ranking audit, n = 50 and 96 random candidates per episode, mean over eval seeds 3072/3073/3074. Spearman measures candidate ordering by realized final distance; lower oracle-best rank percentile is better. Selector Spearman vs final distance Oracle-best rank Selector-best dist. Latent 0.490 20.41 156.6 True pair 0.957 2.08 127.6 True hybrid, λ = 0 .5 0.703 12.96 144.8 True hybrid, λ = 1 .0 0.824 8.37 139.2 Shuffled pair 0.071 44.86 175.8 Shuffled hybrid, λ = 0 .5 0.438 22.67 156.7 Shuffled hybrid, λ = 1 .0 0.343 27.88 159.3 Table 21: PushT go75 SCSA candidate-ranking audit, n = 50 and 96 random candidates per episode, mean over eval seeds 3072/3073/3074. Spearman measures candidate ordering by realized final distance; lower oracle-best rank percentile and selector-best final distance are better. Candi-date success is near zero in these diagnostic pools. Selector Spearman vs final distance Oracle-best rank Selector-best dist. Latent 0.490 25.73 195.1 True pair 0.941 3.29 165.7 True hybrid, λ = 0 .5 0.696 16.64 184.0 True hybrid, λ = 1 .0 0.811 11.07 179.0 Shuffled pair 0.118 46.58 216.7 Shuffled hybrid, λ = 0 .5 0.444 26.50 198.3 Shuffled hybrid, λ = 1 .0 0.350 31.25 198.8 23 Table 22: PushT go50 SCSA common-random-number CEM audit, n = 50 per seed over eval seeds 3072/3073/3074, 64 samples and 10 CEM steps. Lower distances are better. The true hybrid improves both the CEM -refined mean action and the selected final distance, but selected-action success remains low. 
+
+CEM cost Refined mean dist. Pool-best dist. Selected dist. Sel. success Raw latent 127.4 103.7 127.3 16.7 True hybrid, λ = 1 .0 75.3 59.1 75.3 16.0 Shuffled hybrid, λ = 1 .0 137.8 113.2 137.8 14.0 Table 23: PushT go75 SCSA selected-action diagnostic, n = 50 per seed over eval seeds 3072/3073/3074, common random numbers, 64 CEM samples, 10 CEM steps, topk 8. The true hybrid reduces selected final task distance, but selected-action success remains low; official success is threshold crossing at any time, while final-state success tests the terminal state. Selector Sel. dist. Final succ. Official Oracle rank Pool best Latent 191.6 4.0 5.3 45.24 163.0 True hybrid w1 114.5 4.0 4.0 34.63 96.7 Shuffled hybrid w1 183.4 4.0 4.0 43.04 158.3 Table 24: PushT go50 seed-3072 SCSA final-distance diagnostic. Official success is threshold crossing at any time; final-state success tests the final state only. Cost Official Mean dist. Median dist. Final succ. Raw latent 42.0 131.5 40.8 28.0 True hybrid, λ = 1 60.0 48.0 26.2 42.0 Shuffled hybrid, λ = 1 38.0 154.9 50.9 30.0 
+
+# D Appendix: What Would Falsify the Claim? 
+
+The planner-metric hypothesis is falsifiable. It would be weakened if candidate-ranking audits showed that raw latent MSE already ranked oracle-good candidates near the top, if decoded or rowspace metrics failed despite high probe accuracy, if shuffled-label heads matched true TRM 
+
+under the same protocol, or if stronger raw-latent CEM search reliably closed the gap. The core TwoRoom experiments point in the opposite direction: raw latent MSE buries oracle-good candidates, rowspace and decoded interventions rescue control, shuffled temporal labels fail, and solver stress does not repair raw latent planning. PushT is deliberately treated as a boundary case because shuffled hybrid costs can have nontrivial closed-loop success even when their SCSA 
+
+candidate-ranking diagnostics are poor. Go75 would remain a boundary case even when SCSA 
+
+ranking and selected distances improve, because that pattern separates planner-facing candidate ordering from execution, contact, and recovery bottlenecks. 24 References 
+
+[1] Emmanuel Ameisen, Jack Lindsey, Adam Pearce, Wes Gurnee, Nicholas L. Turner, Brian Chen, Craig Citro, David Abrahams, Shan Carter, Ben Hosmer, Jonathan Marcus, Michael Sklar, Adly Templeton, Trenton Bricken, Callum McDougall, Hoagy Cunningham, Tom Henighan, and Chris Olah. Circuit tracing: Revealing computational graphs in language models. Transformer Circuits Thread , 2025. URL https://transformer-circuits.pub/ 2025/attribution-graphs/methods.html .[2] Junik Bae, Kwanyoung Park, and Youngwoon Lee. TLDR: Unsupervised goal-conditioned reinforcement learning via temporal distance-aware representations. arXiv preprint arXiv:2407.08464 , 2024. URL https://arxiv.org/abs/2407.08464 .[3] Trenton Bricken, Adly Templeton, Joshua Batson, Brian Chen, Adam Jermyn, Thomas Con-erly, Nicholas L. Turner, Cem Anil, Carson Denison, Amanda Askell, Robert Lasenby, Yi-fan Wu, Shauna Kravec, Nicholas Schiefer, Tim Maxwell, Nicholas Joseph, Zac Hatfield-Dodds, Alex Tamkin, Karina Nguyen, Brayden McLean, Josiah E. Burke, Tristan Hume, Shan Carter, Tom Henighan, and Christopher Olah. Towards monosemanticity: Decompos-ing language models with dictionary learning. Transformer Circuits Thread , 2023. URL 
+
+https://transformer-circuits.pub/2023/monosemantic-features/index.html .[4] Kurtland Chua, Roberto Calandra, Rowan McAllister, and Sergey Levine. Deep reinforce-ment learning in a handful of trials using probabilistic dynamics models. Advances in Neural Information Processing Systems , 2018. URL https://arxiv.org/abs/1805.12114 .[5] Nelson Elhage, Tristan Hume, Catherine Olsson, Nicholas Schiefer, Tom Henighan, Shauna Kravec, Zac Hatfield-Dodds, Robert Lasenby, Dawn Drain, Carol Chen, Roger Grosse, Sam McCandlish, Jared Kaplan, Dario Amodei, Martin Wattenberg, and Christopher Olah. Toy models of superposition. Transformer Circuits Thread , 2022. URL https: //transformer-circuits.pub/2022/toy_model/index.html .[6] Benjamin Eysenbach, Ruslan Salakhutdinov, and Sergey Levine. Search on the replay buffer: Bridging planning and reinforcement learning. In Advances in Neural Information Processing Systems , 2019. URL https://arxiv.org/abs/1906.05253 .[7] Danijar Hafner, Timothy Lillicrap, Jimmy Ba, and Mohammad Norouzi. Dream to control: Learning behaviors by latent imagination. International Conference on Learning Representa-tions , 2020. URL https://arxiv.org/abs/1912.01603 .[8] Wenyuan Li, Guang Li, Keisuke Maeda, Takahiro Ogawa, and Miki Haseyama. Predictive but not plannable: RC-aux for latent world models. arXiv preprint arXiv:2605.07278 , 2026. URL 
+
+https://arxiv.org/abs/2605.07278 .[9] Lucas Maes, Quentin Le Lidec, Damien Scieur, Yann LeCun, and Randall Balestriero. LeWorldModel: Stable end-to-end joint-embedding predictive architecture from pixels. arXiv preprint arXiv:2603.19312 , 2026. URL https://arxiv.org/abs/2603.19312 .[10] Lucas Maes, Quentin Le Lidec, Damien Scieur, Yann LeCun, and Randall Balestriero. Stable World Model: A data-driven benchmark and model for offline goal-conditioned reinforcement learning. arXiv preprint arXiv:2602.08968 , 2026. URL https://arxiv.org/abs/2602.08968 .25 [11] Vivek Myers, Chongyi Zheng, Anca Dragan, Sergey Levine, and Benjamin Eysenbach. Learn-ing temporal distances: Contrastive successor features can provide a metric structure for decision-making. In Proceedings of the 41st International Conference on Machine Learning ,volume 235 of Proceedings of Machine Learning Research , pages 37076–37096. PMLR, 2024. URL https://proceedings.mlr.press/v235/myers24a.html .[12] Vivek Myers, Bill Chunyuan Zheng, Benjamin Eysenbach, and Sergey Levine. Offline goal-conditioned reinforcement learning with quasimetric representations. arXiv preprint arXiv:2509.20478 , 2025. URL https://arxiv.org/abs/2509.20478 .[13] Zhifeng Qian, Mingyu You, Hongjun Zhou, Xuanhui Xu, and Bin He. Goal-conditioned reinforcement learning with disentanglement-based reachability planning. arXiv preprint arXiv:2307.10846 , 2023. URL https://arxiv.org/abs/2307.10846 .[14] Reuven Y. Rubinstein. The cross-entropy method for combinatorial and continuous optimiza-tion. Methodology and Computing in Applied Probability , 1(2):127–190, 1999. [15] Erik Scheurer, Nikola Jovanovic, Lindsay Miller, Alexander Kalb, David Rolnick, and Randall Balestriero. LEPA: Learning geometric equivariance in satellite remote sensing data with a predictive architecture. arXiv preprint arXiv:2603.07246 , 2026. URL https://arxiv.org/ abs/2603.07246 .[16] Adly Templeton, Tom Conerly, Jonathan Marcus, Jack Lindsey, Trenton Bricken, Brian Chen, Adam Pearce, Craig Citro, Emmanuel Ameisen, Andy Jones, Hoagy Cunningham, Nicholas L. Turner, Callum McDougall, Monte MacDiarmid, C. Daniel Freeman, Theodore R. Sumers, Edward Rees, Joshua Batson, Adam Jermyn, Shan Carter, Chris Olah, and Tom Henighan. Scaling monosemanticity: Extracting interpretable features from claude 3 son-net. Transformer Circuits Thread , 2024. URL https://transformer-circuits.pub/2024/ scaling-monosemanticity/index.html .[17] Lunjun Zhang, Ge Yang, and Bradly C. Stadie. World model as a graph: Learning latent land-marks for planning. In Proceedings of the 38th International Conference on Machine Learning ,volume 139 of Proceedings of Machine Learning Research , pages 12611–12620. PMLR, 2021. URL https://proceedings.mlr.press/v139/zhang21x.html .[18] Gaoyue Zhou, Hengkai Pan, Yann LeCun, and Lerrel Pinto. DINO-WM: World models on pre-trained visual features enable zero-shot planning. arXiv preprint arXiv:2411.04983 , 2024. URL https://arxiv.org/abs/2411.04983 .26

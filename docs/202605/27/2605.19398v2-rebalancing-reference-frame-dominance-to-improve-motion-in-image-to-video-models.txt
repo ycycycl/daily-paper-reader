@@ -1,0 +1,535 @@
+Title: Rebalancing Reference Frame Dominance to Improve Motion in Image-to-Video Models
+
+URL Source: https://arxiv.org/pdf/2605.19398v2
+
+Published Time: Thu, 21 May 2026 00:40:04 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Rebalancing Reference Frame Dominance to Improve Motion in Image-to-Video Models 
+
+Wooseok Jeon 1∗ Seungho Park 1∗ Seunghyun Shin 2 Sangeyl Lee 1
+
+Hyeonho Jeong 3 Hae-Gon Jeon 1†
+
+> 1
+
+Yonsei University 2GIST 3Adobe Research A space shuttle taking off into the sky.   
+
+> CogVideoX Ours
+> Beauty, dusk, riding a white horse from a distance.
+> Wan 2.2 Ours
+
+(a) Dynamic image -to -video generation  (b) Continuous control over motion dynamics     
+
+> A wet dog close up portrait, water droplets on its happy face.
+> Dynamic  Static
+
+Figure 1: Example videos from our method. We present DyMoS, a training-free and model-agnostic method for improving motion dynamics in image-to-video generation. (a) Comparison of generated videos from the same input image. DyMoS produces dynamic motion while preserving video quality. (b) Furthermore, DyMoS provides continuous control over motion dynamics. 
+
+## Abstract 
+
+Image-to-video models often generate videos that remain overly static, compared to text-to-video models. While prior approaches mitigate this issue by weakening or modifying the image-conditioning signal, they often require additional training or sacrifice fidelity to the reference image. In this work, we identify reference-frame dominance as a key mechanism behind motion suppression. We observe that non-reference frames in I2V models allocate excessive self-attention to reference-frame key tokens, causing reference information to be over-propagated across time and suppressing inter-frame dynamics. Based on this finding, we propose DyMoS (Dynamic Motion Slider), a training-free and model-agnostic method that rebalances the attention pathway from generated frames to the reference frame during initial denoising steps. DyMoS leaves both the input image and model weights unchanged and introduces a single scalar parameter for continuous control over motion strength. Experiments across multiple state-of-the-art I2V backbones demonstrate that DyMoS consistently improves motion dynamics while maintaining visual quality and fidelity to the reference image. 
+
+> ∗
+
+Equal contribution. 
+
+> †
+
+Corresponding author. Preprint. 
+
+> arXiv:2605.19398v2 [cs.CV] 20 May 2026
+
+## 1 Introduction 
+
+Recent advances in generative models have been driven by the remarkable success of diffusion [ 1– 4]and flow-matching [ 5–8 ] frameworks. Building on these paradigms, text-to-video (T2V) models [ 9–15 ] have made it possible to generate high-quality videos from text prompts. Image-to-video (I2V) models [ 9– 12 , 16 – 22 ] extend this capability by conditioning generation on reference images 1, en-abling the creation of videos that follow text prompts while preserving the content and appearance of the input. These models are typically adapted from large-scale T2V backbones by introducing an additional image-conditioning pathway, which grounds the generation in specific visual input while retaining the motion priors learned from large-scale video data. Despite this progress, I2V models often produce videos that remain overly static compared to their T2V counterparts, even when the prompt explicitly describes motion. Prior works address this static motion bias by either modifying the image-conditioning pathway or weakening the conditioning signal during generation [ 23 – 25 ]. While these approaches can encourage stronger motion, they often require additional training or involve direct modification of the input signal. In the latter case, improved motion dynamics are achieved at the cost of fidelity to the reference image. In this work, we revisit the static motion bias by analyzing how reference image information is utilized within I2V models. Since I2V models process spatiotemporal latent tokens through self-attention, their attention maps allow us to analyze how information flows across frames during generation. By comparing paired T2V and I2V generations, we observe that query tokens in non-reference frames in I2V models allocate substantially more attention to the reference-frame key tokens than their paired T2V counterparts. We refer to this asymmetric attention pattern as reference-frame dominance .This observation implies that the static nature of I2V models may stem from excessive propagation of reference frame information through internal attention routing, rather than that from the input image itself. To test this hypothesis, we directly modulate the attention logits associated with reference-frame key tokens. Strengthening these logits makes generation more static, whereas weakening them restores motion and reduces the reference-frame dominance. This provides an intervention-based evidence that the reference-frame dominance is a primary driver of motion suppression in I2V models. Based on this insight, we present DyMoS (Dynamic Motion Slider), a simple, training-free method that mitigates the reference-frame dominance by rebalancing attention logits. DyMoS introduces a scalar bias shift to the attention logits corresponding to reference-frame key tokens during initial denoising steps, leaving the input image and model weights unchanged. This allows DyMoS to improve motion dynamics while preserving fidelity to the reference image The magnitude of this bias serves as a single parameter for continuously controlling the generation, ranging from strict reference-image preservation to highly dynamic motion. We validate the effectiveness of DyMoS in improving motion dynamics across state-of-the-art I2V models, including Wan 2.2 [ 10 ], Wan 2.1 [ 10 ], HunyuanVideo-1.5 [ 9] and CogVideoX-5B [ 11 ]. Across all backbones, DyMoS consistently improves motion dynamics while preserving reference fidelity, incurring negligible additional inference-time overhead (e.g., 1.2% on Wan 2.2). We further show that DyMoS provides continuous control over the static-to-dynamic spectrum, enabling users to adjust motion strength with a single scalar parameter. These results demonstrate that static motion bias in I2V generation can be effectively mitigated by intervening at the attention-logit level, without fine-tuning the model weights or degrading the input image. 
+
+## 2 Background 
+
+Text-to-video models. Modern flow-based text-to-video (T2V) models [ 10 , 9] employ diffusion transformers (DiTs) [ 26 , 27 ], operating in the latent space of a 3D variational autoencoder (VAE) [ 28 ], which consists of an encoder E(·) and a decoder D(·). An RGB video x is first compressed into a low-dimensional latent representation via z0 = E(x). The latent z0 is then perturbed along a flow-matching interpolation path zt = (1 − t)z0 + tϵ, where t ∈ [0 , 1] and ϵ ∼ N (0, I). A neural network vθ (zt, t, c) is trained to approximate a target velocity v = ϵ − z0, where c denotes the text condition embedded by a pretrained text encoder such as T5 [ 29 ]. Generation starts from a Gaussian 
+
+> 1In this paper, a reference image serves as the initial frame of the generated video, rather than functioning solely as an appearance or identity reference.
+
+2latent zT ∼ N (0, I) and progressively denoises it into a clean latent z0 using the learned velocity field. The final latent is then decoded into pixel space as ˆx = D(z0).During the denoising process, classifier-free guidance (CFG) [ 30 ] is commonly applied in order to improve text-conditional generation by extrapolating between the unconditional and conditional predictions: 
+
+˜vθ (zt, t, c) = vθ (zt, t, ∅) + ω (vθ (zt, t, c) − vθ (zt, t, ∅)) , (1) where ω ≥ 1 is the guidance scale, and ∅ denotes the null text condition. 
+
+Self-attention mechanism. Within each DiT block, spatiotemporal latent tokens are processed by self-attention. Let S = f · h · w be the number of latent tokens. For each attention head, the attention weights are computed as 
+
+A = softmax( L), L = QK ⊤
+
+√dh
+
+∈ RS×S , (2) where Q, K ∈ RS×dh are query and key projections, dh is the per-head dimension, and L denotes the attention logits. Since the token sequence spans both spatial and temporal dimensions, this operation aggregates information within and across frames. 
+
+Image-to-video models. Image-to-video (I2V) models are commonly obtained by fine-tuning T2V models to additionally condition on a reference image xref , which corresponds to the first frame of the generated video. The reference image is first encoded as E(xref ) and temporally aligned with the noisy video latent. For simplicity, we denote the resulting reference-image latent by zref . The aligned reference-image latent is then concatenated with the noisy video latent along the channel dimension. This gives the denoising network direct access to reference-image features throughout sampling. During inference with an I2V model, CFG in Eq. 1 is extended by providing the reference-image latent to both predictions as: 
+
+˜vθ (zt, t, c, zref ) = vθ (zt, t, ∅, zref ) + ω (vθ (zt, t, c, zref ) − vθ (zt, t, ∅, zref )) . (3) Some I2V models further preserve the reference frame by replacing the corresponding latent with the encoded reference latent after each sampling update. 
+
+Static motion bias in I2V generation. Although I2V models can faithfully preserve the appearance of the reference image, they often suffer from a stronger static motion bias than their T2V counterparts, where excessive reliance on the input image leads to videos with weak or limited motion. Several recent methods [ 23 –25 , 31 ] mitigate this bias by weakening or redesigning the image-conditioning pathway. Zhao et al. [23] attribute this phenomenon to conditional image leakage and mitigate it by perturbing the conditioning image with time-dependent noise, thereby reducing the model’s reliance on the reference signal. FlashI2V [ 24 ] also targets the conditional image leakage by reformulating flow matching with Fourier-guided latent shifting, which injects the image condition implicitly rather than providing the reference latent through direct concatenation. Most closely related to our work, ALG [ 25 ] addresses over-conditioning at inference time by suppressing high-frequency components of the input image during early denoising steps. However, these methods either require additional training or introduce a trade-off between motion enhancement and reference-image preservation. In contrast, our method leaves the image condition unchanged and directly intervenes in the self-attention mechanism during inference, enabling training-free and model-agnostic control over motion dynamics while preserving fidelity to the input image. 
+
+## 3 DyMoS: Dynamic Motion Slider 
+
+In this section, we first analyze frame-to-frame self-attention in I2V generation (§3.1) and examine whether modulating this attention pattern controls motion dynamics (§3.2). Finally, we present DyMoS, a training-free and model-agnostic self-attention modulation method (§3.3). 
+
+3.1 Reference-frame dominance in I2V self-attention 
+
+To understand how image conditioning changes information routing within the model, we compare frame-to-frame self-attention distributions between an I2V model and its corresponding T2V coun-terpart. We first generate 50 videos using a T2V model, and then use the first frames as reference 3(a)            
+
+> f0 f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12
+> target frame
+> f0
+> f1
+> f2
+> f3
+> f4
+> f5
+> f6
+> f7
+> f8
+> f9
+> f10
+> f11
+> f12
+> source  frame
+> (b)
+> −0.02
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> T2V I2V
+> A blue car drives past a white picket fence on a sunny day
+
+Figure 2: Reference-frame dominance in I2V self-attention. (a) Qualitative comparison between paired T2V and I2V generations. (b) Frame-to-frame self-attention difference map AI2V − A T2V ,averaged over the first 10% of inference steps. images for an I2V model, using the same text prompts sourced from T2V-CompBench [ 32 ]. Since this setup ensures the same prompt and first frame for both models, we can analyze the differences in their respective attention distributions. The detailed procedure is provided in Appendix B. In this paired setting, the two models generate videos with distinct motion dynamics and self-attention patterns. As shown in Fig. 2(a), the I2V model tends to preserve the reference image with limited inter-frame movement, whereas the T2V counterpart exhibits more dynamic motion given the same prompt. Fig. 2(b) shows the frame-to-frame attention difference map AI2V − A T2V . Positive values indicate that I2V allocates significantly more attention to the reference key tokens than its T2V counterpart (highlighted in black). We refer to this structural asymmetry as reference-frame dominance . Notably, this dominance is most pronounced during the initial denoising stage, which is consistent with the coarse-to-fine nature of denoising process. Since early steps largely determine global motion of the generated video [ 25 , 33 , 34 ], we target our subsequent intervention at this stage. 
+
+3.2 Correlation between reference-frame dominance and motion dynamics 
+
+Based on this observation, we hypothesize that reference-frame dominance is a primary factor underlying static I2V generation, and we demonstrate that directly modulating this dominance impacts the motion dynamics of the generated videos. Since the reference frame contains the input image information, excessive attention to reference-frame key tokens propagates the reference appearance along the temporal axis, thereby weakening frame-to-frame interactions necessary for motion dynamics. Accordingly, we argue that attenuating reference-frame dominance should affect both the generated motion and the frame-to-frame attention structure. To test this, we directly intervene on the attention logits during the first 10% of denoising steps. At every self-attention layer, we add a scalar bias to the attention logits from non-reference-frame query tokens to reference-frame key tokens before the softmax operation: 
+
+˜L[i, j ] = L[i, j ] − γ · 1[j ∈ I f0 ] · 1[i / ∈ I f0 ] (4) where If0 denotes the set of token indices belonging to the reference frame, and γ represents the strength of the intervention. A negative value of γ increases the logits assigned to reference-frame keys and thereby strengthens reference-frame dominance, whereas a positive γ suppresses these logits and weakens the dominance. Fig. 3(a) shows the resulting change in reference-frame attention for 
+
+γ = 0 .6, confirming that the intervention effectively attenuates the intended attention pathway. We next examine whether this intervention alters generation behavior with VBench [ 35 ] metrics: Dynamic Degree and Video Quality. As shown in Fig. 3(b), increasing γ consistently increases Dynamic Degree, moving the I2V model from near-static outputs toward more dynamic generation. Notably, Video Quality remains stable over a broad range of γ values. This shows that weaken-ing reference-frame dominance can improve motion dynamics without degrading visual quality. Conversely, negative γ strengthens reference-frame dominance and results in more static videos. Finally, we quantify how the modulation affects the frame-to-frame attention structure relative to the paired T2V generation. Let AI2V  
+
+> γ
+
+denote the frame-to-frame attention matrix of the I2V model under 4f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12               
+
+> source frame
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> 0.05
+> 0.06
+> 0.07
+> Δ attention (I2V  − T2V)
+> (a)
+> γ= 0.0
+> γ= 0.6
+> −1.0 −0.5 0.0 0.4 0.6 1.0
+> Modulation strength γ
+> 30
+> 35
+> 40
+> 45
+> 50
+> 55
+> 60
+> 65
+> VBench Score
+> T2V
+> +33.3%
+> (b)
+> Video Quality
+> Dynamic Degree
+> −1.0 −0.5 0.0 0.4 0.6 1.0
+> Modulation strength γ
+> 0.005
+> 0.010
+> 0.015
+> 0.020
+> 0.025
+> D(γ)
+> (c)
+> D(γ)
+
+Figure 3: Modulating reference-frame dominance controls motion dynamics. (a) Absolute difference in reference-frame attention between the vanilla I2V model and the modulated I2V model with γ = 0 .6, measured over non-reference query frames. (b) Dynamic Degree and Video Quality as 
+
+γ varies. The yellow star denotes the Dynamic Degree of the paired T2V generation. (c) T2V–I2V attention distance D(γ) measured by Jensen–Shannon divergence. a modulation strength of γ. We define the T2V–I2V attention distance as 
+
+D(γ) = 1
+
+F − 1 
+
+> F−1
+
+X
+
+> a=1
+
+JSD  AI2V  
+
+> γ
+
+[a, :] ∥ A T2V [a, :]  , (5) where JSD denotes the Jensen–Shannon divergence [ 36 ], and the average is taken over non-reference query frames. A smaller D(γ) indicates that the I2V attention pattern is closer to that of the paired T2V model. Fig. 3(c) shows an inverse relationship between the modulation strength and the T2V– I2V attention distance. In particular, D(γ) reaches its minimum value around γ = 0 .6, where the Dynamic Degree is also closest to that of the paired T2V generation. This consistency confirms that attenuating reference-frame dominance moves the I2V model toward a more T2V-like regime in both attention structure and motion dynamics. 
+
+3.3 Proposed method: DyMoS 
+
+Our analysis provides the key insight that static generation in I2V models can be mitigated by attenuating reference-frame dominance in self-attention. Moreover, varying the attenuation strength enables continuous control over motion dynamics. To this end, we introduce DyMoS (Dynamic Motion Slider), a simple yet effective inference-time method that subtracts a positive scalar γ from the logits associated with reference-frame key tokens by generalizing Eq. 4: 
+
+˜L[i, j ] = L[i, j ] − γ · ϕ(f (i)) · 1[j ∈ I f0 ] · 1[i / ∈ I f0 ], (6) where f (i) denotes the latent-frame index of query token i, and ϕ(·) is a frame-wise modulation schedule that controls how the modulation strength varies across query frames. This design explicitly targets the pathway identified in our analysis: attention from generated frames to reference frame. Since the modulation is applied in logit space prior to the softmax operation, DyMoS does not directly discard reference information. Instead, it reduces the excessive propagation of reference-frame information to non-reference frames while preserving fidelity to the input image. DyMoS incorporates two key design choices. First, we apply the modulation only during the first 
+
+λ ∈ [0 , 1] fraction of sampling steps and revert to the original attention computation thereafter. Here, λ
+
+determines the transition point between modulated and standard attention. This approach is motivated by the observation that reference-frame dominance is most pronounced during early denoising steps, as shown in Fig. 2(b). Applying the modulation specifically in this early stage enhances motion, while preserving appearance consistency and temporal coherence in later refinement steps. Second, under CFG in Eq. 3, we apply DyMoS only to the text-conditional branch as 
+
+˜vθ (zt, t, c, zref ) = vθ (zt, t, ∅, zref ) + ω(v ˜L 
+
+> θ
+
+(zt, t, c, zref ) − vθ (zt, t, ∅, zref )) , (7) where v ˜L 
+
+> θ
+
+(zt, t, c, zref ) denotes the text-conditional prediction computed with modulated attention logits ˜L, vθ (zt, t, ∅, zref ) is the standard prediction under the null text condition. This design 5Baseline ALG Ours  
+
+> A young boy is jumping in the mud .
+> Baseline ALG Ours
+> A train traveling down tracks through the woods with leaves on the ground.
+> Baseline ALG Ours
+> Cyclists cycling at Burning Man festival.
+
+Figure 4: Qualitative comparison with vanilla I2V baseline and ALG. The leftmost images are the reference images. Our method (DyMoS) produces substantially more dynamic motion than the vanilla baseline and ALG while preserving fidelity to the reference image. In contrast, ALG introduces motion at the cost of visible degradation. steers the guided update away from reference-frame dominance while keeping the null-text branch unchanged. The full sampling algorithm for DyMoS is provided in Appendix A. 
+
+## 4 Experiments 
+
+4.1 Experimental setup I2V backbones and comparison methods. To verify the robustness of our method, we con-duct experiments on several state-of-the-art I2V models, including Wan 2.2 [ 10 ], Wan 2.1 [ 10 ], HunyuanVideo-1.5 [ 9] and CogVideoX-5B [ 11 ]. Wan 2.2 and Wan 2.1 adopt a separate self-attention and cross-attention design, while HunyuanVideo-1.5 and CogVideoX-5B adopt MM-DiT archi-tectures. Evaluating on both designs allows us to verify that our findings and method generalize 6Table 1: Quantitative results across various I2V backbones on VBench-I2V test set.                                                                   
+
+> Model Method Dynamic Degree Video Quality ViCLIP Vision Reward VBench VideoScore Wan 2.2-14B Baseline 51.7 2.83 58.0 0.2614 0.143 ALG 55.3 2.83 57.7 0.2616 0.140
+> Ours 64.8 2.84 57.7 0.2621 0.143
+> Wan 2.1-14B Baseline 48.7 3.21 57.7 0.2601 0.132
+> ALG 52.5 3.18 57.2 0.2615 0.127
+> Ours 54.5 3.25 57.4 0.2618 0.126 HunyuanVideo-1.5 Baseline 48.0 2.87 58.2 0.2624 0.140 ALG 46.3 2.87 58.2 0.2629 0.141
+> Ours 55.3 2.88 58.1 0.2653 0.141
+> CogVideoX-5B Baseline 30.9 2.90 57.8 0.2612 0.140
+> ALG 52.0 2.98 57.1 0.2647 0.127
+> Ours 52.9 2.92 57.1 0.2652 0.131
+
+across different architectures. We compare DyMoS against the vanilla I2V backbones (baseline) and ALG [ 25 ] using the official default configurations. For Wan 2.2, we set γ = 0 .6 and λ = 0 .2, and we tune γ and λ separately for each backbone to account for differences in attention scale and denoising schedule. Per-backbone configurations are provided in Appendix C. 
+
+Evaluation metrics. We evaluate the generated videos in various aspects: motion dynamics, video quality, text-video alignment, and human-aligned preference. Since DyMoS mainly targets enhancing motion dynamics in I2V generation, we adopt Dynamic Degree from both VBench [ 35 ]and VideoScore [ 37 ] as our primary metric. For video quality, we report Video Quality , an aggregate score computed over selected VBench quality-related dimensions. For text-video alignment, we use ViCLIP [ 38 ] to compute the similarity between the input prompt and the generated video. Finally, we include VisionReward [ 39 ], a VLM-based human-aligned reward model for image and video generation. Further details on evaluation metrics are provided in Appendix C.2. 
+
+Datasets. We assess our method on three datasets. For our primary evaluation, we use 246 image-caption pairs from the VBench-I2V test set [35], which consists of diverse scenes and motion types. We additionally evaluate on 200 image-caption pairs sampled from PE Video Dataset (PVD) [ 40 ], a large-scale video-caption dataset containing both synthetic and human-annotated captions, from which we use the first frame of each video as the conditioning image. Finally, we include VidProM [ 41 ], a large-scale text-to-video prompt dataset, to assess generalization to diverse text prompts. We randomly sample 500 prompts from VidProM and generate corresponding reference images using Flux.1-dev [42]. Further details on each dataset are provided in Appendix C.3. 
+
+4.2 Main results Qualitative evaluation. As illustrated in Fig. 4, DyMoS achieves a better balance between motion dynamics and reference-image fidelity than both the vanilla I2V baseline and ALG. The vanilla I2V baseline often produces nearly static videos, where the generated frames remain overly close to the reference image even when the prompt describes object motion. ALG improves motion dynamics over the baseline, but it can introduce visible degradation due to its input-level attenuation. For example, in the train sequence, ALG induces motion but also changes the appearance of the train as the video progresses, indicating a loss of reference fidelity. In contrast, DyMoS produces substantially more dynamic videos while faithfully preserving the reference image, as shown in the first two examples. In particular, in the boy example, DyMoS sustains the jumping motion over more frames, resulting in an additional jump cycle compared to the other methods. Additional qualitative examples are provided in Appendix E. 
+
+Quantitative evaluation. Tab. 1 reports quantitative results across four different I2V backbones on VBench-I2V. Our method consistently achieves higher Dynamic Degree than both the baseline and ALG, demonstrating its effectiveness in improving motion dynamics. Crucially, DyMoS maintains Video Quality scores comparable to ALG while achieving substantially higher Dynamic Degree. 7Table 2: Quantitative results with Wan 2.2-14B across various benchmark datasets. 
+
+Dataset Method Dynamic Degree Video Quality ViCLIP Vision Reward VBench VideoScore VBench-I2V Baseline 51.7 2.83 58.0 0.2614 0.143 ALG 55.3 2.83 57.7 0.2616 0.140 
+
+Ours 64.8 2.84 57.7 0.2621 0.143 
+
+PVD Baseline 79.0 2.80 55.0 0.2147 0.087 
+
+ALG 77.5 2.80 55.1 0.2141 0.084 
+
+Ours 85.0 2.80 55.1 0.2143 0.086 VidProM Baseline 54.2 2.78 57.3 0.2427 0.064 
+
+ALG 59.0 2.78 58.2 0.2433 0.062 
+
+Ours 67.0 2.80 60.1 0.2432 0.062 0.4 0.6 0.8 1.0            
+
+> Modulation strength γ
+> 58
+> 60
+> 62
+> 64
+> 66
+> 68
+> VBench Score
+> +11.7%
+> (a)
+> Dynamic Degree
+> Video Quality
+> 0.10 0.16 0.20 0.24 0.30
+> Modulation ratio λ
+> 58
+> 60
+> 62
+> 64
+> 66
+> 68
+> VBench Score
+> +3.4%
+> (b)
+> Motion Fidelity Text Overall
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> Preference (%)
+> (c)
+> Baseline ALG Ours
+
+Figure 5: Hyperparameter analysis and user study. (a) Effect of modulation strength γ. (b) Effect of modulation step ratio λ. (c) User study results. This indicates that our attention-level intervention improves motion dynamics more effectively than input-level attenuation, while preserving visual quality. Our method also achieves the highest ViCLIP scores among the compared methods, suggesting that reducing reference-frame dominance allows the model to better follow motion described in text prompts. In addition, VisionReward scores remain stable or improve, indicating that enhanced motion dynamics do not degrade overall perceptual quality and human preference. Tab. 2 further validates the robust performance of our method across various benchmark datasets. Comparison of computation cost is provided in Appendix. D.1. 
+
+User study. We conduct a user study to complement the automated evaluation. Participants are shown videos generated from the vanilla baseline, ALG, and DyMoS, with method names hidden and order randomized. They are asked to select the best video according to four criteria: Motion Dynamicness , Reference-Frame Fidelity , Text Alignment , and Overall preference . As shown in Fig. 5(c), DyMoS is most selected as the best video across all criteria, confirming that its motion improvements are perceptually meaningful. Details of user study are provided in Appendix C.4. 
+
+4.3 Ablation studies Effect of modulation strength γ. To assess the impact of the modulation strength γ, we vary 
+
+γ ∈ { 0.4, 0.6, 0.8, 1.0} and measure Dynamic Degree and Video Quality for each setting. As shown in Fig. 5(a), Dynamic Degree consistently increases as γ increases, which is consistent with our analysis in §3.2. For example, increasing γ from 0.4 to 0.6 yields an 11.7% relative gain in Dynamic Degree. In contrast, Video Quality remains nearly stable across the same range. These results show that γ can control the strength of motion dynamics without substantially degrading video quality. 
+
+Effect of modulation step ratio λ. Additionally, we investigate how the modulation step ratio λ
+
+affects motion dynamics and video quality. As shown in Fig. 5(b), increasing λ initially improves Dynamic Degree while Video Quality remains stable. The improvement saturates beyond a certain point, as increasing λ from 0.24 to 0.30 reduces Dynamic Degree. This demonstrates that applying 8A blue car driving down a dirt  
+
+> road near train tracks.
+> A couple of horses are running
+> in the dirt.
+> Static Dynamic
+> Baseline Baseline
+
+Figure 6: Continuous control over static-to-dynamic generation with DyMoS. Rows from top to bottom correspond to γ ∈ {− 2, −1, 0, 0.6, 1.0}, with γ = 0 denoting the baseline. DyMoS to an appropriate number of initial denoising steps is sufficient to enhance motion, while switching back to the original attention computation helps maintain generation quality. 
+
+4.4 Application: Continuous control over motion dynamics 
+
+A key practical advantage of DyMoS is that it provides a simple control knob for continuously adjusting the balance between reference preservation and motion strength. Under our convention, 
+
+γ = 0 recovers the vanilla I2V baseline, γ > 0 weakens reference-frame dominance to encourage stronger motion, and γ < 0 strengthens reference-frame dominance to further suppress motion. Fig. 6 illustrates this behavior across different values of γ. At γ = 0 , the model strongly preserves the reference image and produces limited motion. As γ becomes negative, the generated videos become even more static, with the reference image effectively propagated along the temporal axis. For example, at γ = −2, both the car and the horses remain nearly static. As γ increases above zero, the generated videos exhibit richer motion, such as the car moving along the road with a following camera. Moderate positive values of γ improve motion while preserving reference fidelity, whereas overly large values suppress reference-frame dominance beyond the level observed in T2V models, yielding much more dynamic motion at the cost of appearance consistency. These results demonstrate that DyMoS enables continuous control over the static-to-dynamic generation spectrum. 
+
+## 5 Conclusion 
+
+We present DyMoS (Dynamic Motion Slider), a training-free and model-agnostic method for improv-ing motion dynamics in image-to-video generation. Our analysis identifies that static motion bias in I2V models is primarily caused by reference-frame dominance. DyMoS mitigates this issue by subtracting a log-space bias from reference-frame key logits during initial denoising steps, thereby reducing excessive reference propagation without modifying the input image or model weights. With a single parameter γ, DyMoS offers continuous control over the balance between reference preservation and motion strength. Experiments across recent I2V backbones show that DyMoS significantly improves motion dynamics while maintaining reference fidelity and visual quality. 
+
+Limitation and future work. Although DyMoS improves motion dynamics across diverse I2V backbones, overly large modulation strengths can reduce appearance consistency and temporal stability by excessively suppressing reference-frame information. In addition, since our method currently uses fixed hyperparameters per backbone, an automatic adaption of the modulation strength to different prompts or motion types remains for future work. 9References 
+
+[1] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. [2] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. In 
+
+International Conference on Learning Representations , 2021. URL https://openreview. net/forum?id=PxTIG12RRHS .[3] Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsuper-vised learning using nonequilibrium thermodynamics. In International conference on machine learning , pages 2256–2265. pmlr, 2015. [4] Prafulla Dhariwal and Alexander Nichol. Diffusion models beat gans on image synthesis. 
+
+Advances in neural information processing systems , 34:8780–8794, 2021. [5] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. arXiv preprint arXiv:2209.03003 , 2022. [6] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. In The Eleventh International Conference on Learning Representations , 2023. URL https://openreview.net/forum?id=PqvMRDCJT9t .[7] Michael Samuel Albergo and Eric Vanden-Eijnden. Building normalizing flows with stochastic interpolants. In The Eleventh International Conference on Learning Representations , 2023. URL https://openreview.net/forum?id=li7qeBbCR1t .[8] Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim Entezari, Jonas Müller, Harry Saini, Yam Levi, Dominik Lorenz, Axel Sauer, Frederic Boesel, et al. Scaling rectified flow trans-formers for high-resolution image synthesis. In Forty-first international conference on machine learning , 2024. [9] Tencent Hunyuan Foundation Model Team. Hunyuanvideo 1.5 technical report, 2025. URL 
+
+https://arxiv.org/abs/2511.18870 .[10] Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. [11] Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, Da Yin, Yuxuan.Zhang, Weihan Wang, Yean Cheng, Bin Xu, Xiaotao Gu, Yuxiao Dong, and Jie Tang. Cogvideox: Text-to-video diffusion models with an expert transformer. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=LQzN6TRFg9 .[12] Andreas Blattmann, Tim Dockhorn, Sumith Kulal, Daniel Mendelevitch, Maciej Kilian, Do-minik Lorenz, Yam Levi, Zion English, Vikram Voleti, Adam Letts, et al. Stable video diffusion: Scaling latent video diffusion models to large datasets. arXiv preprint arXiv:2311.15127 , 2023. [13] Jonathan Ho, Tim Salimans, Alexey Gritsenko, William Chan, Mohammad Norouzi, and David J Fleet. Video diffusion models. Advances in neural information processing systems , 35: 8633–8646, 2022. [14] Bin Lin, Yunyang Ge, Xinhua Cheng, Zongjian Li, Bin Zhu, Shaodong Wang, Xianyi He, Yang Ye, Shenghai Yuan, Liuhan Chen, et al. Open-sora plan: Open-source large video generation model. arXiv preprint arXiv:2412.00131 , 2024. [15] Jonathan Ho, William Chan, Chitwan Saharia, Jay Whang, Ruiqi Gao, Alexey Gritsenko, Diederik P Kingma, Ben Poole, Mohammad Norouzi, David J Fleet, et al. Imagen video: High definition video generation with diffusion models. arXiv preprint arXiv:2210.02303 , 2022. 10 [16] Yuwei Guo, Ceyuan Yang, Anyi Rao, Zhengyang Liang, Yaohui Wang, Yu Qiao, Maneesh Agrawala, Dahua Lin, and Bo Dai. Animatediff: Animate your personalized text-to-image diffusion models without specific tuning. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id=Fx2SbBgcte .[17] Yoav HaCohen, Nisan Chiprut, Benny Brazowski, Daniel Shalem, Dudu Moshe, Eitan Richard-son, Eran Levin, Guy Shiran, Nir Zabari, Ori Gordon, et al. Ltx-video: Realtime video latent diffusion. arXiv preprint arXiv:2501.00103 , 2024. [18] Haomiao Ni, Changhao Shi, Kai Li, Sharon X Huang, and Martin Renqiang Min. Conditional image-to-video generation with latent flow diffusion models. In 2023 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 18444–18455. IEEE, 2023. [19] Xiaoyu Shi, Zhaoyang Huang, Fu-Yun Wang, Weikang Bian, Dasong Li, Yi Zhang, Manyuan Zhang, Ka Chun Cheung, Simon See, Hongwei Qin, et al. Motion-i2v: Consistent and controllable image-to-video generation with explicit motion modeling. In ACM SIGGRAPH 2024 Conference Papers , pages 1–11, 2024. [20] Hansi Teng, Hongyu Jia, Lei Sun, Lingzhi Li, Maolin Li, Mingqiu Tang, Shuai Han, Tianning Zhang, WQ Zhang, Weifeng Luo, et al. Magi-1: Autoregressive video generation at scale. arXiv preprint arXiv:2505.13211 , 2025. [21] Jinbo Xing, Menghan Xia, Yong Zhang, Haoxin Chen, Wangbo Yu, Hanyuan Liu, Gongye Liu, Xintao Wang, Ying Shan, and Tien-Tsin Wong. Dynamicrafter: Animating open-domain images with video diffusion priors. In European Conference on Computer Vision , pages 399–417. Springer, 2024. [22] Shiwei Zhang, Jiayu Wang, Yingya Zhang, Kang Zhao, Hangjie Yuan, Zhiwu Qin, Xiang Wang, Deli Zhao, and Jingren Zhou. I2vgen-xl: High-quality image-to-video synthesis via cascaded diffusion models. arXiv preprint arXiv:2311.04145 , 2023. [23] Min Zhao, Hongzhou Zhu, Chendong Xiang, Kaiwen Zheng, Chongxuan Li, and Jun Zhu. Identifying and solving conditional image leakage in image-to-video diffusion model. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL 
+
+https://openreview.net/forum?id=o9Lkiv1qpc .[24] Yunyang Ge, Xinhua Cheng, Chengshu Zhao, Xianyi He, Shenghai Yuan, Bin Lin, Bin Zhu, and Li Yuan. Flashi2v: Fourier-guided latent shifting prevents conditional image leakage in image-to-video generation. arXiv preprint arXiv:2509.25187 , 2025. [25] June Suk Choi, Kyungmin Lee, Sihyun Yu, Yisol Choi, Jinwoo Shin, and Kimin Lee. Enhancing motion dynamics of image-to-video models via adaptive low-pass guidance. arXiv preprint arXiv:2506.08456 , 2025. [26] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF international conference on computer vision , pages 4195–4205, 2023. [27] Nanye Ma, Mark Goldstein, Michael S Albergo, Nicholas M Boffi, Eric Vanden-Eijnden, and Saining Xie. Sit: Exploring flow and diffusion-based generative models with scalable interpolant transformers. In European Conference on Computer Vision , pages 23–40. Springer, 2024. [28] Diederik P Kingma and Max Welling. Auto-encoding variational bayes. arXiv preprint arXiv:1312.6114 , 2013. [29] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and Peter J Liu. Exploring the limits of transfer learning with a unified text-to-text transformer. Journal of machine learning research , 21(140):1–67, 2020. [30] Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598 , 2022. [31] Kiwhan Song, Boyuan Chen, Max Simchowitz, Yilun Du, Russ Tedrake, and Vincent Sitzmann. History-guided video diffusion. In Forty-second International Conference on Machine Learning ,2025. URL https://openreview.net/forum?id=j8Vr3E3vhy .11 [32] Kaiyue Sun, Kaiyi Huang, Xian Liu, Yue Wu, Zihan Xu, Zhenguo Li, and Xihui Liu. T2v-compbench: A comprehensive benchmark for compositional text-to-video generation. In 
+
+Proceedings of the Computer Vision and Pattern Recognition Conference , pages 8406–8416, 2025. [33] Byungjun Kim, Soobin Um, and Jong Chul Ye. Motioncfg: Boosting motion dynamics via stochastic concept perturbation. arXiv preprint arXiv:2603.14073 , 2026. [34] Wooseok Jeon, Seunghyun Shin, Dongmin Shin, and Hae-Gon Jeon. Motion prior distillation in time reversal sampling for generative inbetweening. In The Fourteenth International Con-ference on Learning Representations , 2026. URL https://openreview.net/forum?id= GRElsj9W2t .[35] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. Vbench: Comprehensive benchmark suite for video generative models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21807–21818, 2024. [36] Jianhua Lin. Divergence measures based on the shannon entropy. IEEE Transactions on Information theory , 37(1):145–151, 2002. [37] Xuan He, Dongfu Jiang, Ge Zhang, Max Ku, Achint Soni, Sherman Siu, Haonan Chen, Abhranil Chandra, Ziyan Jiang, Aaran Arulraj, et al. Videoscore: Building automatic metrics to simulate fine-grained human feedback for video generation. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing , pages 2105–2123, 2024. [38] Yi Wang, Yinan He, Yizhuo Li, Kunchang Li, Jiashuo Yu, Xin Ma, Xinhao Li, Guo Chen, Xinyuan Chen, Yaohui Wang, Ping Luo, Ziwei Liu, Yali Wang, Limin Wang, and Yu Qiao. Internvid: A large-scale video-text dataset for multimodal understanding and generation. In 
+
+The Twelfth International Conference on Learning Representations , 2024. URL https:// openreview.net/forum?id=MLBdiWu4Fw .[39] Jiazheng Xu, Yu Huang, Jiale Cheng, Yuanming Yang, Jiajun Xu, Yuan Wang, Wenbo Duan, Shen Yang, Qunlin Jin, Shurun Li, et al. Visionreward: Fine-grained multi-dimensional human preference learning for image and video generation. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pages 11269–11277, 2026. [40] Daniel Bolya, Po-Yao Huang, Peize Sun, Jang Hyun Cho, Andrea Madotto, Chen Wei, Tengyu Ma, Jiale Zhi, Jathushan Rajasegaran, Hanoona Abdul Rasheed, Junke Wang, Marco Monteiro, Hu Xu, Shiyu Dong, Nikhila Ravi, Shang-Wen Li, Piotr Dollar, and Christoph Feichtenhofer. Perception encoder: The best visual embeddings are not at the output of the network. In 
+
+The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. URL 
+
+https://openreview.net/forum?id=INqBOmwIpG .[41] Wenhao Wang and Yi Yang. Vidprom: A million-scale real prompt-gallery dataset for text-to-video diffusion models. Advances in Neural Information Processing Systems , 37:65618–65642, 2024. [42] Black Forest Labs. Flux. https://github.com/black-forest-labs/flux , 2024. [43] Zachary Teed and Jia Deng. Raft: Recurrent all-pairs field transforms for optical flow. In 
+
+European conference on computer vision , pages 402–419. Springer, 2020. [44] Kevin Crowston. Amazon mechanical turk: A research tool for organizations and information systems scholars. In Shaping the Future of ICT Research. Methods and Approaches: IFIP WG 8.2, Working Conference, Tampa, FL, USA, December 13-14, 2012. Proceedings , 2012. 12 A Full algorithm of DyMoS 
+
+Algorithm 1 DyMoS 
+
+Input: Reference image Iref , text prompt c, total inference steps N , guidance scale ω, modulation strength γ, modulation step ratio λ, frame-wise schedule ϕ(·) 
+
+> 1:
+
+zref ← E (Iref ) 
+
+> 2:
+
+z ∼ N (0, I) 
+
+> 3:
+
+If0 ← token indices of the reference frame  
+
+> 4:
+
+for i = 1 to N do  
+
+> 5:
+
+t ← iN 
+
+> 6:
+
+if t < λ then  
+
+> 7:
+
+˜L[p, q ] ← L [p, q ] − γ · ϕ(f (p)) · 1[q ∈ I f0 ] · 1[p / ∈ I f0 ] ▷ Eq. 6  
+
+> 8:
+
+else  
+
+> 9:
+
+˜L ← L  
+
+> 10:
+
+end if  
+
+> 11:
+
+˜vθ (z, t, c, zref ) ← vθ (z, t, ∅, zref ) + ω
+
+
+
+v ˜L 
+
+> θ
+
+(z, t, c, zref ) − vθ (z, t, ∅, zref )
+
+
+
+▷ Eq. 7  
+
+> 12:
+
+z ← SchedulerStep( z, ˜vθ , t ) 
+
+> 13:
+
+end for  
+
+> 14:
+
+return ˆx ← D (z)
+
+## B Additional details on analysis 
+
+This appendix details the experimental procedure used to obtain the frame-to-frame self-attention comparison reported in §3.1 and Fig. 2. 
+
+Paired T2V/I2V generation. We construct paired T2V and I2V generations using CogVideoX-5B. We first generate a video vT2V with CogVideoX-5B-T2V using a text prompt c sampled from T2V-CompBench and a fixed random seed. We then extract the first frame xref = vT2V [0] and feed it together with the same prompt c and the same seed to CogVideoX-5B-I2V to obtain vI2V . We keep the sampling hyperparameters matched between the two runs, including the number of denoising steps, classifier-free guidance scale, resolution, and number of latent frames. We repeat the procedure above for N = 50 prompts sampled from T2V-CompBench, covering a range of motion types, including camera motion, object motion, and human action, as well as diverse scene categories. All reported attention statistics are averaged over this prompt set. 
+
+Attention extraction. At each denoising step s ∈ { 0, . . . , N − 1}, self-attention layer ℓ, and attention head h, we record the post-softmax attention matrix A(s,ℓ,h ) ∈ RL×L, where L is the total number of latent tokens. We convert this token-level attention into a frame-to-frame attention matrix by summing attention over key tokens within each frame and averaging over query tokens within each query frame: 
+
+¯A(s,ℓ,h )[a, b ] = 1
+
+|I a|
+
+X
+
+> i∈I a
+
+X
+
+> j∈I b
+
+A(s,ℓ,h )[i, j ], (8) where Ia and Ib denote the token indices belonging to frames a and b, respectively. This quantity represents the average fraction of attention mass that query tokens in frame a assign to key tokens in frame b. For Fig. 2, we compute AT2V and AI2V by averaging ¯A(s,ℓ,h ) over the initial 10% of denoising steps, attention heads, layers, and prompts. 
+
+## C Additional details on the experimental setup 
+
+C.1 Implementation and setup Implementation details. We implement DyMoS on top of the official open-source releases of Wan 2.2, Wan 2.1, HunyuanVideo-1.5 and CogVideoX-5B. The model checkpoints we used in our experiments are provided in Tab. 3. DyMoS is applied identically across all backbones. During 13 Table 3: Detailed configurations for each I2V backbone.                                     
+
+> Models Wan 2.2-14B Wan 2.1-14B HunyuanVideo-1.5 CogVideoX-5B Base Resolution 81 ×832 ×480 81 ×832 ×480 81 ×832 ×480 49 ×720 ×480 FPS 16 16 16 8Denoising steps 40 40 50 50 CFG scale 3.5 5.0 6.0 6.0 Scheduler UniPC UniPC FlowMatch-Euler DDIM DyMoS
+> γ0.6 1.0 1.0 0.8
+> λ0.2 0.25 0.2 0.24
+> ϕ(·)1111
+
+Table 4: Model checkpoints used in our main experiments.           
+
+> Model Type Source
+> Wan 2.2 I2V https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B-Diffusers
+> Wan 2.1 I2V https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-480P-Diffusers
+> HunyuanVideo-1.5 I2V https://huggingface.co/tencent/HunyuanVideo-1.5
+> CogVideoX-5B I2V https://huggingface.co/zai-org/CogVideoX-5b-I2V
+
+the first λN denoising steps, we add a bias γ to the pre-softmax self-attention logits for query-key pairs where the key is the frame-0 video token and the query is a non-frame-0 video token. The frame-0 →frame-0 attention block is exempted to preserve the reference frame. 
+
+Configuration. Tab. 3 summarizes the per-backbone sampling configurations used in all experi-ments, including resolution, FPS, denoising steps, CFG scale, scheduler, and our hyperparameters 
+
+(γ, λ, ϕ f ). All experiments are conducted on either a single NVIDIA H100 GPU or a single NVIDIA A100 GPU. For each backbone, all methods are run on the same GPU type, and no multi-GPU inference is used. Random seeds are fixed across methods within each pair to ensure that comparisons better isolate the effect of the method itself. For ALG [ 25 ], we use the official implementation 2 and the recommended hyperparameters reported in the paper. 
+
+C.2 Evaluation metrics 
+
+We provide details of the evaluation metrics used throughout our experiments, including VBench [ 35 ], VideoScore [ 37 ], ViCLIP [ 38 ], and VisionReward [ 39 ]. Our evaluation covers four aspects: motion dynamics, video quality, text-video alignment, and human-aligned preference. 
+
+Motion dynamics. We evaluate motion dynamics using Dynamic Degree from both VBench and VideoScore. VBench Dynamic Degree is designed to measure whether a generated video contains sufficiently large motion by computing the highest 5% optical flows across frames using RAFT [ 43 ]. VideoScore Dynamic Degree is predicted by a VLM-based video evaluator trained on human feedback. We report both metrics to verify that DyMoS improves motion dynamics under both a convention metric and a learned human-aligned evaluator. 
+
+Video quality. We report Video Quality as an aggregate score over selected VBench quality-related dimensions. Specifically, we compute 
+
+VideoQuality = 0 .1 · TF + 0 .25 · MS + 0 .1 · AQ + 0 .25 · IQ ,
+
+where TF, MS, AQ, and IQ denote Temporal Flickering, Motion Smoothness, Aesthetic Quality, and Imaging Quality, respectively. These dimensions capture complementary aspects of perceptual video quality: TF penalizes frame-to-frame flickering artifacts, MS measures the temporal coherence of motion, and AQ/IQ assess the visual appeal and low-level imaging quality of individual frames. The weights follow the official VBench aggregation; we omit Dynamic Degree, Subject Consistency, and Background Consistency to isolate video quality from motion strength and reference preservation. 
+
+> 2https://github.com/choi403/ALG
+
+14 Text-video alignment. We use ViCLIP to evaluate text-video semantic alignment. ViCLIP is a ViT-L-based video-text representation model trained on InternVid with contrastive video-language learning, mapping videos and text prompts into a shared embedding space. We compute the similarity between the input prompt and the generated video representation as a global measure of text-video semantic matching. 
+
+Human-aligned preference. We additionally evaluate generated videos with VisionReward, a VLM-based reward model for image and video generation. VisionReward decomposes human visual preferences into multiple fine-grained assessment questions (e.g. prompt alignment, fidelity, motion realism, stability) and combines the corresponding judgments through interpretable linear weighting to produce a human-aligned reward score. It is trained to capture multi-dimensional human preferences over both images and videos, including dynamic aspects that are important for video evaluation. We use VisionReward to complement benchmark-specific metrics and assess whether DyMoS’s outputs are also favored by a learned human-aligned evaluator. 
+
+C.3 Evaluation datasets 
+
+We evaluate DyMoS on three datasets covering complementary scenarios: a standard I2V benchmark, a recently released video-caption dataset, and a large-scale prompt collection paired with synthesized images. Note that we adopt the same dataset suite as ALG to ensure consistent comparison. 
+
+VBench-I2V. VBench-I2V is the official I2V benchmark of VBench, consisting of image-caption pairs for evaluating image-to-video generation. Since our study focuses on video motion dynamics, we use the 246 image-caption pairs obtained after excluding subsets designed for background-quality evaluation and camera-motion instruction following. The provided reference images are used directly as conditioning inputs. We do not report the I2V-specific subject/background consistency dimensions, as our evaluation focuses on motion and video quality. 
+
+PE Video Dataset (PVD). PE Video Dataset (PVD) is a large-scale video-caption dataset released alongside the Perception Encoder, containing both synthetic and human-annotated video captions. We randomly sample 200 videos from PVD and use the first frame of each video as the conditioning image, paired with the corresponding caption as the text prompt. PVD allows us to evaluate DyMoS on real-world videos with naturally diverse motion patterns. 
+
+VidProM. VidProM is a large-scale text-to-video prompt dataset originally collected to study real user prompts in T2V generation. We randomly sample 500 prompts from VidProM and generate the corresponding conditioning images using a text-to-image model Flux.1-dev. This setup probes whether DyMoS generalizes to diverse text prompts beyond curated I2V benchmarks. 
+
+C.4 User study protocol 
+
+To further evaluate beyond automated metrics, we conduct a user study via MTurk [ 44 ]. For each trial, participants are shown three videos generated from the same reference image and text prompt by the vanilla I2V baseline, ALG, and DyMoS. Method names are hidden, and the video order is randomized. Participants answer four questions: 1. Motion: Which video has the most dynamic and realistic motion? Examples include water ripples, cloth movement, human action, and camera motion. 2. Fidelity: Which video best preserves the appearance of the reference image throughout the sequence? Examples include the subject, background, and colors. 3. Text alignment: Which video most faithfully reflects the content described in the text prompt? 4. Overall preference: Overall, which video do you prefer? We collect 30 responses for each question over 25 randomly sampled image–prompt pairs from VBench-I2V. The final preference score for each method is computed as the fraction of times it is selected under each criterion. 15 D Additional experimental results 
+
+D.1 Computational cost 
+
+Both ALG and DyMoS are training-free methods, but their runtime overhead comes from different sources. During its active interval, ALG requires an additional diffusion transformer forward pass for low-pass conditioned branch. In contrast, DyMoS keeps the original sampling loop unchanged. We use the official denoising steps in the official configuration of each backbone and the standard batched unconditional/conditional forward pass for classifier-free guidance. The only extra computation in DyMoS is the self-attention score modification applied during the first λOurs N denoising steps. This modification is fused into the attention kernel via PyTorch FlexAttention, and therefore adds only a lightweight element-wise operation on top of the existing attention computation, without any additional model forward pass. Tab. 5 reports per-video inference time measured on a single NVIDIA A100 80GB GPU. Although DyMoS uses a larger active interval than ALG for most backbones, its amortized runtime overhead remains between 1.2% and 4.3% . By contrast, ALG incurs a larger overhead due to its additional forward pass, reaching up to 10 .3% on Wan 2.1. Table 5: Computational cost comparison of our method with ALG across I2V backbones. Wan 2.2 Wan 2.1 HV-1.5 CogVideoX 
+
+λALG 0.10 0.20 0.04 0.04 
+
+λOurs 0.20 0.25 0.20 0.24 Baseline (s) 831 735 486 232 +ALG (s) 870 (+4.7%) 811 (+10.3%) 515 (+5.9%) 235 (+1.3%) +Ours (s) 841 (+1.2%) 749 (+1.9%) 503 (+3.5%) 242 (+4.3%) 
+
+D.2 Ablation study on frame-wise modulation schedule 
+
+We further analyze the frame-wise modulation schedule ϕ(·), which controls how the modulation strength varies across query frames in Eq. 6. Let f (i) ∈ { 0, . . . , F − 1} denote the latent-frame index of query token i. We compare three simple schedules: Uniform: ϕ(f (i)) = 1 , (9) Linear: ϕ(f (i)) = f (i)
+
+F − 1 , (10) Log: ϕ(f (i)) = log(1 + f (i)) log( F ) . (11) The Uniform schedule applies the same modulation strength to all non-reference query frames. The Linear and Log schedules apply weaker modulation to frames closer to the reference frame and stronger modulation to later frames, with the Log schedule increasing more rapidly for early frames and saturating for later ones. Table 6: Ablation study on frame-wise modulation schedule ϕf on Wan 2.2-14B. 
+
+ϕf
+
+Dynamic Degree Video Quality ViCLIP Vision Reward VBench VideoScore Uniform 64.8 2.84 57.7 0.2621 0.143 Linear 56.1 2.82 57.9 0.2598 0.143 Log 60.2 2.80 57.7 0.2597 0.141 Tab. 6 reports the ablation results on Wan 2.2 under the same γ and λ settings as the main experiments. Among the evaluated schedules, the Uniform schedule achieves the highest Dynamic Degree while maintaining comparable Video Quality and text-video alignment. We therefore use the Uniform schedule as the default setting in the main experiments. 16 E Additional qualitative results 
+
+We provide additional qualitative comparisons and continuous-control examples. Baseline ALG Ours   
+
+> A white car is swiftly driving on a dirt road near a bush, kicking up dust.
+> Baseline ALG Ours  Baseline ALG Ours
+> A man riding a mountain bike on top of a rocky hill .
+> A red sports car driving through sand, kicking up a large amount of dust .
+
+Figure 7: Additional comparison results with the vanilla baseline and ALG. The leftmost images are the reference images. Our method qualitatively outperforms the vanilla baseline and ALG across various cases, demonstrating superior motion dynamics and visual fidelity. (Top) The vanilla baseline and ALG exhibit static scenes of a man riding a mountain bike. In contrast, our method generates fluid and natural riding movements. (Middle and Bottom) Moreover, our method successfully captures complex dynamic interactions, such as cars kicking up dust, while maintaining high visual quality. 17 Baseline ALG Ours  Baseline ALG Ours    
+
+> A little crab scurried on the sandy beach.
+> A rally car racing at sahara .
+> Baseline ALG Ours
+> Abird with a fish in its beak flying over a field.
+
+Figure 8: Additional comparison results with the vanilla baseline and ALG. The leftmost images are the reference images. (Top) ALG produces highly static scenes where the crab barely moves. In contrast, our method successfully synthesizes vivid and realistic motions. (Bottom) The vanilla baseline produces physically weird motions, such as the bird flying backwards. While ALG generates physically plausible movements, it fails to maintain visual fidelity, exhibiting noticeable distortions in the background. 18 A man riding a horse with spear in his hand. 
+
+> Baseline ALG Ours Baseline ALG Ours
+> A person jumps twice and turns to face the camera while keeping the phone in the air.
+> Baseline ALG Ours
+> A person uses a polishing machine on a wet marble countertop, moving it back and forth.
+
+Figure 9: Additional comparison results with the vanilla baseline and ALG. The leftmost images are the reference images. (Top) Both the vanilla baseline and ALG struggle to synthesize dynamic motions, resulting in rigid and unnatural movements of the man. In contrast, our method generates natural motions of the man hoisting a spear. (Middle) Unlike the other methods, DyMoS successfully generates a semantically aligned video in which the person jumps twice. (Bottom) The vanilla baseline produces a physically implausible video where the person’s arms penetrate the water bottle, whereas ALG simply fails to generate dynamic motions. 19 A person riding a horse in a   
+
+> polo match.
+> A tiger walking through a
+> wooded area.
+> Static Dynamic
+> An airplane is flying through
+> the sky at sunset.
+> An eagle is flying over a
+> mountain with trees in the
+> background.
+> Static Dynamic
+
+Figure 10: Additional examples of continuous control over motion dynamics with DyMoS. Rows from top to bottom correspond to γ ∈ {− 2, −1, 0, 0.6, 1.0}, with γ = 0 denoting the baseline. (Top Left) The movement of the person riding a horse transitions naturally across the static-to-dynamic spectrum as the parameter increases. (Top Right) Our guidance smoothly scales the tiger’s walking speed from slow to fast. Similarly, our method allows for dynamic control over the speeds of the airplane (Bottom Left) and the eagle (Bottom Right). 20
