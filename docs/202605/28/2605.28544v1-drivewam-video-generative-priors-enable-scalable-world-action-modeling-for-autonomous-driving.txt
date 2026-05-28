@@ -1,0 +1,528 @@
+Title: DriveWAM: Video Generative Priors Enable Scalable World-Action Modeling for Autonomous Driving
+
+URL Source: https://arxiv.org/pdf/2605.28544v1
+
+Published Time: Thu, 28 May 2026 01:40:43 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# DriveWAM: Video Generative Priors Enable Scalable World-Action Modeling for Autonomous Driving 
+
+Chen Shi 1∗ Jinrui Xu 1∗ Shaoshuai Shi 2 Kehua Sheng 2 Bo Zhang 2 Li Jiang 1†
+
+> 1
+
+The Chinese University of Hong Kong, Shenzhen 2Voyager Research, Didi Chuxing 
+
+Project Page: https://chenshi3.github.io/drivewam.github.io/ 
+
+## Abstract 
+
+Pretrained foundation models have become an important basis for end-to-end autonomous driving. In contrast to vision-language models pretrained primarily on static image-text pairs, video generative models capture temporal dynamics and motion priors that are naturally suited for driving. We present DriveWAM, a driving world-action model that adapts a pretrained video diffusion transformer into an autoregressive video-action policy. DriveWAM organizes video and action streams into a unified temporal token sequence and trains them under a joint flow-matching objective, preserving the pretrained video-generation architecture while adapting its large-scale video priors to action generation. To incorporate high-level scene understanding, we introduce scene-evolving driving guidance, where a frozen VLM produces chunk-specific semantic intent to guide video-action generation. To keep long-horizon rollout bounded, we further introduce selective KV memory, which maintains bounded modality-aware video and action memory pools through relevance-redundancy cache selection at inference time. Experiments on NAVSIM and the PhysicalAI-Autonomous-Vehicles benchmark show that DriveWAM achieves strong planning performance, and a data-scaling study from 4k to 100k driving clips further confirms the scaling potential of world-action modeling for end-to-end autonomous driving. 
+
+## 1 Introduction 
+
+Recent end-to-end autonomous driving systems increasingly leverage pretrained foundation models as policy backbones. A major line of work builds on vision-language-action (VLA) models [ 1 – 7], transferring the semantic knowledge and instruction-following ability of large-scale VLMs [ 8–13 ] to action generation. Such VLA-based policies are well suited to high-level scene understanding and semantic reasoning, but driving decisions also require temporally dense visual cues such as spatial layout, motion continuity, and how the scene may evolve in the near future. Since VLM backbones are pretrained primarily on image-text data rather than video dynamics, VLM-centric policies must acquire these temporal priors largely from downstream driving data. Video generative models offer a complementary foundation. They are pretrained on large-scale videos to model object persistence, motion patterns, and scene evolution, making them naturally suited for dynamic decision problems. Recent VLA-based driving methods [ 3, 14 , 15 ] have begun to incorporate future image or video generation to improve spatio-temporal awareness, but visual generation is often used as an auxiliary signal or a modular component on top of a VLM-centric policy. In parallel, world-action (WA) models in robotics [ 16 – 21 ] show that pretrained video foundation models can be adapted more directly for action prediction and planning. Adapting this paradigm to autonomous driving, however, remains non-trivial. First, a video foun-dation model is pretrained for visual generation rather than ego-action control, so turning it into an  
+
+> ∗:Equal Contribution. Work done during an internship at Voyager Research, Didi Chuxing. †: Corresponding author. Preprint.
+> arXiv:2605.28544v1 [cs.CV] 27 May 2026
+
+autoregressive video-action policy requires preserving its future-generation prior while coupling it to continuous action prediction. Second, video foundation models capture near-future dynamics but lack high-level semantic planning, whereas the appropriate driving decision depends on route intent, right-of-way, and decision-relevant traffic participants. Third, deploying such autoregressive policies over long horizons requires persistent historical context, but full KV caching grows with horizon length and sliding-window caching may discard old yet critical evidence. Existing driving-oriented world-action methods [ 22 –24 ] often rely on separate planners, discrete video tokenizers, or customized generation architectures, leaving open how to directly adapt a modern video foundation model into a semantically guided and scalable end-to-end driving policy. In this paper, we present DriveWAM, a driving world-action model that adapts a pretrained video foundation model into an end-to-end autonomous driving policy. DriveWAM uses a flow-matching video diffusion transformer as the policy core and formulates driving as autoregressive video-action generation. Given observed video-action history and ego state, the model first generates future video latents and then decodes ego actions conditioned on the generated future latent, realizing inverse-dynamics action generation. Both video and action streams share the same transformer and are trained under a joint flow-matching objective [ 25 ], preserving the pretrained spatio-temporal generative prior while learning to convert imagined future world evolution into executable ego motion. To supply the missing high-level driving semantics, DriveWAM introduces scene-evolving driving guidance. A frozen VLM uses only causally available context, including the latest observation, recent ego motion, and route command, and produces chunk-specific guidance for the next prediction horizon. This guidance is injected through temporally localized cross-attention, ensuring that each future video-action chunk receives its own semantic intent while preserving the causal structure of full-clip autoregressive training. Thus, the VLM acts as a semantic guide, while the video foundation model remains responsible for dense temporal prediction. For long-horizon rollout, DriveWAM further introduces selective KV memory. Instead of storing all historical tokens or evicting tokens by age, DriveWAM maintains separate bounded memory pools for video and action KVs. Each pool is updated by a relevance-redundancy selection rule inspired by efficient video-generation caching [ 26 ]: prediction-relevant tokens are retained, while redundant patterns are filtered out. This training-free memory provides a compact video-action history for autoregressive inference without changing the training objective. We evaluate DriveWAM on NAVSIM [ 27 ] and the large-scale PhysicalAI-Autonomous-Vehicles benchmark [ 28 ]. DriveWAM achieves strong planning performance with an autoregressive world-action architecture. Beyond benchmark comparison, we conduct a data-scaling study over 4k, 20 k, and 100 k driving clips, where DriveWAM improves consistently as training data increases. These results suggest that semantically guided world-action modeling provides a scalable foundation for end-to-end autonomous driving. Our contributions are summarized as follows: • We propose DriveWAM, a driving world-action model that adapts a pretrained video diffusion transformer into an autoregressive video-action policy under a joint flow-matching objective. • We introduce scene-evolving driving guidance to supply high-level driving semantics, where a frozen VLM provides causally available chunk-specific intent that guides video-action generation through temporally localized cross-attention. • We propose selective KV memory for bounded long-horizon rollout, maintaining modality-aware video and action memory pools through relevance-redundancy cache selection at inference time. • Experiments on NAVSIM and PhysicalAI-Autonomous-Vehicles, together with a scaling study from 4k to 100 k clips, demonstrate the effectiveness and scalability of DriveWAM. 
+
+## 2 Related Work 
+
+2.1 Vision-Language-Action Models in Autonomous Driving 
+
+Recent autonomous driving methods increasingly leverage the general knowledge and semantic reasoning capabilities of large vision-language models. Early efforts use LLMs or VLMs mainly as high-level reasoning modules [ 29 – 36 ], producing scene descriptions, maneuver suggestions, com-mand tokens, or coarse trajectories that are further consumed by downstream planners. More recent VLA methods [ 6, 37 , 4] move toward end-to-end action prediction by coupling VLM backbones with 2trajectory decoders or planning heads. DriveMoE [ 6 ] introduces an MoE-based policy head on top of a VLM to route different driving situations to specialized action experts. AutoVLA [ 37 ] discretizes continuous trajectories into action primitives and casts driving policy learning as autoregressive token prediction. ReCogDrive [ 4 ] combines VLM-based reasoning with a diffusion trajectory planner and further aligns the policy through imitation learning and reinforcement learning. Building on this line, a parallel set of works incorporates visual world modeling into the VLA pipeline. FSDrive [ 15 ] introduces future visual prediction as a visual reasoning process, while DriveVLA-W0 [ 3] and DriveDreamer-Policy [ 14 ] augment VLM-based policies with generative world-model components [ 38 –41 ]. Although these designs improve the spatio-temporal awareness of VLA-based driving, their policy core remains VLM-centric, with visual generation serving as an auxiliary branch rather than the policy backbone. In contrast, DriveWAM inherits a pretrained video generative model as the policy core to jointly model future world evolution and ego actions, while leveraging VLM reasoning as complementary scene-evolving guidance for high-level semantic intent. 
+
+2.2 World-Action Models 
+
+The world-action paradigm reuses pretrained video generative models as the foundation for policy learning. Recent works in robotic manipulation [ 16 – 19 , 21 ] have shown that large-scale video pretraining can transfer favorably to action generation, motivating its adoption in autonomous driving. WorldDrive [ 22 ] transfers representations learned by a trajectory-aware driving world model to a downstream planner, bridging scene generation and planning but keeping planning as a separate module. VaViM/VaVAM [ 23 ] formulates autonomous driving as autoregressive video modeling with discrete VQ-VAE tokens [ 42 ] through a GPT-style transformer [ 43 ], and extends the model with an action expert for trajectory prediction. Epona [ 24 ] couples a spatiotemporal transformer with twin diffusion transformers for separate next-frame generation and ego-trajectory prediction. While these designs establish important baselines, they do not directly adopt a modern video foundation model as a unified video-action policy backbone, and thus cannot fully inherit the latest pretrained video priors. DriveWAM instead builds directly on a pretrained video diffusion transformer and adapts both video and action streams under a unified flow-matching objective. Moreover, existing driving-oriented world-action methods mostly rely on simple navigation com-mands as high-level guidance, leaving rich scene-level semantic reasoning largely unexplored. DriveWAM addresses this by injecting chunk-specific VLM guidance through temporally localized cross-attention. Efficient memory is another requirement for autoregressive video-action policies during long-horizon rollout, but prior models either use a limited observation window [ 16 , 18 ] or maintain a standard KV cache [ 17 , 19 ] whose cost grows with the sequence length. Recent works on efficient autoregressive video generation explore sliding-window attention [ 44 –46 ], sparse atten-tion [ 47 , 48 ], and cache compression [ 26 , 49 ]. DriveWAM adapts the relevance-redundancy criterion of FlowCache [26] to maintain bounded video and action memory pools for long-horizon driving. 
+
+## 3 Method 
+
+We propose DriveWAM, a semantically guided world-action model that adapts a pretrained video foundation model into a unified backbone for future world evolution and ego-action generation in autonomous driving, complemented by guidance from a frozen VLM for scene-evolving driving semantics. Specifically, as shown in Figure 1, we first formulate driving as autoregressive video-action generation, where a pretrained video diffusion transformer predicts future video latents and ego actions under a joint flow-matching objective (Sec. 3.1). We then introduce scene-evolving guidance, using a frozen VLM to provide causally available chunk-level intent that steers the video-action generation process (Sec. 3.2). Finally, we present selective KV memory, which retains prediction-relevant and non-redundant video-action history for bounded long-horizon rollout (Sec. 3.3). 
+
+3.1 Autoregressive Video-Action Generation 
+
+A driving clip contains synchronized streams of camera images, ego actions, and ego states. We divide the clip into K consecutive chunks and then consider the driving task as the next-chunk generation. At decision step k, the model has observed the clip up to chunk k and predicts the future video-action chunk (xk+1 , a k+1 ), where xk+1 is the next video segment and ak+1 is the corresponding ego action. The causally available conditions include the historical context Hk (video and action tokens of all 3Video Diffusion Transformer 
+
+Vision Language Model         
+
+> "straight at steady
+> speed …maintaining safe
+> distance from cyclist …"
+> Ego States: !)Text Guidance: #)̂
+> %)"#
+> Text
+> Encoder
+> Ego
+> Encoder
+> Memory Cache 2)
+
+… …                 
+
+> Read
+> Noised Action
+> Token
+> Noised Video
+> Token
+> Action: !%#$
+> Action
+> Encoder
+> Observation: ")"#
+> Video
+> VAE
+> ,)"#+)"#
+> Future World
+> Modeling
+> Inverse -Dynamics
+> Generation
+> "Refer to the latest observation and action …"
+> Real Observation
+> “Generate guidance for next chunk driving "
+> Scene -Evolving Guidance
+> Chunk #Chunk #+1
+> {,-}-.)
+> Memory Cache 2)"#
+
+… …   
+
+> "Route command for next chunk is straight "
+> Redundancy
+> Relevance
+> World -Action Prediction
+> {+-}-.)
+> '+)"#
+> Memory Selection
+
+… …× ×         
+
+> Redundancy
+> {,-}-.){+-}-.){,-}-.)"#{+-}-.)"#
+> Action: !%
+> Action
+> Encoder
+> Observation: ")
+> Video
+> VAE
+> ,)+)
+> Real Observation Reasoning
+> Write Write
+
+Figure 1: Overview of DriveWAM, which adapts a pretrained video generation backbone into a unified video-action policy. Building on this backbone, DriveWAM uses a frozen VLM to provide chunk-specific scene-evolving guidance for high-level scene reasoning and introduces selective KV memory to preserve compact prediction-relevant history for long-horizon rollout. observed chunks up to k), the ego state ek at the end frame of chunk k (e.g. , velocity, acceleration, and curvature), and a textual guidance gk for the predicted chunk. 
+
+Tokenization. To jointly model video-action generation, we organize video and action chunks into a unified temporal token sequence while preserving their temporal order. Each observed video chunk is encoded by the pretrained VAE [ 40 ], and each ego-action chunk, represented as normalized ego-frame translation and yaw increments, is embedded by an MLP action encoder Ea, as follows: 
+
+zk = VAE( xk), uk = Ea(ak), Hk = {(zi, u i)}i≤k. (1) Here, zk ∈ RNx×dz and uk ∈ RNa×d denote encoded video and action tokens, respectively. Nx
+
+and Na are the numbers of tokens per chunk, dz is the VAE latent channel dimension, and d is the transformer hidden dimension. In practice, the VAE latents zk are also mapped to dimension d by the latent input embedding layer inherited from the pretrained video diffusion transformer, yielding a unified representation for video-action generation. 
+
+World-action flow. DriveWAM adopts the autoregressive video-action generation scheme, which factors the driving task into future world modeling and inverse-dynamics action generation. Specif-ically, DriveWAM utilizes a pretrained flow-matching video diffusion transformer Tω [40 ] for predicting the next video chunk and action chunk. During training, we sample a flow timestep 
+
+τ ∈ [0 , 1] along the rectified-flow path [ 25 , 50 ], where τ = 1 is the Gaussian-noise endpoint and 
+
+τ = 0 represents clean data. For the next video chunk, the clean latent zk+1 is noised along the standard rectified-flow path, producing a query zk+1 ,τ and target velocity vzk+1 ,τ . The video branch predicts this velocity under the current driving context: 
+
+ˆvzk+1 ,τ = Tω (zk+1 ,τ ; Hk, e k, g k, τ ). (2) Here, ek is embedded by a lightweight MLP and injected through a separate ego-state cross-attention branch. Notably, this conditioning repurposes the video model as a policy prior, with the backbone retaining its native future-visual-prediction objective while the predicted future is shaped by driving history, ego state, and semantic intent. Actions are generated by an inverse-dynamics flow on the same diffusion transformer. We perturb the next action chunk directly in the normalized action space and embed it with the MLP action encoder 
+
+Ea to obtain uk+1 ,τ . Conditioned on the future world latent and the current driving context, the shared transformer predicts the action velocity as: 
+
+ˆvak+1 ,τ = Da(Tω (uk+1 ,τ ; ˜ zk+1 , H k, e k, g k, τ )) , (3) 4where Da is an MLP action decoder. The conditioning latent ˜zk+1 is the clean future video latent 
+
+zk+1 during teacher-forced training and the generated latent ˆzk+1 during inference. This design grounds action generation in the predicted world evolution, so the action decoder behaves as an inverse-dynamics readout of the predicted future rather than an independent trajectory head. We use noisy-history augmentation [19] to reduce this train-test mismatch. 
+
+Training objective. We train the video and action branches with a joint flow-matching objective: 
+
+L = Ek,τ 
+
+h
+
+ˆvzk+1 ,τ − vzk+1 ,τ  
+
+> 22
+
++ βa ˆvak+1 ,τ − vak+1 ,τ 
+
+> 22
+
+i
+
+, (4) where βa controls the balance between future world modeling and action generation. The video term preserves the pretrained spatio-temporal generative prior during policy adaptation, while the action term teaches the shared backbone to decode this prior into executable ego motion. 
+
+Full-clip training and autoregressive rollout. During training, we process all chunks of a clip in a single forward pass for efficiency. The video-action tokens are arranged in temporal order and denoised in parallel under a causal teacher-forcing mask (Figure 2), which realizes the conditional dependencies in Eqs. 2 and 3 while preserving the causal pattern used during inference [ 45 , 19 , 44 ]. At inference, DriveWAM rolls out one chunk at a time. Given history Hk, the model first samples the future video latent ˆzk+1 and then samples the action chunk ˆak+1 conditioned on this generated future. When the next real observation becomes available, it is encoded and appended to the history to form Hk+1 , keeping long-horizon rollout grounded in observed driving context. 
+
+3.2 Scene-Evolving Driving Guidance 
+
+The video foundation model provides dense dynamic priors for near-future scene evolution, but it lacks semantic planning ability. In driving, the appropriate future is determined not only by short-term dynamics but also by route intent, traffic participants, and other decision-level semantics. For example, at an intersection, multiple future evolutions may be visually plausible from the current observation, while the desired one depends on the high-level driving intent. However, existing world-action methods typically use a single clip-level text condition, applying the same semantic guidance to every chunk. DriveWAM instead introduces a frozen VLM as a scene-evolving semantic guide. At each decision step k, the VLM produces fresh guidance gk from the latest causally available context, so each future video-action chunk is conditioned on its own up-to-date semantic intent while the video model remains the policy backbone for dense temporal prediction. 
+
+Causal guidance generation. At each decision step k, the frozen Qwen3-VL-8B [ 9 ] receives only causally available information: the latest observation xk, a recent ego trajectory ak, and the route command ck for the upcoming horizon. It produces a concise guidance text as follows: 
+
+gk = Φ VLM (xk, a k, c k), (5) which summarizes the current road context and provides ego behavior guidance for the upcoming horizon, such as proceeding, yielding, stopping, or merging. Since no observation from the target chunk is used, gk provides semantic intent for predicting (xk+1 , a k+1 ) without leaking future information. During training, guidance texts are precomputed and cached; during inference, the VLM is queried once per decision step and reused across all denoising steps, keeping the semantic condition aligned with the current prediction horizon. 
+
+Temporally localized guidance injection. Scene-evolving guidance introduces a separate text condition gk at each decision step. Without an additional constraint, tokens of chunk k + 1 could attend to guidance from other chunks, including future guidance from later decision steps, breaking causal consistency. We therefore apply an additional block-diagonal text mask, which allows video-action tokens of target chunk k + 1 to attend only to the guidance tokens of gk. This keeps semantic conditioning temporally localized and prevents cross-chunk leakage. The resulting attention pattern is illustrated in Figure 2. 
+
+3.3 Selective KV Memory for Long-Horizon Rollout 
+
+Autoregressive world-action rollout conditions on the historical context Hk defined in Sec. 3.1, where 
+
+Hk denotes the causal video-action history up to step k. During inference, this abstract history is 5$. e. &- *-&.        
+
+> &.
+> $-e-
+> Q
+> K&-,1*-,1&0*0&0,1*0,1
+> &-,1
+> &-
+> *-
+> *-,1
+> &0
+> *0
+> &0,1
+> *0,1
+> Text
+> Guidance
+> Ego
+> State Video Action
+
+Figure 2: Attention mask used during Drive-WAM training. Colored entries indicate al-lowed attention; blank entries are masked. Reference      
+
+> frame
+> Chunk 1
+> Chunk 2
+> Chunk 3
+> After query
+> chunk 4
+> After query
+> chunk 5
+> Low score
+> High score
+> Query chunk
+
+Figure 3: Video-token retention under selective KV memory. Columns 2 and 3 visualize the tokens retained after query chunks 4 and 5. implemented as layer-wise KV caches that store the keys and values produced by previous video and action chunks, so the model can attend to past context without recomputing all historical tokens. A full-window cache preserves complete history but grows linearly with rollout length, while a sliding-window cache bounds the cost by evicting the oldest tokens under FIFO rules [ 51 , 52 ]. However, age-based eviction is suboptimal for driving tasks: older tokens may remain decision-relevant, such as motion trend of a nearby vehicle or a briefly occluded pedestrian, whereas newer tokens may correspond to repeated static background. To keep long-horizon inference bounded without discarding useful context, DriveWAM adopts an inference-time, training-free selective KV memory inspired by FlowCache [26], retaining a compact, prediction-relevant approximation of Hk during rollout. 
+
+Modality-aware memory pools. Video and action histories have different token densities and functional roles. Video tokens are numerous and encode scene context, while action tokens are compact and encode ego-motion history. A single global cache would therefore be dominated by visual tokens and may under-preserve motion context. DriveWAM decomposes Hk into two bounded modality pools Hvk and Hak , with |Hvk | ≤ Bv and |Hak | ≤ Ba, where Bv and Ba are the video and action memory budgets. This modality-aware design keeps both scene evidence and ego-motion history available during long-horizon rollout. 
+
+Relevance-redundancy retention. When a memory pool exceeds its budget, DriveWAM ranks cached tokens by both current relevance and memory complementarity. For modality m ∈ { v, a }, let 
+
+Qmk denote the current query tokens of modality m, and let kmj be the cached key of token j in Hmk .We measure relevance ρmj by the average attention mass assigned to token j from current queries, and redundancy ηmj by its average similarity to other cached keys: 
+
+ρmj = 1
+
+|Qmk |
+
+X
+
+> q∈Qmk
+
+
+
+softmax ℓ∈Hmk
+
+ q⊤kmℓ
+
+√d
+
+ 
+
+> j
+
+, ηmj = mean ℓ̸=j cos( kmj , kmℓ ), (6) where d is the transformer hidden dimension. The final retention score is: 
+
+smj = λρ mj − (1 − λ)ηmj , (7) where λ ∈ [0 , 1] balances relevance and redundancy, and tokens with low scores are evicted. As shown in Figure 3, this criterion has a natural driving-oriented interpretation: repeated road surfaces, sky, buildings, and other static background regions tend to be filtered out, while prediction-relevant cues such as moving vehicles and lane geometry are more likely to be retained. 
+
+Inference procedure. Selective KV memory is applied only at inference time and does not change the training objective or model parameters. During rollout, each transformer layer attends to the current chunk together with the bounded video and action memory pools. After chunk k + 1 is processed, the existing memory is ranked by the retention score, and the lowest-scored historical tokens are evicted to make room for the newly generated KVs ∆Hmk+1 . The modality pool is then updated as: 6Table 1: Comparison on NAVSIM v1. ∗: results with imitation learning. †: trained with multiple trajectory anchors from [53]. MV: multi-view cameras; SV: single-view camera; L: LiDAR. Method Ref Sensors NC ↑ DAC ↑ TTC ↑ C. ↑ EP ↑ PDMS ↑                                                                                                                          
+
+> Human ––100 100 100 99.9 87.5 94.8 UniAD [54] CVPR’23 MV 97.8 91.9 92.9 100.0 78.8 83.4 TransFuser [55] TPAMI’23 MV & L 97.7 92.8 92.8 100.0 79.2 84.0 PARA-Drive [56] CVPR’24 MV 97.9 92.4 93.0 99.8 79.3 84.0 LAW [57] ICLR’25 SV 96.4 95.4 88.7 99.9 81.7 84.6 DiffusionDrive [58] CVPR’25 MV & L 98.2 96.2 94.7 100.0 82.2 88.1 WoTE [59] ICCV’25 MV & L 98.5 96.8 94.4 99.9 81.9 88.3
+> VLA-based Methods
+> ReCogDrive ∗[4] ICLR’26 MV 98.1 94.7 94.2 100.0 80.9 86.5 DriveVLA-W0 [3] ICLR’26 SV 98.7 96.2 95.5 100.0 82.2 88.4 AutoVLA [37] NeurIPS’25 MV 98.4 95.6 98.0 99.9 81.9 89.1 DriveDreamer-Policy [14] arXiv’26 MV 98.4 97.1 95.1 100.0 83.5 89.2 DriveVLA-W0 †[3] ICLR’26 SV 98.7 99.1 95.3 99.3 83.3 90.2
+> WA-based Methods
+> Epona [24] ICCV’25 SV 97.9 95.1 93.8 99.9 80.4 86.2 WorldDrive [22] arXiv’26 SV 98.4 95.8 95.2 99.8 83.3 89.0 DriveWAM –SV 98.3 98.1 95.2 100.0 84.3 90.1
+
+Table 2: Comparison on our curated 1,000-clip test subset of PhysicalAI-Autonomous-Vehicles benchmark. # Params denotes the number of model parameters. SV: single-view camera. ∗: evaluated using the released checkpoint, which only supports up to 3s prediction. Method Source Sensors # Params ADE@3s ↓ FDE@3s ↓ ADE@4s ↓ FDE@4s ↓                      
+
+> VaVAM ∗[23] Valeo SV 1.3B 2.31 4.32 ––Alpamayo-1.5 [28] NVIDIA SV 10B 0.80 2.31 1.44 4.18 DriveWAM –SV 5B + 8B 0.47 1.35 0.83 2.47
+
+Hmk+1 ← Top Bm−| ∆Hmk+1 |(Hmk ) ∪ ∆Hmk+1 , m ∈ { v, a }. (8) Here Bm denotes the memory budget for modality m. This training-free update keeps long-horizon inference bounded while retaining a compact approximation to full-history attention. 
+
+## 4 Experiments 
+
+4.1 Datasets NAVSIM [ 27 ] is a standard end-to-end planning benchmark derived from OpenScene [ 60 , 61 ], with 103k trainval samples and 12k test samples. Following the standard NAVSIM protocol, we report No at-fault Collisions (NC), Drivable Area Compliance (DAC), Time-To-Collision (TTC), Comfort (C.), Ego Progress (EP), and the overall Predictive Driver Model Score (PDMS). 
+
+PhysicalAI-Autonomous-Vehicles is a large-scale real-world driving benchmark released with Alpamayo-R1 [ 28 ]. It contains approximately 1,700 hours of driving logs, organized into 306,152 clips of 20 seconds each, with 153,625 clips for training, 90,928 for validation, and 61,599 for testing. We use the front-view camera stream and ego-motion labels. To focus on non-trivial driving scenarios, we use a VLM to tag each clip with a scene description and filter out simple scenes. Finally, we select 100k clips from the training split, and construct a curated 1,000-clip test subset from the test split. Details of the filtering procedure are provided in Appendix A. We report Average Displacement Error (ADE) and Final Displacement Error (FDE) over 3-second and 4-second future trajectories. 
+
+4.2 Implementation Details 
+
+We build DriveWAM based on the code framework of [ 19 ]. DriveWAM uses Wan2.2-TI2V-5B [ 40 ]as the video backbone, initialized from the base checkpoint released by [ 19 ]. Unless otherwise specified, we fine-tune the full video diffusion transformer together with the newly introduced action and ego-state modules. The action encoder Ea and action decoder Da are implemented as MLPs with 7Table 3: Ablation of scene-evolving (SE) driving guidance under different training data scales on the PhysicalAI-Autonomous-Vehicles benchmark. ✗: fixed global prompt as text conditioning. # Clips # Iters SE Guidance ADE@4s ↓ FDE@4s ↓                        
+
+> 4k 50k ✗1.21 3.65 4k 50k ✓1.01 2.95
+> 20k 50k ✗0.95 2.94 20k 50k ✓0.94 2.65
+> 100k 50k ✗0.92 2.75 100k 50k ✓0.83 2.47
+
+Table 4: Ablation of video backbone initializa-tion and joint video supervision. All models are trained on 100k clips for 50k iterations. Pretrained init. Video sup. ADE@4s ↓ FDE@4s ↓         
+
+> ✗✓1.10 3.26
+> ✓✗1.23 3.79
+> ✓✓0.83 2.47
+
+Table 5: Ablation of KV memory strategies. ADE/FDE are measured on 20s clips, while KV memory and GFLOPs are profiled under a 300s clip. KV memory ADE@4s ↓ FDE@4s ↓ Mem. (GB) ↓ GFLOPs ↓            
+
+> Full 0.83 2.47 3.07 17.37 FIFO 1.40 3.47 0.25 1.05
+> Selective 0.89 2.52 0.25 1.44
+
+hidden dimension 3072, and the ego-state features are encoded by a separate MLP. The scene-evolving guidance is generated by a frozen Qwen3-VL-8B [ 9], which is queried once per chunk. Details of the VLM prompt template are provided in Appendix B. All models are trained at 256 ×448 resolution on 48 NVIDIA H20 GPUs. We use AdamW [ 62 ] with 
+
+β = (0 .9, 0.95) , weight decay 0.1, learning rate 1×10 −5, and per-device batch size 1. The action loss weight is set to βa = 1 .0. DriveWAM uses a 4-second chunk for video-action generation. On NAVSIM, we train for 100k iterations and decay the learning rate by a factor of 0.5 at 50k, 70k, and 90k iterations. Each sample uses the current frame as the condition and predicts a 4-second future horizon at 1 Hz. Since NAVSIM provides a single future planning horizon per sample, this setting reduces to one chunk-level prediction. On the PhysicalAI-Autonomous-Vehicles benchmark, we train for 50k iterations. Each training sample is a 12-second segment randomly cropped from a 20-second clip. The video stream is downsampled to 1 Hz, while ego actions remain at 10 Hz. For inference, following [ 19 ], we use an Euler ODE solver with 3 steps for video tokens and 10 steps for action tokens. The video solver integrates the flow trajectory from τ = 1 to τ = 0 .6, while the action solver integrates from τ = 1 to τ = 0 . For selective KV memory, we follow FlowCache [ 26 ]and set λ = 0 .07 . The video and action cache capacities are set to 448 and 160 tokens, respectively. 
+
+4.3 Main Results NAVSIM. We compare DriveWAM against state-of-the-art end-to-end planners on NAVSIM v1, including classical end-to-end pipelines [ 54 –59 ], VLA-based policies [ 4, 3, 37 , 14 ], and WA-based methods [ 24 , 22 ]. As shown in Table 1, DriveWAM achieves a PDMS of 90 .1 using only a single front-view camera, outperforming all competing methods under comparable training settings. We attribute this to the underlying video generative backbone, which provides effective spatio-temporal priors for modeling scene geometry, motion dynamics, and fine-grained action prediction. 
+
+PhysicalAI-Autonomous-Vehicles. We evaluate DriveWAM on the large-scale PhysicalAI-Autonomous-Vehicles benchmark, comparing against the WA-based VaVAM [ 23 ], trained on ap-proximately 1,700 hours of OpenDV [ 63 ] driving data, and the VLA-based Alpamayo-1.5 [ 28 ], trained on roughly 80,000 hours of data containing the PhysicalAI-Autonomous-Vehicles training set. For consistency, all methods use only the front-view camera input and output a single trajectory at inference. As reported in Table 2, DriveWAM achieves ADE/FDE of 0.47 /1.35 at 3 seconds and 
+
+0.83 /2.47 at 4 seconds, substantially outperforming both baselines. 
+
+Qualitative results. Figure 4 visualizes future scenes and ego trajectories jointly generated by DriveWAM. Additional qualitative examples are provided in Appendix D. 8Ground Truth      
+
+> Prediction
+> Ground Truth
+> Prediction
+> T=1 T=2
+> T=3 T=4
+> T=1 T=2
+> T=3 T=4
+
+Figure 4: Qualitative results on NAVSIM (left) and PhysicalAI-Autonomous-Vehicles benchmark (right). The predicted ego trajectories are consistent with the jointly generated future scenes. 
+
+4.4 Ablation Study 
+
+We conduct ablation studies on the PhysicalAI-Autonomous-Vehicles benchmark to investigate the individual components of DriveWAM. Unless otherwise noted, all ablation models are trained on 100k clips for 50k iterations under the same optimization settings as in the main results. 
+
+Scene-evolving Driving Guidance. Table 3 studies the contribution of injecting chunk-specific VLM guidance. Replacing the global prompt with scene-evolving guidance consistently improves trajectory prediction at every training data scale, reducing ADE@4s from 1.21 to 1.01 with 4k clips and from 0.92 to 0.83 with 100k clips, while also yielding consistent reductions in FDE@4s. These results indicate that high-level scene reasoning provides a complementary semantic conditioning to the low-level WA backbone. We also observe that the benefit does not vanish as training data grows. Appendix B provides qualitative examples of guidance evolving with scene context and route intent. 4k 20k 100k 
+
+> Number of Clips
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.25
+> ADE (m)
+> ADE w/ SE
+> ADE w/o SE
+> FDE w/ SE
+> FDE w/o SE
+> 2.50
+> 2.60
+> 2.70
+> 2.80
+> 2.90
+> 3.00
+> 3.70
+> FDE (m)
+
+Figure 5: Data scaling on PhysicalAI-Autonomous-Vehicles. 
+
+Data Scaling. We investigate the data scalability of Drive-WAM by varying the training set size from 4k to 20k and 100k clips under a fixed 50k-iteration training procedure. As shown in Table 3 and Figure 5, both ADE@4s and FDE@4s improve significantly with more data, regard-less of whether scene-evolving guidance is applied. This consistent scaling trend reflects the effectiveness of the video-action modeling as a scalable policy foundation, and suggests that DriveWAM has not yet saturated at the current data scale. 
+
+Video Foundation Model Adaptation. We ablate Drive-WAM’s capability by removing the pretrained video-backbone initialization and the joint video flow-matching supervision. As reported in Table 4, training entirely from scratch removes the large-scale spatio-temporal priors inherited from video pretraining, and degrades ADE@4s/FDE@4s to 1.10 /3.26 . Initializing from the pretrained backbone but removing video supervision also performs poorly, yielding 1.23 /3.79 , suggesting that action-only adaptation fails to preserve the generative video priors needed for WA policy learning. The full configuration combines pretrained initialization with joint video-action flow-matching supervision and achieves the best performance. 
+
+Selective KV Memory. Table 5 compares three inference-time memory strategies for autoregressive rollout. Full KV caching retains the entire video-action history, while FIFO and our selective KV memory operate under the fixed-size cache budget. As shown in 1st and 3rd rows, selective KV memory largely closes the accuracy gap to full caching, achieving 0.89 /2.52 ADE@4s/FDE@4s, while FIFO degrades substantially to 1.40 /3.47 . To examine the long-horizon overhead of the memory module, we further profile each strategy on a 300-second rollout, reporting KV memory summed over all DiT layers and attention GFLOPs of one causal self-attention layer. As presented in Table 5, full caching requires 3.07 GB memory and 17 .37 GFLOPs per step, whereas selective KV memory reduces them to 0.25 GB and 1.44 GFLOPs, yielding over 12 × reductions. 
+
+## 5 Conclusion 
+
+We present DriveWAM, a unified world-action policy that adapts a pretrained video foundation model directly into an end-to-end driving policy. DriveWAM introduces scene-evolving driving guidance that injects chunk-specific semantic intent through temporally localized cross-attention, and selective KV memory that maintains modality-aware video and action memory pools via relevance-redundancy selection at inference time. Experiments on NAVSIM and the PhysicalAI-Autonomous-Vehicles 9benchmark show that DriveWAM achieves strong planning performance, and a data-scaling study from 4k to 100k clips further confirms its scalability. 
+
+## References 
+
+[1] Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom, Karol Hausman, Brian Ichter, et al. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 , 2024. [2] Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, et al. π0.5: a vision-language-action model with open-world generalization. arXiv preprint arXiv:2504.16054 , 2025. [3] Yingyan Li, Shuyao Shang, Weisong Liu, Bing Zhan, Haochen Wang, Yuqi Wang, Yuntao Chen, Xiaoman Wang, AnYasong, Chufeng Tang, Lu Hou, Lue Fan, and Zhaoxiang Zhang. DriveVLA-w0: World models amplify data scaling law in autonomous driving. In ICLR , 2026. [4] Yongkang Li, Kaixin Xiong, Xiangyu Guo, Fang Li, Sixu Yan, Gangwei Xu, Lijun Zhou, Long Chen, Haiyang Sun, Bing Wang, et al. Recogdrive: A reinforced cognitive framework for end-to-end autonomous driving. In ICLR , 2026. [5] Katrin Renz, Long Chen, Elahe Arani, and Oleg Sinavski. Simlingo: Vision-only closed-loop autonomous driving with language-action alignment. In CVPR , 2025. [6] Zhenjie Yang, Yilin Chai, Xiaosong Jia, Qifeng Li, Yuqian Shao, Xuekai Zhu, Haisheng Su, and Junchi Yan. Drivemoe: Mixture-of-experts for vision-language-action model in end-to-end autonomous driving. In CVPR , 2026. [7] Xiangbo Gao, Yuheng Wu, Rujia Wang, Chenxi Liu, Yang Zhou, and Zhengzhong Tu. Langcoop: Collaborative driving with language. In CVPR , 2025. [8] Xinlong Wang, Xiaosong Zhang, Zhengxiong Luo, Quan Sun, Yufeng Cui, Jinsheng Wang, Fan Zhang, Yueze Wang, Zhen Li, Qiying Yu, et al. Emu3: Next-token prediction is all you need. arXiv preprint arXiv:2409.18869 , 2024. [9] Shuai Bai, Yuxuan Cai, Ruizhe Chen, Keqin Chen, Xionghui Chen, Zesen Cheng, Lianghao Deng, Wei Ding, Chang Gao, Chunjiang Ge, Wenbin Ge, Zhifang Guo, Qidong Huang, Jie Huang, Fei Huang, Binyuan Hui, Shutong Jiang, Zhaohai Li, Mingsheng Li, Mei Li, Kaixin Li, Zicheng Lin, Junyang Lin, Xuejing Liu, Jiawei Liu, Chenglong Liu, Yang Liu, Dayiheng Liu, Shixuan Liu, Dunjie Lu, Ruilin Luo, Chenxu Lv, Rui Men, Lingchen Meng, Xuancheng Ren, Xingzhang Ren, Sibo Song, Yuchong Sun, Jun Tang, Jianhong Tu, Jianqiang Wan, Peng Wang, Pengfei Wang, Qiuyue Wang, Yuxuan Wang, Tianbao Xie, Yiheng Xu, Haiyang Xu, Jin Xu, Zhibo Yang, Mingkun Yang, Jianxin Yang, An Yang, Bowen Yu, Fei Zhang, Hang Zhang, Xi Zhang, Bo Zheng, Humen Zhong, Jingren Zhou, Fan Zhou, Jing Zhou, Yuanzhi Zhu, and Ke Zhu. Qwen3-vl technical report. arXiv preprint arXiv:2511.21631 , 2025. [10] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. In NeurIPS , 2023. [11] Lucas Beyer, Andreas Steiner, André Susano Pinto, Alexander Kolesnikov, Xiao Wang, Daniel Salz, Maxim Neumann, Ibrahim Alabdulmohsin, Michael Tschannen, Emanuele Bugliarello, et al. Paligemma: A versatile 3b vlm for transfer. arXiv preprint arXiv:2407.07726 , 2024. [12] Jean-Baptiste Alayrac, Jeff Donahue, Pauline Luc, Antoine Miech, Iain Barr, Yana Hasson, Karel Lenc, Arthur Mensch, Katherine Millican, Malcolm Reynolds, et al. Flamingo: a visual language model for few-shot learning. In NeurIPS , 2022. [13] Peng Wang, Shuai Bai, Sinan Tan, Shijie Wang, Zhihao Fan, Jinze Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, et al. Qwen2-vl: Enhancing vision-language model’s perception of the world at any resolution. arXiv preprint arXiv:2409.12191 , 2024. [14] Yang Zhou, Xiaofeng Wang, Hao Shao, Letian Wang, Guosheng Zhao, Jiangnan Shao, Jiagang Zhu, Tingdong Yu, Zheng Zhu, Guan Huang, et al. Drivedreamer-policy: A geometry-grounded world-action model for unified generation and planning. arXiv preprint arXiv:2604.01765 , 2026. [15] Shuang Zeng, Xinyuan Chang, Mengwei Xie, Xinran Liu, Yifan Bai, Zheng Pan, Mu Xu, and Xing Wei. Futuresightdrive: Thinking visually with spatio-temporal cot for autonomous driving. In NeurIPS , 2025. [16] Moo Jin Kim, Yihuai Gao, Tsung-Yi Lin, Yen-Chen Lin, Yunhao Ge, Grace Lam, Percy Liang, Shuran Song, Ming-Yu Liu, Chelsea Finn, and Jinwei Gu. Cosmos policy: Fine-tuning video models for visuomotor control and planning. In ICLR , 2026. 
+
+10 [17] Seonghyeon Ye, Yunhao Ge, Kaiyuan Zheng, Shenyuan Gao, Sihyun Yu, George Kurian, Suneel Indupuru, You Liang Tan, Chuning Zhu, Jiannan Xiang, et al. World action models are zero-shot policies. arXiv preprint arXiv:2602.15922 , 2026. [18] Tianyuan Yuan, Zibin Dong, Yicheng Liu, and Hang Zhao. Fast-wam: Do world action models need test-time future imagination? arXiv preprint arXiv:2603.16666 , 2026. [19] Lin Li, Qihang Zhang, Yiming Luo, Shuai Yang, Ruilin Wang, Fei Han, Mingrui Yu, Zelin Gao, Nan Xue, Xing Zhu, et al. Causal world modeling for robot control. arXiv preprint arXiv:2601.21998 , 2026. [20] Angen Ye, Boyuan Wang, Chaojun Ni, Guan Huang, Guosheng Zhao, Hao Li, Hengtao Li, Jie Li, Jindi Lv, Jingyu Liu, et al. Gigaworld-policy: An efficient action-centered world–action model. arXiv preprint arXiv:2603.17240 , 2026. [21] Yucheng Hu, Yanjiang Guo, Pengchao Wang, Xiaoyu Chen, Yen-Jen Wang, Jianke Zhang, Koushil Sreenath, Chaochao Lu, and Jianyu Chen. Video prediction policy: A generalist robot policy with predictive visual representations. In ICML , 2025. [22] Xingtai Gui, Meijie Zhang, Tianyi Yan, Wencheng Han, Jiahao Gong, Feiyang Tan, Cheng-zhong Xu, and Jianbing Shen. Bridging scene generation and planning: Driving with world model via unifying vision and motion representation. arXiv preprint arXiv:2603.14948 , 2026. [23] Florent Bartoccioni, Elias Ramzi, Victor Besnier, Shashanka Venkataramanan, Tuan-Hung Vu, Yihong Xu, Loick Chambon, Spyros Gidaris, Serkan Odabas, David Hurych, Renaud Marlet, Alexandre Boulch, Mickael Chen, Eloi Zablocki, Andrei Bursuc, Eduardo Valle, and Matthieu Cord. Vavim and vavam: Autonomous driving through video generative modeling. arXiv preprint arXiv:2502.15672 , 2025. [24] Kaiwen Zhang, Zhenyu Tang, Xiaotao Hu, Xingang Pan, Xiaoyang Guo, Yuan Liu, Jingwei Huang, Li Yuan, Qian Zhang, Xiao-Xiao Long, et al. Epona: Autoregressive diffusion world model for autonomous driving. In ICCV , 2025. [25] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. In ICLR , 2023. [26] Yuexiao Ma, Xuzhe Zheng, Jing Xu, Xiwei Xu, Feng Ling, Xiawu Zheng, Huafeng Kuang, Huixia Li, Xing Wang, Xuefeng Xiao, et al. Flow caching for autoregressive video generation. In ICLR , 2026. [27] Daniel Dauner, Marcel Hallgarten, Tianyu Li, Xinshuo Weng, Zhiyu Huang, Zetong Yang, Hongyang Li, Igor Gilitschenski, Boris Ivanovic, Marco Pavone, et al. Navsim: Data-driven non-reactive autonomous vehicle simulation and benchmarking. In NeurIPS , 2024. [28] Yan Wang, Wenjie Luo, Junjie Bai, Yulong Cao, Tong Che, Ke Chen, Yuxiao Chen, Jenna Diamond, Yifan Ding, Wenhao Ding, et al. Alpamayo-r1: Bridging reasoning and action prediction for generalizable autonomous driving in the long tail. arXiv preprint arXiv:2511.00088 , 2025. [29] Zhenhua Xu, Yujia Zhang, Enze Xie, Zhen Zhao, Yong Guo, Kwan-Yee K Wong, Zhenguo Li, and Hengshuang Zhao. Drivegpt4: Interpretable end-to-end autonomous driving via large language model. 
+
+IEEE Robotics and Automation Letters , 2024. [30] Xiaoyu Tian, Junru Gu, Bailin Li, Yicheng Liu, Zhiyong Zhao, Yang Wang, Kun Zhan, Peng Jia, Xianpeng Lang, and Hang Zhao. Drivevlm: The convergence of autonomous driving and large vision-language models. In CoRL , 2024. [31] Bo Jiang, Shaoyu Chen, Bencheng Liao, Xingyu Zhang, Wei Yin, Qian Zhang, Chang Huang, Wenyu Liu, and Xinggang Wang. Senna: Bridging large vision-language models and end-to-end autonomous driving. 
+
+arXiv preprint arXiv:2410.22313 , 2024. [32] Chonghao Sima, Katrin Renz, Kashyap Chitta, Li Chen, Hanxue Zhang, Chengen Xie, Jens Beißwenger, Ping Luo, Andreas Geiger, and Hongyang Li. DriveLM: Driving with graph visual question answering. In 
+
+ECCV , 2024. [33] Wenhai Wang, Jiangwei Xie, ChuanYang Hu, Haoming Zou, Jianan Fan, Wenwen Tong, Yang Wen, Silei Wu, Hanming Deng, Zhiqi Li, et al. Drivemlm: Aligning multi-modal large language models with behavioral planning states for autonomous driving. arXiv preprint arXiv:2312.09245 , 2023. [34] Jiageng Mao, Junjie Ye, Yuxi Qian, Marco Pavone, and Yue Wang. A language agent for autonomous driving. arXiv preprint arXiv:2311.10813 , 2023. 
+
+11 [35] Shihao Wang, Zhiding Yu, Xiaohui Jiang, Shiyi Lan, Min Shi, Nadine Chang, Jan Kautz, Ying Li, and Jose M. Alvarez. OmniDrive: A holistic vision-language dataset for autonomous driving with counterfactual reasoning. In CVPR , 2025. [36] Jyh-Jing Hwang, Runsheng Xu, Hubert Lin, Wei-Chih Hung, Jingwei Ji, Kristy Choi, Di Huang, Tong He, Paul Covington, Benjamin Sapp, et al. Emma: End-to-end multimodal model for autonomous driving. 
+
+arXiv preprint arXiv:2410.23262 , 2024. [37] Zewei Zhou, Tianhui Cai, Seth Z. Zhao, Yun Zhang, Zhiyu Huang, Bolei Zhou, and Jiaqi Ma. Au-toVLA: A vision-language-action model for end-to-end autonomous driving with adaptive reasoning and reinforcement fine-tuning. In NeurIPS , 2025. [38] Chuanxia Zheng, Long Tung Vuong, Jianfei Cai, and Dinh Phung. MoVQ: Modulating quantized vectors for high-fidelity image generation. In NeurIPS , 2022. [39] William Peebles and Saining Xie. Scalable diffusion models with transformers. In ICCV , 2023. [40] Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. [41] Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, Da Yin, Yuxuan.Zhang, Weihan Wang, Yean Cheng, Bin Xu, Xiaotao Gu, Yuxiao Dong, and Jie Tang. Cogvideox: Text-to-video diffusion models with an expert transformer. In 
+
+ICLR , 2025. [42] Aaron Van Den Oord, Oriol Vinyals, et al. Neural discrete representation learning. In NeurIPS , 2017. [43] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language models are unsupervised multitask learners. OpenAI blog , 2019. [44] Xun Huang, Zhengqi Li, Guande He, Mingyuan Zhou, and Eli Shechtman. Self forcing: Bridging the train-test gap in autoregressive video diffusion. In NeurIPS , 2025. [45] Boyuan Chen, Diego Martí Monsó, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitzmann. Diffusion forcing: Next-token prediction meets full-sequence diffusion. In NeurIPS , 2024. [46] Tianwei Yin, Qiang Zhang, Richard Zhang, William T Freeman, Fredo Durand, Eli Shechtman, and Xun Huang. From slow bidirectional to fast autoregressive video diffusion models. In CVPR , 2025. [47] Haocheng Xi, Shuo Yang, Yilong Zhao, Chenfeng Xu, Muyang Li, Xiuyu Li, Yujun Lin, Han Cai, Jintao Zhang, Dacheng Li, Jianfei Chen, Ion Stoica, Kurt Keutzer, and Song Han. Sparse video-gen: Accelerating video diffusion transformers with spatial-temporal sparsity. In ICML , 2025. [48] Shuo Yang, Haocheng Xi, Yilong Zhao, Muyang Li, Jintao Zhang, Han Cai, Yujun Lin, Xiuyu Li, Chenfeng Xu, Kelly Peng, Jianfei Chen, Song Han, Kurt Keutzer, and Ion Stoica. Sparse videogen2: Accelerate video generation with sparse attention via semantic-aware permutation. In NeurIPS , 2025. [49] Kumara Kahatapitiya, Haozhe Liu, Sen He, Ding Liu, Menglin Jia, Chenyang Zhang, Michael S Ryoo, and Tian Xie. Adaptive caching for faster video generation with diffusion transformers. In ICCV , 2025. [50] Xingchao Liu, Chengyue Gong, and qiang liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In ICLR , 2023. [51] Jihwan Kim, Junoh Kang, Jinyoung Choi, and Bohyung Han. Fifo-diffusion: Generating infinite videos from text without training. NeurIPS , 2024. [52] Chaoda Zheng, Sean Li, Jinhao Deng, Zhennan Wang, Shijia Chen, Liqiang Xiao, Ziheng Chi, Hongbin Lin, Kangjie Chen, Boyang Wang, et al. X-world: Controllable ego-centric multi-camera world models for scalable end-to-end driving. arXiv preprint arXiv:2603.19979 , 2026. [53] Zhenxin Li, Kailin Li, Shihao Wang, Shiyi Lan, Zhiding Yu, Yishen Ji, Zhiqi Li, Ziyue Zhu, Jan Kautz, Zuxuan Wu, et al. Hydra-mdp: End-to-end multimodal planning with multi-target hydra-distillation. arXiv preprint arXiv:2406.06978 , 2024. [54] Yihan Hu, Jiazhi Yang, Li Chen, Keyu Li, Chonghao Sima, Xizhou Zhu, Siqi Chai, Senyao Du, Tianwei Lin, Wenhai Wang, et al. Planning-oriented autonomous driving. In CVPR , 2023. [55] Kashyap Chitta, Aditya Prakash, Bernhard Jaeger, Zehao Yu, Katrin Renz, and Andreas Geiger. Transfuser: Imitation with transformer-based sensor fusion for autonomous driving. TPAMI , 2023. 
+
+12 [56] Xinshuo Weng, Boris Ivanovic, Yan Wang, Yue Wang, and Marco Pavone. Para-drive: Parallelized architecture for real-time autonomous driving. In CVPR , 2024. [57] Yingyan Li, Lue Fan, Jiawei He, Yuqi Wang, Yuntao Chen, Zhaoxiang Zhang, and Tieniu Tan. Enhancing end-to-end autonomous driving with latent world model. In ICLR , 2025. [58] Bencheng Liao, Shaoyu Chen, Haoran Yin, Bo Jiang, Cheng Wang, Sixu Yan, Xinbang Zhang, Xiangyu Li, Ying Zhang, Qian Zhang, et al. Diffusiondrive: Truncated diffusion model for end-to-end autonomous driving. In CVPR , 2025. [59] Yingyan Li, Yuqi Wang, Yang Liu, Jiawei He, Lue Fan, and Zhaoxiang Zhang. End-to-end driving with online trajectory evaluation via bev world model. In ICCV , 2025. [60] OpenScene Contributors. Openscene: The largest up-to-date 3d occupancy prediction benchmark in autonomous driving. https://github.com/OpenDriveLab/OpenScene , 2023. [61] Napat Karnchanachari, Dimitris Geromichalos, Kok Seang Tan, Nanxiang Li, Christopher Eriksen, Shakiba Yaghoubi, Noushin Mehdipour, Gianmarco Bernasconi, Whye Kit Fong, Yiluan Guo, et al. Towards learning-based planning: The nuplan benchmark for real-world autonomous driving. In ICRA , 2024. [62] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In ICLR , 2019. [63] Jiazhi Yang, Shenyuan Gao, Yihang Qiu, Li Chen, Tianyu Li, Bo Dai, Kashyap Chitta, Penghao Wu, Jia Zeng, Ping Luo, et al. Generalized predictive model for autonomous driving. In CVPR , 2024. 
+
+13 A Dataset Curation 
+
+The PhysicalAI-Autonomous-Vehicles benchmark contains roughly 1,700 hours of driving organized into 306,152 20-second clips. To focus evaluation and training on non-trivial driving scenarios, we tag every clip with a frozen Qwen3-VL-8B [ 9] and use the resulting tags to construct a 100k-clip training subset, and a curated 1,000-clip test subset with balanced coverage of rare and ordinary scenarios. 
+
+Scene tagging. For each clip, we uniformly sample 20 frames from the front-view stream and pass them to Qwen3-VL-8B with four structured prompts. Each prompt focuses on one facet of driving complexity: • Scene attributes : weather (clear/rainy/snowy/foggy), lighting (day/dusk/night/tunnel transi-tion/strong backlight), road type (urban/highway/ramp/intersection/etc.), traffic density, and ego behavior. • Vulnerable road-user events : whether the scene contains pedestrian crossing, jaywalking, occluded pedestrian popout, child or elderly participants, cyclist conflict, or crowd. • Vehicle interaction events : whether the scene contains cut-in, cut-out, sudden braking ahead, wrong-way vehicle, large-vehicle occlusion, emergency vehicle, door opening, or stopped/broken vehicle. • Intersection and long-tail events : whether the scene contains unprotected left turn, round-about, irregular intersection, traffic-police gesture, road debris, accident scene, construction, animal on road, water puddle, or railway crossing, together with the traffic-light state. The four prompts are run sequentially on the same sampled frames and merged into a single per-clip record. We additionally compute a scalar interest score by summing rule-based weights over detected event tags. In practice, rare or safety-critical events receive larger weights, e.g., accident scenes ( 5.0), occluded pedestrian popouts ( 4.0), animals on the road ( 3.5), and traffic-police gestures ( 3.0), while frequent or lower-impact attributes receive smaller weights ( 0.5–1.5). Figure 6 shows representative tagged clips with their detected attributes and interest scores. 
+
+Training subset. The training subset is curated from the tagged training split through a two-stage procedure. We first retain all clips with interest score no smaller than 2.0, preserving rare-event and interaction-rich cases. We then uniformly sample 50% of the remaining lower-score clips, so that ordinary driving scenarios are still represented without dominating the training distribution. For the data-scaling study, we sample 20k and 4k subsets from this 100k subset. 
+
+Test subset. The test subset contains 1,000 clips and is constructed from the tagged test split to cover both long-tail and ordinary driving scenarios. We combine three sources: • Rare-event clips : a tag is treated as rare if it appears in fewer than 1% of the test clips. For each rare tag, we select up to 30 top-scoring clips that contain it, covering events such as accident scenes, animals on the road, occluded pedestrian popouts, traffic-police gestures, and railway crossings. • High-interest clips : clips above the 75th percentile of the interest-score distribution are grouped by weather, lighting, and road type. We assign an approximately equal quota to each group and select the highest-scoring clips within each group until the target size is reached. • Common-scene clips : 200 clips uniformly sampled from below the high-interest threshold to serve as ordinary-driving controls. The selected clips are merged to form the final 1,000-clip test set. 
+
+## B VLM Guidance Details 
+
+This section details the pipeline that produces the chunk-specific guidance gk used in Sec. 3.2. The pipeline operates in two stages. First, we classify the route of each upcoming 4-second chunk from ground-truth ego pose, producing a route command. Second, we prompt a frozen Qwen3-VL-8B with the route command, the front-camera frame at the end of the latest chunk, and a BEV visualization of 14 Video Frames         
+
+> Lighting: dusk
+> Road _type :urban
+> Events: pedestrian
+> crossing, cyclist or ebike
+> conflict, large vehicle
+> occlusion …
+> Interest Score : 9. 0
+
+Scene Tags                 
+
+> Lighting: dusk
+> Road _type :intersection
+> Weather: Snowy
+> Events: railway crossing
+> Ego _behavior :stop and
+> go
+> Interest Score : 6.0
+> Road_type :urban
+> Weather: Rainy
+> Events: construction
+> Ego_behavior :stop and
+> go
+> Interest Score : 5.5
+> Road _type :urban
+> Events: None
+> Ego_behavior :lane
+> keeping
+> Interest Score :0
+
+Figure 6: Representative scene tagging results for dataset curation. For each clip, the left panel shows Qwen3-VL-8B detected scene attributes, events, and the resulting interest score, while the right panel shows sampled front-view frames. High-score clips capture rare or interaction-rich scenarios, whereas low-score clips represent ordinary driving. Urban street with pedestrians and       
+
+> parked vehicles on both sides,
+> overcast lighting. Proceed straight
+> with caution ,slowing near
+> pedestrians and maintaining
+> awareness of surrounding traffic.
+> Urban street with parked vehicles,
+> pedestrians, and a red traffic light
+> ahead. Proceed straight with
+> caution, slowing to stop at the
+> intersection before proceeding.
+> Urban intersection with pedestrians
+> crossing and red traffic light
+> ahead. Proceed straight with caution,
+> yielding to cross -traffic and
+> pedestrians until the light turns
+> green.
+
+T=0 
+
+Route command: Straight 
+
+T=4 
+
+Route command: Straight 
+
+T=8 
+
+Route command: Straight     
+
+> Night urban roa d with wet
+> pavement, leading vehicle ahead,
+> pedestrians near crosswalk, traffic
+> lights green. Proceed straight
+> cautiously, maintaining safe
+> distance from vehicle ahead and
+> yielding to pedestrians crossing
+> Night urban road with wet
+> pavement, construction barriers ,
+> and a slow vehicle ahead. Proceed
+> straight slowly, maintaining
+> distance, as traffic light is green
+> but road is obstructed ahead
+> Night urban road with wet pavement,
+> construction barriers, and a slow
+> vehicle ahead. Yield to cross -traffic,
+> slow left turn, and proceed
+> cautiously through the
+> intersection
+
+T=0 
+
+Route command: Straight 
+
+T=4 
+
+Route command: Straight 
+
+T=8 
+
+Route command: Straight 
+
+T=0 
+
+Route command: Straight 
+
+T=4 
+
+Route command: Straight 
+
+T=8 
+
+Route command: Left 
+
+Figure 7: Examples of scene-evolving VLM guidance. The guidance adapts to changing scene context and route intent, such as pedestrians, traffic lights, construction barriers. the ego trajectory from the previous 4-second chunk, asking it to produce a concise two-sentence guidance for the upcoming chunk. Figure 7 shows representative guidance examples, where the generated text evolves with the latest observation and route command. 
+
+Route command. Each chunk is assigned a high-level route command from { straight , left ,
+
+right }. As explicit route annotations are unavailable, we construct this coarse command from the route/ego-yaw change for labeling purposes. Specifically, this command is derived from the yaw change of the ego vehicle over the chunk. Let R0 and R1 denote the ego rotations at the beginning and end of a chunk. We compute the relative yaw from R⊤
+
+0 R1 and assign the command as left if the yaw change is larger than 15 ◦, right if it is smaller than −15 ◦, and straight otherwise. The command only specifies directional intent and does not contain future positions, velocities, distances, or trajectory coordinates. 
+
+Prompt template. The prompt template used for chunk-level guidance generation is shown below. The route command and visual inputs are filled at runtime. 15 Prompt template for VLM guidance 
+
+You are a navigation assistant for an autonomous-driving dataset. You generate short navigation guidance for an upcoming 4-second driving window. You do not see the future window; you only see the current road conditions, the recent ego trajectory when available, and a high-level route command. 
+
+Inputs. 
+
+• Route command for the upcoming window: straight , left , or right . Treat it as an authorita-tive navigation instruction. • Latest causally available front-camera frame before the upcoming 4-second window, showing the current road conditions. • BEV trajectory map of the previous 4-second window when available, showing recent ego motion and speed. 
+
+Output format. Output exactly two sentences, under 50 words in total. Do not use labels, bullets, markdown, or extra paragraphs. Use present tense only. 
+
+Sentence 1. Describe the current road context visible in the provided frame, including road type, traffic participants, traffic-light state if visible, weather, and lighting. 
+
+Sentence 2. Describe the ego navigation guidance for the upcoming window. Jointly reason from the road context, the previous BEV trajectory, and the route command. The direction must be consistent with the route command, and the caution level should reflect the traffic conditions. Capture required interactions such as yielding, waiting, or merging. Use qualitative language only; do not include numbers, units, distances, coordinates, or low-level trajectory values. 
+
+## C Efficiency Analysis 
+
+We analyze the per-chunk inference cost of DriveWAM and compare it against Alpamayo-1.5 [ 28 ] on a single NVIDIA H20 GPU. As shown in Table 6, each inference pass consists of three stages: (1) VLM guidance generation, (2) video generation, and (3) action denoising. 
+
+VLM guidance. DriveWAM queries a frozen Qwen3-VL-8B once per 4-second chunk, taking 125 ms with the default vLLM compilation. Because the guidance is generated at the chunk boundary rather than per frame, the cost is amortized over the entire chunk. Alpamayo-1.5 processes a substantially larger number of visual tokens per query, which accounts for its higher VLM latency of 570 ms. 
+
+Video generation. DriveWAM generates a 4-second video clip using a 3-step Euler ODE solver over the video tokens, taking 372 ms. Alpamayo-1.5 does not perform explicit video generation. 
+
+Action denoising. By default, DriveWAM uses 10 denoising steps for action tokens, taking 765 ms. We find that reducing the steps from 10 to 5 incurs negligible change in trajectory metrics, while reducing action denoising time to 374 ms. The 5-step variant (DriveWAM ∗) brings the total per-chunk cost to approximately 871 ms, comparable to Alpamayo-1.5’s 900 ms, while additionally producing a jointly generated future video. 
+
+Method VLM (ms) Video Gen (ms) Action (ms) ADE@4s ↓ FDE@4s ↓
+
+Alpamayo-1.5 570 — 330 1.44 4.18 DriveWAM (Ours) 125 372 765 0.83 2.47 DriveWAM ∗ (Ours) 125 372 374 0.84 2.45 
+
+Table 6: Per-chunk inference cost and trajectory prediction accuracy on a single H20 GPU. ∗ indicates action denoising steps reduced from 10 to 5. 
+
+## D Additional Qualitative Results 
+
+We present additional qualitative results to complement the main-paper visualization. Figure 8 shows representative examples from both NAVSIM and the PhysicalAI-Autonomous-Vehicles benchmark, spanning driving conditions and road layouts. 16 Ground Truth              
+
+> Prediction
+> Ground Truth
+> Prediction
+> T=1 T=2 T=3 T=4
+> T=1 T=2 T=3 T=4
+> T=1 T=2 T=3 T=4
+> T=1 T=2 T=3 T=4
+
+Figure 8: Qualitative results on NAVSIM (top two rows) and PhysicalAI-Autonomous-Vehicles (bottom two rows) benchmarks. Each row shows the predicted ego trajectory alongside the jointly generated future frames at T=1,2,3,4. 
+
+NAVSIM qualitative results. Each example shows a BEV map on the left, where the red trajectory is the DriveWAM prediction and the blue trajectory is the ground-truth. The yellow vehicle icon denotes the starting ego, the blue vehicle icon denotes the predicted ending ego, and the green vehicle icon denotes the ground-truth ending ego. In both cases, the predicted trajectory aligns closely with the ground truth despite the complexity of the surroundings, and the generated video maintains photometric and geometric consistency across the four future timesteps. 
+
+PhysicalAI-Autonomous-Vehicles qualitative results. Each example overlays the ground-truth and predicted ego trajectories on the current front-view frame. These results are consistent with the strong quantitative performance and further demonstrate that the joint video-action generation provides a coherent, physically plausible world model that supports accurate long-horizon planning across diverse real-world conditions. 17

@@ -1,0 +1,1218 @@
+Title: RCSP: Risk-Sensitive Conjectural Scenario Planning for Safe Dynamic Robot Navigation
+
+URL Source: https://arxiv.org/pdf/2605.26348v1
+
+Published Time: Wed, 27 May 2026 00:20:48 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# RCSP: Risk-Sensitive Conjectural Scenario Planning for Safe Dynamic Robot Navigation 
+
+Zhengye Han Quanyan Zhu 
+
+Department of Electrical and Computer Engineering New York University 
+
+{zh3286,qz494 }@nyu.edu 
+
+Figure 1: Actual MuJoCo rollout frames illustrating predictive near-miss commitment. Under the same dynamic bottleneck, a DWA-style local planner commits to a short-horizon trap, while RCSP reaches the goal by scoring tail risk over plausible moving-obstacle futures. 
+
+Abstract: Mobile robots can fail before they collide: a velocity that is safe now may commit the robot to a passage that moving obstacles will soon close. We study this predictive near-miss commitment problem and propose Risk-Sensitive Conjectural Scenario Planning (RCSP), a planning layer that evaluates candidate commands against plausible short-horizon obstacle futures. RCSP maintains a lightweight belief over local motion conjectures, samples future interactions, pe-nalizes high-risk tails, and executes through a local safety check. In controlled MuJoCo bottleneck tasks, the RCSP planner reaches the goal without collisions and yields higher secondary safety and path-quality point estimates than a non-adaptive predictor, with additional latency. In ROS2/Gazebo, adding the local safety layer to a standard Nav2 stack reduces dynamic near-miss failures. On of-ficial DynaBARN/Jackal transfer, tuned DWA and TEB remain stronger on strict benchmark success, revealing the boundary of the approach. These simulation results position RCSP as a predictive-risk module that complements existing nav-igation stacks in dynamic bottleneck regimes. 
+
+Keywords: dynamic navigation, risk-sensitive planning, moving obstacles, simu-lation benchmarks 
+
+> arXiv:2605.26348v1 [cs.RO] 25 May 2026
+
+## 1 Introduction 
+
+Mobile robots navigating among moving obstacles must make decisions before the future is fully visible. A velocity command can be collision-free under the current observation, improve short-horizon progress, and still commit the robot to a doorway, corridor, or bottleneck that a moving obstacle will occupy moments later. Once the robot has entered such a passage, the remaining choices may be limited to braking, oscillating, or colliding. We call this failure mode dynamic near-miss commitment : the dangerous decision is made before the near miss appears as an immediate local constraint violation. Mature navigation systems, including DWA, TEB, ROS2/Nav2 controllers, velocity-obstacle meth-ods, MPC variants, and control-barrier-style safety filters, provide strong tools for tracking, local obstacle avoidance, and instantaneous safety checking [1, 2, 3]. However, dynamic near-miss com-mitment exposes a different weakness: local clearance and short-horizon progress can be mislead-ing when the risk lies in the tail of plausible future obstacle motions. This paper therefore asks whether a robot can improve safety by evaluating candidate commands under plausible moving-obstacle futures and penalizing high-risk tails. We study this as a controlled simulation mechanism question, using ROS2/Gazebo near-miss tasks, MuJoCo dynamic-bottleneck environments, and offi-cial DynaBARN/Jackal transfer, where maintained DWA and TEB remain strong public-benchmark baselines [4]. We propose Risk-Sensitive Conjectural Scenario Planning (RCSP), a planning-layer mechanism that combines conjectural posterior update, CVaR scenario planning, and fixed safety execution. At each control step, RCSP maintains a finite posterior over local obstacle-motion conjectures, samples short-horizon futures from this posterior, scores candidate velocity commands by a CVaR tail-risk objective [5], and passes the selected nominal command through a fixed control-barrier-style execu-tion layer [3]. The conjectural update is deliberately lightweight: it is not intended to recover a true social-motion model, but to upweight members of a small local model family that best explain the recent interaction history. The resulting claim is targeted. In dynamic near-miss and bottleneck regimes, RCSP is designed to improve safety by changing the robot’s commitment before failure becomes locally unavoidable. On official DynaBARN/Jackal transfer, the picture is more mixed: full posterior RCSP gives better point estimates than its fixed-predictor and lower-level ablations, but mature DWA/TEB controllers remain stronger on official strict success. Thus, RCSP is best viewed as a predictive-risk layer to be integrated with robust navigation stacks, not as a universal replacement for them. Our contributions are: 1. We identify dynamic near-miss commitment as a predictive failure mode in navigation around moving obstacles. 2. We propose RCSP, a planning-layer mechanism combining online conjectural model updating, posterior scenario rollouts, CVaR tail-risk scoring, and fixed differential-drive safety execution. 3. We evaluate RCSP across ROS2/Gazebo, MuJoCo, and official DynaBARN/Jackal transfer, showing both where tail-risk planning helps and where mature local planners remain stronger. 
+
+## 2 Related Work 
+
+Dynamic robot navigation and local planning. Navigation among moving agents has a long his-tory in local planning, social navigation, and learning-based obstacle avoidance [6, 7]. DWA, TEB, and modern ROS2/Nav2 controllers such as DWB, Regulated Pure Pursuit, Graceful Controller, and MPPI remain strong practical baselines for local tracking, obstacle avoidance, and velocity selection [1, 2, 8, 9]. BARN and DynaBARN further stress such navigation stacks in constrained and dynamic Jackal environments [10, 4]. RCSP is not intended to replace these systems wholesale. Instead, it targets a narrower failure mode: local progress and instantaneous clearance can look favorable even when the selected velocity commits the robot to a future dynamic near miss. 2Risk-sensitive and predictive safety planning. Control barrier functions and MPC-CBF meth-ods enforce local safety constraints when the relevant state, model, and barrier conditions are well aligned [3]. Predictive safety filters extend this view by evaluating imagined, adversarial, or coun-terfactual futures before execution [11]. RCSP follows this predictive-safety perspective, but uses lightweight local rollouts and Conditional Value-at-Risk (CVaR) to penalize the high-risk tail of plausible moving-obstacle futures [5]. Its finite-sample interpretation is related to scenario opti-mization [12]; however, RCSP uses scenarios online to choose the next velocity command rather than offline to certify a controller. 
+
+Learning-based safe navigation. Safe reinforcement-learning methods such as CPO and PPO-Lagrangian learn constrained policies from interaction data [13, 14]. These methods are important comparisons for safe decision-making, but they can require substantial task-specific training and may still incur safety cost during training or transfer. RCSP instead remains a planning/control method: it does not learn a task policy, adapts only a small local predictive model online, and trades additional runtime latency for explicit scenario-based risk evaluation. 
+
+## 3 Problem Formulation 
+
+We consider a differential-drive robot navigating to a goal in a dynamic environment. At time t, the robot state is xrt , the local observation is ot, and the executed velocity command is ut = ( vt, ω t) ∈U, where vt and ωt denote linear and angular velocity. The observation ot may contain a local range scan such as LiDAR, an occupancy crop, visible moving-obstacle tracks, or simulator-provided local range observations. The environment contains static obstacles and moving agents whose future states are only partially observed. The history available before acting is Ht = {(oτ , u τ )}τ <t ∪ { ot}.
+
+The failure mode studied in this paper is not an immediate collision violation, but a predictive commitment error. A command may be feasible and collision-free under ot, yet place the robot in a local passage whose future safety depends on uncertain moving-obstacle motion. To reason about this uncertainty, RCSP maintains a finite conjectural model family Θ for nearby moving-obstacle dynamics. For each θ ∈ Θ, bθt denotes the obstacle-state belief under conjecture θ, and qt ∈ ∆(Θ) 
+
+is the posterior weight over conjectures. The robot information state is It =  Mt, {bθt }θ∈Θ, q t, g ,
+
+where Mt is the local map or occupancy memory and g is the goal. Given It, the planner chooses a velocity command before the relevant future obstacle motion is fully observed. The objective is to reach g while avoiding collisions, maintaining clearance, and not committing to passages that are likely to close. 
+
+## 4 Method 
+
+RCSP separates predictive risk reasoning from low-level execution. Before acting, the planner scores available velocity commands by their tail outcomes over plausible future moving-obstacle interactions, while a fixed safety filter enforces local feasibility and immediate safety. 
+
+4.1 Conjectural Model Update 
+
+The conjecture variable represents how nearby dynamic agents may move over the short horizon. RCSP maintains posterior weights qt(θ) over a finite model family and updates them by predictive likelihood. This update should be interpreted as lightweight misspecified-model selection: a highly weighted conjecture need not be the true environment model, but it should be useful for predicting the recent local interaction history. In our experiments, Θ contains simple local motion models for nearby moving obstacles, including static, slow/constant/fast velocity, yielding, and aggressive variants. This family is not intended as a complete social-motion model. Its role is to span locally plausible futures whose weights can change online as observations arrive. The fixed-predictor ablation disables this update and therefore tests whether adaptive conjecture weighting contributes beyond CVaR scoring alone. 3Figure 2: Method overview. The high-level planning layer updates the information state, maintains a posterior over local moving-obstacle conjectures, samples multiple future scenarios, and scores candidate actions by CVaR tail risk. The low-level execution layer applies a fixed safety filter to the planner-selected velocity command. We use the finite-family likelihood update as the conceptual posterior update. In the experiments, this update is implemented with standard numerical stabilization to avoid posterior collapse under noisy local observations; Appendix A gives the details. 
+
+4.2 Conjectural Scenario Generation 
+
+Let st denote the full current moving-obstacle state required by a conjectural predictor, such as obstacle positions together with tracked velocities or other hidden motion variables used to propagate obstacles forward. This state is not necessarily identical to the current observation ot: the robot may observe only part of the obstacle state, or may be uncertain about velocity, intent, or recently occluded motion. After assimilating the local observation history, each conjecture θ maintains a belief distribution bθt over the full current moving-obstacle state st; equivalently, bθt (s) denotes the belief mass or density of st = s under conjecture θ given (Ht, M t). If the current obstacle state is fully observed, then bθt reduces to a point mass at the observed state; otherwise, it represents a distribution over plausible hidden completions consistent with the observations. At each control step, for scenario count N and horizon H, RCSP samples short-horizon futures from the posterior-weighted conjectural mixture. Equivalently, for each scenario i = 1 , . . . , N , it draws 
+
+θ(i) ∼ qt and s(i) 
+
+> t
+
+∼ bθ(i) 
+
+> t
+
+, and then rolls the moving obstacles forward under the sampled conjecture: 
+
+ζ(i) 
+
+> t
+
+=  ζ(i)
+
+> t+1
+
+, . . . , ζ (i)
+
+> t+H
+
+ ∼ Qθ(i) (· | s(i) 
+
+> t
+
+, M t). Here ζ(i) 
+
+> t
+
+denotes the entire future obstacle rollout sampled at decision time t, while ζ(i) 
+
+> t+k
+
+denotes the obstacle state at future step k. Thus scenario generation propagates three sources of uncertainty: uncertainty over the local motion conjecture 
+
+θ, uncertainty over the full current obstacle state st, and stochasticity or model randomness in the future obstacle rollout. The sampled futures are not used to certify the conjectural model as correct; they are used to test candidate commands against plausible short-horizon interactions before the robot physically commits to one of them. 
+
+4.3 CVaR Scenario Planning 
+
+For each candidate velocity command u ∈ U , RCSP rolls out the robot under every sampled fu-ture trajectory ζ(i) 
+
+> t
+
+. Let R(i)(u) denote progress toward the goal and let G(i)(u) denote trajectory-4level risk, such as inverse clearance, maximum safety violation, or near-miss cost over the horizon. Rather than optimizing only the mean rollout reward or the single worst sampled future, RCSP uses a tail-risk objective Jt(u) = 1
+
+> N
+
+PNi=1 R(i)(u) − λ \CVaR α
+
+ {G(i)(u)}Ni=1 
+
+. Here \CVaR α av-erages the largest-risk α fraction of sampled outcomes, with α interpreted as the tail fraction. The planner-selected nominal command is unom  
+
+> t
+
+∈ arg max u∈U Jt(u). This objective is designed for near-miss commitment: it penalizes candidate commands whose average rollout may look accept-able but whose high-risk tail contains closing-passage or collision-prone futures. 
+
+4.4 Fixed Safety Execution Layer 
+
+The scenario planner selects a planner-selected nominal command unom  
+
+> t
+
+, i.e., the command before local safety filtering. This command is passed through the fixed local safety filter in Figure 2 before execution. The filter is CBF-style but discrete: rather than solving a continuous quadratic program, it evaluates the finite candidate set At = {unom  
+
+> t
+
+} ∪ U , where U is the same finite differential-drive velocity lattice used by the planner. For each u ∈ A t, the filter performs a short local rollout using the current observation ot and tracked obstacle velocities. Let ct be the current local clearance and 
+
+cmin (u) the minimum predicted clearance along this rollout. With hard-clearance margin chard , a candidate is locally feasible if 
+
+cmin (u) ≥ chard and  cmin (u) − chard 
+
+ + κ ct − chard 
+
+ ≥ 0,
+
+where κ > 0 is a fixed barrier-style gain. The first condition enforces a clearance margin; the second discourages commands that rapidly erode the current safety margin. Among the finite candidates, the filter selects a command that balances short-horizon progress, clearance, and closeness to unom  
+
+> t
+
+, with infeasible candidates penalized. We write the executed command as usafe  
+
+> t
+
+= Π safe (unom  
+
+> t
+
+, o t). This layer uses only current local geometry and short-horizon obstacle extrapolation: it does not sample conjectural futures, update the posterior, evaluate CVaR, or choose a new route. The same fixed filter is used for the shielded RCSP variants, including full posterior RCSP, fixed-predictor RCSP, and mean-risk + filter. The CVaR-only row disables this filter. Thus comparisons among shielded rows isolate predictive scenario-planning choices under a common execution layer. Algorithm 1 summarizes the whole framework. 
+
+Algorithm 1 Risk-sensitive conjectural scenario planning 
+
+1. Require: finite model family Θ, prior distribution q0 ∈ ∆(Θ) over conjectures, horizon H, scenario count 
+
+N , CVaR tail fraction α, progress-risk weight λ, and finite command set U.2. Observe and remember: receive local observation ot, append it to Ht, update the local map memory Mt,and maintain obstacle-state beliefs {bθt }θ∈Θ under each conjecture. 3. Conjecture update: for each θ ∈ Θ, compute the one-step predictive likelihood ℓt(θ) = Lθ (ot |Ht−1, u t−1), which measures how well conjecture θ explains the newly observed local scene ot. Concep-tually, RCSP performs the finite-family likelihood update ¯qt(θ) = qt−1(θ)ℓt(θ)  
+
+> P
+> θ′∈Θqt−1(θ′)ℓt(θ′)
+
+. In the experiments, the posterior used for scenario sampling is a stabilized version of this finite-family update, as described in Appendix A. 4. Scenario evaluation: for each candidate velocity command u ∈ U and each sample i = 1 , . . . , N :4.1. sample a conjecture θ(i) ∼ qt, a current moving-obstacle state s(i) 
+
+> t
+
+∼ bθ(i) 
+
+> t
+
+, and a future moving-obstacle trajectory ζ(i) 
+
+> t
+
+=  ζ(i)
+
+> t+1
+
+, . . . , ζ (i)
+
+> t+H
+
+ ∼ Qθ(i) (· | s(i) 
+
+> t
+
+, M t), where ζ(i) 
+
+> t
+
+denotes the whole future obstacle rollout sampled at decision time t, and ζ(i) 
+
+> t+k
+
+denotes its obstacle state at future step k;4.2. roll out the robot from its current state xrt for H steps under candidate command u against this sampled obstacle trajectory, yielding simulated robot states  xr, (i) 
+
+> t+1
+
+(u), . . . , x r, (i) 
+
+> t+H
+
+(u);
+
+4.3. compute progress reward R(i)(u) and trajectory risk G(i)(u) = max 1≤k≤H grisk 
+
+ xr, (i) 
+
+> t+k
+
+(u), ζ (i)
+
+> t+k
+
+,
+
+where larger G(i)(u) indicates lower predicted clearance or greater safety violation. 5. Tail-risk score: Jt(u) = 1
+
+> N
+
+PNi=1 R(i)(u) − λ \CVaR α({G(i)(u)}Ni=1 ), where \CVaR α averages the largest-risk ⌈αN ⌉ sampled outcomes, with α interpreted as the tail fraction. 6. Act: choose unom  
+
+> t
+
+∈ arg max u∈U Jt(u), and execute usafe  
+
+> t
+
+= Π safe (unom  
+
+> t
+
+, o t) through the fixed local safety filter. 
+
+55 Experiments 
+
+The experiments address three questions. Q1: Does full posterior RCSP prevent dynamic near-miss failures in controlled simulation? Q2: Which components are responsible for the gain? Q3: What happens on public benchmarks where mature local planners are already strong? 
+
+5.1 Evaluation Scope and Simulation Protocol 
+
+We use full posterior RCSP as the canonical controller: online conjecture-posterior updating, posterior-mixture scenario sampling, CVaR tail-risk scoring, and a fixed local execution filter. We also evaluate controlled variants. Fixed-predictor RCSP disables posterior updating while retaining CVaR scoring and the fixed filter. The ROS2/Gazebo Nav2 experiment is a deployment-wrapper test in which the fixed RCSP execution filter supervises official Nav2 commands. We evaluate on a controlled-to-public benchmark ladder: • MuJoCo controlled bottlenecks: differential-drive dynamics, local range observations, latency, velocity response, actuation noise, and dynamic obstacles. • ROS2/Gazebo dynamic near-miss: TurtleBot/Nav2-style moving-obstacle settings with official Nav2 controller baselines. • Official DynaBARN/Jackal: public dynamic-navigation transfer with ROS Noetic Jackal, DWA, and TEB [4]. 
+
+Baseline fairness and matching. Across matched comparisons, all methods use the same start– goal pairs, random seeds, robot model, obstacle schedule, and local observation interface within each environment. ROS2/Nav2 and official DynaBARN baselines use maintained benchmark or stack implementations where available; MuJoCo DWA/TEB/ORCA rows are style-matched simula-tor comparators using the same differential-drive action interface. Hyperparameters are fixed before final evaluation and are not tuned per seed. Figure 3 gives a compact overview of the selected headline comparisons across this evaluation lad-der; the detailed MuJoCo and DynaBARN metrics are reported in Tables 1 and 2. 0 50 100     
+
+> ROS2/Gazebo
+> near-miss
+> MuJoCo
+> BARN-style
+> MuJoCo
+> warehouse
+> 53%
+> 97%
+> 0%
+> 100%
+> 0%
+> 100%
+> paired 30-seed comparisons
+> (a) Success rate ↑
+> 050 100
+> 47%
+> 3%
+> 100%
+> 0%
+> 100%
+> 0%
+> same matched tasks
+> (b) Collision rate ↓
+> 050 100
+> DWA
+> TEB
+> RCSP full
+> RCSP fixed
+> CVaR only
+> MPC-CBF
+> strict public benchmark
+> 97%
+> 93%
+> 80%
+> 63%
+> 57%
+> 0%
+> (c) DynaBARN transfer ↑
+
+Figure 3: Compact cross-benchmark summary of selected headline comparisons. The ROS2/Gazebo panel compares Nav2 MPPI with the Nav2+RCSP execution-filter wrapper. The MuJoCo panels compare the DWA-style local planner with full posterior RCSP on matched controlled bottleneck tasks. The DynaBARN panel reports official benchmark success for DWA/TEB and RCSP variants, highlighting the public-transfer boundary: maintained DWA/TEB remain stronger on strict success, while full posterior RCSP is strongest among the RCSP variants. 65.2 Main Dynamic Navigation Results 
+
+Table 1 gives the final controlled MuJoCo all-variant rerun. Full posterior RCSP and fixed-predictor RCSP both solve the medium bottleneck tasks on success and collision. The posterior version gives better point estimates on score, safety cost, signed minimum clearance, and SPL, at the cost of higher latency. Table 1: Controlled MuJoCo dynamic-bottleneck results over two environments and 30 matched seeds per environment. Full posterior RCSP preserves the strong success/collision result and gives higher secondary point estimates than fixed-predictor RCSP, but is slower. “Score” is Success −
+
+Collision − 0.10 Timeout − 0.03 SafetyCost; “Min clear.” is signed clearance, with negative values indicating collision-margin violation. 
+
+Method Score Success Collision Timeout Safety cost Min clear. SPL Lat. ms Full posterior RCSP 0.478 1.000 0.000 0.000 17.394 0.135 1.000 535.669 Fixed-predictor RCSP 0.466 1.000 0.000 0.000 17.814 0.128 1.000 428.796 Mean-risk + filter 0.404 0.983 0.017 0.000 18.752 0.125 0.982 428.216 CVaR-only -1.081 0.183 0.467 0.350 25.410 0.069 0.135 407.711 MPC-CBF -2.205 0.033 0.917 0.050 43.894 -0.022 0.032 2.604 
+
+DWA-style -1.460 0.000 1.000 0.000 15.325 -0.060 0.000 20.909 TEB-style -2.997 0.000 0.983 0.017 67.051 -0.025 0.000 0.104 ORCA-style -3.329 0.000 0.967 0.033 78.645 -0.060 0.000 9.437 
+
+In the ROS2/Gazebo Nav2 comparison, the evaluated variant is a Nav2+RCSP execution filter: an official Nav2 controller provides the nominal command, and the fixed RCSP execution filter su-pervises the velocity command. This tests whether the local execution filter can reduce dynamic near-miss failures inside an otherwise standard navigation stack; it does not isolate the full posterior scenario planner. Against the strongest official Nav2 baseline, MPPI, this wrapper achieves 0.967 success and 0.033 collision, compared with 0.533 success and 0.467 collision for MPPI. Safety cost and collision are related but distinct: safety cost accumulates conservative slow-motion and proximity exposure over successful episodes, whereas collision is a terminal safety failure. 
+
+5.3 Ablations and Public-Benchmark Boundary 
+
+We use official DynaBARN/Jackal as the main external transfer test because it is not tailored to our controlled near-miss environments and includes mature benchmark navigation stacks. This setting is therefore used both as an ablation test for RCSP and as a boundary case for the paper’s claim. Table 2 evaluates full posterior RCSP against its fixed-predictor and lower-level ablations, as well as maintained DWA and TEB baselines. Table 2: Official DynaBARN/Jackal transfer. DWA/TEB remain stronger under the official move-base success signal. The full posterior/expanded-family RCSP variant gives better point estimates than fixed-predictor RCSP and lower-level ablations on endpoint and adapter safety diagnostics, but the full-vs-fixed success advantage is directional rather than conclusive. 
+
+Method Official success Final-pose comp. Adapter collision Min clear. Final dist. DWA 0.967 0.300 n/a n/a 1.281 TEB 0.933 0.267 n/a n/a 1.535 Fixed-predictor RCSP 0.633 0.967 0.367 0.930 0.523 Full posterior RCSP 0.800 1.000 0.200 1.026 0.300 
+
+CVaR-only 0.567 0.733 0.333 0.904 1.100 MPC-CBF 0.000 0.000 0.367 0.471 4.620  
+
+> Notes. “Official success” is the benchmark move-base status. “Final-pose comp.” uses a 0.45 m final-pose threshold and is not the same as official success. “Adapter collision” is the collision label from the RCSP adapter’s signed-clearance monitor; it is not a generic near-miss threshold. “Min clear.” is signed clearance. Adapter-collision and min-clearance labels are n/a for DWA/TEB because official logs do not expose this monitor.
+
+7The results support a targeted mechanism claim rather than a universal navigation-stack claim. In the controlled medium bottleneck tasks, full posterior RCSP achieves strong success and collision-avoidance performance. The ablations indicate that CVaR scoring and the fixed execution filter are central to the controlled-task gains. Restoring the online conjecture posterior gives higher secondary point estimates than the fixed-predictor variant, but does not improve success or collision in the medium table because both shielded variants already solve those tasks. On DynaBARN/Jackal, the full posterior/expanded-family RCSP variant gives better point estimates than fixed-predictor RCSP, CVaR-only, and MPC-CBF on endpoint and adapter safety diagnostics. This evidence is directional rather than conclusive: the paired official-success advantage over fixed-predictor RCSP has a bootstrap interval crossing zero, and posterior diagnostics are diffuse in this interface. 
+
+## 6 Discussion and Limitations 
+
+The experiments support a targeted mechanism claim rather than universal navigation SOTA. RCSP is strongest when dynamic obstacles create predictive near-miss commitments, where short-horizon local clearance is misleading. It is less compelling when performance is dominated by mature path tracking, robot-interface details, or fully observed local constraints: official DynaBARN shows this boundary, with DWA/TEB achieving higher strict success while full RCSP has better point estimates than its ablations. The main limitation is that the study is simulation-only; it does not validate real sensing noise, physical latency, calibration, actuation delays, wheel–ground interaction, or long-horizon autonomy on hardware. RCSP also incurs higher latency and less smooth control than mature local controllers, motivating faster scenario evaluation, integration with stronger navigation stacks, and physical-robot validation. 
+
+## 7 Conclusion 
+
+RCSP studies a specific failure mode in dynamic navigation: locally safe actions can commit a robot to future near misses before low-level safety filters can recover. In controlled dynamic near-miss and bottleneck simulations, full posterior RCSP combines posterior-mixture scenario sampling, CVaR tail-risk scoring, and fixed local execution filtering to achieve strong success and collision-avoidance performance. The posterior variant gives higher secondary point estimates than fixed-predictor RCSP at higher latency, but does not improve success/collision in the medium controlled table because both shielded variants already solve those tasks. ROS2/Gazebo evaluates a Nav2+RCSP execution-filter wrapper rather than the full posterior planner. Public DynaBARN transfer shows both promise and boundary: full posterior RCSP gives better point estimates than its own ablations, but mature DWA/TEB controllers remain stronger on official strict success. The method is therefore best viewed as a simulation-tested predictive-risk layer to be integrated with, rather than replace, robust navigation stacks. 
+
+## References 
+
+[1] D. Fox, W. Burgard, and S. Thrun. The dynamic window approach to collision avoidance. 
+
+IEEE Robotics Autom. Mag. , 4:23–33, 1997. URL https://api.semanticscholar.org/ CorpusID:1718553 .[2] C. R¨ osmann, W. Feiten, T. W¨ osch, F. Hoffmann, and T. Bertram. Trajectory modification considering dynamic constraints of autonomous robots. In ROBOTIK 2012; 7th German Con-ference on Robotics , pages 1–6. VDE, 2012. [3] A. D. Ames, S. Coogan, M. Egerstedt, G. Notomista, K. Sreenath, and P. Tabuada. Control barrier functions: Theory and applications. In 2019 18th European control conference (ECC) ,pages 3420–3431. Ieee, 2019. 8[4] A. Nair, F. Jiang, K. Hou, Z. Xu, S. Li, X. Xiao, and P. Stone. Dynabarn: Benchmarking metric ground navigation in dynamic environments. In 2022 IEEE International Symposium on Safety, Security, and Rescue Robotics (SSRR) , pages 347–352. IEEE, 2022. [5] R. T. Rockafellar, S. Uryasev, et al. Optimization of conditional value-at-risk. Journal of risk ,2:21–42, 2000. [6] C. Mavrogiannis, F. Baldini, A. Wang, D. Zhao, P. Trautman, A. Steinfeld, and J. Oh. Core challenges of social robot navigation: A survey. ACM Transactions on Human-Robot Interac-tion , 12(3):1–39, 2023. [7] Z. Xie and P. Dames. Drl-vo: Learning to navigate through crowded dynamic scenes using velocity obstacles. IEEE Transactions on Robotics , 39(4):2700–2719, 2023. [8] S. Macenski, T. Foote, B. Gerkey, C. Lalancette, and W. Woodall. Robot operating system 2: Design, architecture, and uses in the wild. Science robotics , 7(66):eabm6074, 2022. [9] G. Williams, N. Wagener, B. Goldfain, P. Drews, J. M. Rehg, B. Boots, and E. A. Theodorou. Information theoretic mpc for model-based reinforcement learning. In 2017 IEEE international conference on robotics and automation (ICRA) , pages 1714–1721. IEEE, 2017. [10] X. Xiao, Z. Xu, Z. Wang, Y. Song, G. Warnell, P. Stone, T. Zhang, S. Ravi, G. Wang, H. Kar-nan, et al. Autonomous ground navigation in highly constrained spaces: Lessons learned from the benchmark autonomous robot navigation challenge at icra 2022 [competitions]. IEEE Robotics & Automation Magazine , 29(4):148–156, 2022. [11] D. P. Nguyen, K.-C. Hsu, W. Yu, J. Tan, and J. F. Fisac. Gameplay filters: Robust zero-shot safety through adversarial imagination. arXiv preprint arXiv:2405.00846 , 2024. [12] M. C. Campi and S. Garatti. The exact feasibility of randomized solutions of uncertain convex programs. SIAM Journal on Optimization , 19(3):1211–1230, 2008. [13] J. Achiam, D. Held, A. Tamar, and P. Abbeel. Constrained policy optimization. In International conference on machine learning , pages 22–31. Pmlr, 2017. [14] A. Ray, J. Achiam, and D. Amodei. Benchmarking safe exploration in deep reinforcement learning. arXiv preprint arXiv:1910.01708 , 7(1):2, 2019. [15] R. H. Berk. Limiting behavior of posterior distributions when the model is incorrect. The Annals of Mathematical Statistics , 37(1):51–58, 1966. [16] I. Esponda and D. Pouzo. Berk–nash equilibrium: A framework for modeling agents with misspecified models. Econometrica , 84(3):1093–1130, 2016. 9Appendix A Implementation Scope 
+
+The canonical full posterior RCSP controller consists of posterior conjecture updating, posterior-mixture scenario sampling, CVaR tail-risk scoring, and a fixed local execution filter. Some experi-ments intentionally instantiate controlled variants: fixed-predictor rows disable posterior updating, CVaR-only disables the fixed execution filter, ROS2/Nav2 rows evaluate the fixed execution filter as a supervisor over official Nav2 commands, and full posterior rows use the posterior-mixture con-troller. Environment-specific adapters translate observations, simulator states, and velocity commands into the relevant robot interface. They should not be read as identical controller deployments across all environments. 
+
+Stabilized posterior weights. Here qt denotes the posterior weight over conjectural models, not the obstacle-state belief. For each conjecture θ, the corresponding obstacle-state belief bθt and roll-out model Qθ are used to generate future scenarios; qt determines how much probability mass is assigned to each conjecture when sampling those scenarios. Algorithm 1 presents the conceptual finite-family likelihood update qt(θ) ∝ qt−1(θ)ℓt(θ). In code, we use standard numerical stabilizers for this finite-family filter. In particular, likelihood tempering replaces the likelihood factor by 
+
+ℓt(θ)1/τ ,
+
+so the tempered update has the form 
+
+qt(θ) ∝ qt−1(θ)ℓt(θ)1/τ ,
+
+where τ > 0 is a temperature. Smaller τ sharpens the update, while larger τ keeps the posterior more diffuse. Equivalently, in log space, this corresponds to adding log ℓt(θ)/τ to the posterior log weight. After normalization, we apply a small probability floor so that every conjecture retains nonzero support. In expanded-family runs, finite scenario samples may be drawn from the top-K posterior mixture after renormalization; this affects scenario allocation only and is not hard MAP model se-lection. These stabilizers prevent premature posterior collapse under noisy local obstacle tracks, but they do not change the controller’s decision structure: RCSP still samples futures from a posterior mixture, scores candidate commands by CVaR tail risk, and executes the selected command through the fixed local safety layer. 
+
+## B Information-State and Conjectural Model Formulation 
+
+This section gives the information-state view behind RCSP and aligns the notation with Algorithm 1. Let Ht denote the history of observations and executed commands before choosing the next com-mand: 
+
+Ht = {(oτ , u τ )}t−1  
+
+> τ=0
+
+∪ { ot}.
+
+All admissible decisions are measurable with respect to the information generated by Ht. RCSP summarizes this history by 
+
+It = ( Mt, {bθt }θ∈Θ, q t, g ).
+
+Here Mt is the accumulated local map or occupancy memory, bθt is the belief over nearby moving-obstacle states under conjecture θ, qt ∈ ∆(Θ) is the posterior weight over conjectures, and g is the goal. 10 Knowledge state. Let V (xrt ) denote the region visible to the robot from pose xrt . If Et is the explored region and ξstat is the static environment, the map memory can be written as 
+
+Mt = ( Et, ξ stat |Et ), Et+1 = Et ∪ V (xrt+1 ).
+
+Thus Mt captures accumulated static information: once part of the local environment has been observed, it remains available to the controller. 
+
+Belief under a conjectured dynamics model. Let st denote the full current state of nearby mov-ing obstacles, including positions, tracked velocities, or other hidden motion variables needed by a conjectural predictor. Given conjecture θ, the scenario model Qθ induces an obstacle-transition kernel Qobs  
+
+> θ
+
+. The belief update follows the usual prediction–correction form. First, the controller predicts the next obstacle-state belief by marginalizing over the current hidden state: 
+
+˜bθt+1 (s′) = X
+
+> s
+
+bθt (s)Qobs  
+
+> θ
+
+(s′ | s, x rt , u t, M t).
+
+Here bθt (s) is the current belief that the obstacle state is s, and Qobs  
+
+> θ
+
+(s′ | s, x rt , u t, M t) is the conjec-tured probability of moving from s to s′. The product gives the contribution of previous state s to future state s′, and the sum marginalizes over all possible previous states. Then the new observation reweights the prediction: 
+
+bθt+1 (s′) ∝ ˜bθt+1 (s′)Lθ (ot+1 | s′, M t+1 ).
+
+The likelihood Lθ measures how compatible the new local observation is with candidate state s′.For continuous obstacle states, the sum is replaced by an integral. 
+
+Conjecture update and predictive KL interpretation. The conjectural model weights are up-dated by predictive performance. Let mθ (ot+1 | H t, u t) denote the one-step predictive observation distribution induced by the conjectured model Qθ . The cumulative predictive log-likelihood of con-jecture θ is 
+
+> t−1
+
+X 
+
+> τ=0
+
+log mθ (oτ +1 | H τ , u τ ).
+
+When the model class is misspecified, high posterior weight should not be interpreted as recovering the true environment model. Let μu denote the true observation distribution induced by applying the command or local policy u in the environment. In a stationary local regime, likelihood-based updating favors conjectures whose predictive observation distributions are closest to μu in predictive Kullback–Leibler divergence: 
+
+θ⋆(u) ∈ arg min  
+
+> θ∈Θ
+
+DKL 
+
+ μu ∥ mθ (· | u).
+
+This is the misspecified-model interpretation behind the conjecture update: a model can be predic-tively useful even when it is not a literal true model of the world. Appendix C.1 gives the corre-sponding finite-family likelihood-selection statement. 
+
+## C Model-Conditional Theory for Conjectural CVaR Planning 
+
+This appendix gives a model-conditional interpretation of RCSP. The results below do not constitute a closed-loop real-world safety guarantee. Instead, they clarify what is supported by the algorithmic structure when the conjectured scenario model is treated as the decision model: likelihood-based updates select predictive conjectures under misspecification, finite scenario samples approximate model-implied CVaR tail risk, and an idealized model–decision–data fixed point exists under stan-dard compactness and continuity assumptions. 11 C.1 Berk-Style Selection of Conjectural Predictors 
+
+The analysis below uses the idealized untempered finite-family likelihood update. The implemen-tation uses the stabilized update described in Appendix A; these numerical regularizers are used for finite-family filtering under noisy local observations and are not modeled in the idealized statements below. This subsection formalizes the conjecture-update step used by RCSP. We call the update Berk-style 
+
+because, under model misspecification and suitable regularity conditions, likelihood-based posterior updating need not recover a literal true model. Instead, posterior mass concentrates on models that are closest to the data-generating process in predictive Kullback–Leibler divergence [15]. This perspective is also related to Berk–Nash equilibrium, where an agent’s decision determines the data distribution that subsequently selects the predictive model [16]. In our setting, this corresponds to a model–decision–data loop: a conjecture affects the planned command, the command affects future observations, and those observations update the conjecture. In the main text, the posterior weight over conjectures is denoted by qt ∈ ∆(Θ) . In this subsection we write the same object as wt ∈ ∆(Θ) to avoid confusion with predictive observation distributions. The model family Θ is finite, and each θ ∈ Θ represents one local hypothesis about how nearby moving obstacles may evolve and how future observations may be generated. Given the current history Ht and the command executed at time t, conjecture θ induces a one-step predictive distribution over the next local observation. We denote its likelihood or density by 
+
+mθ (ot+1 | H t, u t) > 0.
+
+Here ot+1 is the same local observation variable used in the main text. The quantity mθ (ot+1 |Ht, u t) should be read as: “how likely was the newly observed local scene under conjecture θ?” It is induced by the conjectured scenario model Qθ after marginalizing over latent moving-obstacle states and other unobserved quantities. The strict positivity assumption avoids degenerate likelihood ratios; in implementation this corresponds to assigning nonzero probability or density to observations that may occur. The posterior update is the usual finite-family likelihood update: 
+
+wt+1 (θ) = wt(θ) mθ (ot+1 | H t, u t)
+
+P 
+
+> θ′∈Θ
+
+wt(θ′) mθ′ (ot+1 | H t, u t) .
+
+Thus, a conjecture receives more weight when it assigns higher predictive likelihood to the obser-vation that actually occurs. Conversely, a conjecture whose predictions are repeatedly inconsistent with the observed local interaction history loses weight. Unrolling this recursion over T observations gives 
+
+wT (θ) = 
+
+w0(θ) exp 
+
+PT −1 
+
+> t=0
+
+log mθ (ot+1 | H t, u t)
+
+P 
+
+> θ′∈Θ
+
+w0(θ′) exp 
+
+PT −1 
+
+> t=0
+
+log mθ′ (ot+1 | H t, u t)
+
+ .
+
+This expression shows that the posterior weight is controlled by cumulative predictive log-likelihood. Under misspecification, the update therefore selects conjectures that are most predictive of the observations generated by the closed-loop robot, rather than necessarily selecting a literal true model. 
+
+C.2 Why CVaR Rather Than the Single Worst Rollout 
+
+A natural conservative alternative to the CVaR objective is the single-worst-rollout score 
+
+bJworst  
+
+> t,N
+
+(u) = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(i)(u) − λ max  
+
+> 1≤i≤N
+
+G(i)(u).
+
+This objective is easy to justify from a safety perspective, but it is brittle under finite scenario sam-pling. If one sampled future is an extreme low-probability or noisy rollout, the entire command 12 score is dominated by that single sample. In dynamic navigation, this can make the robot overly conservative: it may brake, hesitate, take unnecessarily long detours, or fail to complete the route even when most plausible futures remain safe. The mean-risk objective has the opposite failure mode: 
+
+bJmean  
+
+> t,N
+
+(u) = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(i)(u) − λ 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+G(i)(u).
+
+It can average away rare but dangerous futures and is therefore too optimistic for near-miss commit-ment. Empirical CVaR provides an intermediate risk measure: 
+
+bJCVaR  
+
+> t,N
+
+(u) = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(i)(u) − λ \CVaR α
+
+ {G(i)(u)}Ni=1 
+
+,
+
+where \CVaR α averages the largest-risk ⌈αN ⌉ samples. When α = 1 , the risk term reduces to the empirical mean risk; when ⌈αN ⌉ = 1 , it reduces to the empirical worst-case risk. Intermediate values of α retain sensitivity to dangerous tail futures while reducing dependence on a single extreme sample. This distinction is why the main implementation uses CVaR rather than a hard worst-case score. The theory in Appendix C.3 therefore analyzes model-conditional approximation of the CVaR objective rather than chance-feasibility guarantees for hard sampled constraints. 
+
+C.3 Model-Conditional Empirical CVaR Approximation 
+
+This subsection explains why a finite number of sampled futures can be used to estimate the tail-risk objective optimized by RCSP. The statement is model-conditional: it treats the current posterior-weighted scenario model as the decision model and does not claim safety under the true environment when that model is misspecified. Recall that wt ∈ ∆(Θ) denotes the posterior weight over conjectures. At information state It, the posterior-weighted scenario model is 
+
+Qwt (· | It) = X
+
+> θ∈Θ
+
+wt(θ)Qθ (· | It).
+
+For each candidate command u ∈ U , the planner evaluates u under sampled futures 
+
+ζ(i) 
+
+> t
+
+∼ Qwt (· | It), i = 1 , . . . , N. 
+
+These sampled futures describe plausible moving-obstacle evolutions under the current information state. The command u affects the simulated robot rollout inside each sampled future, written as 
+
+xr, (i) 
+
+> t+k
+
+(u), and therefore affects the reward and risk values computed from that rollout. Let R(u, ζ )
+
+denote progress reward and let G(u, ζ ) denote trajectory-level risk, where larger G means lower clearance or greater safety violation. We assume bounded reward and bounded risk, 
+
+G(u, ζ ) ∈ [0 , B G], R(u, ζ ) ∈ [Rmin , R max ],
+
+and define the reward range BR = Rmax − Rmin . Here BG denotes a finite upper bound on the risk values under the finite-horizon scenario model; the implementation may use collision penalties or scaled safety-margin violations, so the bound is not assumed to be one. We next define the tail-risk functional used in the planner. For a risk random variable X ∈ [0 , B G],the cumulative distribution function 
+
+FX (x) = Pr( X ≤ x)
+
+gives the fraction of outcomes whose risk is at most x. The quantile function reverses this question: 
+
+F −1 
+
+> X
+
+(p) = inf {x ∈ [0 , B G] : FX (x) ≥ p}, p ∈ [0 , 1] .
+
+13 It is the smallest risk threshold x such that at least a p fraction of outcomes have risk no larger than 
+
+x. Thus, the (1 − α) quantile is the threshold where the worst α tail begins. We define the upper-tail CVaR over this worst α fraction as 
+
+ρα(X) = 1
+
+α
+
+Z 11−α
+
+F −1 
+
+> X
+
+(p) dp, α ∈ (0 , 1] .
+
+Thus, α denotes the tail fraction , not the quantile level. For example, α = 0 .1 means that CVaR averages the worst 10% of outcomes, which lie above the 0.9 quantile. Equivalently, the same tail average can be written in the standard optimization form 
+
+ρα(X) = inf 
+
+> η∈[0 ,B G]
+
+
+
+η + 1
+
+α E(X − η)+
+
+
+
+.
+
+This form has a simple threshold interpretation. The scalar η is a candidate risk threshold, and 
+
+(X − η)+ = max {X − η, 0} counts only the excess risk above that threshold. If η is chosen too low, many outcomes exceed it and the excess term is large. If η is chosen too high, the threshold term 
+
+η itself is large. The minimizing threshold therefore balances these two effects. For a continuous distribution, differentiating the objective with respect to η gives the condition 
+
+Pr( X > η ) = α, 
+
+so the minimizer is the (1 − α)-quantile, i.e., the point where the worst α tail begins. At this threshold, the objective equals the average risk in that worst tail. When the distribution has atoms, the minimizing threshold may not be unique; the quantile-integral definition above gives the corre-sponding fractional-tail average. For each command u, define the population model-conditional tail risk 
+
+ρα,t (u) := ρα
+
+ G(u, ζ ), ζ ∼ Qwt (· | It).
+
+The empirical version bρα,N,t (u) is computed from the sampled risks 
+
+{G(u, ζ (i) 
+
+> t
+
+)}Ni=1 .
+
+In implementation, this means sorting the sampled risks and averaging the largest-risk ⌈αN ⌉ out-comes, up to the usual rounding or fractional-weight convention for the finite tail size. The notation 
+
+bρα,N,t (u) is the theoretical counterpart of the empirical \CVaR α({G(i)(u)}Ni=1 ) used in Algorithm 1. 
+
+Proposition C.2 (uniform empirical CVaR approximation). For finite U and bounded risks 
+
+G(u, ζ ) ∈ [0 , B G], with probability at least 1 − δ over the scenario samples, 
+
+sup 
+
+> u∈U
+
+|bρα,N,t (u) − ρα,t (u)| ≤ BG
+
+α
+
+r log(2 |U| /δ )2N .
+
+Proof. Fix a command u ∈ U . Under the posterior-weighted scenario model ζ ∼ Qwt (· | It),the risk G(u, ζ ) is a random variable supported on [0 , B G]. Let Fu be its population cumulative distribution function, 
+
+Fu(x) = Pr  
+
+> ζ∼Qwt(·| It)
+
+ G(u, ζ ) ≤ x,
+
+and let bFu,N be the empirical CDF formed from the sampled risks {G(u, ζ (i) 
+
+> t
+
+)}Ni=1 .The first step is to control the sampling error of this empirical CDF. By the Dvoretzky–Kiefer– Wolfowitz inequality, for any fixed u and any ε > 0,
+
+Pr 
+
+
+
+sup 
+
+> x
+
+| bFu,N (x) − Fu(x)| > ε 
+
+
+
+≤ 2e−2N ε 2
+
+.
+
+Thus, with high probability, the empirical risk distribution is uniformly close to the model-implied risk distribution. 14 The second step converts this uniform CDF error into a Wasserstein error. In one dimension, the Wasserstein-1 distance between two distributions on [0 , B G] can be written as the area between their CDFs: 
+
+W1( bFu,N , F u) = 
+
+Z BG
+
+> 0
+
+| bFu,N (x) − Fu(x)| dx. 
+
+Therefore, 
+
+W1( bFu,N , F u) ≤ BG sup 
+
+> x
+
+| bFu,N (x) − Fu(x)|.
+
+Combining this with the DKW inequality gives, for fixed u,
+
+Pr 
+
+
+
+W1( bFu,N , F u) > B Gε
+
+
+
+≤ 2e−2N ε 2
+
+.
+
+The third step uses the quantile representation of upper-tail CVaR. If F −1 and bF −1 are the popula-tion and empirical quantile functions, then 
+
+ρα = 1
+
+α
+
+Z 11−α
+
+F −1(p) dp, bρα = 1
+
+α
+
+Z 11−α
+
+bF −1(p) dp. 
+
+Hence, 
+
+|bρα,N,t (u) − ρα,t (u)| ≤ 1
+
+α
+
+Z 11−α
+
+bF −1 
+
+> u,N
+
+(p) − F −1 
+
+> u
+
+(p) dp. 
+
+Since the integral over the tail is bounded by the integral over the full quantile interval, 
+
+Z 11−α
+
+bF −1 
+
+> u,N
+
+(p) − F −1 
+
+> u
+
+(p) dp ≤
+
+Z 10
+
+bF −1 
+
+> u,N
+
+(p) − F −1 
+
+> u
+
+(p) dp = W1( bFu,N , F u),
+
+where the last equality is the one-dimensional quantile representation of W1. Therefore, 
+
+|bρα,N,t (u) − ρα,t (u)| ≤ 1
+
+α W1( bFu,N , F u).
+
+Using the previous Wasserstein bound, for fixed u,
+
+Pr 
+
+
+
+|bρα,N,t (u) − ρα,t (u)| > BGεα
+
+
+
+≤ 2e−2N ε 2
+
+.
+
+Finally, we make the bound uniform over the finite command set. Applying a union bound over 
+
+u ∈ U gives 
+
+Pr 
+
+
+
+sup 
+
+> u∈U
+
+|bρα,N,t (u) − ρα,t (u)| > BGεα
+
+
+
+≤ 2|U| e−2N ε 2
+
+.
+
+Setting 
+
+2|U| e−2N ε 2
+
+= δ
+
+gives 
+
+ε =
+
+r log(2 |U| /δ )2N .
+
+Substituting this value of ε proves 
+
+sup 
+
+> u∈U
+
+|bρα,N,t (u) − ρα,t (u)| ≤ BG
+
+α
+
+r log(2 |U| /δ )2N
+
+with probability at least 1 − δ. □
+
+Proposition C.3 (uniform objective approximation and near-optimality). With probability at least 1 − δ,
+
+sup 
+
+> u∈U
+
+bJt,N (u) − Jt(u) ≤ εN (δ),
+
+where 
+
+εN (δ) = 
+
+
+
+BR + λB G
+
+α
+
+ r log(4 |U| /δ )2N .
+
+Consequently, if 
+
+buN ∈ arg max 
+
+> u∈U
+
+bJt,N (u), u⋆ ∈ arg max  
+
+> u∈U
+
+Jt(u),
+
+then, with the same probability, 
+
+Jt(u⋆) − Jt(buN ) ≤ 2εN (δ).
+
+15 Proof. The objective has two parts: an expected progress term and a CVaR risk penalty. We control their sampling errors separately and then add the two bounds. First consider the reward term. For each fixed command u, the random variables 
+
+R(u, ζ (1)  
+
+> t
+
+), . . . , R (u, ζ (N ) 
+
+> t
+
+) are bounded in [Rmin , R max ], with range BR = Rmax − Rmin . By Hoeffding’s inequality, 
+
+Pr 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(u, ζ (i) 
+
+> t
+
+) − Eζ∼Qwt (·| It)[R(u, ζ )] > B Rε
+
+!
+
+≤ 2e−2N ε 2
+
+.
+
+Applying a union bound over the finite command set U gives 
+
+Pr sup 
+
+> u∈U
+
+1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(u, ζ (i) 
+
+> t
+
+) − Eζ∼Qwt (·| It)[R(u, ζ )] > B Rε
+
+!
+
+≤ 2|U| e−2N ε 2
+
+.
+
+Setting 
+
+2|U| e−2N ε 2
+
+= δ/ 2
+
+yields 
+
+ε =
+
+r log(4 |U| /δ )2N .
+
+Therefore, with probability at least 1 − δ/ 2,
+
+sup 
+
+> u∈U
+
+1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(u, ζ (i) 
+
+> t
+
+) − Eζ∼Qwt (·| It)[R(u, ζ )] ≤ BR
+
+r log(4 |U| /δ )2N .
+
+Second, Proposition C.2 applied with confidence level δ/ 2 gives, with probability at least 1 − δ/ 2,
+
+sup 
+
+> u∈U
+
+|bρα,N,t (u) − ρα,t (u)| ≤ BG
+
+α
+
+r log(4 |U| /δ )2N .
+
+By another union bound, both the reward approximation event and the CVaR approximation event hold simultaneously with probability at least 1−δ. Recall that by definition, the population objective and empirical objective are 
+
+Jt(u) = Eζ∼Qwt (·| It)[R(u, ζ )] − λρ α,t (u),
+
+and 
+
+bJt,N (u) = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(u, ζ (i) 
+
+> t
+
+) − λbρα,N,t (u).
+
+So on this event, for every u ∈ U ,
+
+bJt,N (u) − Jt(u) =
+
+"
+
+1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(u, ζ (i) 
+
+> t
+
+) − Eζ∼Qwt (·| It)[R(u, ζ )] 
+
+#
+
+− λ [bρα,N,t (u) − ρα,t (u)] 
+
+≤ 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+R(u, ζ (i) 
+
+> t
+
+) − Eζ∼Qwt (·| It)[R(u, ζ )] + λ |bρα,N,t (u) − ρα,t (u)|≤
+
+
+
+BR + λB G
+
+α
+
+ r log(4 |U| /δ )2N .
+
+Taking the supremum over u ∈ U proves the uniform objective approximation. It remains to show the near-optimality statement. On the same event, every empirical objective value is within εN of its population value: 
+
+| bJt,N (u) − Jt(u)| ≤ εN ∀u ∈ U .
+
+16 Let u⋆ maximize the population objective and let buN maximize the empirical objective. Then 
+
+Jt(u⋆) ≤ bJt,N (u⋆) + εN
+
+because the empirical value of u⋆ can be at most εN below its population value. Since buN maximizes the empirical objective, bJt,N (u⋆) ≤ bJt,N (buN ).
+
+Finally, the empirical value of buN can be at most εN above its population value: 
+
+bJt,N (buN ) ≤ Jt(buN ) + εN .
+
+Combining the three inequalities gives 
+
+Jt(u⋆) ≤ Jt(buN ) + 2 εN ,
+
+or equivalently, 
+
+Jt(u⋆) − Jt(buN ) ≤ 2εN .
+
+□
+
+Interpretation. Propositions C.2 and C.3 justify the use of finite scenario samples for comparing candidate commands by model-implied tail risk. They do not imply that the chosen command is safe in the true environment. The guarantee is conditional on the posterior-weighted scenario model 
+
+Qwt (· | It) and on the quality of the observation and robot-interface models. If an interactive implementation instead uses command-dependent scenario sampling Qwt (· | It, u ), the same finite-command-set argument applies after replacing Qwt (· | It) by Qwt (· | It, u ) throughout. 
+
+C.4 Idealized Berk–CVaR Fixed Point 
+
+The previous subsections analyze the two ingredients of RCSP separately. The likelihood update selects conjectures that predict the observed data well, while finite scenario samples approximate the model-implied CVaR objective. We now give an idealized fixed-point interpretation that couples these two ingredients. This is a structural consistency statement, not a convergence theorem for the implemented receding-horizon controller. To keep notation light, this subsection suppresses the current information state It. Think of u as a candidate local command or stationary local decision rule in a fixed local regime. For this idealized fixed-point statement, let Uid denote a relaxed compact convex command set, which is distinct from the finite command lattice used in the implementation. The posterior-weighted scenario model is 
+
+Qw(· | u) = X
+
+> θ∈Θ
+
+w(θ)Qθ (· | u),
+
+and the corresponding model-conditional CVaR objective is 
+
+J(w, u ) = Eζ∼Qw (·| u)[R(u, ζ )] − λρ α(G(u, ζ )) .
+
+Here R(u, ζ ) is the progress reward and G(u, ζ ) is the trajectory-level risk under scenario ζ. The CVaR planning response to conjecture w is 
+
+A(w) = arg max 
+
+> u∈U id
+
+J(w, u ).
+
+The other direction of the loop is data-driven model selection. When command or local policy 
+
+u is applied in the true environment, it induces an observation distribution μu ∈ ∆( O) over the observation space O. Each conjecture θ induces a predictive observation model mθ (· | u) ∈ ∆( O).Define the predictive KL loss of conjecture θ under u by 
+
+ℓθ (u) = DKL (μu ∥ mθ (· | u)) ,
+
+and the set of best predictive conjectures by 
+
+Θ⋆(u) = arg min  
+
+> θ∈Θ
+
+ℓθ (u).
+
+17 Following the finite-family likelihood-selection result in Appendix C.1, the long-run posterior should place mass only on conjectures that are best at predicting the data generated under u. We therefore define the model-response correspondence 
+
+Γ( u) = {w ∈ ∆(Θ) : supp( w) ⊆ Θ⋆(u)} ,
+
+where supp( w) is the set of conjectures assigned positive probability. If there is a unique best predictive conjecture, Γ( u) contains only the point mass on that conjecture; if several conjectures tie, Γ( u) allows the posterior mass to be split among them. 
+
+Definition C.1 (idealized Berk–CVaR equilibrium). A pair (w⋆, u ⋆) ∈ ∆(Θ) × U id is an ideal-ized Berk–CVaR equilibrium if 
+
+u⋆ ∈ A(w⋆), w⋆ ∈ Γ( u⋆).
+
+Equivalently, with μ⋆ = μu⋆ , the triple (w⋆, u ⋆, μ ⋆) satisfies the closed-loop consistency relation 
+
+w⋆ −→ u⋆ −→ μ⋆ −→ w⋆.
+
+The conjecture determines the CVaR planning decision, the decision determines the data distribu-tion, and the data distribution selects the predictive conjectures. 
+
+Proposition C.4 (existence under idealized convexity assumptions). Suppose: 1. Uid is nonempty, compact, and convex, and ∆(Θ) is the simplex over a finite model family. 2. O is finite, mθ (o | u) > 0 for all (θ, o, u ), and mθ (o | u) is continuous in u.3. The true induced observation distribution μu(o) is continuous in u.4. J(w, u ) is continuous in (w, u ) and concave in u for every w.Then an idealized Berk–CVaR equilibrium exists. 
+
+Proof. First consider the planning response A(w). Since Uid is compact and J(w, u ) is continuous in u, the maximum theorem implies that 
+
+A(w) = arg max 
+
+> u∈U id
+
+J(w, u )
+
+is nonempty and compact-valued. Since J(w, u ) is concave in u, the argmax set A(w) is also convex-valued. Continuity of J implies that A is upper hemicontinuous. Next consider the model response Γ( u). For each θ ∈ Θ,
+
+ℓθ (u) = DKL (μu ∥ mθ (· | u)) = X
+
+> o∈O
+
+μu(o) log μu(o)
+
+mθ (o | u) .
+
+Because mθ (o | u) > 0 and is continuous in u, and because μu(o) is continuous in u, each ℓθ (u) is continuous. Since Θ is finite, Θ⋆(u) = arg min θ∈Θ ℓθ (u) is nonempty for every u. Therefore Γ( u)
+
+is nonempty, compact, and convex-valued, because it is the simplex over the finite set Θ⋆(u).We now show that Γ is upper hemicontinuous. Suppose un → u, wn ∈ Γ( un), and wn → w. If 
+
+w(θ) > 0, then along a subsequence wn(θ) > 0, so θ ∈ Θ⋆(un) along that subsequence. Hence 
+
+ℓθ (un) = min  
+
+> θ′∈Θ
+
+ℓθ′ (un).
+
+Taking limits and using continuity gives 
+
+ℓθ (u) = min  
+
+> θ′∈Θ
+
+ℓθ′ (u),
+
+so θ ∈ Θ⋆(u). Therefore supp( w) ⊆ Θ⋆(u), and hence w ∈ Γ( u). Thus Γ has a closed graph; with compact values and compact range, it is upper hemicontinuous. 18 Define the correspondence 
+
+T (w, u ) = Γ( u) × A(w)
+
+on the compact convex set ∆(Θ) × U id . The correspondence T has nonempty, compact, convex values and is upper hemicontinuous. By Kakutani’s fixed-point theorem, there exists (w⋆, u ⋆) such that 
+
+(w⋆, u ⋆) ∈ T (w⋆, u ⋆).
+
+Thus w⋆ ∈ Γ( u⋆) and u⋆ ∈ A(w⋆), which is precisely an idealized Berk–CVaR equilibrium. □
+
+Relation to the implemented planner. The implemented RCSP controller is receding-horizon, uses finite scenario samples, and operates under partial observability and simulator-interface con-straints. Proposition C.4 should therefore be read only as an idealized consistency statement. It says that, under strong compactness, continuity, and convexity assumptions, there exists a fixed point linking finite-family predictive model selection and CVaR planning. It does not imply that the implemented closed-loop robot controller converges to such a point, nor does it remove model mismatch or real-world hardware effects. 
+
+## D Mechanism Diagnostics for the Representative MuJoCo Seed 
+
+Figure 4: Mechanism diagnostics for the representative MuJoCo dynamic-bottleneck seed in Fig-ure 1. Left: the DWA clearance trace collapses after the commitment point and crosses the collision boundary, while RCSP maintains positive clearance. Right: the CVaR tail-risk signal rises as filtered clearance decreases, suggesting that the planner detects risky futures before failure becomes an im-mediate collision constraint. The diagnostics explain the representative rollout and complement the aggregate results in the main text. Figure 4 provides a mechanism-level diagnostic for the representative MuJoCo dynamic-bottleneck seed shown in Figure 1. The left panel shows that the DWA clearance trace collapses after the commitment point and crosses the collision boundary, while RCSP maintains positive clearance and later recovers toward the goal. This supports the qualitative observation in the rollout frames: the baseline failure is not merely a last-moment collision event, but the consequence of an earlier commitment into a passage whose future safety becomes unfavorable. The right panel visualizes the corresponding tail-risk diagnostic. Around and after the commitment point, the CVaR risk rises while filtered clearance decreases, indicating that the planner detects high-risk future interactions before the failure becomes an immediate local collision constraint. These diagnostics are intended to explain one representative seed; aggregate success, collision, and transfer results are reported in the main text and the extended tables below. 19 E Extended Experimental Tables 
+
+The following tables provide the full metrics behind the headline results in the main text. They are not intended as additional independent claims; rather, they document the tradeoffs behind the controlled-to-public evaluation ladder. We group the results into controlled simulation settings, where RCSP is expected to help because local progress can hide future tail risk, and transfer settings, where mature navigation stacks remain strong and the purpose is to expose the boundary of the method. 
+
+E.1 Controlled Simulation Results 
+
+The controlled simulation results document two different kinds of evidence. In ROS2/Gazebo, the Nav2+RCSP execution filter supervises official Nav2 velocity commands and reduces dynamic near-miss failures; this is a deployment-wrapper result, not a full posterior planning result. In MuJoCo, the dynamic-bottleneck and warehouse-squeeze tasks isolate the intended failure mode more di-rectly: local or reactive baselines often enter the closing passage, while full posterior RCSP and fixed-predictor RCSP preserve success and collision avoidance. Table 3: ROS2/Gazebo official Nav2 30-seed metrics. The Nav2+RCSP execution filter supervises official Nav2 velocity commands and improves success, collision, and SPL relative to the official Nav2 controllers, at the cost of higher safety-cost rate, longer duration, and higher jerk. This row is a deployment-wrapper test, not a full posterior RCSP planning result. “Min clear.” is signed clearance; negative values indicate collision-margin violation.                                                 
+
+> Method Success Collision Safety cost Min clear. SPL Duration Path length Jerk
+> Nav2+RCSP execution filter 0.967 0.033 0.428 0.033 0.932 31.667 0.927 0.112 Nav2 MPPI 0.533 0.467 0.408 0.027 0.533 18.013 0.818 0.001
+> Nav2 DWB 0.500 0.500 0.403 0.016 0.500 18.820 0.754 0.003 Nav2 RPP 0.467 0.533 0.405 0.013 0.467 21.650 0.802 0.003 Nav2 Graceful 0.333 0.667 0.401 0.008 0.333 19.073 0.761 0.003
+
+Table 4: MuJoCo robot-navigation ablation summary by environment. These settings isolate dy-namic bottlenecks with differential-drive dynamics, local range observations, and moving obstacles. All rows use the final all-variant rerun with 30 matched seeds per environment. Full posterior RCSP uses online posterior-mixture scenario sampling; fixed-predictor RCSP disables the posterior update while retaining CVaR scoring and the fixed local execution filter.                                                                        
+
+> Benchmark Method Score Success Collision Safety cost BARN/DynaBARN-style Full posterior RCSP 0.464 1.000 0.000 17.863 Fixed-predictor RCSP 0.451 1.000 0.000 18.297 Mean-risk + filter 0.431 1.000 0.000 18.980 CVaR-only -1.166 0.167 0.467 27.648 MPC-CBF -2.163 0.067 0.900 44.215 DWA-style -1.461 0.000 1.000 15.350
+> TEB-style -3.333 0.000 0.967 78.767 ORCA-style -3.062 0.000 1.000 68.743 Warehouse squeeze Full posterior RCSP 0.492 1.000 0.000 16.925
+> Fixed-predictor RCSP 0.480 1.000 0.000 17.331 Mean-risk + filter 0.378 0.967 0.033 18.523 CVaR-only -0.995 0.200 0.467 23.173 MPC-CBF -2.247 0.000 0.933 43.573 DWA-style -1.459 0.000 1.000 15.300 TEB-style -2.660 0.000 1.000 55.335 ORCA-style -3.596 0.000 0.933 88.547
+
+20 Table 5: Safety Gymnasium comparison with trained safe-RL baselines. This benchmark is included as a supplementary scope check. The first row is a CVaR+CBF controller rather than full posterior RCSP; CBF-only matches it in this more local and fully observed setting.                                 
+
+> Method Eval. episodes Success Collision Safety cost CVaR+CBF controller 20 0.950 0.050 0.650 CBF-only 20 0.950 0.050 0.650 Goal-PD 20 1.000 0.200 3.150 DWA 20 0.450 0.000 0.000
+> CVaR-only 20 0.650 0.150 3.100 Trained CPO 60 0.900 0.433 15.150 Trained PPO-Lag 60 0.983 0.517 23.100
+
+The Safety Gymnasium comparison is included as a scope check rather than as the main evidence. Because the task is more local and more fully observed, CBF-only matches the CVaR+CBF con-troller, suggesting that the full posterior scenario layer is most valuable when dynamic uncertainty and partial observability matter. 
+
+E.2 Public Transfer and Boundary Cases 
+
+The transfer results are deliberately reported as boundary cases. They show that full posterior RCSP gives better point estimates than its ablations in official DynaBARN/Jackal settings, while mature navigation stacks retain advantages in strict success, completion, and interface robustness. This distinction is important for the paper’s scope: RCSP is a predictive-risk mechanism, not a full re-placement for a tuned navigation stack. Table 6: Paired official DynaBARN statistics comparing fixed-predictor RCSP and full RCSP on the same 30 generated worlds. Positive values indicate an advantage for full RCSP; collision and final-distance metrics are written as reductions, so positive values are also better.                          
+
+> Metric Mean full-method advantage 95% bootstrap CI p(adv ≤0)
+> Success 0.167 [−0.033 ,0.367] 0.075 Collision reduction 0.167 [−0.033 ,0.367] 0.076 Relaxed completion 0.033 [0 .000 ,0.100] 0.356 Min clear 0.096 [−0.156 ,0.337] 0.219 Final distance reduction 0.222 [−0.018 ,0.683] 0.209
+
+## F Failure Cases and Limitations 
+
+The results in the main paper are intentionally framed as a targeted mechanism claim rather than a universal navigation claim. RCSP is designed to help when dynamic obstacles create predictive near-miss commitments: the robot must decide before the dangerous future becomes an immediate local collision constraint. The following cases clarify where this mechanism helps, where it does not yet dominate mature navigation stacks, and what must be improved before stronger real-world deployment claims can be made. 
+
+Public DynaBARN/Jackal transfer. Official DynaBARN/Jackal provides the strongest public transfer test in the paper because it is not tailored to our near-miss environments. On this benchmark, maintained DWA and TEB achieve higher strict success than full posterior RCSP. This result should not be read as a contradiction of the main claim. Rather, it shows the boundary between a predictive-risk planning mechanism and a mature navigation stack with strong path-following, tuning, and robot-interface robustness. Full posterior/expanded-family RCSP gives better point estimates than fixed-predictor RCSP, CVaR-only, and MPC-CBF on endpoint and adapter safety diagnostics, but the full-vs-fixed official-success advantage is directional and posterior diagnostics are diffuse in this 21 interface. We therefore use DynaBARN as boundary evidence, not as a decisive posterior-update win. 
+
+Fully observed local safety tasks. Safety Gymnasium results show that CBF-only can match RCSP on local, fully observed tasks. This is consistent with the intended scope of the method. Scenario planning is most useful when the risk is predictive: the relevant danger lies in plausible future moving-obstacle configurations that are not captured by the current local clearance constraint. When the task is already well described by instantaneous local safety constraints, the additional scenario layer may provide little benefit. 
+
+Latency and smoothness. Scenario rollouts and execution filtering introduce additional compu-tation and can make commands less smooth than mature local controllers. This appears in the ROS2/Gazebo metrics, where the Nav2+RCSP execution filter improves success and collision out-comes but has higher duration and jerk. Faster scenario proposal, pruning, parallelization, or learned rollout models are needed to make the planner more suitable for real-time deployment on physical platforms. 
+
+Sensing, model mismatch, and hardware effects. The finite-sample interpretation in Ap-pendix C is conditional on the posterior-weighted scenario model and the quality of the observations. It does not remove model mismatch, sensing noise, actuation delay, calibration error, wheel–ground interaction, or other hardware effects. The current paper therefore evaluates RCSP as a controlled simulation study with public transfer checks, not as a physical-robot deployment claim. Real-robot validation remains an important next step. 22
