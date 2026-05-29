@@ -1,0 +1,1775 @@
+Title: Score-Based One-step MeanFlow Policy Optimization
+
+URL Source: https://arxiv.org/pdf/2605.23365v1
+
+Published Time: Mon, 25 May 2026 00:43:13 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# Score-Based One-step MeanFlow Policy Optimization 
+
+Kyungyoon Kim 1 Donghyeon Ki 1 Hee-Jun Ahn 1 Byung-Jun Lee 1,2  
+
+> 1
+
+Korea University, Decision Making Lab 2 Gauss Labs Inc. 
+
+{kykim803, peop1e1n, niwniwniw, byungjunlee}@korea.ac.kr 
+
+Abstract 
+
+Diffusion and flow matching have emerged as expressive policy classes in rein-forcement learning, but their reliance on multi-step denoising imposes substantial computational overhead at inference time, which is particularly problematic in online RL. MeanFlow offers a promising alternative by learning an average velocity field that maps noise to data in a single network evaluation. However, MeanFlow typically requires samples from the target distribution to construct its target veloc-ity field, which are unavailable in online RL. We propose Score-Based One-step MeanFlow Policy Optimization (SOM), an actor-critic algorithm that resolves this by constructing the target velocity field directly from the Q-function via score estimation and a probability flow ODE, thereby concentrating probability mass on high-value modes. In the fully online RL setting, SOM achieves state-of-the-art performance on locomotion tasks with a single generation step, while substan-tially reducing both training and inference time compared to prior diffusion- and flow-matching-based policies. 
+
+1 Introduction 
+
+Reinforcement learning in continuous action spaces has long been dominated by Gaussian policies, yet their unimodal nature fundamentally limits expressivity, failing to capture the complex, multimodal structure that arises in many real-world control tasks. To overcome this, recent works have adopted generative models as policy parameterization. In particular, diffusion-based generative modeling [ 23 ,9, 21 , 24 ] and flow matching [ 12 , 13 ] have emerged as promising alternatives to Gaussian policies in RL [ 1, 10 , 30 , 29 , 5, 3 , 28 , 16 , 17 , 11 , 4, 15 ]. These approaches leverage the expressivity of generative models to represent complex, multimodal action distributions, enabling richer exploration and capturing diverse optimal behaviors. Despite these advantages, generative policies share a critical limitation: they require multiple, iterative network evaluations to generate a single action. This introduces significant computational overhead at inference time, which is particularly problematic in online RL, where policy inference is continuously interleaved with data collection. Numerous efforts have been made to alleviate the iterative nature of diffusion and flow-matching models, including diffusion distillation [ 18 , 31 ], consistency models [ 22 ,14], rectified flow [13], and shortcut models [6]. More recently, MeanFlow [ 7] has been proposed as a promising solution to the multi-step generation problem. Whereas flow matching learns an instantaneous velocity field that must be integrated over multiple discretization steps, MeanFlow learns a mean velocity field that directly maps noise to data across any time interval in a single network evaluation. This formulation enables high-quality sample generation in a single step, significantly reducing the computational cost of sampling. However, directly applying MeanFlow to online RL is not straightforward. The MeanFlow training objective requires a target velocity field defining the ground-truth transport from noise to the target data distribution, which in turn requires ground-truth samples from that distribution. In online RL, 
+
+> Preprint.
+> arXiv:2605.23365v1 [cs.LG] 22 May 2026
+
+Figure 1: Unlike existing diffusion and flow matching algorithms, SOM does not require multi-step denoising and can perform denoising in just one step. Furthermore, to train MeanFlow in online RL, SOM directly constructs a target velocity from the Q-function without requiring target-distribution samples. where such samples are unavailable, constructing an appropriate target velocity without access to explicit target-distribution samples is a key requirement. In this work, we propose Score-Based One-step MeanFlow Policy Optimization (SOM) , which addresses this challenge by constructing a target velocity field directly from the Q-function, without requiring samples from the target distribution. Treating the negative Q-function as the energy of the target distribution, we reduce velocity field construction to a score estimation problem. We adapt the Monte Carlo score estimator of iDEM [ 2], originally proposed for energy-defined target distributions, to the online RL setting. Our central contribution is to show that this Q-derived score estimator can be incorporated into a score-based probability flow ODE (PF-ODE), yielding a novel target velocity field. The resulting velocity field transports noise to the high-value action distribution induced by the current Q-function while maintaining the diversity needed for exploration. This allows MeanFlow policies to be trained in fully online RL where target-distribution samples are unavailable. Our main contributions are as follows: • We identify the absence of target-distribution samples as a key bottleneck in applying MeanFlow to online RL, and address it by constructing a target velocity field directly from Q-function gradients. • Building on this insight, we propose Score-Based One-step MeanFlow Policy Optimization (SOM), an actor-critic algorithm that integrates MeanFlow-based generative policies with online RL. Unlike prior diffusion and flow matching policies that require iterative denoising at inference time, SOM achieves expressive policy learning with single-step action sampling. • We demonstrate that SOM achieves state-of-the-art performance on locomotion tasks with just a single generation step, while substantially reducing training and inference time compared to prior diffusion- and flow-matching-based policies. 
+
+2 Related Work 
+
+Recent works have explored diffusion and flow-based models as policy representations in reinforce-ment learning, leveraging their expressiveness and multimodality to overcome the limitations of conventional unimodal policies. QVPO [ 5 ] introduces a Q-weighted variational lower bound objective that serves as a tight lower bound of the online RL policy objective, enabling diffusion policies to be trained without optimal action samples. QSM [ 16 ] regresses the policy’s score onto the Q-function’s action gradient. SDAC and DPMD [ 15 ] reweight the denoising score matching loss with the exponen-tial of the Q-function to approximate the Boltzmann policy induced by the Q-function. They differ in their sampling strategy: DPMD samples from the current policy, while SDAC samples from a Gaus-sian conditioned on noisy actions. DACER [ 28 ] treats the reverse diffusion process as the policy and 2backpropagates Q-function gradients across all denoising steps to maximize expected Q-values, while estimating policy entropy via a Gaussian mixture approximation to adaptively regulate exploration. DIPO [ 30 ] updates replay buffer actions along the Q-function gradient and fits the improved actions with a diffusion model. Despite their progress, all of these methods rely on iterative multi-step denoising at inference, which fundamentally limits their efficiency and scalability for online RL where actions must be sampled at every environment step. A recent work, MFP [ 32 ] extends MeanFlow — a one-step generative framework based on average velocity fields — to offline-to-online RL by constructing target velocities from replay buffer samples. Building on the recent success of MFP [ 32 ] in applying MeanFlow to RL, SOM derives the target velocity field directly from Q-function gradients via a score-based formulation over an analytically tractable Boltzmann distribution, enabling stable training. 
+
+3 Background 
+
+3.1 Reinforcement Learning 
+
+Reinforcement learning (RL) problems are typically formalized as a Markov Decision Process, defined by the tuple M = ⟨S , A, P, r, ρ 0, γ ⟩ [25 ]. Here, S ⊆ Rn denotes the state space, A ⊆ Rm the action space, P(s′|s, a ) the state transition function specifying the probability of transitioning to state s′
+
+after taking action a in state s, r : S × A → [rmin , r max ] the bounded reward function, ρ0 ∈ ∆( S)
+
+the initial state distribution, and γ ∈ [0 , 1) the discount factor. The goal of RL is to learn a policy π∗
+
+that maximizes the expected cumulative discounted return: J(π) = Eτ ∼π [P∞ 
+
+> t=0
+
+γtr(st, a t)] . To this end, the action-value function Qπ (s, a ) = Eτ ∼π [P∞ 
+
+> t=0
+
+γtr(st, a t) | s0 = s, a 0 = a] measures the expected return of taking action a in state s and following π thereafter. Following entropy-regularized RL, we consider the corresponding Boltzmann-form optimal policy: π∗(a | s) ∝ exp ( αQ (s, a )) 
+
+where α is a temperature parameter. 
+
+3.2 Variance Preserving SDE 
+
+The forward SDE describes the gradual perturbation of clean data into noise over time. Depending on the choice of the drift term f (t) and the diffusion term g(t), the forward SDE admits several variants, among which the two most common are the Variance Exploding (VE) and Variance Preserving (VP) SDEs. We primarily focus on the VP-SDE, defined as 
+
+dx t = − 12 β(t) xt dt + pβ(t) dw t,
+
+which corresponds to f (t) = − 12 β(t) and g(t) = pβ(t), where β(t) denotes a time-dependent noise schedule. Under this SDE, the forward perturbation kernel admits the closed-form Gaussian transition 
+
+pt(xt | x0) = N
+
+
+
+xt; x0 e− 12    
+
+> Rt
+> 0β(τ)dτ
+
+,  1 − e− R t   
+
+> 0β(τ)dτ
+
+I
+
+
+
+, (1) so that xt can be obtained directly from x0 via reparameterization, bypassing explicit SDE simulation. A description of the VE SDE is provided in the Appendix B.1. 
+
+3.3 Probability Flow ODE 
+
+For a general SDE dx t = f (t)xtdt + g(t)dw , where f (t) : RD → RD denotes the deterministic drift function, g(t) ∈ R is a scalar diffusion coefficient controlling the magnitude of stochastic perturbations, and w(t) is a standard Wiener process (Brownian motion). Since our goal is to construct a deterministic velocity field that transports samples toward high-value regions, the probability flow ODE provides a principled way to derive such a velocity directly from the evolving marginal density. The corresponding probability flow ODE is given by: 
+
+vt(xt) := f (t)xt − 12 g2(t)∇xt log pt(xt) (2) This ODE shares the same marginal densities pt(xt) as the original SDE. The equivalence of marginal distributions is guaranteed by the Fokker–Planck equation, which characterizes the time evolution of densities induced by the SDE and its corresponding probability flow ODE. 33.4 MeanFlow 
+
+The probability flow ODE defines an instantaneous velocity at each time t, requiring numerical integration over many steps to generate samples. MeanFlow [ 7 ] is a one-step generative modeling framework that introduces a new paradigm, the average velocity over a certain time interval, in contrast to the instantaneous velocity modeled by Flow Matching. Following the Flow Matching framework, given data x0 ∼ pdata and prior ϵ ∼ pprior , we construct a conditional flow path xt = atx + btϵ with predefined schedules at and bt; under the standard choice at = 1 − t, bt = t, the time derivative yields the conditional velocity vt(xt | x0, ϵ ) = ϵ − x0. Since the same point xt may originate from many different (x0, ϵ ) pairs, Flow Matching takes as its ground-truth target the marginal velocity field , v(xt, t ) ≜ E[ vt | xt ], obtained by taking expectation over all conditional velocities that pass through xt. Building on this marginal field, MeanFlow introduces the average velocity 
+
+u(xt, r, t ), defined as the displacement between two time steps r and t divided by the elapsed interval 
+
+u(xt, r, t ) ≜ 1
+
+> t−r
+
+R tr v(xτ , τ ) dτ . Differentiating both sides of (t − r)u(xt, r, t ) = R tr v(xτ , τ ) dτ 
+
+with respect to t yields the MeanFlow Identity [7]: 
+
+u(xt, r, t ) = v(xt, t ) − (t − r) ddt u(xt, r, t ),
+
+where the total derivative ddt u = v(xt, t )∂xt u + ∂tu can be efficiently computed via a Jacobian-vector product (JVP). A neural network uθ (xt, r, t ) is then trained to satisfy this identity by minimizing 
+
+L(θ) = Et,r,x t ∥uθ (xt, r, t ) − sg( utgt )∥22, (3) where utgt = v(xt, t ) − (t − r) v(xt, t ) ∂xt uθ + ∂tuθ
+
+ and sg( ·) denotes the stop-gradient operator. Following the conditional Flow Matching loss [ 12 ], the v(xt, t ) in utgt is replaced by the conditional velocity vt(xt | x0, ϵ ) during training. At inference time, a sample is generated in a single network evaluation via x0 = x1 − u(x1, 0, 1) , where x1 = ϵ ∼ pprior (ϵ).
+
+3.5 Iterated Denoising Energy Matching 
+
+iDEM [ 2] addresses the setting where the target distribution is defined implicitly through an en-ergy function, p0(x) ∝ exp( −E(x)) , with access only to E(x) and its gradient ∇E(x) rather than samples. Since samples from p0 are unavailable, the posterior expectation ∇xt log pt(xt) = 
+
+Ex0∼p(x0|xt)[∇xt log pt(xt|x0)] cannot be evaluated directly. Instead, iDEM approximates it via self-normalized importance sampling. Under the VE SDE, samples x(i)0|t are drawn from a Gaussian proposal N (xt, σ 2 
+
+> t
+
+I) and reweighted by wi ∝ exp( −E(x(i)0|t)) to correct for the proposal–posterior mismatch: 
+
+∇xt log pt(xt) ≈
+
+> 1
+> K
+
+P 
+
+> i
+
+∇xt exp( −E(x(i)0|t)) 
+
+> 1
+> K
+
+P 
+
+> i
+
+exp( −E(x(i)0|t)) = ∇xt log X
+
+> i
+
+exp( −E(x(i)0|t)) , (4) where x(1) 0|t , . . . , x (K)0|t ∼ N (xt, σ 2 
+
+> t
+
+I). Specifically, x(i)0|t is obtained from xt through the reparameteri-zation x(i)0|t = xt + ϵ(i) with ϵ(i) ∼ N (0 , σ 2 
+
+> t
+
+I). The notation 0|t thus represents a sample drawn at the base time level t = 0 from a Gaussian distribution whose mean is xt. Moreover, xt need not be sampled from a distribution conditioned on x0; instead, it can be regarded as an arbitrary fixed point. 
+
+4 Score-Based One-step MeanFlow Policy Optimization 
+
+In this section, we propose a score-based MeanFlow training framework for online RL that obviates the need for sampling from the target distribution. We begin by introducing a time-dependent energy function that defines a Boltzmann distribution at each timestep in Section 4.1. We then present a critic-based method to estimate its score without access to target samples in Section 4.2. Finally, we convert the estimated score into a velocity field via the PF-ODE formulation in Section 4.3. 
+
+4.1 Time-Dependent Energy Function 
+
+MeanFlow objectives (Equation (3)) regress uθ (xt, r, t ) toward a target utgt defined by a marginal velocity field. However, their inherent reliance on explicit samples from the target distribution poses 4a key challenge in online reinforcement learning. Unlike supervised settings, online RL lacks a fixed, externally specified target distribution, making MeanFlow challenging to apply directly in this setting, as it requires samples from the target distribution for training. Recent approaches such as MFP circumvent this issue by employing Best-of-N (BoN) samples, where N candidate actions are sampled from the current policy and the one with the highest learned Q-value is retained. While this strategy successfully bypasses the need for explicit value-maximizing target distribution samples, it may struggle as action dimensionality grows, since the number of candidates required to adequately cover the action space can grow exponentially with dimension. To overcome the aforementioned limitations, we present a method for constructing the target velocity via gradient information, which scales more favorably with action dimensionality than BoN-based approaches. In particular, under a Boltzmann-form policy parameterization motivated by entropy-regularized RL, the target score can be naturally expressed in terms of the critic. To this end, we construct a time-dependent family of distributions that provides a tractable score at each timestep. Let p0(a0 | s) denote the target distribution we aim to sample from, which we assume admits an energy-based representation: 
+
+p0(a0 | s) = exp( αQ (s, a 0)) 
+
+Z(s) ,
+
+where Z(s) = R exp( αQ (s, a 0)) da 0 is the normalization constant, and α > 0 is a temperature parameter. The score of this distribution is available in closed form through the learned critic: 
+
+∇a0 log p0(a0 | s) = α∇a0 Q(s, a 0). Since PF-ODE-based training requires the score at every timestep t ∈ [0 , 1] , we construct a time-dependent energy function that preserves the Boltzmann structure of the target across timesteps and admits a tractable score throughout. Under a forward noising kernel pt(at|a0), which gradually corrupts a clean sample a0 into Gaussian noise as t increases, the induced density at time t is 
+
+pt(at | s) = 
+
+Z
+
+pt(at|a0)p0(a0 | s)da 0 = 1
+
+Z(s)
+
+Z
+
+pt(at|a0) exp( αQ (s, a 0)) da 0
+
+We additionally define the time-dependent energy function Qt(s, a t) implicitly as: 
+
+Qt(s, a t) = log 
+
+Z
+
+pt(at|a0) exp( αQ (s, a 0)) da 0
+
+Under this definition, the density at time t admits an energy-based representation pt(at | s) =  
+
+> exp( Qt(s,a t))
+> Z(s)
+
+, and the score reduces to the simple form ∇at log pt(at | s) = ∇at Qt(s, a t). How-ever, computing Qt(s, a t) in closed form is generally intractable, as it requires computing the log-expectation of exponentiated Q-values under the forward noising kernel. Crucially, however, our objective only requires the gradient ∇at Qt(s, a t), allowing us to directly approximate it without ever evaluating the intractable Qt(s, a t), which is sufficient to construct the probability flow velocity field. 
+
+4.2 Estimation of the Time-Dependent Energy Gradient 
+
+Under the Boltzmann action distribution π(· | s) ∝ exp( αQ (s, ·)) , we consider an energy-based formulation with E(s, a ) = −αQ (s, a ), where α > 0 controls the exploration–exploitation trade-off. Starting from the iDEM estimator, we substitute the energy function using the Boltzmann-form action distribution introduced above and adapt the resulting estimator to the VP-SDE setting in Section 3.2. Applying these modifications to Equation (4) yields the following score estimator: 
+
+∇at Qt(s, a t) ≈ 
+
+> 1
+> K
+
+Σi∇at exp( αQ (s, a (i)0|t))  
+
+> 1
+> K
+
+Σi exp( αQ (s, a (i)0|t)) = ∇at log Σ i exp( αQ (s, a (i)0|t)) , (5) where a(1) 0|t , . . . , a (K)0|t ∼ N 
+
+ at     
+
+> e−12
+> Rt
+> 0β(r)dr
+
+, 1−e− R t       
+
+> 0β(r)dr
+> e−Rt
+> 0β(r)dr
+
+I
+
+
+
+. This estimator corresponds to the gradi-ent of a locally Gaussian-smoothed Q-landscape, effectively biasing action updates toward high-value regions while maintaining exploration. 54.3 Velocity Field and Its Relation to the Score Function 
+
+The Probability Flow ODE (PF-ODE) in Section 3.3 establishes a connection between the velocity field and the gradient of the time-dependent energy function. In the reinforcement learning setting, the action distribution is conditioned on the state s. Substituting the VP-SDE coefficients f (t) and 
+
+g(t) from Section 3.2 into the PF-ODE therefore yields the following state-conditioned VP-specific velocity field vt(at | s) = − 12 β(t) at + ∇at log pt(at | s). Recall from Section 4.1 that the density at timesteps t admits the energy-based form pt(at | s) = exp( Qt(s,a t))  
+
+> Z(s)
+
+, so that the score reduces to 
+
+∇at log pt(at | s) = ∇at Qt(s, a t). Specifically, the target velocity is substituted with 
+
+vnew t (at | s) = − 12 β(t)( at + ∇at Qt(s, a t)) , (6) so that the transport velocity is directly determined by the gradient of the time-dependent energy function. Substituting the PF-ODE–induced velocity field into the MeanFlow objective, where uθ
+
+denotes the MeanFlow policy parameterization, we obtain the following training formulation. 
+
+unew tgt = vnew t (at | s) − (t − r)( vnew t (at | s)∂at uθ + ∂tuθ )
+
+The training objective is therefore defined as 
+
+L(θ) = E(s,a 0)∼D , t ∼U (0 ,1) , a t∼pt(at|a0)
+
+|| uθ (at, r, t, s ) − sg (unew tgt )|| 22
+
+ . (7) 
+
+4.4 Implementation Details Normalization and Re-scaling. We apply two normalizations to stabilize training. First, we found that the highly varying scale of the score ∇at Qt(s, a t) can result in severely imbalanced updates across states and timesteps, which can slow down learning; we normalize the score to have unit norm and rescale it with a tunable coefficient w. Accordingly, Equation (6) can be rewritten as: 
+
+vnew t (at | s) = − 12 β(t)
+
+
+
+at + w ∇at Qt(s, a t)
+
+∥∇ at Qt(s, a t)∥2 + ϵ
+
+
+
+. (8) Second, similar to the batch-wise advantage normalization used in GRPO [ 20 ], we normalize Q
+
+values across each training batch when constructing the policy targets. This makes training more robust to varying reward scales across tasks, and reduces the variance of the score estimator. 
+
+Critic Update. We train the critic via a distributional Bellman objective with twin Q-networks 
+
+Qϕ1 , Q ϕ2 and corresponding target networks following DACER [28]. 
+
+Best-of-N . We also incorporate BoN sampling into SOM when training the critic, which makes the critic estimate the action value of further improved policy. While our score-based target velocity effectively incorporates critic gradient information into actor updates, we find that BoN sampling additionally speeds up training, as scores can sometimes plateau in complex Q landscapes. Specifically, multiple candidate actions are generated for each state and evaluated using the critic, and the action with the highest predicted Q-value is selected when evaluating the target value in the critic objective. The overall procedure is described in Algorithm 1, and the full pipeline is illustrated in Figure 1. 
+
+5 Experiments 
+
+5.1 MuJoCo Benchmarks Benchmarks. We evaluated the performance on nine tasks from the MuJoCo v4 suite [ 26 , 27 ]: 
+
+Ant-v4 , HalfCheetah-v4 , Hopper-v4 , Humanoid-v4 , Walker2d-v4 , Swimmer-v4 , Pusher-v4 ,
+
+Reacher-v4 , and InvertedDoublePendulum-v4 . These environments are widely used to bench-mark model-free RL algorithms and cover a broad range of state-action dimensionalities. Each algorithm is trained and reported over 5 random seeds. We employ 1M environment steps for 
+
+InvertedDoublePendulum-v4 , Pusher-v4 , and Reacher-v4 , and 5M steps for all others. 60 1 2 3 4 5                                                                           
+
+> Step 1e6
+> -2
+> 0
+> 2
+> 4
+> 6
+> 8
+> Return
+> 1e3 Ant-v4
+> 012345
+> Step 1e6
+> 0
+> 0.5
+> 1
+> 1.5
+> 1e4 HalfCheetah-v4
+> 012345
+> Step 1e6
+> 0
+> 1
+> 2
+> 3
+> 4
+> 1e3 Hopper-v4
+> 012345
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 8
+> 1e3 Humanoid-v4
+> 012345
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 1e3 Walker2d-v4
+> 012345
+> Step 1e6
+> 0.2
+> 0.5
+> 0.8
+> 1
+> 1.2
+> 1.5
+> Return
+> 1e2 Swimmer-v4
+> 00.2 0.4 0.6 0.8 1
+> Step 1e6
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1
+> 1e4
+> InvertedDoublePendulum-v4
+> 00.2 0.4 0.6 0.8 1
+> Step 1e6
+> -3
+> -2
+> -1
+> 0
+> 1e2 Pusher-v4
+> 00.2 0.4 0.6 0.8 1
+> Step 1e6
+> -1.2
+> -1
+> -0.8
+> -0.5
+> -0.2
+> 0
+> 1e2 Reacher-v4
+> 012345
+> Step 1e6
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0 Normalized (5 locomotions)
+> SOM (Ours) DACER DIPO DPMD MFP PPO QSM QVPO SAC SDAC
+
+Figure 2: Training curves on locomotion benchmarks Curves denote the mean across five random seeds, with shaded regions representing the 95% confidence interval. The bottom-right panel reports a per-environment min–max normalized return averaged across the five locomotion benchmarks. Table 1: Final Episode returns: mean ± 95% CI over 5 seeds. Bold indicates the highest mean in each column; underline indicates the second highest. Algorithm Ant-v4 HalfCheetah-v4 Hopper-v4 Humanoid-v4 Walker2d-v4 Normalized DACER 6953 .5 ± 1029 .7 14445 .8 ± 281 .5 3462 .8 ± 709 .2 3915 .5 ± 3006 .2 4723 .6 ± 2276 .1 0.764 
+
+DIPO 3112 .0 ± 640 .7 11762 .1 ± 1912 .9 1962 .7 ± 158 .8 6139 .4 ± 645 .9 5425 .8 ± 181 .3 0.667 
+
+DPMD 5714 .1 ± 887 .8 14020 .6 ± 946 .3 3257 .6 ± 623 .3 4968 .4 ± 1991 .1 4953 .8 ± 707 .1 0.760 
+
+QSM 1671 .0 ± 377 .9 13922 .1 ± 1032 .4 1493 .3 ± 146 .7 2082 .9 ± 842 .4 4144 .9 ± 575 .3 0.468 
+
+QVPO 430 .3 ± 2277 .9 5447 .0 ± 4585 .8 2232 .1 ± 1189 .3 1127 .1 ± 937 .4 1323 .3 ± 1609 .7 0.456 
+
+SDAC 3067 .0 ± 926 .6 14820 .9 ± 1049 .0 2036 .4 ± 431 .5 5803 .5 ± 520 .6 4702 .1 ± 627 .4 0.503 
+
+MFP 5150 .7 ± 785 .6 6400 .3 ± 966 .5 1280 .3 ± 981 .8 4862 .2 ± 603 .1 1849 .8 ± 1356 .2 0.310 
+
+SAC 5711 .6 ± 530 .4 11098 .7 ± 1697 .4 1722 .6 ± 248 .7 5179 .5 ± 335 .0 5348 .6 ± 712 .9 0.669 
+
+PPO 5417 .2 ± 283 .6 7112 .6 ± 576 .7 2282 .5 ± 770 .3 299 .2 ± 119 .0 3096 .3 ± 540 .3 0.674 
+
+SOM (Ours) 7033 .5 ± 304 .2 15789 .8 ± 910 .9 3425 .2 ± 353 .6 7365 .7 ± 493 .3 5472 .8 ± 526 .9 0.887 
+
+Baselines. We compare our method against a diverse set of baselines covering both generative and non-generative policy classes. Among generative policy baselines, we include diffusion-based actors—DACER [ 28 ], DIPO [ 30 ], DPMD [ 15 ], QSM [ 16 ], QVPO [ 5], and SDAC [ 15 ]—as well as MFP [ 32 ], which builds on the recently proposed MeanFlow framework [ 7]. For non-generative base-lines, we include the standard off-policy and on-policy actor-critic algorithms SAC [ 8] and PPO [ 19 ], which serve as strong and widely adopted baselines for continuous control. All baselines follow the same training protocol as described in the Benchmarks section above, except that PPO is trained for 5M environment steps on InvertedDoublePendulum-v4 , Pusher-v4 , and Reacher-v4 (5× the x-axis scale of other methods). 
+
+Results. Figure 2 shows the full training curves over all 9 tasks, and Table 1 reports the final episode returns of all methods across the five locomotion benchmarks, together with the average of per-environment normalized performance. SOM achieves the highest mean return on four out of five environments and the second highest on Hopper-v4 where the difference to the top-performing method is statistically insignificant. The improvement is most pronounced on the Humanoid-v4 task, which has the highest action dimensionality among all tasks, outperforming the second-best method by a clear margin. This result aligns with our intuition that gradient information becomes increasingly beneficial as action dimensionality grows. In addition, Table 2 shows that SOM achieves substantially lower inference latency than all diffusion-based baselines while maintaining efficient training time, highlighting the practical advantage of one-step action generation. Additional experimental results under the VE-SDE formulation are provided in Section B.1. Full implementation details, including hyperparameters, are provided in Appendix I. 
+
+Policy Analysis. SOM can effectively shift the policy distribution toward high-Q regions by incorporating gradient information. Figure 3 shows that SOM exhibits higher mean Q-values and lower standard deviation compared to MFP, which uses BoN only to improve the policy. This behavior 7Table 2: Per-step training and per-call inference time on HalfCheetah-v4 (MuJoCo). Training uses batch size 256 and inference uses a single observation (batch size 1). Td: number of denoising steps; N : number of best-of-N particles. All times are reported in milliseconds as mean ± 95% CI over 30 runs. Bold indicates the fastest in each column, and underline indicates the second fastest. 
+
+Method Td N Training (ms) Inference (ms) Method Td N Training (ms) Inference (ms) SOM 1 32 6.512 ± 0.026 0.218 ± 0.002 SDAC 20 32 15.633 ± 0.057 1.012 ± 0.014 QSM 20 32 7.238 ± 0.032 0.606 ± 0.003 DACER 20 1 15.791 ± 0.161 0.703 ± 0.010 DPMD 20 32 8.941 ± 0.037 1.036 ± 0.004 QVPO 20 32 40.768 ± 0.136 1.044 ± 0.027 DIPO 100 1 10.097 ± 0.042 1.562 ± 0.029 SOM MFP    
+
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> mean  Q
+> Hopper-v4
+> SOM MFP
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> std  Q
+> Hopper-v4
+> SOM MFP
+> 50
+> 60
+> 70
+> 80
+> 90
+> 100
+> 110
+> mean  Q
+> Walker2d-v4
+> SOM MFP
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> std  Q
+> Walker2d-v4
+
+Figure 3: Q-value mean and std over N =1000 action samples at 50 states. Details in Appendix D. 40 30 20 10 0 10 20 30                
+
+> 40
+> 20
+> 0
+> 20
+> 40
+> Hopper-v4(SOM)
+> 43.5
+> 45.8
+> 48.1
+> 48.1
+> 50.4
+> 50.4
+> 50.4
+> 52.7
+> 52.7
+> 55.0
+> 55.0
+> 40 30 20 10 010 20 30
+> 40
+> 20
+> 0
+> 20
+> 40
+> Hopper-v4(MFP)
+> 43.5
+> 45.8
+> 48.1
+> 48.1
+> 50.4
+> 50.4
+> 50.4
+> 52.7
+> 52.7
+> 55.0
+> 55.0
+> 40 20 020 40
+> 40
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+> Walker2d-v4(SOM)
+> 43.4
+> 44.7
+> 46.0
+> 47.2
+> 48.5
+> 49.8
+> 40 20 020 40
+> 40
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+> Walker2d-v4(MFP)
+> 43.4
+> 44.7
+> 46.0
+> 47.2
+> 48.5
+> 49.8
+> 42
+> 44
+> 46
+> 48
+> 50
+> 52
+> 54
+> 56
+> Q
+> 42
+> 44
+> 46
+> 48
+> 50
+> 52
+> 54
+> 56
+> Q
+> 43
+> 44
+> 45
+> 46
+> 47
+> 48
+> 49
+> 50
+> 51
+> Q
+> 43
+> 44
+> 45
+> 46
+> 47
+> 48
+> 49
+> 50
+> 51
+> Q
+
+Figure 4: Action samples from SOM (white circles) and MFP (gray triangles) at a fixed state, projected via t-SNE on the Q-landscape. Details in Appendix E. SOM SDAC (10-step) DACER (10-step) MFP 
+
+Figure 5: Generative trajectories. Arrow plots from a 7 × 7 grid of xT (black) to x0 (red) on the eight-Gaussian reward. SDAC and DACER with their full 10-step rollouts. SOM (Ours) and MFP, both 1-step by design. Details and additional results in Appendix F. is further supported by the t-SNE visualization in Figure 4, where SOM samples form tight clusters around high-Q regions, while MFP samples are more diffusely distributed across the action space. 
+
+5.2 SOM Behavior on Bandit Environments Mode Coverage. We verify SOM on a 2D bandit whose reward is a mixture of eight Gaussian modes (Figure 5). For each method we roll out the learned policy from a fixed 7 × 7 grid of initial noise a1 and visualize the endpoint a0 along with the arrow connecting a1 to a0. With their full 
+
+10 -step reverse process, the diffusion baselines concentrate samples on the high-reward modes. SDAC distributes its samples relatively evenly across all four high-reward modes, while DACER collapses onto a single mode. Among one-step samplers, MFP collapses onto a single mode, failing to capture the reward landscape, whereas SOM successfully maps the initial noise grid to all four high-reward 8σ = 0.2 
+
+> σ = 0.3
+> σ = 0.2
+> σ = 0.3
+> σ = 0.2
+> σ = 0.3
+
+Figure 6: Robustness under two reward perturbations. Each side is a 6×5 grid: rows alternate 
+
+Clean / Noisy training Q for SOM, SDAC, and MFP (top to bottom); columns show the Q landscape and the action distribution at sampler times t = 0 .75 , 0.5, 0.25 , 0.0. (Left) random Gaussian noise on Q ( σ = 0 .20 ). (Right) random Gaussian noise on Q ( σ = 0 .30 ). Details and additional results in Appendix H. modes. This confirms that SOM learns a coherent one-step map from noise to high-reward actions. We also include experimental results on the two-moons and checkerboard datasets in F. 
+
+Robustness under Imperfect Critics. A central challenge of online RL is that the critic Qϕ is itself being learned and thus inevitably imperfect, with TD noise and unreliable estimates in under-explored regions. The iDEM-style estimator in Equation (5) mitigates this by returning the gradient of a Gaussian-smoothed Q-landscape, whose smoothing kernel scales with the diffusion noise level σ(t):large t yields heavy smoothing that averages out coarse critic errors, while small t preserves local structure near high-value modes. Fig. 6 shows the samples in different timesteps with and without explicit noise in Q-function. We observe that the smoothed Q and its induced velocity field remain largely preserved under noise—empirically confirming the timestep-adaptive smoothing behavior and offering a potential explanation for SOM’s strong empirical performance. 
+
+6 Conclusion 
+
+We presented Score-Based One-step MeanFlow Policy Optimization (SOM), an actor-critic algorithm that trains MeanFlow policies in fully online RL. The central insight is that the absence of target-distribution samples in online RL, a key challenge for applying MeanFlow in this setting, can be circumvented by constructing the target velocity field directly from the Q-function. By estimating the score of a Boltzmann target distribution from the Q-function, we incorporate it into a probability flow ODE to obtain a target velocity field that transports noise toward high-value modes. Empirically, SOM achieves state-of-the-art performance on standard locomotion benchmarks with a single generation step, while substantially reducing both training and inference time compared to prior diffusion-based policies. 
+
+Limitations and Future Work. SOM has several limitations that suggest promising directions for future work. Our evaluation focuses on continuous control from the MuJoCo suite, and extending SOM to higher-dimensional or partially observable settings—such as visual control or robotic manipulation—remains an important next step. Finally, SOM’s performance is ultimately bounded by the quality of the learned critic; tighter integration with distributional or uncertainty-aware critics is left to future work. 9References 
+
+[1] Anurag Ajay, Yilun Du, Abhi Gupta, Joshua Tenenbaum, Tommi Jaakkola, and Pulkit Agrawal. Is conditional generative modeling all you need for decision-making? arXiv preprint arXiv:2211.15657 , 2022. [2] Tara Akhound-Sadegh, Jarrid Rector-Brooks, Avishek Joey Bose, Sarthak Mittal, Pablo Lemos, Cheng-Hao Liu, Marcin Sendera, Siamak Ravanbakhsh, Gauthier Gidel, Yoshua Bengio, et al. Iterated denoising energy matching for sampling from boltzmann densities. In Proceedings of the 41st International Conference on Machine Learning , pages 760–786, 2024. [3] Huayu Chen, Cheng Lu, Zhengyi Wang, Hang Su, and Jun Zhu. Score regularized policy optimization through diffusion behavior. In The Twelfth International Conference on Learning Representations , 2024. [4] Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. 
+
+The International Journal of Robotics Research , 44(10-11):1684–1704, 2025. [5] Shutong Ding, Ke Hu, Zhenhao Zhang, Kan Ren, Weinan Zhang, Jingyi Yu, Jingya Wang, and Ye Shi. Diffusion-based reinforcement learning via q-weighted variational policy optimization. 
+
+Advances in Neural Information Processing Systems , 37:53945–53968, 2024. [6] Kevin Frans, Danijar Hafner, Sergey Levine, and Pieter Abbeel. One step diffusion via shortcut models. In The Thirteenth International Conference on Learning Representations , 2025. [7] Zhengyang Geng, Mingyang Deng, Xingjian Bai, J Zico Kolter, and Kaiming He. Mean flows for one-step generative modeling. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. [8] Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine. Soft actor-critic: Off-policy maximum entropy deep reinforcement learning with a stochastic actor, 2018. [9] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In 
+
+Proceedings of the 34th International Conference on Neural Information Processing Systems ,pages 6840–6851, 2020. [10] Michael Janner, Yilun Du, Joshua B Tenenbaum, and Sergey Levine. Planning with diffusion for flexible behavior synthesis. arXiv preprint arXiv:2205.09991 , 2022. [11] Donghyeon Ki, JunHyeok Oh, Seong-Woong Shim, and Byung-Jun Lee. Prior-guided diffusion planning for offline reinforcement learning. arXiv preprint arXiv:2505.10881 , 2025. [12] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. In The Eleventh International Conference on Learning Representations , 2023. [13] Xingchao Liu, Chengyue Gong, and qiang liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In The Eleventh International Conference on Learning Representations , 2023. [14] Cheng Lu and Yang Song. Simplifying, stabilizing and scaling continuous-time consistency models. In The Thirteenth International Conference on Learning Representations , 2025. [15] Haitong Ma, Tianyi Chen, Kai Wang, Na Li, and Bo Dai. Efficient online reinforcement learning for diffusion policy. In International Conference on Machine Learning , pages 41837–41853. PMLR, 2025. [16] Michael Psenka, Alejandro Escontrela, Pieter Abbeel, and Yi Ma. Learning a diffusion model policy from rewards via q-score matching. In Forty-first International Conference on Machine Learning , 2024. [17] Allen Z Ren, Justin Lidard, Lars L Ankile, Anthony Simeonov, Pulkit Agrawal, Anirudha Majumdar, Benjamin Burchfiel, Hongkai Dai, and Max Simchowitz. Diffusion policy policy optimization. arXiv preprint arXiv:2409.00588 , 2024. 10 [18] Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. In International Conference on Learning Representations , 2022. [19] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. [20] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. [21] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. arXiv preprint arXiv:2010.02502 , 2020. [22] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. In 
+
+Proceedings of the 40th International Conference on Machine Learning , pages 32211–32252, 2023. [23] Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data distribution. Advances in Neural Information Processing Systems , 32, 2019. [24] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. In 
+
+International Conference on Learning Representations , 2021. [25] Richard S Sutton, Andrew G Barto, et al. Reinforcement learning: An introduction . MIT press Cambridge, 1998. [26] Emanuel Todorov, Tom Erez, and Yuval Tassa. Mujoco: A physics engine for model-based control. In 2012 IEEE/RSJ International Conference on Intelligent Robots and Systems , pages 5026–5033. IEEE, 2012. [27] Mark Towers, Ariel Kwiatkowski, Jordan Terry, John U Balis, Gianluca De Cola, Tristan Deleu, Manuel Goulão, Andreas Kallinteris, Markus Krimmel, Arjun KG, et al. Gymnasium: A standard interface for reinforcement learning environments. arXiv preprint arXiv:2407.17032 ,2024. [28] Yinuo Wang, Likun Wang, Yuxuan Jiang, Wenjun Zou, Tong Liu, Xujie Song, Wenxuan Wang, Liming Xiao, Jiang WU, Jingliang Duan, and Shengbo Eben Li. Diffusion actor-critic with entropy regulator. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. [29] Zhendong Wang, Jonathan J Hunt, and Mingyuan Zhou. Diffusion policies as an expressive policy class for offline reinforcement learning. In The Eleventh International Conference on Learning Representations , 2023. [30] Long Yang, Zhixiong Huang, Fenghao Lei, Yucun Zhong, Yiming Yang, Cong Fang, Shiting Wen, Binbin Zhou, and Zhouchen Lin. Policy representation via diffusion probability model for reinforcement learning. arXiv preprint arXiv:2305.13122 , 2023. [31] Tianwei Yin, Michaël Gharbi, Richard Zhang, Eli Shechtman, Fredo Durand, William T Free-man, and Taesung Park. One-step diffusion with distribution matching distillation. In Proceed-ings of the IEEE/CVF conference on computer vision and pattern recognition , pages 6613–6623, 2024. [32] Guojian Zhan, Letian Tao, Pengcheng Wang, Yixiao Wang, Yuxin Chen, Yiheng Li, Hongyang Li, Masayoshi Tomizuka, and Shengbo Eben Li. Mean flow policy with instantaneous velocity constraint for one-step action generation. In The Fourteenth International Conference on Learning Representations , 2026. 11 A Algorithm Pseudocode 
+
+Algorithm 1 Score-Based One-step MeanFlow Policy Optimization 
+
+Function π(s; uθ , Q ϕ, N ) ▷ Best-of-N action selection Sample ϵ(i) ∼ N (0 , I) for i = 1 , . . . , N a(i) ← ϵ(i) − uθ (ϵ(i), 0, 1, s ) for i = 1 , . . . , N ▷ One-step generation 
+
+return a(i∗) where i∗ = arg max i Qϕ(s, a (i))
+
+Input: Policy uθ , Critic Qϕ, buffer B, Monte Carlo sample size K, BoN size N
+
+for each iteration do for each sampling step do 
+
+a ← π(s; uθ , Q ϕ, N )
+
+Execute a, observe reward r and next state s′
+
+Store transition (s, a, r, s ′) in buffer B
+
+end for for each update step do 
+
+Sample mini-batch {(s, a, r, s ′)} ∼ B 
+
+Update critic Qϕ following DACER [28] 
+
+▷ Train MeanFlow policy uθ
+
+Sample t, r ∼ U (0 , 1) with r ≤ t
+
+Get at from Equation (1) Get ∇at Qt(s, a t) from Equation (5) Get vnew t (at | s) from Equation (6) Update θ to minimize Equation (7) 
+
+end for end for return One-step policy π
+
+B VE-SDE Formulation of SOM and Experimental Results under VE-SDE 
+
+B.1 Variance Exploding SDE 0 1 2 3 4 5                                         
+
+> Step 1e6
+> -2.5
+> 0
+> 2.5
+> 5
+> 7.5
+> Return
+> 1e3 Ant-v4
+> 012345
+> Step 1e6
+> 0
+> 0.5
+> 1
+> 1.5
+> 1e4 HalfCheetah-v4
+> 012345
+> Step 1e6
+> 0
+> 1
+> 2
+> 3
+> 4
+> 1e3 Hopper-v4
+> 012345
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 81e3 Humanoid-v4
+> 012345
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 1e3 Walker2d-v4
+> SOM (Ours) DACER DIPO DPMD MFP PPO QSM QVPO SAC SDAC
+
+Figure 7: VE-SDE Results. 
+
+The forward SDE describes the process in which clean data is gradually perturbed into noise over time. Based on how the variance evolves over time, the forward SDE can be categorized into three types according to the forms of the drift term f (t) and the diffusion term g(t): the Variance Exploding (VE) SDE, the Variance Preserving (VP) SDE, and the Sub-Variance Preserving (sub-VP) SDE. In this work, we primarily focus on the VE-SDE. For the Variance Exploding (VE) SDE: 
+
+dx t =
+
+r dσ 2(t)
+
+dt dw (9) where σ(t) is monotonically increasing function over t ∈ [0 , T ]. The function σ(t) controls the noise scale of the diffusion process, satisfying σ2(T ) ≫ σ2(0) , thereby ensuring progressive variance expansion over time. 12 B.2 VE-SDE Formulation of SOM 
+
+We have: 
+
+f (t) = 0 , g2(t) = dσ 2(t)
+
+dt 
+
+Under the VE-SDE, the forward perturbation kernel admits a closed-form Gaussian transition: 
+
+pt(at|a0) = N (at; a0, σ 2(t)I). (10) Thus, perturbed samples can be generated via the reparameterization, which allows efficient sampling without explicitly solving the SDE. Substituting the VE-SDE coefficients f (t) and g(t) into the PF-ODE therefore yields the following state-conditioned VE-specific velocity field 
+
+vt(at | s) = − 12
+
+dσ 2(t)
+
+dt ∇at log pt(at | s).
+
+Recall from Section 4.1 that the density at timesteps t admits the energy-based form pt(at | s) =  
+
+> exp( Qt(s,a t))
+> Z(s)
+
+, so that the score reduces to ∇at log pt(at | s) = ∇at Qt(s, a t). Specifically, the target velocity is substituted with 
+
+vnew t (at | s) = − 12
+
+dσ 2(t)
+
+dt ∇at Qt(s, a t).
+
+B.3 Experimental Results under VE-SDE 
+
+We evaluated the performance on nine OpenAI Gym MuJoCo v4 tasks [ 26 ]: 
+
+Ant-v4 , HalfCheetah-v4 , Hopper-v4 , Humanoid-v4 , Walker2d-v4 , Swimmer-v4 ,
+
+InvertedDoublePendulum-v4 , Pusher-v4 , and Reacher-v4 .In particular, SOM significantly outperforms existing diffusion-based baselines on the high-dimensional Humanoid-v4 task while remaining competitive on the remaining benchmarks. More-over, consistent with the results in Table 2, SOM maintains substantially lower training and inference costs than iterative diffusion-based policies, highlighting the computational advantage of one-step action generation under both VP- and VE-SDE formulations. 
+
+C Ablation Study 
+
+We conduct all ablation experiments on six OpenAI Gym MuJoCo v4 benchmarks [ 26 ]: Ant-v4 ,
+
+HalfCheetah-v4 , Hopper-v4 , Humanoid-v4 , Swimmer-v4 , and Walker2d-v4 .
+
+C.1 Sensitivity to the Rescaling Coefficient 0 1 2 3 4 5                                            
+
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 8
+> Return
+> 1e3 Ant-v4
+> 012345
+> Step 1e6
+> 0
+> 0.5
+> 1
+> 1.5
+> 1e4 HalfCheetah-v4
+> 012345
+> Step 1e6
+> 0
+> 1
+> 2
+> 3
+> 41e3 Hopper-v4
+> 012345
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 8
+> 1e3 Humanoid-v4
+> 012345
+> Step 1e6
+> 0
+> 0.5
+> 1
+> 1.5
+> 2
+> 2.5
+> 1e2 Swimmer-v4
+> 012345
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 1e3 Walker2d-v4
+> w=1 w=5 w=10 w=25 (default) w=50 w=100
+
+Figure 8: Ablation results for the rescaling coefficient w.
+
+As shown in Figure 8, moderate values of w generally yield stable and strong performance across environments, whereas excessively small or large values tend to degrade training stability and final return. Small values of w weaken the contribution of the score term in the velocity field, while overly large values can lead to unstable action updates due to excessively strong score guidance. Across most environments, intermediate values achieve the best trade-off between stability and performance. Based on these results, we use w = 25 as the default setting in all experiments. 13 C.2 Effect of the Number of Monte Carlo Samples in the iDEM Estimator 0 1 2 3 4 5                                          
+
+> Step 1e6
+> 2
+> 4
+> 6
+> 8
+> Return
+> 1e3 Ant-v4
+> 012345
+> Step 1e6
+> 0
+> 0.5
+> 1
+> 1.5
+> 1e4 HalfCheetah-v4
+> 012345
+> Step 1e6
+> 1
+> 2
+> 3
+> 41e3 Hopper-v4
+> 012345
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 8
+> 1e3 Humanoid-v4
+> 012345
+> Step 1e6
+> 0.5
+> 1
+> 1.5
+> 1e2 Swimmer-v4
+> 012345
+> Step 1e6
+> 0
+> 2
+> 4
+> 6
+> 1e3 Walker2d-v4
+> mc=10 mc=50 mc=100 (default) mc=500
+
+Figure 9: Ablation results for the number of Monte Carlo samples in the iDEM estimator. 
+
+As shown in Figure 9, increasing the number of Monte Carlo samples generally improves training stability and final performance by providing a more accurate approximation of the iDEM score esti-mator. In particular, small sample sizes exhibit noticeably higher variance and occasional performance collapse in several environments, while larger sample sizes produce more stable learning dynamics. However, the performance gain saturates beyond a certain point, and we find that N = 100 provides a good trade-off between estimator quality and computational efficiency. 
+
+D Experimental Setup for the Box Plot 
+
+Batch Construction via Rollout We construct an evaluation batch by first generating a fixed-length rollout using the SOM policy as the behavior policy. Starting from an environment reset, we execute the SOM policy for 800 environment steps, resetting the environment whenever an episode terminates or is truncated. All visited observations are recorded, yielding a pool of 800 states. From this pool, we uniformly sample 50 states, which form the evaluation batch. We conduct this evaluation on the 
+
+Hopper-v4 and Walker2d-v4 environments. 
+
+Best-of-N Evaluation For each sampled state, we evaluate candidate actions generated by two methods: SOM and MFP. Each method generates 32 candidate actions conditioned on the given state. These candidate actions are evaluated using a learned Q-function, producing a set of Q-values per method. We summarize each candidate set using the mean and standard deviation of its Q-values. This results in, for each state, a pair of statistics (mean and standard deviation) for SOM and MFP respectively. 
+
+E Experimental Setup and Results for the t-SNE Visualization 
+
+E.1 Experimental Setup 
+
+We visualize the action distributions of SOM and MFP policies, both performing one-step inference, at a fixed environment state using t-SNE. For each environment ( HalfCheetah-v4 , Hopper-v4 
+
+and Walker2d-v4 ), we fix an initial state and perform a 5-step rollout using the SOM policy. At each step, we sample 100 actions from both SOM and MFP conditioned on the current observation, resulting in 500 samples per policy. This design ensures that both policies are evaluated on a shared sequence of observations, so that any differences in the resulting action distributions can be attributed to the policies themselves rather than differences in visited trajectories. 
+
+E.2 Results for the t-SNE Visualization 
+
+We visualize the resulting Q-landscape on the t-SNE plane using a Gaussian kernel density estimate (KDE) heatmap, with 8 contour lines overlaid for readability. SOM samples are plotted as white circles, and MFP samples as gray triangles. As shown in Figure 10, Figure 11, and Figure 12, SOM forms tighter clusters around Q-optimal modes, while MFP spreads more diffusely. 14 40 20 0 20 40 
+
+40 
+
+20 
+
+0
+
+20 
+
+40 
+
+SOM 
+
+> 83.1
+> 83.1
+> 94.4
+> 94.4
+> 105.7
+> 105.7
+> 117.0
+> 117.0
+> 128.3
+> 128.3
+> 139.7
+> 139.7
+
+40 20 0 20 40 
+
+50 
+
+40 
+
+30 
+
+20 
+
+10 
+
+0
+
+10 
+
+20 
+
+30 
+
+SOM 
+
+> 84.7
+> 84.7
+> 96.0
+> 96.0
+> 107.3
+> 107.3
+> 118.6
+> 118.6
+> 129.8
+> 129.8
+> 141.1
+> 141.1
+
+40 20 0 20 40 
+
+30 
+
+20 
+
+10 
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+SOM 
+
+> 83.1
+> 83.1
+> 94.5
+> 94.5
+> 106.0
+> 106.0
+
+117.4 
+
+> 117.4
+> 128.8
+> 128.8
+> 140.3
+> 140.3
+
+40 20 0 20 40 
+
+40 
+
+20 
+
+0
+
+20 
+
+40 
+
+MFP 
+
+> 83.1
+> 83.1
+> 94.4
+> 94.4
+> 105.7
+> 105.7
+> 117.0
+> 117.0
+> 128.3
+> 128.3
+> 139.7
+> 139.7
+
+40 20 0 20 40 
+
+50 
+
+40 
+
+30 
+
+20 
+
+10 
+
+0
+
+10 
+
+20 
+
+30 
+
+MFP 
+
+> 84.7
+> 84.7
+> 96.0
+> 96.0
+> 107.3
+> 107.3
+> 118.6
+> 118.6
+> 129.8
+> 129.8
+> 141.1
+> 141.1
+
+40 20 0 20 40 
+
+30 
+
+20 
+
+10 
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+MFP 
+
+> 83.1
+> 83.1
+> 94.5
+> 94.5
+> 106.0
+> 106.0
+
+117.4 
+
+> 117.4
+> 128.8
+> 128.8
+> 140.3
+> 140.3
+
+80 
+
+90 
+
+100 
+
+110 
+
+120 
+
+130 
+
+140 
+
+150 
+
+> Q
+
+80 
+
+90 
+
+100 
+
+110 
+
+120 
+
+130 
+
+140 
+
+150 
+
+> Q
+
+80 
+
+90 
+
+100 
+
+110 
+
+120 
+
+130 
+
+140 
+
+150 
+
+> Q
+
+80 
+
+90 
+
+100 
+
+110 
+
+120 
+
+130 
+
+140 
+
+150 
+
+> Q
+
+80 
+
+90 
+
+100 
+
+110 
+
+120 
+
+130 
+
+140 
+
+150 
+
+> Q
+
+80 
+
+90 
+
+100 
+
+110 
+
+120 
+
+130 
+
+140 
+
+150 
+
+> Q
+
+Figure 10: HalfCheetah-v4 40 30 20 10 0 10 20 30 
+
+40 
+
+20 
+
+0
+
+20 
+
+40 
+
+SOM 
+
+43.5 
+
+45.8 
+
+48.1 
+
+> 48.1
+
+50.4 
+
+> 50.4
+
+50.4 
+
+52.7 52.7 
+
+55.0 
+
+> 55.0
+
+40 20 0 20 40 
+
+40 
+
+30 
+
+20 
+
+10 
+
+0
+
+10 
+
+20 
+
+30 
+
+SOM 
+
+> 43.5
+> 45.8
+> 48.1
+> 50.4
+> 52.7
+> 55.0
+> 55.0
+
+40 30 20 10 0 10 20 30 40 
+
+40 
+
+20 
+
+0
+
+20 
+
+40 
+
+SOM 
+
+> 43.6
+> 45.9
+> 48.1
+> 50.4
+
+50.4 
+
+> 52.7
+
+52.7 
+
+55.0 
+
+55.0 
+
+40 30 20 10 0 10 20 30 
+
+40 
+
+20 
+
+0
+
+20 
+
+40 
+
+MFP 
+
+43.5 
+
+45.8 
+
+48.1 
+
+> 48.1
+
+50.4 
+
+> 50.4
+
+50.4 
+
+52.7 
+
+52.7 
+
+55.0 
+
+> 55.0
+
+40 20 0 20 40 
+
+40 
+
+30 
+
+20 
+
+10 
+
+0
+
+10 
+
+20 
+
+30 
+
+MFP 
+
+> 43.5
+> 45.8
+> 48.1
+> 50.4
+> 52.7
+> 55.0
+> 55.0
+
+40 30 20 10 0 10 20 30 40 
+
+40 
+
+20 
+
+0
+
+20 
+
+40 
+
+MFP 
+
+> 43.6
+> 45.9
+> 48.1
+> 50.4
+
+50.4 
+
+> 52.7
+
+52.7 
+
+55.0 
+
+55.0 
+
+42 
+
+44 
+
+46 
+
+48 
+
+50 
+
+52 
+
+54 
+
+56 
+
+> Q
+
+42 
+
+44 
+
+46 
+
+48 
+
+50 
+
+52 
+
+54 
+
+56 
+
+> Q
+
+42 
+
+44 
+
+46 
+
+48 
+
+50 
+
+52 
+
+54 
+
+56 
+
+> Q
+
+42 
+
+44 
+
+46 
+
+48 
+
+50 
+
+52 
+
+54 
+
+56 
+
+> Q
+
+42 
+
+44 
+
+46 
+
+48 
+
+50 
+
+52 
+
+54 
+
+56 
+
+> Q
+
+42 
+
+44 
+
+46 
+
+48 
+
+50 
+
+52 
+
+54 
+
+56 
+
+> Q
+
+Figure 11: Hopper-v4 
+
+15 20 0 20 40 
+
+> 40
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+
+SOM     
+
+> 43.2
+> 44.5
+> 45.8
+> 47.2
+> 48.5
+> 49.8
+> 40 20 020 40
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+
+SOM         
+
+> 43.2
+> 44.5 45.8
+> 47.1
+> 48.4
+> 49.7
+> 30 20 10 010 20 30 40
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+
+SOM    
+
+> 43.2
+> 44.5
+> 45.8
+> 47.1
+> 48.4
+> 49.7
+> 20 020 40
+> 40
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+
+MFP     
+
+> 43.2
+> 44.5
+> 45.8
+> 47.2
+> 48.5
+> 49.8
+> 40 20 020 40
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+
+MFP         
+
+> 43.2
+> 44.5 45.8
+> 47.1
+> 48.4
+> 49.7
+> 30 20 10 010 20 30 40
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> 40
+
+MFP 
+
+> 43.2
+> 44.5
+> 45.8
+> 47.1
+> 48.4
+> 49.7
+> 42
+> 44
+> 46
+> 48
+> 50
+> Q
+> 42
+> 44
+> 46
+> 48
+> 50
+> Q
+> 42
+> 44
+> 46
+> 48
+> 50
+> Q
+> 42
+> 44
+> 46
+> 48
+> 50
+> Q
+> 42
+> 44
+> 46
+> 48
+> 50
+> Q
+> 42
+> 44
+> 46
+> 48
+> 50
+> Q
+
+Figure 12: Walker2d-v4 
+
+F 2D Bandit Tasks: Bandit, Two-Moons, and Checkerboard 
+
+F.1 Eight Mode Bandit Reward function The reward is defined as a Gaussian-mixture density with K = 8 isotropic components N (μi, σ 2I2) with σ = 0 .3. The component centers 
+
+μi = √2
+
+
+
+cos 2πi 
+
+8 , sin 2πi 
+
+8
+
+
+
+, i = 0 , . . . , 7,
+
+are uniformly distributed on a circle of radius √2. To create interleaved high- and low-reward modes, we assign alternating mixture weights wi = 2 for even i and wi = 1 for odd i. The final reward is given by the normalized mixture density, producing a smooth multimodal reward landscape with values in [0 , 1] .
+
+F.2 Two-Moons SOM SDAC (10-step) DACER (10-step) MFP 
+
+Figure 13: Two-Moons Results. Arrow plots from a 7 × 7 grid of a1 (black) to a0 (red) on the two-moon reward. SDAC and DACER with their full 10-step rollouts. SOM (Ours) and MFP, both 1-step by design. As shown in Figure 13, SOM successfully transports actions toward the high-reward modes of the two-moon landscape while preserving coherent and stable transport trajectories. Compared to 16 diffusion-based baselines with iterative denoising steps, SOM achieves comparable mode-seeking behavior using a single-step policy parameterization. In contrast, DACER exhibits more diffuse transport dynamics, whereas MFP occasionally produces less structured trajectories around the multimodal regions. 
+
+F.3 Checkerboard SOM SDAC (10-step) DACER (10-step) MFP 
+
+Figure 14: Checkerboard results. Arrow plots from a 7 × 7 grid of a1 (black) to a0 (red) on the checkerboard reward. SDAC and DACER with their full 10-step rollouts. SOM (Ours) and MFP, both 1-step by design. As shown in Figure 14, SOM accurately transports actions toward high-reward regions in the checkerboard landscape. Compared to iterative diffusion-based baselines, SOM achieves clearer mode separation and more stable convergence behavior under a single-step policy parameterization. DACER exhibits highly diffuse transport patterns, whereas MFP tends to concentrate trajectories toward a limited subset of modes. 
+
+G Comparison of True and Estimated Scores Estimated Score  
+
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> True Score
+> 0
+> 5
+> 10
+> 15
+> 20
+
+Figure 15: Score field comparison on the eight-Gaussian reward. Left: estimated score (max magnitude ≈ 10 ). Right: ground-truth score (max magnitude ≈ 24 ). Brighter regions indicate larger gradient magnitude; the eight mode centers are marked with ×.Since the reward landscape is defined as a Gaussian mixture, the corresponding diffusion-perturbed density admits a closed-form expression, making the ground-truth score analytically tractable. We compute this true score and compare it against the score estimated by our method. The true score function can be derived as follows. Suppose p0(x0) = PKk=1 wkN (x0; μk, Σk) and 
+
+pt(xt | x0) = N (xt; x0, σ 2 
+
+> t
+
+I).17 Marginalizing over x0 gives 
+
+pt(xt) = 
+
+Z
+
+pt(xt | x0)
+
+> K
+
+X
+
+> k=1
+
+wkN (x0; μk, Σk) dx 0
+
+=
+
+> K
+
+X
+
+> k=1
+
+wk
+
+Z
+
+N (xt; x0, σ 2 
+
+> t
+
+I)N (x0; μk, Σk) dx 0
+
+=
+
+> K
+
+X
+
+> k=1
+
+wkN (xt; μk, Σk + σ2 
+
+> t
+
+I),
+
+where the last equality uses the convolution of two Gaussians. Applying ∇ log f = ∇f /f together with ∇xt N (xt; μk, Σk + σ2 
+
+> t
+
+I) = N (xt; μk, Σk + σ2 
+
+> t
+
+I)(Σ k + σ2 
+
+> t
+
+I)−1(μk − xt) yields 
+
+∇xt log pt(xt) = 
+
+PKk=1 wkN (xt; μk, Σk + σ2 
+
+> t
+
+I)(Σ k + σ2 
+
+> t
+
+I)−1(μk − xt)
+
+PKk=1 wkN (xt; μk, Σk + σ2 
+
+> t
+
+I) .
+
+Letting 
+
+ρk(xt) = wkN (xt; μk, Σk + σ2 
+
+> t
+
+I)
+
+PKj=1 wj N (xt; μj , Σj + σ2 
+
+> t
+
+I) ,
+
+the score reduces to a weighted average of the component-wise scores: 
+
+∇xt log pt(xt) = 
+
+> K
+
+X
+
+> k=1
+
+ρk(xt)(Σ k + σ2 
+
+> t
+
+I)−1(μk − xt).
+
+As shown in Figure 15, the ground-truth score (right) is a long-range field: its magnitude grows in the outer region where it pulls samples sharply toward the nearest mode, vanishing only at mode centers, the origin, and inter-mode saddles. The estimated score (left), in contrast, is short-range, bright only on a thin annulus around each mode and flat elsewhere, since it fits the reward only locally. Despite this truncation, the PF-ODE drift in Equation (6) explains why: the prior-pull term − 12 β(t) at alone contracts outer samples inward at early steps, so an accurate outer-region score is unnecessary; the learned score only needs to be reliable near the modes, where it snaps samples onto the annulus at late steps. This division of labor also explains why partial mode collapse does not degrade reward: outer-region accuracy is simply not required. 
+
+H Robustness under Two Reward Perturbations 
+
+H.1 Random Gaussian Noise 
+
+At every reward query during training, an independent Gaussian sample with mean 0 and standard deviation σ is added directly to the observed scalar reward, so the same action returns a different value each time it is queried. In this setting σ characterizes the magnitude of measurement noise on the reward value itself; it does not describe any spatial scale in the action space. 
+
+H.2 Gaussian Bump 
+
+A deterministic Gaussian bump centered at the origin is added to the reward, with peak value equal to 
+
+c · Qmax (where c is the bias scale and Qmax is the maximum of the original reward). Here σ is a 
+
+spatial length scale: it sets the width of the bump in the action space. A larger σ produces a wider bump whose influence extends out to the high-reward modes, whereas a smaller σ yields a narrow, sharply-peaked bump concentrated near the origin. Crucially, this perturbation is identical on every query (no randomness), and the role of σ is fundamentally different from the random Gaussian noise. 
+
+H.3 Radius for Counting Points That Reach A Mode 
+
+The 2D bandit has four high-reward modes lying on the cardinal axes (north, east, south, west) at distance √2 ≈ 1.414 from the origin. For each trajectory endpoint, we count it as having reached a given mode if its Euclidean distance to that mode’s center is at most 0.5. The per-mode counts 
+
+N/E/S/W and the total shown below each panel are obtained with this fixed tolerance of 0.5.18 Figure 16: Gaussian Bump. 
+
+19 Figure 17: Random Gaussian Noise ( σ = 2 .0). 
+
+I Implementation Details 
+
+Note that we conducted all experiments using four NVIDIA RTX 4090 GPUs and AMD Ryzen Threadripper PRO 5995WX CPUs. 20 Figure 18: Random Gaussian Noise ( σ = 3 .0). 
+
+21 Table 3: The overall algorithms’ hyperparameter settings. 
+
+Hyperparameter SOM SDAC DPMD QSM DIPO DACER QVPO SAC PPO MFP 
+
+Replay buffer capacity 1e6 1e6 1e6 1e6 1e6 1e6 1e6 1e6 - 1e6 Buffer warm-up size 1e5 3e4 3e4 3e4 3e4 3e4 3e4 3e4 - 3e4 Batch size 256 256 256 256 256 256 256 256 4000 256 Discount factor γ 0.99 0.99 0.99 0.99 0.99 0.99 0.99 0.99 0.995 0.99 Target update rate τ 0.005 0.005 0.005 0.005 0.005 0.005 0.005 0.005 - 0.005 Reward scale 0.2 0.2 0.2 0.2 0.2 0.2 0.2 0.2 1.0 0.2 Number of hidden layers 3 3 3 3 3 3 3 3 3 3Number of hidden nodes 256 256 256 256 256 256 256 256 512 256 Activations GELU Mish Mish ReLU Mish Mish Mish GELU GELU GELU Diffusion steps 1 20 20 20 100 20 20 - - 1Alpha delay update 250 250 250 - - 10,000 - - - -Action gradient steps - - - - 30 - - - - -Number of Gaussian distributions - - - - - 3 - - - -Number of action samples - - - - - 200 - - - -Noise scale 0.1 0.1 0.1 - - - - - - -Optimizer Adam Adam Adam Adam Adam Adam Adam Adam Adam Adam Actor learning rate 1e-4 3e-4 3e-4 3e-4 3e-4 3e-4 3e-4 3e-4 1e-4 1e-4 Critic learning rate 1e-4 3e-4 3e-4 3e-4 3e-4 3e-4 3e-4 3e-4 1e-3 1e-4 Alpha learning rate 7e-3 7e-3 7e-3 - - 3e-2 - 3e-4 - -Target entropy -0.9 · dim( A) -0.9 · dim( A) -0.9 · dim( A) - - -0.9 · dim( A) - -dim( A) -Number of particles for boN 32 32 32 32 1 1 32 1 - 32 Table 4: The PPO algorithm’s hyperparameter settings. 
+
+Hyperparameter Setting 
+
+GAE λ 0.95 PPO clip ϵ 0.2 Target KL 0.01 Policy update steps 80 Value update steps 80 22

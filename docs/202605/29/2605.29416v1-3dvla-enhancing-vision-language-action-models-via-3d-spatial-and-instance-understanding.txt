@@ -1,0 +1,537 @@
+Title: 3DVLA: Enhancing Vision-Language-Action Models via 3D Spatial and Instance Understanding
+
+URL Source: https://arxiv.org/pdf/2605.29416v1
+
+Published Time: Fri, 29 May 2026 00:41:12 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# 3DVLA: Enhancing Vision-Language-Action Models via 3D Spatial and Instance Understanding 
+
+Zhongyu Xia Yousen Tang † Bingqing Wei Yongtao Wang B
+
+Wangxuan Institute of Computer Technology, Peking University 
+
+xiazhongyu@pku.edu.cn tangyousen@tongji.edu.cn bingqing.wei@stu.pku.edu.cn wyt@pku.edu.cn 
+
+Abstract 
+
+Vision-Language-Action models have achieved remarkable progress in robotic ma-nipulation, yet they suffer from a critical limitation: a lack of 3D scene understand-ing. This deficiency manifests as three intertwined challenges: weak extraction of 3D spatial positions without enforcing multi-view consistency, inadequate 3D in-stance understanding, and fragile reasoning under occlusion. Although mature 3D perception methods exist, their direct integration into VLA pipelines is hindered by architectural incompatibility and by heavy reliance on costly instance-level annotations. To address the above challenges, we propose 3DVLA, a plug-and-play framework that injects robust 3D reasoning into pretrained VLAs without requiring extra manual labels or discarding VLM priors. Specifically, 3DVLA tackles the three challenges through: (1) pervasive 3D feature encoding with explicit multi-view consistency constraints across all modalities and a Spatially-Conditioned Geometry Aggregation method, (2) an instance estimation module with high-level instance tokens for 3D instance awareness, and (3) a masked self-supervised 3D encoding branch that retains its predictor for visual token completion to handle occlusions. We integrate 3DVLA with multiple VLA baselines and evaluate on LIBERO-Plus and RoboTwin 2.0. Results show consistent and significant gains in manipulation performance, validating both the effectiveness and plug-and-play compatibility of our approach. 
+
+1 Introduction 
+
+By leveraging large-scale vision-language pre-training, Vision-Language-Action Models (VLAs) [ 3,30 , 13 , 22 ] have demonstrated impressive manipulation capabilities across diverse tasks and em-bodiments, underscoring their immense practical value for general-purpose robotics. Despite these advances, a fundamental limitation persists: mainstream VLA models operate predominantly on 2D visual inputs and lack genuine 3D scene understanding. This deficiency impedes their deployment in real-world environments where spatial reasoning is crucial and can be characterized by three tightly coupled challenges. 
+
+The first challenge is weak 3D spatial position extraction and the absence of multi-view consis-tency constraints. Existing VLA architectures typically encode single-view observations or loosely fuse multiple views without explicitly reconstructing 3D coordinates or enforcing consistencies across viewpoints. As a result, the policy cannot ground its decisions in a metric 3D reference frame, making it incapable of reasoning about precise 6-DoF poses. 
+
+The second challenge is insufficient 3D instance understanding. Standard VLAs reason about objects as flat image regions, without access to their volumetric extent, 3D boundaries, or fine-grained   
+
+> †This work was done as an intern at PKU. BCorresponding author. Preprint.
+> arXiv:2605.29416v1 [cs.RO] 28 May 2026 3D PE & 3D Instance Pred
+> ACTION EXPERT
+> View A View B
+> Conventional Methods Our 3DVLA framework
+> 3D Instance
+> 3D Geometric Completion
+> Spatially-Conditioned Geometry Aggregation
+> ACTION EXPERT
+> 3D Vision Token from ViT
+> 3D Vision Token from Completion
+> Color = PCA visualization for 3D Token
+> Orange Points: Instance Points
+> Black Points: Background Points
+> Yellow Points: Completion Points
+
+Figure 1: Overview of 3DVLA. Compared to conventional methods, 3DVLA extracts view-consistent 3D instances (orange) and synthesizes occluded geometries (yellow). These features are aggregated into spatially-grounded vision tokens to enable robust manipulation under complex occlusions. geometry. Consequently, they struggle with tasks that demand precise spatial interaction—such as grasping a specific part of an object or placing one item relative to another’s 3D structure—because the model cannot reliably distinguish which pixels belong to which object instance in 3D space. For the first and second challenges, prior 3D scene-understanding approaches [ 19 , 26 , 24 , 25 ] offer strong spatial reasoning, but they cannot be directly applied to VLA-based manipulation, which depends on 2D VLM pre-training. Integrating specialized 3D encoders forces a redesign that discards this pre-training, sacrificing the generalization and language grounding that make VLAs valuable. Besides, 3D perception models assume the availability of dense instance-level or semantic annotations, which are costly to obtain at scale in robotic manipulation settings. Motivated by this, we propose a 3D VLA compatible with VLM architectures that does not rely on additional manual annotations. 
+
+The third challenge is fragile reasoning under occlusion, particularly when viewpoint variations hide task-relevant object parts. A telling example is observed on the LIBERO-Plus benchmark [ 9]: slightly shifting the camera viewpoint so that the target object becomes partially occluded causes the state-of-the-art VLAs’ success rates to drop dramatically. This brittleness arises because purely 2D models lack the capacity to infer the unseen geometry and maintain a coherent spatial memory, leading to action generation based on incomplete and misleading visual cues. This fragility calls for a mechanism that can explicitly infer unseen geometry from partial views. Interestingly, masked self-supervised learning offers an overlooked building block. Masked self-supervised methods [ 1]typically discard the predictor used to predict masked tokens after self -supervised training. However, we realize that after adopting a unified 3D positional encoding, this predictor can be repurposed to complete tokens at occluded locations. In this paper, we propose 3DVLA, a plug-and-play method that enriches VLA models with robust 3D understanding by leveraging priors from off-the-shelf foundation perception models. Crucially, 3DVLA is designed to be fully compatible with VLM pre-training and requires no extra manual annotations. Concretely, our contributions include: (1) To address the first challenge, we impose Multi-View Spatial Fusion and Spatially-Conditioned Geometry Aggregation , enforcing explicit multi-view consistency constraints throughout the entire model. (2) To address the second challenge of weak 3D instance understanding, 3DVLA incorporates an Object-Centric 3D Instance Module and introduces high-level 3D instance tokens that explicitly encode object identity and geometry. (3) For the third challenge of occlusion reasoning, we complement the architecture with a 3D encoding branch trained via masked self-supervision. Unlike conventional masked auto-encoding paradigms that discard the lightweight predictor after pre-training, we retain it and repurpose it for visual token completion, enabling the model to reconstruct occluded visual features and reason about invisible parts of objects during policy execution. (4) We integrate 3DVLA with multiple VLA baselines and conduct experiments on the LIBERO-Plus and RoboTwin 2.0 benchmarks. The results demonstrate that our method consistently improves manipulation performance across different architectures and tasks, validating both its effectiveness and its plug-and-play compatibility. 
+
+2 Related Work 
+
+Vision-Language-Action Models With the development of large language models and large-scale robotic datasets, Vision-Language-Action (VLA) models have emerged as a crucial paradigm for general-purpose robot policy learning. OpenVLA [ 13 ] fuses DINOv2 and SigLIP, while NORA [ 10 ]is built upon a lightweight VLM. WorldVLA [ 5] unifies action prediction and future-state modeling into a single autoregressive world model. UniVLA [ 4] enables cross-embodiment generalization 2through a task-centric, implicit action space trained on DINO features. π0 [2 ] combines a pre-trained vision-language model with an action expert under a sparse mixture-of-experts framework. π0.5 [11 ]further introduces a knowledge-insulated VLA paradigm to preserve semantic knowledge during heterogeneous multi-source co-training. RIPT-VLA [ 21 ] extends the pre-training plus supervised fine-tuning pipeline with a reinforcement-learning-based interactive post-training stage. Diffusion Policy (DP) [ 7] formulates action generation as a denoising diffusion probabilistic process, while DP3 [ 27 ]replaces its 2D input with 3D point cloud representations. ACT [ 28 ] recasts action prediction as a conditional VAE-driven sequence-generation problem, and RDT [ 15 ] employs a physically interpretable, unified action space within a scalable diffusion Transformer. As discussed in Section 1, although some of the aforementioned methods have explored combining 3D vision with VLAs, their exploration of understanding 3D instances, occlusions, and spatial positions remains insufficient. 
+
+Self-Supervised Representation Learning In the construction of visual encoders, self-supervised pre-training is a commonly adopted technique. Early methods [ 8, 16 ] learn latent actions by modeling pixel variations between adjacent frames, but they are prone to degenerating into reliance on local visual correlations. DINOv2 [ 17 ] employs masked self-distillation for Vision Transformer pre-training. I-JEPA [ 1] transitioned from pixel-level reconstruction to latent space modeling. This paradigm has further influenced the field of embodied learning; for example, VLA-JEPA [ 20 ] extends it to action-relevant representation alignment tasks. However, these self-supervised methods typically discard the masked tokens predictor after training. We realize that after adopting a unified 3D positional encoding, this predictor can be repurposed to complete tokens at occluded locations. 
+
+3 Method 
+
+We introduce 3DVLA, a 3D framework that enhances 2D Vision-Language-Action (VLA) models without disrupting their pre-trained representations. As illustrated in Figure 2, 3DVLA consists of four interconnected components: (1) Multi-View Spatial Fusion lifts 2D visual tokens into a unified 3D memory bank to enforce multi-view consistency; (2) The Object-Centric 3D Instance Module 
+
+extracts physical entities directly in 3D space; (3) A Coordinate-Driven 3D Self-Supervised Predictor 
+
+synthesizes occluded geometric structures; (4) Spatially-Conditioned Geometry Aggregation explicitly embeds these 3D geometries as affordance-aware instance tokens for the downstream action expert. 
+
+3.1 Multi-View Spatial Fusion 
+
+To construct a unified 3D representation from multi-view feature maps Xf map ∈ RV ×C×H×W
+
+without computationally expensive voxelization, we flatten the spatial dimensions into an unordered sequence Mf lat ∈ RN ×C (N = V × H × W ). Using the unprojected 3D coordinate grids 
+
+Pf lat ∈ RN ×3, we ground the visual features in absolute 3D space via a coordinate projection network: 
+
+E3D = LayerNorm 
+
+
+
+W2 GELU( W1Pf lat + b1) + b2
+
+
+
+, (1) where W(·) and b(·) denote learnable weights and biases. The position-aware features ( Mf lat +E3D )are processed by a multi-layer Transformer Encoder. Driven by absolute spatial embeddings, this module natively establishes cross-view geometric correspondences, yielding a globally consistent memory M. While the fusion module relies on absolute coordinates to align global context, synthe-sizing occluded structures (Section 3.3) strictly requires fine-grained relative distances. To provide this, we apply Continuous 3D Rotary Position Embedding (RoPE) exclusively to the attention queries and keys. For a specific axis component p ∈ { x, y, z } of a 3D coordinate and its channel dimension 
+
+d, the phase angle is computed continuously as θd = p · 10000 −2d/D axis , where Daxis is the channel dimension allocated per spatial axis. The independent embeddings for the three axes are concatenated to impose strict Euclidean relative-distance priors on the network. 
+
+3.2 Object-Centric 3D Instance Module 
+
+To overcome the limitations of 2D bounding boxes and masks, we initialize state probes directly in continuous 3D space. This unifies absolute 3D geometric anchoring with semantic feature extraction. 3RGB-D Images  Instruction       
+
+> view A, view B, …
+> Multi-View Spatial Fusion
+> Spatially-Conditioned Geometry Aggregation
+> MIM Predictor
+> 3D Partial Completion
+> Object-Centric Instance
+> Extraction
+> Multi-View Spatial Fusion EMA
+> + Mask
+> only when training both training and inference
+> 3D Vision Tokens
+> 3D pos query
+> Loss stop-grad
+> 3D Instance
+> 3D pos query Instance Token
+> Image
+> ViT
+> Language Encoder
+> Action Expert
+
+Figure 2: Overall Architecture of 3DVLA. The pipeline consists of four interconnected components: (1) Multi-View Spatial Fusion, (2) Object-Centric 3D Instance Module, (3) Coordinate-Driven 3D Self-Supervised Predictor, and (4) Spatially-Conditioned Geometry Aggregation. 
+
+3.2.1 3D Probe Decoding and Multi-Scale Sampling 
+
+To extract entities from the globally consistent memory M (Section 3.1), we instantiate Nq state probes Q = {(cj , pj )}Nq
+
+> j=1
+
+, where cj ∈ RC encapsulates the semantic state and pj ∈ R3 denotes its 3D reference point. Specifically, M is decoded via transposed convolutions into a multi-scale semantic pyramid Mms (strides 8, 16, 32) and a 1/4-scale map M(4)  
+
+> mask
+
+for high-resolution mask supervision. The 3D point pj is projected to the v-th camera view via intrinsic Kv and extrinsic [Rv |tv ] matrices. To prevent numerical instability near the camera plane, we introduce a depth clamping mechanism: 
+
+uj,v = Φ norm 
+
+ Kv (Rv pj + tv )max( Zc, ϵ )
+
+
+
+∈ [0 , 1] 2, (2) where Zc is the projected depth, ϵ = 0 .01 serves as a numerical stabilizer, and Φnorm normalizes the coordinates. Treating uj,v as the sampling pivot, the semantic vector cj predicts 2D spatial offsets ∆u and attention weights A. The probe then extracts textures from Mms via Deformable Cross-Attention: 
+
+hj,v =
+
+> M
+
+X
+
+> m=1
+
+WmKX
+
+> k=1
+> S
+
+X
+
+> s=1
+
+Aj,v,m,k,s · W′M(s) 
+
+> ms
+
+(uj,v + ∆ uj,v,m,k,s ) , (3) where M, K, S denote the number of attention heads, sampled keys, and feature scales, respectively, and the predicted attention weights A are normalized to sum to 1. Crucially, a single 3D physical entity naturally projects to drastically different 2D shapes across multiple cameras. Forcing a shared 3D semantic state cj to directly predict these varying 2D masks would lead to conflicting gradient updates. To resolve this, we strictly anchor predictions to pj , but condition the regression of view-dependent bounding boxes and masks on a view-specific positional encoding PE( uj,v ). This enables the shared probe cj to handle perspective variations without compromising its 3D topological consistency. 
+
+3.2.2 Occlusion-Aware Gating and Bounded Coordinate Refinement 
+
+To filter geometric noise from occluded or out-of-view perspectives, an adaptive gating mechanism evaluates view validity: gj,v = sigmoid(MLP( hj,v )/τ view ), where τview is a learnable temperature scalar that controls the sharpness of the gating. At each decoder layer l, the semantic state is residually updated via c(l+1)  
+
+> j
+
+= c(l) 
+
+> j
+
++ P 
+
+> v
+
+˜gj,v h(l) 
+
+> j,v
+
+, where ˜gj,v is the normalized gating weight, naturally suppressing unclear observations. Concurrently, the reference point pj must be calibrated to correct initial depth inaccuracies. To prevent spatial divergence during training, we propose a bounded coordinate refinement: 
+
+p(l+1)  
+
+> j
+
+= p(l) 
+
+> j
+
++ α · tanh 
+
+
+
+MLP coord (c(l+1)  
+
+> j
+
+)
+
+
+
+. (4) 4ITERATIVE PROBE  
+
+> M
+> STEP 1: MULTI-VIEW SPATIAL FUSION
+> STEP 2: 3D PROBE DECODING & REFINEMENT
+> x , y , z
+> 3DPE Multi-Scale Semantic Pyramid
+
+M  
+
+> Multi-View
+> Feature Maps Fused Cross-View Consistency
+> & 3D Geometric Relations
+> 3D-to-2D
+> Projection
+> Multi-Scale
+> Deformable Sampling
+> Adaptive View Gating &
+> Validity Evaluation
+> Bounded Point Refinement
+> Multi-Scale
+> Semantic Pyramid
+> Sampled
+> Features
+> hj,v
+> View σ
+> j
+> (l+1)
+> C
+> P(l)
+> Feature Filtering & Aggregation
+> 1/4
+> jΔP
+> SELF-ATTN
+> p
+> P’
+> Points
+> ITERATIVE PROBE …V
+> …V
+> SPATIAL FUSION
+
+L REFINEMENT LOOP      
+
+> REFINEMENT LOOP
+> Initial Prob
+> MInitial Probes
+> Target
+> P(l+1)
+> Mask
+> &
+> 2D Box
+> …V
+> STEP 3:
+> GLOBAL 3D MATCHING & OPTIMIZATION
+> Final
+> Prediction
+> Global ID Matching
+> Loss Functions
+> 3D Point Ll Mask CE / DICE
+> 2D Box Ll / GIoU
+> Classification
+> Focal Loss
+> LLabe
+> LOSS & TOP K
+> 1/4
+> 1/8
+> 1/16
+> 1/32
+> End-Effector Centric Relative Positional Encoding
+> Globally Consistent Memory
+> +
+> Multi-Scale Generation
+> Visual Feature
+> Images & Depth
+> VL-SAMv2
+> Loss
+> Confidence-Modulated Routing
+> Spatial-Biased Local Context
+> Inst feat
+> Inst logit
+> z
+> xy
+> Comp Points
+> Instance
+> Point
+> Inst feat
+> Spatial-Biased Attention
+> OPEN
+> CLOSE
+> (Interactable)
+> (Background)
+
+…
+
+> Object-Centric 3D Instance Module
+
++  
+
+> 3D
+> PE
+> jj
+> j
+> (l)
+> CiC
+> iC
+> il
+> iP
+> ih
+
+Figure 3: Left : Object-centric 3D instance modeling. Right : Spatially-conditioned geometry aggregation with uncertainty-guided routing. The tanh activation, scaled by a predefined physical factor α, limits the maximum spatial displace-ment per layer, guaranteeing stable 3D centroid convergence. 
+
+3.2.3 Global 3D Matching and Joint Optimization 
+
+We shift label assignment exclusively into the 3D space to eliminate cross-view ID conflicts. Pseudo ground-truth 2D bounding boxes and masks are generated by an off-the-shelf frozen perception model [ 14 ], and their 3D centroids are derived by unprojecting 2D centers using aligned depth maps. The global matching cost Cglobal (j, k ) between probe j and target k is averaged across all valid views 
+
+Vk:
+
+Cglobal (j, k ) = 1max( |V k|, 1) 
+
+X
+
+v∈V k
+
+Cv (j, k ), (5) where Cv (j, k ) incorporates classification, 2D boundaries, and 3D distance costs. The Hungarian Algorithm is applied once on Cglobal to yield the optimal assignment. The network is optimized by 6 joint loss components: 
+
+L = λcls Lcls + λbox L2DL1 + λgiou LGIoU + λmask Lmask CE + λdice Lmask DICE + λ3dL3DL1 . (6) Specifically, Lcls is the focal loss for classification. L2DL1 and LGIoU optimize 2D boxes. 2D masks are optimized via cross-entropy ( Lmask CE ) and DICE losses ( Lmask DICE ) using the spatial dot product between cj and M(4) 
+
+mask . Lastly, L3DL1 constrains absolute 3D positions against unprojected pseudo ground-truth centroids, firmly anchoring 2D features to physical 3D space. 
+
+3.3 Coordinate-Driven 3D Self-Supervised Predictor 
+
+To address fragile reasoning under occlusion, we propose a Coordinate-Driven 3D Self-Supervised Predictor . We repurpose the masked self-supervised predictor to formulate 3D completion as a coordinate-conditioned feature-regression process for synthesizing unobserved structures. 
+
+3.3.1 Target Coordinate Formulation and Geometric Completion 
+
+We define Mask Coordinates ( Pmask ) for self-supervised distillation and Completion Coordinates (Pcomp ) for unobservable geometries. During training, asymmetric multi-view masking forces the network to leverage cross-view geometric priors instead of trivial spatial interpolation to infer missing structures, with unmasked regions forming the visible context Xvis anchored at Pvis . To generate 
+
+Pcomp , we back-project 2D masks into a raw point cloud, denoise it via dynamic density-based clustering, and use a pre-trained completion network [ 23 ] to predict a dense shape. We isolate unobservable regions by sampling the farthest points from the observed geometry and then apply Farthest Point Sampling to obtain a uniform distribution. At inference, masking is disabled, and the predictor queries the continuous space directly with Pcomp .
+
+3.3.2 Position-View Conditioned Hybrid Attention 
+
+Inferring unobserved features requires encoding both absolute coordinates and specific camera perspectives. We propose a Hybrid 3D Attention Mechanism that decouples identity injection from 5relative distance encoding. We inject a continuous Fourier 3D positional encoding Φpos (·) and discrete camera view embedding Eview (·) into the context Xvis and target queries Ztgt :
+
+˜Xvis = Xvis + Φ pos (Pvis ) + Eview (Vvis ), (7) 
+
+˜Ztgt = Ztgt + Φ pos (Ptgt ) + Eview (Vtgt ), (8) where Vvis and Vtgt denote the respective view identifier vectors for the context and target coordi-nates, Ptgt = Pmask ∪ Pcomp . Continuous 3D RoPE is applied exclusively to the Query ( Q) and Key ( K) matrices to inject Euclidean distance priors. The core Hybrid Attention ( H-Attn ) operator is defined as: 
+
+Q = RoPE 3D (Xq WQ, Pq ), K = RoPE 3D (Xkv WK , Pkv ), (9) 
+
+H-Attn( Xq , Xkv ) = softmax 
+
+ QK T
+
+√dk
+
+
+
+(Xkv WV ), (10) where dk is the channel dimension per head. Each predictor block sequentially employs H-Attn for cross-attention ( Xq = ˜Ztgt , Xkv = ˜Xvis ) to extract visual features from the unmasked context, and for self-attention ( Xq = Xkv = ˜Ztgt ) to exchange spatial information. This sequential integration aligns structural consistencies in the final representations ˆZtgt = [ ˆZmask , ˆZcomp ].
+
+3.3.3 Distillation Objective and Anti-Collapse Regularization 
+
+To stabilize continuous feature regression, representations are distilled from an EMA teacher network (θT ← mθ T + (1 − m)θS ). Continuous feature prediction is highly susceptible to minimizing reconstruction error by simply outputting an averaged vector. To prevent this, our objective governs the magnitude, direction, and variance of features: 
+
+Lss = λrecon Lrecon + λcos Lcos + λvar Lvar . (11) Here, Lrecon is a Smooth-L1 loss for magnitude alignment. Lcos is a cosine distance penalty aligning semantic angles independent of their norms: 
+
+Lcos = 1 − 1
+
+Nmask Nmask X
+
+> i=1
+
+ˆzi · yi
+
+∥ˆzi∥2∥yi∥2
+
+, (12) where yi ∈ Y tea is the corresponding teacher target token. Finally, Lvar is a variance regularization loss to avoid spatial homogeneity: 
+
+Lvar = 1
+
+D
+
+> D
+
+X
+
+> d=1
+
+ReLU 
+
+
+
+std d(Ytea ) − std d( ˆZmask )
+
+
+
+, (13) where std d(·) computes the standard deviation for the d-th channel. 
+
+3.4 Spatially-Conditioned Geometry Aggregation 3.4.1 End-Effector Centric Relative Positional Encoding 
+
+In downstream manipulation, actions are inherently executed relative to the robot’s gripper. Providing only absolute world coordinates forces the policy to implicitly learn complex kinematic transfor-mations. To bypass this, we explicitly ground the geometric representations in end-effector-centric spatial offsets: ∆p = pobj − pee . To capture high-frequency spatial variations, ∆p is expanded using sinusoidal functions across F frequencies: 
+
+Φf req (∆ p) = [∆ p, sin(2 0π∆p), cos(2 0π∆p), . . . , cos(2 F −1π∆p)] . (14) This continuous vector is projected via an MLP to match the token dimension. The resulting affordance embeddings are added to the corresponding instance and completion tokens. Finally, these spatially grounded tokens are concatenated with the visual tokens and fed into the action expert, thereby perfectly fulfilling the plug-and-play design without altering the base VLA architecture. 6Table 1: Main Results on LIBERO-Plus. We report success rates (%) across 7 perturbation categories. Ours achieves the highest average success rate, significantly outperforming state-of-the-art baselines under severe visual and spatial variations.                                                                                                      
+
+> Methods Guidance Camera Robot Language Light Background Noise Layout Avg.
+> WorldVLA [5] Visual 0.1 27.9 41.6 43.7 17.1 10.9 38.0 25.0 OpenVLA [13] Linguistics 0.8 3.5 23.0 8.1 34.8 15.2 28.5 15.6 NORA [10] Linguistics 2.2 37.0 65.1 45.7 58.6 12.8 62.1 39.0 UniVLA [4] Linguistics 1.8 46.2 69.6 69.0 81.0 21.2 31.9 42.9
+> π0-Fast [18] Linguistics 65.1 21.6 61.0 73.2 73.2 74.4 68.8 61.6 RIPT-VLA [21] Linguistics 55.2 31.2 77.6 88.4 91.6 73.5 74.2 68.4 OpenVLA-OFT [12] Linguistics 56.4 31.9 79.5 88.7 93.3 75.8 74.2 69.6
+> π0[2] Linguistics 61.0 40.8 63.5 89.3 84.1 80.1 76.4 69.4
+> π0.5[11] Linguistics 71.2 77.1 89.9 94.7 94.0 84.2 84.3 84.2
+> π0.5+3DVLA Linguistics 75.6 77.4 88.6 97.4 97.7 85.3 86.6 86.0
+
+Table 2: Main Results on RoboTwin 2.0. 
+
+Method Easy Hard 
+
+DP [7] 28.0% 0.6% ACT [28] 29.7% 1.7% RDT [15] 34.5% 13.7% DP3 [27] 55.2% 5.0% 
+
+π0 [2] 46.4% 16.3% 
+
+π0+3DVLA 54.5% 23.2% X-VLA [29] 70.0% 39.0% 
+
+X-VLA+3DVLA 72.6% 42.1% 
+
+Table 3: Comprehensive Ablation Studies on RoboTwin 2.0. Inst. : 3D Instance Module; Pred. :3D Self-Supervised & Predictor; Rout. : Uncertainty-Guided Routing for the Aggregation. 
+
+Model Inst. Pred. Rout. Easy Hard 
+
+π0 46.4% 16.3% A ✓ 50.1% 18.9% B ✓ ✓ 53.4% 21.8% 
+
+C (Ours) ✓ ✓ ✓ 54.5% 23.2% 
+
+X-VLA 70.0% 39.0% A ✓ 71.3% 40.4% B ✓ ✓ 72.1% 41.6% 
+
+C (Ours) ✓ ✓ ✓ 72.6% 42.1% 
+
+3.4.2 Uncertainty-Guided Instance Geometric Routing 
+
+Fusing dense 3D completion features directly into the semantic states of instance probes ( ci) risks corrupting highly confident visual representations. We propose Uncertainty-Guided Instance Geo-metric Routing to adaptively inject 3D geometry based on physical proximity and explicit detection uncertainty. 
+
+Spatial-Biased Local Context. Using 3D Euclidean distance, we retrieve the K-nearest completion points N (i) for the instance centered at pi. The local geometric context hi is aggregated via cross-attention, where relative physical offsets dictate the attention bias: 
+
+hi = X 
+
+> j∈N (i)
+
+softmax j
+
+qikTj
+
+√dk
+
++ MLP bias (pj − pi)
+
+!
+
+vj Wout , (15) where qi is linearly projected from the instance semantic state ci, while kj and vj are projected from the local 3D completion feature at point pj . Crucially, the dot product qikTj captures semantic consistency, while the penalty term MLP bias (pj − pi) encodes spatial constraints. This joint formulation ensures that the instance only attends to geometries that are both semantically matched and physically adjacent. 
+
+Confidence-Modulated Routing. To ensure the network absorbs 3D context only when necessary, we quantify the ambiguity of the 2D observation. Using the classification logit li generated by the instance module, we define an uncertainty score ui = 1 − σ(li) ∈ [0 , 1] , where σ denotes the sigmoid function. We formulate a dynamic routing gate gi ∈ RD conditioned on the instance feature, local 3D context, and uncertainty score: 
+
+gi = σ
+
+
+
+τ · MLP gate 
+
+ [ci ∥ hi ∥ ui]
+
+, (16) where [· ∥ · ] denotes channel concatenation. Crucially, the final linear layer of MLP gate is zero-initialized with a constant bias of −3.0. This guarantees an identity mapping ( gi ≈ 0) at the onset of 7View A  View B  View A  View B  View A  View B 3D Space  3D Space  3D Space Figure 4: Multi-view instance consistency and 3D completion. Left & Center: Globally consistent masks and projected points generated from instance tokens across different views. Right: 3D geometry completion results in world space. Red and blue dots are visible points unprojected from respective views; yellow stars represent the predicted full geometry completed by our model. 
+
+Figure 5: Coordinate-Driven 3D Self-Supervised Predictor. Illustration of the predictor’s geometry synthesis capabilities under severe occlusion and visual perturbations. training, protecting the pre-trained 2D features from gradient chaos. The instance representation is ultimately updated via ˆci = ci + gi ⊙ LayerNorm( hi).
+
+4 Experiments 
+
+4.1 Benchmarks and metrics 
+
+We conduct experiments on two highly challenging simulation benchmarks. We strictly follow their official training splits and evaluation protocols. LIBERO-Plus [ 9] is a robotic benchmark built on LIBERO platform. It introduces seven distinct perturbation dimensions (e.g., Camera, Layout, Background, Light). RoboTwin 2.0 [6] emphasizes physics-rich, contact-heavy manipulation requiring precise 3D geometric perception. It features diverse multi-view setups and severe self-occlusions across articulated, deformable, and long-horizon tasks. These benchmarks use success rate as the evaluation metric. 
+
+4.2 Main Results Zero-Shot Transfer on LIBERO-Plus. Under zero-shot transfer from LIBERO to LIBERO-Plus, 3DVLA achieves a new state-of-the-art average success rate of 86.0% (Table 1). It is highly resilient to spatial shifts (e.g., Camera , Layout ) and visual perturbations (e.g., Light , Background ). We attribute these gains to anchoring features in continuous 3D space for multi-view consistency and to the coordinate-driven predictor that reconstructs occluded task-relevant geometry. We dissect these mechanisms in Section 4.3. 
+
+Comprehensive Manipulation on RoboTwin 2.0. We further benchmark 3DVLA on RoboTwin 2.0 to assess physics-rich interaction. Demonstrating plug-and-play compatibility, we integrate 3DVLA into π0 and X-VLA, and yield consistent and substantial improvements on both Easy and Hard settings (Table 2). This confirms the effectiveness of our proposed method, while 3DVLA adds only 
+
+∼0.086B parameters and negligible computational overhead. 
+
+4.3 Ablation Study 
+
+We examine the contribution of each proposed module via systematic ablation experiments. To provide a comprehensive view, we analyze the progressive macro-integration across both RoboTwin 2.0 (Table 3) and LIBERO-Plus (Table 4, Top). We then delve into micro-ablations detailing specific architectural choices (Table 4, Bottom). 
+
+3D Instance Module & Spatial Fusion. Upgrading the baseline to the 3D Instance Module (A) improves the average success rate on LIBERO-Plus to 85.0% and notably boosts performance in RoboTwin 2.0’s Hard setting. This confirms that extracting entities directly in 3D space resolves the limitations of flat 2D region reasoning. We dissect its internal dependencies in Table 4a. First, remov-8Table 4: Overall Ablation Studies on LIBERO-Plus. Progressive integration of our core modules yields stepwise improvements in success rate (abbreviations as in Table 3).                                                  
+
+> Model Inst. Pred. Rout. Camera Robot Language Light Background Noise Layout Avg.
+> Baseline 71.2 77.1 89.9 94.7 94.0 84.2 84.3 84.2 A✓71.4 78.9 87.9 96.0 94.4 86.5 86.3 85.0 B✓✓73.6 79.4 88.2 97.1 96.5 85.2 86.4 85.7
+> C (Ours) ✓✓✓75.6 77.4 88.6 97.4 97.7 85.3 86.6 86.0
+
+(a) Ablation of the 3D Instance Module. Variant Layout Avg.         
+
+> w/o Spatial Fusion 84.6 84.6 2D Matching (vs. Global 3D) 85.4 84.5 w/o End-Effector Relative PE 86.0 84.8
+> Full Instance Module (A) 86.3 85.0
+
+(b) Ablation on the masking ratio for the self-supervised training. Masking Ratio Camera Noise Avg.       
+
+> 25% Masking 73.1 85.0 85.5
+> 50% Masking (B) 73.6 85.2 85.7
+
+ing the voxel-free spatial fusion causes a performance drop (85.0% → 84.6%). This demonstrates that enforcing multi-view consistency prior to decoding is necessary to align divergent perspectives into a coherent memory (Figure 4, Left & Center). Second, replacing our global 3D bipartite matching with heuristic 2D matching drops the average to 84.5%, as 2D matching inevitably reintroduces cross-view ID conflicts when cameras shift. Finally, omitting the end-effector relative positional encoding degrades performance (84.8%). Logically, action execution is intrinsically relative to the robot’s gripper. Feeding absolute world coordinates forces the policy to implicitly learn complex kinematic transformations, whereas our relative encoding provides a direct, actionable spatial offset. 
+
+Coordinate-Driven 3D Self-Supervised Predictor. Introducing the 3D Self-Supervised Predictor (B) directly targets fragile reasoning under occlusion. This addition increases the LIBERO-Plus average to 85.7% and yields a substantial jump in RoboTwin 2.0’s Hard tasks (18.9% → 21.8%). Specifically, as visualized in Figure 5, the significant gain in the Camera split (71.4% → 73.6%) confirms that actively inferring unseen topologies prevents the policy from failing when task-relevant parts are hidden. In Table 4b, we evaluate the masking ratio during self-supervised training. A lower ratio of 25% yields sub-optimal results (85.5%) because the network bypasses 3D reconstruction by simply interpolating features from adjacent visible 2D pixels. Conversely, our 50% asymmetric masking explicitly forces the predictor to perform true cross-view spatial reasoning, yielding the highest structural fidelity. 
+
+Uncertainty-Guided Instance Geometric Routing. Finally, we examine the integration of the Uncertainty-Guided Instance Geometric Routing (C). In Model B, the predicted 3D completion tokens and the instance tokens are fed independently into the downstream action expert. In contrast, Model C dynamically fuses the local 3D geometric context directly into the instance representations based on explicit 2D detection uncertainty. This guided fusion provides a final +2.0% absolute improvement under Camera variations on LIBERO-Plus and pushes both LIBERO-Plus and RoboTwin 2.0 to their peak performances (86.0% average and 42.1% Hard success rate, respectively). The logic behind this gain is twofold: first, explicitly fusing 3D geometries with semantic instances relieves the action expert from the complex burden of spatial-semantic association; second, by utilizing the 2D classification logit ( li) to quantify observation ambiguity, the routing gate ensures that the network securely absorbs synthesized 3D context only when it is actually occluded or exhibits perspective ambiguity, preventing the corruption of already-confident visual representations. 
+
+5 Conclusion 
+
+In this paper, we propose 3DVLA, a plug-and-play framework that enriches VLAs with robust 3D rea-soning while remaining fully compatible with VLM pre-training and requiring no additional manual annotations. Our method integrates pervasive multi-view consistency constraints for viewpoint-invariant representations, instance tokens for 3D instance awareness, and a masked, self-supervised 3D-encoding branch with a retained predictor for visual token completion. Experiments on the LIBERO-Plus and RoboTwin 2.0 benchmarks demonstrate that 3DVLA consistently improves ma-nipulation performance over multiple baselines, validating both its effectiveness and its practical plug-and-play compatibility. 9References 
+
+[1] Mahmoud Assran, Quentin Duval, Ishan Misra, Piotr Bojanowski, Pascal Vincent, Michael Rabbat, Yann LeCun, and Nicolas Ballas. Self-supervised learning from images with a joint-embedding predictive architecture. In CVPR , 2023. 2, 3 [2] Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom, Karol Hausman, Brian Ichter, et al. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 , 2024. 3, 7 [3] Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Joseph Dabis, Chelsea Finn, Keerthana Gopalakrishnan, Karol Hausman, Alex Herzog, Jasmine Hsu, et al. Rt-1: Robotics transformer for real-world control at scale. In RSS , 2022. 1 [4] Qingwen Bu, Yanting Yang, Jisong Cai, Shenyuan Gao, Guanghui Ren, Maoqing Yao, Ping Luo, and Hongyang Li. Univla: Learning to act anywhere with task-centric latent actions. arXiv preprint arXiv:2505.06111 , 2025. 2, 7 [5] Jun Cen, Chaohui Yu, Hangjie Yuan, Yuming Jiang, Siteng Huang, Jiayan Guo, Xin Li, Yibing Song, Hao Luo, Fan Wang, et al. Worldvla: Towards autoregressive action world model. arXiv preprint arXiv:2506.21539 , 2025. 2, 7 [6] Tianxing Chen, Zanxin Chen, Baijun Chen, Zijian Cai, Yibin Liu, Zixuan Li, Qiwei Liang, Xianliang Lin, Yiheng Ge, Zhenyu Gu, et al. Robotwin 2.0: A scalable data generator and benchmark with strong domain randomization for robust bimanual robotic manipulation. arXiv preprint arXiv:2506.18088 , 2025. 8 [7] Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. IJRR , 2025. 3, 7 [8] Ashley Edwards, Himanshu Sahni, Yannick Schroecker, and Charles Isbell. Imitating latent policies from observation. In ICML , 2019. 3 [9] Senyu Fei, Siyin Wang, Junhao Shi, Zihao Dai, Jikun Cai, Pengfang Qian, Li Ji, Xinzhe He, Shiduo Zhang, Zhaoye Fei, et al. Libero-plus: In-depth robustness analysis of vision-language-action models. arXiv preprint arXiv:2510.13626 , 2025. 2, 8 [10] Chia-Yu Hung, Qi Sun, Pengfei Hong, Amir Zadeh, Chuan Li, U Tan, Navonil Majumder, Soujanya Poria, et al. Nora: A small open-sourced generalist vision language action model for embodied tasks. arXiv preprint arXiv:2504.19854 , 2025. 2, 7 [11] Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, et al. π0.5: a vision-language-action model with open-world generalization. arXiv preprint arXiv:2504.16054 , 2025. 3, 7 [12] Moo Jin Kim, Chelsea Finn, and Percy Liang. Fine-tuning vision-language-action models: Optimizing speed and success. arXiv preprint arXiv:2502.19645 , 2025. 7 [13] Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan P Foster, Pannag R Sanketi, Quan Vuong, et al. Openvla: An open-source vision-language-action model. In CoRL , 2025. 1, 2, 7 [14] Zhiwei Lin and Yongtao Wang. Vl-sam-v2: Open-world object detection with general and specific query fusion. arXiv preprint arXiv:2505.18986 , 2025. 5 [15] Songming Liu, Lingxuan Wu, Bangguo Li, Hengkai Tan, Huayu Chen, Zhengyi Wang, Ke Xu, Hang Su, and Jun Zhu. Rdt-1b: a diffusion foundation model for bimanual manipulation. In ICLR , 2025. 3, 7 [16] Corey Lynch, Mohi Khansari, Ted Xiao, Vikash Kumar, Jonathan Tompson, Sergey Levine, and Pierre Sermanet. Learning latent plans from play. In CoRL , 2020. 3 [17] Maxime Oquab, Timothée Darcet, Théo Moutakanni, Huy Vo, Marc Szafraniec, Vasil Khalidov, Pierre Fernandez, Daniel Haziza, Francisco Massa, Alaaeldin El-Nouby, et al. Dinov2: Learning robust visual features without supervision. TMLR , 2023. 3 [18] Karl Pertsch, Kyle Stachowicz, Brian Ichter, Danny Driess, Suraj Nair, Quan Vuong, Oier Mees, Chelsea Finn, and Sergey Levine. Fast: Efficient action tokenization for vision-language-action models. arXiv preprint arXiv:2501.09747 , 2025. 7 [19] Danila Rukhovich, Anna Vorontsova, and Anton Konushin. Imvoxelnet: Image to voxels projection for monocular and multi-view general-purpose 3d object detection. In WACV , 2022. 2 
+
+10 [20] Jingwen Sun, Wenyao Zhang, Zekun Qi, Shaojie Ren, Zezhi Liu, Hanxin Zhu, Guangzhong Sun, Xin Jin, and Zhibo Chen. Vla-jepa: Enhancing vision-language-action model with latent world model. arXiv preprint arXiv:2602.10098 , 2026. 3 [21] Shuhan Tan, Kairan Dou, Yue Zhao, and Philipp Krähenbühl. Interactive post-training for vision-language-action models. arXiv preprint arXiv:2505.17016 , 2025. 3, 7 [22] Octo Model Team, Dibya Ghosh, Homer Walke, Karl Pertsch, Kevin Black, Oier Mees, Sudeep Dasari, Joey Hejna, Tobias Kreiman, Charles Xu, et al. Octo: An open-source generalist robot policy. In RSS ,2024. 1 [23] Jun Wang, Ying Cui, Dongyan Guo, Junxia Li, Qingshan Liu, and Chunhua Shen. Pointattn: You only need attention for point cloud completion. In AAAI , 2024. 5 [24] Zhongyu Xia, Jishuo Li, Zhiwei Lin, Xinhao Wang, Yongtao Wang, and Ming-Hsuan Yang. Openad: Open-world autonomous driving benchmark for 3d object detection. arXiv preprint arXiv:2411.17761 ,2024. 2 [25] Zhongyu Xia, Zhiwei Lin, Yongtao Wang, and Ming-Hsuan Yang. Henet++: Hybrid encoding and multi-task learning for 3d perception and end-to-end autonomous driving. arXiv preprint arXiv:2511.07106 ,2025. 2 [26] Zhongyu Xia, Yousen Tang, Yongtao Wang, Zhifeng Wang, and Weijun Qin. R4det: 4d radar-camera fusion for high-performance 3d object detection. arXiv preprint arXiv:2603.11566 , 2026. 2 [27] Yanjie Ze, Gu Zhang, Kangning Zhang, Chenyuan Hu, Muhan Wang, and Huazhe Xu. 3d diffusion policy: Generalizable visuomotor policy learning via simple 3d representations. In RSS , 2024. 3, 7 [28] Tony Z Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained bimanual manipula-tion with low-cost hardware. In RSS , 2023. 3, 7 [29] Jinliang Zheng, Jianxiong Li, Zhihao Wang, Dongxiu Liu, Xirui Kang, Yuchun Feng, Yinan Zheng, Jiayin Zou, Yilun Chen, Jia Zeng, et al. X-vla: Soft-prompted transformer as scalable cross-embodiment vision-language-action model. arXiv preprint arXiv:2510.10274 , 2025. 7 [30] Brianna Zitkovich, Tianhe Yu, Sichun Xu, Peng Xu, Ted Xiao, Fei Xia, Jialin Wu, Paul Wohlhart, Stefan Welker, Ayzaan Wahid, et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. In CoRL , 2023. 1 
+
+11 A Implementation Details 
+
+To facilitate future research and ensure full reproducibility, we will open-source our complete codebase, pre-trained model weights, and evaluation scripts upon publication. Below, we detail the architectural hyperpa-rameters, optimization strategies, and computational costs associated with 3DVLA. 
+
+A.1 Architectural Hyper-parameters 
+
+A core advantage of 3DVLA is its parameter efficiency. During training, the large underlying Vision-Language Model (VLM) backbone is kept entirely frozen, while only the newly introduced 3D perception modules and the downstream action expert are actively updated. For the Object-Centric 3D Instance Module , we initialize 
+
+Nq = 300 state probes to ensure comprehensive scene coverage. Through matching and uncertainty filtering, these probes are adaptively distilled into a maximum of 16 highly confident instance tokens per scene. For the Coordinate-Driven 3D Predictor , to balance computational efficiency and geometric fidelity, the network processes at most 6 occluded object instances per observation, with each instance uniformly sampled to ensure it contains exactly 5 completion coordinate queries. 
+
+A.2 Two-Stage Training Strategy 
+
+To ensure stable optimization and prevent continuous feature regression from dominating or collapsing the early learning phase, we decouple 3DVLA’s training into a progressive two-stage pipeline. 
+
+Stage 1: Spatial Fusion and Instance Extraction. In the first stage, we focus exclusively on learning view-consistent physical entities. We jointly train the Multi-View Spatial Fusion module, the 3D Instance Module, and the action expert. This stage is trained for 5,000 steps with an effective batch size of 64. 
+
+Stage 2: 3D Completion and Geometry Aggregation. In the second stage, we freeze the weights of the modules trained in Stage 1 to preserve the stable 2D-to-3D geometric anchoring. We then exclusively train the 3D Self-Supervised Predictor, the Geometry Aggregation module, and continue updating the action expert. This phase is also trained for 5,000 steps with a batch size of 64. 
+
+A.3 Optimization and Loss Coefficients 
+
+The network is optimized using the AdamW optimizer with a gradient clipping norm of 0.5 and a weight decay of 1 × 10 −4. We employ a cosine learning rate decay schedule, featuring 1,200 warmup steps to reach a peak learning rate of 3 × 10 −6, followed by 3,800 decay steps down to 1 × 10 −8.For the joint geometric alignment loss (Equation 6), the balancing coefficients are empirically set to precisely match the scale of heterogeneous geometric properties: λcls = 2 .0, λbox = 5 .0, λgiou = 2 .0, λmask = 5 .0,
+
+λdice = 5 .0, and λ3d = 5 .0. For the self-supervised distillation objective (Equation 11), to strictly prevent feature homogeneity, we strongly penalize variance collapse while maintaining directional alignment: λrecon =1.0, λcos = 0 .1, and λvar = 10 .0. The Exponential Moving Average (EMA) momentum for updating the teacher network is set to m = 0 .999 .
+
+A.4 Computational Cost 
+
+The entire two-stage training process is highly efficient and is conducted on a single compute node equipped with 4 NVIDIA A800 GPUs. Stage 1 takes approximately 5 hours, and Stage 2 takes roughly 9 hours, bounding the total training pipeline to merely 14 hours. During evaluation, due to the physics-rich nature of the environments and the requirement for comprehensive validation across diverse perturbation setups, the testing phase is heavily bottlenecked by simulation rendering and physical stepping rather than model inference. We scale the evaluation across 8 NVIDIA A800 GPUs, which take approximately 14 hours to complete the extensive simulation benchmark suites. 
+
+12

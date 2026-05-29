@@ -1,0 +1,386 @@
+Title: ChronoMedicalWorld: A Medical World Model for Learning Patient Trajectories from Longitudinal Care Data
+
+URL Source: https://arxiv.org/pdf/2605.21963v1
+
+Published Time: Fri, 22 May 2026 00:39:34 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+ChronoMedicalWorld – A Preprint May 22, 2026 
+
+# ChronoMedicalWorld: A Medical World Model for Learning Patient Trajectories from Longitudinal Care Data 
+
+## Jiangyuan Wang 1, Xuyong Chen 1, Junwei He 1, Xu Xu 1, Shasha Xie 1, and Fuman Han 11Beijing KidneyTec Medical Technology Co., Ltd., Beijing, China 
+
+May 2026 
+
+Abstract 
+
+Long-horizon clinical simulation—predicting how a patient’s physiology evolves over years under spec-ified interventions—is central to chronic-disease care, yet existing electronic health record (EHR) models are predominantly discriminative, and general-purpose large language models drift under repeated in-terventions. We propose the ChronoMedicalWorld Model (CMWM) , an action-conditioned latent world-model framework for learning patient trajectories from longitudinal care data. CMWM couples a joint-embedding state encoder with a wide action encoder that admits both structured intervention indicators and free-text communication embeddings, and trains a recurrent latent transition module under a six-term objective: next-observation supervision, next-latent prediction, SIGReg latent regular-isation, and three physiology-aware shape priors (slope, continuity, large-jump penalty). A closed-loop rollout-prefix protocol matches training to deployment, so the model is optimised against the same multi-step error it exhibits at inference. As a concrete case study, we instantiate CMWM for annual estimated glomerular filtration rate (eGFR) trajectory forecasting in chronic kidney disease (CKD). On a 2,232-patient nephrology cohort, the CKD instantiation achieves a dynamic-50% history rollout test mean absolute error (MAE) of 7.384 and root-mean-square error (RMSE) of 10.256, against 7.964 and 11.069 for a tuned GPT-5.5 structured-prompting baseline ( −7.28% MAE, −7.35% RMSE), with the gain dominated by the dialogue portion of patient–health-coach communication. The framework is not CKD-specific: its architecture, loss design, and training protocol apply to any chronic condition that can be cast as periodic clinical state interleaved with structured and conversational interventions. 
+
+# 1 Introduction 
+
+Care for chronic disease unfolds over years and is shaped by a continuous interplay between physiology and intervention: medications are titrated, lifestyle plans are negotiated, follow-up visits are scheduled, and conversational exchanges between patients and their care team—clinicians, nurses, or platform health coaches—communicate adherence, symptoms, and management decisions that are often only loosely reflected in structured laboratory tables. Modelling this process well would unlock individualised long-horizon tra-jectory forecasting, counterfactual intervention evaluation, and the broader vision of clinical digital twins. In practice, however, this capability is under-served. Classical risk equations [1] are calibrated for endpoint probabilities, not for multi-year state trajectories. Deep EHR representation learners such as RETAIN [2], BEHRT [3], and Med-BERT [4], along with disease-specific dynamic models [5, 6, 7], are discriminative predictors of future events rather than closed-loop simulators of patient physiology. General-purpose large language models (LLMs), when prompted with rich clinical context, drift after a few intervention events—as quantified explicitly by recent patient-centric medical world-model work [8]—because they lack a persistent latent state and were never trained against multi-step rollout error. The world-model paradigm [9, 10, 11, 12] offers an alternative: explicitly learn how observations evolve under actions, then unroll the learned dynamics in imagination to evaluate counterfactual intervention se-quences. Joint-embedding predictive architectures (JEPAs) [13] place these dynamics in a compact latent space, and LeWorldModel (LeWM) [14] recently showed that a JEPA can be trained stably end-to-end with 1 
+
+> arXiv:2605.21963v1 [cs.LG] 21 May 2026 ChronoMedicalWorld – A Preprint May 22, 2026
+
+a next-embedding loss plus a sketched isotropic-Gaussian regulariser (SIGReg), removing many collapse-prevention heuristics. EHRWorld [8] ported the world-model framing to medicine and demonstrated that disease-agnostic LLM-only simulators are not enough. We identify three gaps in the current medical-world-model literature. First , existing patient-centric medical world models are oriented toward broad clinical narrative simulation, and there is no published architectural recipe specialised to the periodic-observation regime in which structured interventions and free-text interventions co-occur, as is typical of chronic-disease follow-up. Second , the action interface in medical-world-model work has so far treated interventions almost exclusively as structured events; the rich patient–health-coach text exchange that often carries the actual management signal has not been formalised as a first-class action input. Third , the training-evaluation mismatch in which models are trained on next-step prediction but deployed in multi-step rollout is a known source of drift, yet it is not consistently addressed in clinical work. This paper introduces the ChronoMedicalWorld Model (CMWM) , a general action-conditioned latent world-model framework designed to fill these three gaps. CMWM is not a CKD-specific predictor: it is a template that consumes (i) periodic clinical state observations of arbitrary structured dimensionality, (ii) action observations that may concatenate any structured intervention indicators with any free-text-derived semantic embeddings, and (iii) a target-time covariate vector; and produces both an explicit next-observation prediction and a next-latent prediction for closed-loop rollout. The framework is paired with a six-term training objective whose three physiology-aware shape priors (slope, continuity, jump) make it suitable for slowly evolving biomarkers, and with a rollout-prefix training protocol that closes the train– evaluation gap. To make the proposal concrete and to substantiate its value, we instantiate CMWM for annual eGFR trajectory forecasting in CKD and compare it against a contemporary GPT-5.5 structured-prompting baseline. Our contributions are: 
+
+• A medical-world-model framework. We formalise long-horizon clinical trajectory forecasting under structured and conversational interventions as an action-conditioned latent dynamics problem and provide CMWM, a concrete general-purpose recipe for it: state encoder, wide action encoder, recurrent latent transition module, and explicit next-observation and next-latent heads. 
+
+• A first-class communication-action channel. CMWM treats patient–health-coach text exchange as an intervention signal rather than as auxiliary metadata, encoding each follow-up window’s full transcript as a semantic vector that enters the action encoder alongside structured indicators. This is, to our knowledge, the first medical world model to formalise communication as a primary action. 
+
+• A physiology-aware training objective. We pair the LeWM next-latent-prediction and SIGReg backbone with three shape priors—slope consistency, local-continuity Huber, and a hinge-style large-jump penalty—that prevent representation collapse and clinically implausible step changes during multi-year rollout, and we train under a rollout-prefix protocol that matches the deployment regime. 
+
+• A CKD eGFR case study demonstrating value. We instantiate CMWM for annual eGFR fore-casting on a 2,232-patient nephrology cohort and show that the instantiated model outperforms a tuned GPT-5.5 structured-prompting baseline on dynamic-50% rollout (test MAE 7.384 vs. 7.964; RMSE 10.256 vs. 11.069), with ablations confirming that the framework’s communication-action channel drives the gain. We emphasise that the architecture, loss design, and training protocol are domain-agnostic; the CKD instantiation supplies one concrete validation, and the same template applies to other chronic conditions whose management can be cast as periodic clinical state interleaved with structured and conversational interventions (e.g., glycated haemoglobin (HbA1c) in type 2 diabetes, blood pressure in hypertension, N-terminal pro–B-type natriuretic peptide (NT-proBNP) and ejection fraction in heart failure, forced expiratory volume in one second (FEV 1) in chronic obstructive pulmonary disease). 2ChronoMedicalWorld – A Preprint May 22, 2026 
+
+# 2 Related Work 
+
+## 2.1 World Models and Joint-Embedding Predictive Architectures 
+
+World models compress an environment into a learned latent dynamics function that an agent can roll forward without further interaction [9]. PlaNet [10] introduced recurrent state-space models for pixel-based control; Dreamer-V3 [11] generalised the paradigm across diverse domains using latent imagination. LeCun’s energy-based view [12] reframed prediction as a joint-embedding problem, leading to image and video JEPAs [13]. LeWM [14] contributes a clean end-to-end JEPA training recipe by replacing collapse-prevention heuristics with SIGReg, a normality test on random one-dimensional projections of the latent distribution. CMWM retains LeWM’s next-latent-prediction and SIGReg backbone, but the observation space is periodic struc-tured clinical state, the action space couples structured intervention indicators with semantic communication embeddings, and the supervision target is a physiological scalar rather than a control reward. 
+
+## 2.2 EHR Representation Learning and Medical World Models 
+
+RETAIN [2] demonstrated interpretable longitudinal modelling via reverse-time attention; BEHRT [3] and Med-BERT [4] adapted transformer pretraining to structured electronic health records, and the public avail-ability of MIMIC-IV [15] catalysed a generation of dynamic EHR models. A 2023 systematic review of deep models on EHR trajectories [16] identified missingness, irregular sampling, external validation and inter-pretability as persistent obstacles. Most of these works remain discriminative. EHRWorld [8] represents a recent pivot: it explicitly reframes EHR modelling as long-horizon causally-grounded patient simulation, and quantifies how LLM-only simulators drift after sequential interventions. CMWM shares EHRWorld’s em-phasis on intervention-conditioned long-horizon consistency, but differs in two ways: it targets the periodic-observation chronic-disease regime rather than dense intensive-care-unit (ICU) style multivariate simulation, and it formalises free-text communication as a first-class action input rather than as context. 
+
+## 2.3 Disease-Trajectory and Risk Modelling: a Reference Case Study 
+
+Because we evaluate CMWM on CKD, we briefly survey the CKD modelling landscape that frames our case study. Tangri’s Kidney Failure Risk Equation (KFRE) [1] remains the reference clinical risk score; the Chronic Kidney Disease Epidemiology Collaboration (CKD-EPI) 2021 race-free creatinine equation [17] is now standard for laboratory eGFR reporting. Recent trials—DAPA-CKD [18], FIDELIO-DKD [19]—and the Kidney Disease: Improving Global Outcomes (KDIGO) 2024 guideline [20] reshaped pharmacological management, and methodological work has consolidated total eGFR slope as a surrogate endpoint for CKD progression [21]. On the modelling side, time-dependent long short-term memory networks (LSTMs) [5], transformer time-to-event models [6], and the recent KFDeep dynamic predictor [7] have pushed survival-style prediction of kidney failure, while metabolic-flux digital twins [22] target diagnostic classification rather than trajectory. A separate strand of work predicts eGFR as a continuous value: deep-learning models from kidney ultrasound [23], interpretable machine-learning models from routine laboratory features in CKD cohorts [24], and pretransplant-biopsy convolutional neural network (CNN) models that forecast posttransplant graft eGFR [25] all report mean absolute error (MAE) as a primary evaluation metric. None of these models unrolls clinical state autoregressively under both medication and communication actions; this is the niche the CKD instantiation of CMWM fills, and the gap exists analogously in the modelling literature of other chronic conditions. 
+
+## 2.4 Irregular Time Series and Counterfactual Treatment Effects 
+
+Periodic aggregation reduces but does not eliminate the irregular-sampling problem common to follow-up data. Latent ordinary differential equation (ODE) models [26] and multi-time attention networks [27] pro-vide continuous-time alternatives to discrete recurrence. For intervention-conditioned outcomes, the coun-terfactual recurrent network [28] and treatment-effect neural controlled differential equations (TE-CDE) [29] estimate treatment effects under time-dependent confounding. CMWM is not a causal-inference method—it does not adjust for confounding—but it shares the goal of producing usable predictions under counterfactual 3ChronoMedicalWorld – A Preprint May 22, 2026 
+
+action sequences, and its user-controllable action interface is designed so that downstream causal methods can be layered on top. 
+
+# 3 The ChronoMedicalWorld Framework 
+
+## 3.1 Problem Formulation 
+
+We consider a patient followed periodically. At each observation index t = 1 , . . . , T i, three vectors are recorded: a clinical state xi,t ∈ Rdx summarising the period (biomarkers, vitals, missingness flags, mea-surement counts), an action ai,t ∈ Rda that may concatenate structured intervention indicators ami,t and a semantic embedding aci,t of any free-text exchange during the period, and a target-time covariate vector 
+
+τi,t ∈ Rdτ (e.g., age, gap since previous observation, follow-up volume). The patient also carries a static context bi such as sex and disease type. Let 
+
+Hi,t = {(xi, 1, a i, 1, τ i, 1), . . . , (xi,t , a i,t , τ i,t )}. (1) A medical world model is a parametric map 
+
+ˆyi,t +k = fθ
+
+(Hi,t , b i, a i,t :t+k−1, τ i,t +1: t+k
+
+), k ≥ 1, (2) where ˆyi,t +k is a designated component (or transformation) of the clinical state—the target observable —that we wish to forecast under candidate intervention sequences. At evaluation, ˆyi,t +k is written back into the corresponding slot of x(1)  
+
+> i,t +k
+
+in the next step, so that no future ground-truth observable enters the rollout. 
+
+## 3.2 Architecture 
+
+CMWM instantiates Equation (2) as a recurrent latent transition module with four components (Figure 1): 
+
+bi = B(static i), (3) 
+
+zi,t = Es
+
+([˜ xi,t ; bi]), (state encoder) (4) 
+
+ui,t = Ea
+
+([ami,t ; aci,t ]), (wide action encoder) (5) 
+
+hi,t = G(hi,t −1, [zi,t ; ui,t ]), (recurrent transition) (6) 
+
+(ˆ yi,t +1 , ˆzi,t +1 ) = H([hi,t ; bi; ˜ τi,t +1 ]). (prediction head) (7) Tildes denote standardisation using train-set statistics. The two output channels are deliberate: the explicit-prediction channel ˆyi,t +1 supplies supervised, interpretable forecasts for the target observable, while the latent channel ˆzi,t +1 enables JEPA-style next-latent training and downstream latent-space probing. The wide action encoder is a single feed-forward block over the full action vector; the framework also admits a split variant in which structured and text actions are routed through separate encoders, but in our experiments the wide variant proved more stable under multi-step rollout. 4ChronoMedicalWorld – A Preprint May 22, 2026             
+
+> Clinical state
+> xt∈Rdx
+> Static context
+> bi
+> Structured interventions amt
+> Communication embedding act
+> Es
+> state encoder
+> Ea
+> wide action encoder
+> Latent state
+> zt
+> Action emb.
+> ut
+> GRU G
+> transition
+> ht=G(ht−1,[zt;ut])
+> Prediction head H
+> [ht;bi; ˜ τt+1 ]
+> Next target
+> ˆyt+1
+> Next latent
+> ˆzt+1
+> Static context
+> bi
+> Target time
+> τt+1
+> Autoregressive rollout: ˆyt+1 →x(1)
+> t+1
+
+Figure 1: The ChronoMedicalWorld Model (CMWM) framework. State pathway: a periodic clinical state 
+
+xt together with the static patient embedding bi is mapped by the state encoder Es into the latent state 
+
+zt. Action pathway: structured intervention indicators amt and a semantic embedding act of within-period patient–health-coach communication are mapped jointly by the wide action encoder Ea into the action embedding ut. The recurrent transition module G (implemented as a gated recurrent unit, GRU, in our case-study instantiation) propagates the fused stream [zt; ut] into a hidden state ht; the head H consumes 
+
+[ht; bi; ˜ τt+1 ] and produces both the next-period target observable ˆyt+1 (e.g., eGFR, HbA1c, ejection fraction) and the next predicted latent ˆzt+1 . The static context bi is shown twice for layout clarity (left of Es and below 
+
+H); it denotes the same input fed to both modules. The perimeter dashed loop indicates the autoregressive rollout used at evaluation, where ˆyt+1 replaces the corresponding slot of the next-period clinical state. 
+
+## 3.3 Training Objective 
+
+For minibatches drawn from rollout-prefix samples (Section 3.4), CMWM minimises 
+
+L = Ly + λz Lz + λsig LSIGReg + λ∆Lslope + λcLcont + λj Ljump . (8) The supervised term penalises one-step error on the target observable in the standardised space: 
+
+Ly = 1
+
+|D| 
+
+∑
+
+> (i,t )∈D
+
+SmoothL1(ˆ yi,t +1 − yi,t +1 ) . (9) The next-latent term aligns the predicted next latent with the encoded next observed state under stop-gradient on the target encoding, as in JEPA-style models [14, 13]: 
+
+Lz = 1
+
+|D| 
+
+∑
+
+> (i,t )∈D
+
+∥∥ˆzi,t +1 − sg (Es
+
+([˜ xi,t +1 ; bi]))∥ ∥22. (10) SIGReg [14] prevents trivial latent collapse by projecting a minibatch of latent codes onto Q random unit directions and measuring the discrepancy between each one-dimensional empirical characteristic function 
+
+ˆϕq (t) = ˆCq (t) + i ˆSq (t) and the characteristic function ϕ⋆(t) = e−t2/2 of a standard Gaussian: 
+
+ˆCq (t) = 1
+
+> N
+
+∑Nn=1 cos (t q ⊤zn
+
+), ˆSq (t) = 1
+
+> N
+
+∑Nn=1 sin (t q ⊤zn
+
+), (11) 
+
+LSIGReg = NQ
+
+> Q
+
+∑
+
+> q=1
+> K−1
+
+∑
+
+> k=0
+
+wk
+
+[( ˆCq (tk) − ϕ⋆(tk))2 + ˆSq (tk)2]
+
+, (12) where {tk}K−1 
+
+> k=0
+
+is a uniform grid over [0 , T max ], wk are Gaussian-windowed trapezoidal weights, zn is the 
+
+n-th latent code in the minibatch, and q is sampled from the uniform distribution on the unit sphere. We use K = 17 , Tmax = 3 , and Q = 64 . Equation (12) is differentiable in θ and acts as an isotropy regulariser without exponential moving averages or auxiliary supervision. 5ChronoMedicalWorld – A Preprint May 22, 2026 
+
+To match the prior that chronic-disease physiology evolves smoothly and rarely with abrupt single-period jumps, we add three shape penalties. The slope-consistency term aligns the predicted one-period change with the observed one-period change: 
+
+Lslope = 1
+
+|D| 
+
+∑
+
+> (i,t )∈D
+
+SmoothL1 ( (ˆ yi,t +1 − yi,t ) − (yi,t +1 − yi,t ) ). (13) Local continuity is enforced by a Huber loss between the predicted slope and zero (in standardised units), discouraging small but persistent biases that compound during rollout: 
+
+Lcont = 1
+
+|D| 
+
+∑
+
+> (i,t )∈D
+
+Huber δc
+
+(ˆyi,t +1 − yi,t , 0). (14) Clinically implausible single-period jumps are penalised by a one-sided hinge: 
+
+Ljump = 1
+
+|D| 
+
+∑
+
+> (i,t )∈D
+
+max (0, |ˆyi,t +1 − yi,t | − δj
+
+)2. (15) The three priors have complementary roles: Lslope targets the direction of progression, Lcont smooths short-term oscillation in any direction, and Ljump is silent inside a clinically acceptable band [−δj , δ j ] but penalises only the part of the step beyond δj . The thresholds δc, δ j are framework hyperparameters whose calibration depends on the units and scale of the target observable. 
+
+## 3.4 Rollout-Prefix Training Protocol 
+
+A long-standing source of multi-step error in autoregressive sequence models is the train–evaluation mismatch between teacher-forced next-step training and free-running rollout deployment. CMWM addresses this by replacing standard one-step training with a rollout-prefix regime. For a patient with Ti observations, every prefix length c ∈ [cmin , T i) generates one training trajectory in which the model unrolls forward for up to H
+
+steps; predicted target observables are fed back into the next step’s clinical state in place of the corresponding ground-truth slot, exactly as at evaluation; and per-step losses are aggregated with a horizon-decay factor so that nearer-horizon steps dominate optimisation while later-horizon steps still contribute. This protocol makes the model robust to its own prediction error and is, in our experiments, more important for closed-loop performance than any single architectural choice. 
+
+## 3.5 Inference-Time Stabilisation 
+
+At inference, CMWM supports an optional first-step anchor: the first prediction is convex-combined with a recent-trend extrapolation from the patient’s own history, and the resulting first-step change is clipped to a clinically plausible magnitude. This is a deployment-time stabiliser independent of training; it eliminates an initial jump that occasionally appears at the boundary between observed history and pure-rollout forecasting and that compounds over later horizons. 
+
+# 4 Case Study: Annual eGFR Trajectory Forecasting in CKD 
+
+To substantiate the value of CMWM, we instantiate the framework on a non-trivial chronic-disease setting— annual eGFR trajectory forecasting in CKD—and compare it against a contemporary large language model under matched evaluation protocol. The case study is intended as evidence of the framework’s value; the framework itself remains domain-agnostic. 
+
+## 4.1 Cohort 
+
+The study used a private KidneyOnline platform follow-up cohort. Data sources included serum-creatinine– derived eGFR computed by the CKD-EPI 2021 race-free equation [17]; demographics and pathology; medica-tion exposures; 24-hour urine protein; patient-reported home-measured blood pressure; and patient–health-coach chat transcripts collected through the platform messaging interface. Records were aggregated by 6ChronoMedicalWorld – A Preprint May 22, 2026 
+
+calendar year to produce annual feature vectors. Inclusion required at least five annual observations and a first-year eGFR above 30 mL/min/1.73 m 2. Patients were split at the patient level. The final cohort comprised 2,232 patients and 15,070 patient-years. Table 1: KidneyOnline cohort characteristics, feature dimensions, and missingness for the CKD case study. Continuous variables are reported as mean (standard deviation, SD) or median [interquartile range, IQR]. MAP, mean arterial pressure.                              
+
+> Category Statistic Value Cohort size Patients / patient-years 2,232 / 15,070 Follow-up Calendar years; years per patient 1999–2026; 6.0 [5.0–8.0] Baseline demographics Age; sex 35.2 (10.0) years; 1,139 female (51.0%), 1,093 male (49.0%) Baseline renal status eGFR; 24-h urine protein; MAP 94.7 (26.5); 0.5 [0.3–1.1] g/day; 85.9 (8.5) mmHg Pathology Most common diagnoses IgA nephropathy 46.4%, unbiopsied/unspecified 19.4%, membranous nephropathy 7.2% Static features Variables / pathology cate-gories 2 variables; 50 pathology categories Dynamic clinical state Annual state dimensions 9 dimensions Target-time covariates Dimensions 6 dimensions Structured intervention actions Dimensions 62 binary features (12 drug classes + 50 frequent agents) Communication actions Dimensions and coverage 256-d annual text embedding; 10,045 patient-years with communication Communication volume Messages and characters 805,327 messages and 46.4 M characters; nonzero years had 37 [8–98] messages and 2,442 [603–5,805] characters Missingness Patient-year missing rate eGFR 0% by construction; urine protein 28.2%; blood pressure 40.0%; no communication 33.3%
+
+Table 2: Patient-level data split and evaluation sample counts for the CKD case study. 
+
+Split Patients Next-year samples Dynamic rollout points Dynamic rollout patients Train 1,562 5,306 4,875 1,562 Validation 334 1,110 1,020 334 Test 336 1,177 1,078 336 
+
+## 4.2 Instantiation: State, Action, Time, and Target 
+
+The target observable is annual mean eGFR. The clinical state vector xt ∈ R9 collects mean eGFR, mean age, log-transformed 24-hour urine total protein, median mean arterial pressure (MAP), measurement counts for eGFR / urine protein / blood pressure, and missingness flags for urine protein and blood pressure. The target-time vector τt ∈ R6 contains age, gap to the previous annual visit, years since baseline, and the same measurement counts. Structured intervention actions amt ∈ { 0, 1}62 cover 12 drug classes (steroid, calcineurin inhibitor, mycophenolate mofetil (MMF), other immunosuppressant, renin–angiotensin system (RAS) blocker, sodium–glucose cotransporter-2 (SGLT2) inhibitor, mineralocorticoid receptor antagonist (MRA), uric-acid lowering agent, statin, calcium channel blocker (CCB), β-blocker, broad CKD support) and 50 frequent individual agents, encoded as year-level exposure indicators. The communication action act ∈ R256 
+
+is obtained by sorting all patient–health-coach messages of a patient-year chronologically, concatenating them into one annual transcript, and embedding with OpenAI’s text-embedding-3-small model truncated to 7ChronoMedicalWorld – A Preprint May 22, 2026 
+
+256 dimensions [30]; long transcripts are embedded in overlapping chunks and averaged with character-count weights; years without communication receive a zero communication vector. The full action vector at ∈ R318 
+
+concatenates the structured and communication components. 
+
+## 4.3 Training Configuration 
+
+We train CMWM with AdamW under the rollout-prefix protocol of Section 3.4 and select on validation dynamic-50% rollout MAE. Table 3 summarises the configuration used for the case study. Table 3: Training configuration of the best CMWM variant on the CKD case study (wide action encoder, communication embedding).                             
+
+> Item Value State / action / target-time dim. 9 / 318 / 6 Architecture state encoder, wide action encoder, GRU dynamics Hidden / latent / static / action emb. 256 / 128 / 64 / 128 Total trainable parameters 790,081 ( ≈0.79 M; GRU 0.395 M, prediction heads 0.217 M, encoders 0.176 M) Context length / minimum history / max hori-zon 6 / 3 / 8 Optimiser AdamW, lr 6×10 −4, weight decay 8×10 −5
+> Dropout 0.05 Loss weights in Eq. (8) λz=0 .08 , λ sig =0 .008 , λ ∆=0 .2, λ c=0 .3, λ j=0 .2
+> Continuity / jump thresholds δc=0 .5, δ j=10 eGFR units SIGReg grid / projections K=17 knots over [0 ,3] ,Q=64
+> Selection metric / best epoch validation dynamic-50% rollout MAE / 5 Rollout-time stabilisation first-step anchor weight 1.0, anchor jump cap ±5eGFR units
+
+## 4.4 GPT-5.5 Baseline 
+
+We probe GPT-5.5 through structured prompting on the same history, future non-eGFR covariates and intervention descriptions used by CMWM. The prompt restricts the model to outputting only future annual eGFR values and explicitly withholds future ground-truth eGFR. For each validation and test patient, the context length matches the dynamic-50% rollout protocol ( max(3 , ⌊0.5 Ti⌋)). Predictions are de-duplicated per (patient, target-year) before scoring. 
+
+# 5 Results 
+
+## 5.1 CMWM vs. GPT-5.5 on the CKD Case Study 
+
+We report mean absolute error (MAE) and root-mean-square error (RMSE) on the predicted vs. observed annual eGFR. MAE is the de facto standard summary metric for continuous-eGFR prediction in prior CKD modelling work—used by imaging-based deep models [23], interpretable machine-learning models on routine laboratory features [24], and pretransplant-biopsy CNN models for posttransplant graft eGFR [25]—so it allows our numbers to be read against the broader literature without re-scaling. Table 4 reports dynamic-50% history rollout metrics on the held-out validation and test splits, plus the sample-weighted overall summary. CMWM outperforms GPT-5.5 across all rows. The relative improvements are largest in RMSE, indicating that the explicit medical world model is particularly effective at suppressing the long-tail late-horizon errors an LLM-only simulator accumulates after several rollout steps—consistent with the behaviour reported by EHRWorld [8]. 8ChronoMedicalWorld – A Preprint May 22, 2026 
+
+Table 4: Dynamic-50% history rollout comparison between CMWM (CKD instantiation) and GPT-5.5 on the CKD case study. “Overall” is the sample-weighted validation and test summary. 
+
+Split n CMWM MAE CMWM RMSE GPT-5.5 MAE GPT-5.5 RMSE ∆ MAE ∆ RMSE Validation 1,020 7.310 9.851 7.997 11.128 −8.59% −11.48% Test 1,078 7.384 10.256 7.964 11.069 −7.28% −7.35% Overall 2,098 7.348 10.061 7.980 11.098 −7.92% −9.34% 
+
+## 5.2 Action-Encoder Ablations 
+
+Table 5 reports four communication-aware variants under the same dynamic-50% protocol. The wide encoder ingesting the full annual communication embedding is the best long-horizon model. A split structured/communication encoder slightly improves next-year MAE but degrades rollout, suggesting that stronger modular separation increases compounding variance in closed-loop forecasts. Replacing the se-mantic embedding by raw communication-intensity statistics (message count, character count, chunk count) does not recover the gain—a strong indication that the predictive signal lies in semantic content rather than volume, supporting the design choice to treat communication as a semantic action rather than a volumetric covariate. Table 5: Ablations of the action encoder on the CKD case study. “Test MAE/RMSE” are next-year metrics; “Test rollout MAE” uses the dynamic-50% protocol; “Fixed3 MAE” anchors on exactly the first three years.                          
+
+> Model variant Action dim. Test MAE Test RMSE Test rollout MAE Fixed3 MAE Communication embedding with wide encoder 318 11.046 15.860 7.384 7.697
+> Split structured / communication encoder 321 10.953 15.834 7.526 7.768 Communication intensity with wide encoder 321 11.142 15.853 7.612 7.946 Compact split encoder 321 11.313 16.149 7.796 8.129
+
+A finer message-type ablation (dialogue-only vs. system-only communication embeddings, identical train-ing otherwise) showed that dialogue messages reproduce essentially all of the gain: dynamic rollout MAE is re-duced by 4.78% relative to the no-communication baseline (compared with 4.95% for the full-communication embedding), whereas system messages alone reduce MAE by only 2.04%. The predictive value of the communication-action channel is therefore dominated by genuine patient–health-coach conversation, not by platform notifications. 
+
+# 6 Discussion 
+
+## 6.1 Why an Explicit Medical World Model Outperforms an LLM Simulator 
+
+GPT-5.5 has broad medical knowledge and reasons coherently over a single prompt, but is not explicitly trained to maintain a persistent latent patient state under repeated intervention-conditioned updates. In multi-year rollout this manifests as over-linearised decline or drift after an early misstep, mirroring the failure mode that EHRWorld [8] reports more broadly for LLM-only clinical simulators. CMWM carries an explicit recurrent hidden state and is optimised in the same closed-loop regime that defines the evaluation: every training trajectory feeds the model’s own prediction back as input. The case-study performance gap is therefore larger on multi-step rollout than on next-year prediction, exactly the empirical signature we expect when long-horizon state consistency is the bottleneck. It is also worth noting that this is achieved at a fraction of the parameter budget: the CKD instance of CMWM has roughly 0.79 M trainable parameters (Table 3), several orders of magnitude smaller than the GPT-5.5 baseline, which is consistent with the broader observation that specialised, intervention-conditioned dynamics models can outperform much larger generalist simulators in long-horizon clinical tasks. 9ChronoMedicalWorld – A Preprint May 22, 2026 
+
+## 6.2 Value of the Framework to Medical World Modelling 
+
+CMWM contributes four elements to the emerging medical-world-model literature. First , it specialises the JEPA next-latent-prediction and SIGReg recipe from raw-pixel control [14] to structured longitudinal clinical data, showing that the isotropy regulariser is useful beyond vision. Second , it formalises within-period patient–health-coach text exchange as a first-class action channel, extending the medical-world-model action interface beyond drug-and-procedure indicators. Because adherence cues, lifestyle coaching, and symptom reports surface primarily in conversation rather than structured fields, this design is well aligned with how chronic-disease care is actually delivered. Third , the rollout-prefix training protocol provides a concrete recipe for closing the train–evaluation gap in clinical autoregressive models, a generic source of long-horizon drift. 
+
+Fourth , the user-controllable action interface, combined with first-step anchoring, makes the framework directly usable in a counterfactual “what-if” interface—a foundation for personalised follow-up planning, intervention-aware decision support, and clinical digital-twin systems [22]. 
+
+## 6.3 Generalisation Beyond CKD 
+
+None of CMWM’s components is specific to nephrology. The state vector xt accommodates any structured periodic biomarker panel; the action vector at accommodates any combination of structured intervention indicators and free-text-derived semantic embeddings; the target observable ˆyt+1 can be any continuous physiological scalar (or, with a different head, any discrete event or vector-valued state). The same template therefore applies, with appropriate calibration of δc and δj to the target’s units, to long-horizon trajectory modelling of, for example, HbA1c in type 2 diabetes, blood pressure in hypertension, left-ventricular ejection fraction and NT-proBNP in heart failure, FEV 1 in chronic obstructive pulmonary disease, and disease activity scores in autoimmune diseases. The CKD case study should be read as a feasibility and value demonstration on a setting where (i) we have a longitudinal cohort with both structured therapy and rich patient–health-coach conversation, and (ii) a contemporary LLM baseline is available for direct comparison; analogous instantiations in other chronic conditions are an immediate follow-up. 
+
+## 6.4 Limitations 
+
+The case-study cohort is single-source, single-platform, and skews young (median age 35); external validation in older and multi-centre populations is required before clinical deployment, and a similar validation regime will be needed for each future disease instantiation. Structured intervention actions are annual binary indicators that do not encode dose, duration, adherence, or confounding by indication; CMWM is not a causal estimator, and comparison with methods that explicitly adjust for time-dependent confounding [28, 29] is left to future work. The communication embedding is a period-level summary and does not separate health-coach advice, patient symptom reports, and automated system notifications inside a single window. Finally, the GPT-5.5 baseline is a structured-prompting baseline rather than a domain-fine-tuned LLM; the gap against a clinically-fine-tuned LLM is an open question. 
+
+# 7 Conclusion 
+
+We proposed CMWM (ChronoMedicalWorld Model), a general action-conditioned latent world-model frame-work for learning patient trajectories from longitudinal care data. CMWM couples a clinical-state encoder, a wide action encoder admitting both structured intervention indicators and free-text communication embed-dings, and a recurrent latent transition module, and is trained under a six-term physiology-aware objective and a closed-loop rollout-prefix protocol. As a concrete case study, we instantiated CMWM for annual eGFR trajectory forecasting in chronic kidney disease and demonstrated that the CKD instance outper-forms a tuned GPT-5.5 structured-prompting baseline on dynamic-50% rollout (test MAE 7.384 vs. 7.964; RMSE 10.256 vs. 11.069), with the gain dominated by the dialogue portion of patient–health-coach commu-nication. The framework is not specific to CKD; the architecture, loss, and training protocol apply to any chronic-disease management process that can be cast as periodic clinical state interleaved with structured and conversational interventions, and CMWM is offered as a medical-world-model template for that broader class of problems. 10 ChronoMedicalWorld – A Preprint May 22, 2026 
+
+# A Case Studies 
+
+Figure 2 shows four de-identified test cases from the CKD instantiation in which CMWM outperformed GPT-5.5. The black curve is the historical context used for prediction; the green curve is the held-out future trajectory; coloured forecast curves start from the prediction horizon. Light dashed connectors link the last observed historical point to the first held-out future point and to the first prediction from each model. Per-case mean absolute errors are reported in Table 6.       
+
+> 2,014 2,016 2,018 2,020 2,022 2,024 2,026
+> 20
+> 40
+> 60
+> Year
+> eGFR
+
+Case A    
+
+> 2,018 2,020 2,022 2,024
+> 60
+> 80
+> Year
+> eGFR
+
+Case B     
+
+> 2,018 2,020 2,022 2,024 2,026
+> 40
+> 60
+> 80
+> Year
+> eGFR
+
+Case C       
+
+> 2,020 2,021 2,022 2,023 2,024 2,025 2,026
+> 20
+> 40
+> 60
+> Year
+> eGFR
+
+Case D    
+
+> history actual future CMWM GPT-5.5
+
+Figure 2: Representative dynamic-50% test rollouts on the CKD case study in which CMWM stays closer to the held-out future eGFR trajectory than GPT-5.5. Table 6: Mean absolute error of the four case-study patients in Figure 2. Case Forecast years CMWM MAE GPT-5.5 MAE A 6 6.915 15.464 B 5 4.192 6.929 C 5 3.480 13.663 D 4 2.877 11.783 11 ChronoMedicalWorld – A Preprint May 22, 2026 
+
+# References 
+
+[1] Navdeep Tangri, Lesley A. Stevens, John Griffith, Hocine Tighiouart, Ognjen Djurdjev, David Naimark, Adeera Levin, and Andrew S. Levey. A predictive model for progression of chronic kidney disease to kidney failure. JAMA , 305(15):1553–1559, 2011. [2] Edward Choi, Mohammad Taha Bahadori, Jimeng Sun, Joshua Kulas, Andy Schuetz, and Walter Stew-art. RETAIN: An interpretable predictive model for healthcare using reverse time attention mechanism. In Advances in Neural Information Processing Systems 29 (NeurIPS 2016) , pages 3504–3512. Curran Associates, Inc., 2016. [3] Yikuan Li, Shishir Rao, José Roberto Ayala Solares, Abdelaali Hassaine, Rema Ramakrishnan, Dex-ter Canoy, Yajie Zhu, Kazem Rahimi, and Gholamreza Salimi-Khorshidi. BEHRT: Transformer for electronic health records. Scientific Reports , 10(1):7155, 2020. [4] Laila Rasmy, Yang Xiang, Ziqian Xie, Cui Tao, and Degui Zhi. Med-BERT: pretrained contextual-ized embeddings on large-scale structured electronic health records for disease prediction. npj Digital Medicine , 4(1):86, 2021. [5] Pumeng Yu, Wenxin Bao, Hongfei Jiang, Mingyuan Wang, Wei Tan, Mengqi Mao, Tao Wang, and Tianzhao Liu. Time-dependent LSTM for survival prediction and patient subtyping in kidney disease trajectory. medRxiv preprint, doi:10.1101/2024.09.25.24314409, https://doi.org/10.1101/2024.09. 25.24314409 , 2024. [6] Daphna Ferro, Liat Yahav-Shafir, Reuven Shamir, Igor Brufman, Eyal Klang, and Benjamin S. Glicks-berg. Transformer-based time-to-event prediction for chronic kidney disease deterioration. Journal of the American Medical Informatics Association , 31(4):980–990, 2024. [7] Jingying Ma, Jinwei Wang, Lanlan Lu, Yexiang Sun, Mengling Feng, Feifei Zhang, Peng Shen, Zhiqin Jiang, Shenda Hong, and Luxia Zhang. Development and validation of a dynamic kidney failure pre-diction model based on deep learning: a real-world study with external validation. arXiv preprint arXiv:2501.16388, https://arxiv.org/abs/2501.16388 , 2025. [8] Linjie Mu, Zhongzhen Huang, Yannian Gu, Shengqian Qin, Shaoting Zhang, and Xiaofan Zhang. EHRWorld: A patient-centric medical world model for long-horizon clinical trajectories. arXiv preprint arXiv:2602.03569, https://arxiv.org/abs/2602.03569 , 2026. [9] David Ha and Jürgen Schmidhuber. Recurrent world models facilitate policy evolution. In Advances in Neural Information Processing Systems 31 (NeurIPS 2018) , pages 2455–2467. Curran Associates, Inc., 2018. Extended interactive version: “World Models”, arXiv:1803.10122, https://worldmodels. github.io/ .[10] Danijar Hafner, Timothy Lillicrap, Ian Fischer, Ruben Villegas, David Ha, Honglak Lee, and James Davidson. Learning latent dynamics for planning from pixels. In Proceedings of the 36th International Conference on Machine Learning (ICML) , volume 97 of Proceedings of Machine Learning Research ,pages 2555–2565. PMLR, 2019. [11] Danijar Hafner, Jurgis Pasukonis, Jimmy Ba, and Timothy Lillicrap. Mastering diverse domains through world models. arXiv preprint arXiv:2301.04104, https://arxiv.org/abs/2301.04104 , 2023. [12] Yann LeCun. A path towards autonomous machine intelligence. Position paper, OpenReview Preprint, 2022. Version 0.9.2, 2022-06-27. [13] Mahmoud Assran, Quentin Duval, Ishan Misra, Piotr Bojanowski, Pascal Vincent, Michael Rabbat, Yann LeCun, and Nicolas Ballas. Self-supervised learning from images with a joint-embedding predictive architecture. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 15619–15629. IEEE, 2023. 12 ChronoMedicalWorld – A Preprint May 22, 2026 
+
+[14] Lucas Maes, Quentin Le Lidec, Damien Scieur, Yann LeCun, and Randall Balestriero. LeWorldModel: Stable end-to-end joint-embedding predictive architecture from pixels. arXiv preprint arXiv:2603.19312, 
+
+https://arxiv.org/abs/2603.19312 , 2026. [15] Alistair E. W. Johnson, Lucas Bulgarelli, Lu Shen, Alvin Gayles, Ayad Shammout, Steven Horng, Tom J. Pollard, Sicheng Hao, Benjamin Moody, Brian Gow, Li-wei H. Lehman, Leo A. Celi, and Roger G. Mark. MIMIC-IV, a freely accessible electronic health record dataset. Scientific Data , 10(1):1, 2023. [16] Ali Amirahmadi, Mattias Ohlsson, and Kobra Etminani. Deep learning prediction models based on EHR trajectories: a systematic review. Journal of Biomedical Informatics , 144:104430, 2023. [17] Lesley A. Inker, Nwamaka D. Eneanya, Josef Coresh, Hocine Tighiouart, Dan Wang, Yingying Sang, Deidra C. Crews, Alessandro Doria, Michelle M. Estrella, Marc Froissart, Morgan E. Grams, Tom Greene, Anders Grubb, Vilmundur Gudnason, Orlando M. Gutierrez, Roberto Kalil, Amy R. Karger, Michael Mauer, Gerjan Navis, Robert G. Nelson, Emilio D. Poggio, Roger Rodby, Peter Rossing, An-drew D. Rule, Elizabeth Selvin, Jesse C. Seegmiller, Michael G. Shlipak, Vicente E. Torres, Wei Yang, Shoshana H. Ballew, Sara J. Couture, Neil R. Powe, and Andrew S. Levey. New creatinine- and cystatin C–based equations to estimate GFR without race. New England Journal of Medicine , 385(19):1737– 1749, 2021. [18] Hiddo J. L. Heerspink, Bergur V. Stefánsson, Ricardo Correa-Rotter, Glenn M. Chertow, Tom Greene, Fan-Fan Hou, Johannes F. E. Mann, John J. V. McMurray, Magnus Lindberg, Peter Rossing, C. David Sjöström, Robert D. Toto, Anna-Maria Langkilde, and David C. Wheeler. Dapagliflozin in patients with chronic kidney disease. New England Journal of Medicine , 383(15):1436–1446, 2020. [19] George L. Bakris, Rajiv Agarwal, Stefan D. Anker, Bertram Pitt, Luis M. Ruilope, Peter Rossing, Peter Kolkhof, Christina Nowack, Patrick Schloemer, Amer Joseph, and Gerasimos Filippatos. Effect of finerenone on chronic kidney disease outcomes in type 2 diabetes. New England Journal of Medicine ,383(23):2219–2229, 2020. [20] Kidney Disease: Improving Global Outcomes (KDIGO) CKD Work Group. KDIGO 2024 clinical practice guideline for the evaluation and management of chronic kidney disease. Kidney International ,105(4S):S117–S314, 2024. [21] Lesley A. Inker, Hiddo J. L. Heerspink, Hocine Tighiouart, Andrew S. Levey, Josef Coresh, Ron T. Gansevoort, Andrew L. Simon, Jian Ying, Gerald J. Beck, Christoph Wanner, Jurgen Floege, Philip K. T. Li, Vlado Perkovic, Edward F. Vonesh, and Tom Greene. GFR slope as a surrogate end point for kidney disease progression in clinical trials: a meta-analysis of treatment effects of randomized controlled trials. Journal of the American Society of Nephrology , 30(9):1735–1745, 2019. [22] Joao Barbieri, Vinay Lala, Aroop Goswami, Rakesh K. Tekade, Padmanabha Subba Rao, Anjaneyulu Sajja, Karthikeya Naidu, Padmanabhan Ramji, Padmavathy Anantha, and Sandeep Karna. A digital twin model incorporating generalized metabolic fluxes to identify and predict chronic kidney disease in type 2 diabetes mellitus. npj Digital Medicine , 7(1):129, 2024. [23] Chin-Chi Kuo, Chun-Min Chang, Kuan-Ting Liu, Wei-Kai Lin, Hsiu-Yin Chiang, Chih-Wei Chung, Meng-Ru Ho, Pei-Ran Sun, Rong-Lin Yang, and Kuan-Ta Chen. Automation of the kidney function prediction and classification through ultrasound-based kidney imaging using deep learning. npj Digital Medicine , 2(1):29, 2019. [24] Luis H. Rojas, Angela J. Pereira-Morales, William Amador, Albert Montenegro, Walberto Buelvas, and Víctor de la Espriella. Development and validation of interpretable machine learning models to predict glomerular filtration rate in chronic kidney disease Colombian patients. Annals of Clinical Biochemistry ,62(1):57–66, 2025. [25] Yi Luo, Junjie Liang, Xiao Hu, Zuofu Tang, Jinhua Zhang, Lanlan Han, Zhanwen Dong, Wenfeng Deng, Bin Miao, Yong Ren, and Ning Na. Deep learning algorithms for the prediction of posttransplant renal function in deceased-donor kidney recipients: a preliminary study based on pretransplant biopsy. 
+
+Frontiers in Medicine , 8:676461, 2021. 13 ChronoMedicalWorld – A Preprint May 22, 2026 
+
+[26] Yulia Rubanova, Ricky T. Q. Chen, and David K. Duvenaud. Latent ODEs for irregularly-sampled time series. In Advances in Neural Information Processing Systems 32 (NeurIPS 2019) , pages 5320–5330. Curran Associates, Inc., 2019. [27] Satya Narayan Shukla and Benjamin M. Marlin. Multi-time attention networks for irregularly sampled time series. In International Conference on Learning Representations (ICLR) , 2021. [28] Ioana Bica, Ahmed M. Alaa, James Jordon, and Mihaela van der Schaar. Estimating counterfactual treatment outcomes over time through adversarially balanced representations. In International Confer-ence on Learning Representations (ICLR) , 2020. [29] Nabeel Seedat, Fergus Imrie, Alexis Bellot, Zhaozhi Qian, and Mihaela van der Schaar. Continuous-time modeling of counterfactual outcomes using neural controlled differential equations. In Proceedings of the 39th International Conference on Machine Learning (ICML) , volume 162 of Proceedings of Machine Learning Research , pages 19497–19521. PMLR, 2022. [30] OpenAI. New embedding models and API updates. Technical announcement, https://openai.com/ index/new-embedding-models-and-api-updates/ , 2024. Accessed 2026-05-20. 14
