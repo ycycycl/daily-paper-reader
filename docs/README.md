@@ -6,100 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-29
-- 运行时间：2026-05-29 21:35:06 UTC
+- 最新运行日期：2026-05-30
+- 运行时间：2026-05-30 20:43:18 UTC
 - 运行状态：成功
-- 本次总论文数：26
-- 精读区：14
+- 本次总论文数：19
+- 精读区：7
 - 速读区：12
 
 ### 今日简报（AI）
-今日完成 26 篇论文筛选：14 篇精读、12 篇速读，重点聚焦具身智能、自动驾驶 VLA 与策略优化方向。
-最值得看的是 ReasonBreak 对推理型视觉-语言-动作自动驾驶模型脆弱性的系统探测，以及 MeanFlow 一步式策略优化带来的高分方法线索。
-建议普通读者先读两篇精读高分论文建立主线，再用三篇速读把握连续动作、世界模型强化学习与运动基元组合的最新趋势。
-- 详情：[/202605/29/README](/202605/29/README)
+1) 2026-05-30 日报完成 19 篇论文筛选：精读 7 篇、速读 12 篇，重点落在 VLA、世界模型与导航控制。
+2) 最值得看的是《Mitigating State Aliasing in Vision-Language-Action Models via Inverse Dynamics Learning》（9.0）以及 FPS 可玩环境世界模型《SCOPE》（8.0），导航方向可关注抗漂移与人群中 MAV 控制两条线。
+3) 建议普通读者先读最高分 VLA 论文建立主线，再快速浏览 8 分世界模型/导航论文，抓住“更稳的状态表征”和“更真实的交互环境”两个关键词。
+- 详情：[/202605/30/README](/202605/30/README)
 
 ### 精读区论文标签
-1. [ReasonBreak: Probing Vulnerabilities in Reasoning-Enabled Vision-Language-Action Models for Autonomous Driving](/202605/29/2605.29114v1-reasonbreak-probing-vulnerabilities-in-reasoning-enabled-vision-language-action-models-for-autonomous-driving)  
-   标签：评分：10.0/10、query:profile-1
-   evidence：面向自动驾驶轨迹生成的推理型VLA
-2. [Score-Based One-step MeanFlow Policy Optimization](/202605/29/2605.23365v1-score-based-one-step-meanflow-policy-optimization)  
+1. [Mitigating State Aliasing in Vision-Language-Action Models via Inverse Dynamics Learning](/202605/30/2605.29577v1-mitigating-state-aliasing-in-vision-language-action-models-via-inverse-dynamics-learning)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：一步MeanFlow策略优化
-3. [Neuro-Inspired Inverse Learning for Planning and Control](/202605/29/2605.24152v2-neuro-inspired-inverse-learning-for-planning-and-control)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：具身规划控制与正逆模型
-4. [E$^3$C: Video Generation with 3D Environmental Memory and Ego-Exo Human Pose Control](/202605/29/2605.26316v1-e3c-video-generation-with-3d-environmental-memory-and-ego-exo-human-pose-control)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：具备3D环境记忆的具身视频扩散
-5. [GE-Sim 2.0: A Roadmap Towards Comprehensive Closed-loop Video World Simulators for Robotic Manipulation](/202605/29/2605.27491v1-ge-sim-20-a-roadmap-towards-comprehensive-closed-loop-video-world-simulators-for-robotic-manipulation)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：面向机器人策略的闭环动作条件视频世界模拟器
-6. [PrimitiveVLA: Learning Reusable Motion Primitives for Efficient and Generalizable Robotic Manipulation](/202605/29/2605.28634v1-primitivevla-learning-reusable-motion-primitives-for-efficient-and-generalizable-robotic-manipulation)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：VLA学习可复用运动基元与轨迹
-7. [MiraBench: Evaluating Action-Conditioned Reliability in Robotic World Models](/202605/29/2605.29360v1-mirabench-evaluating-action-conditioned-reliability-in-robotic-world-models)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：动作条件机器人世界模型评测
-8. [3DVLA: Enhancing Vision-Language-Action Models via 3D Spatial and Instance Understanding](/202605/29/2605.29416v1-3dvla-enhancing-vision-language-action-models-via-3d-spatial-and-instance-understanding)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：面向机器人动作的3D增强VLA模型
-9. [ElegantVLA: Learning When to Think for Efficient Vision-Language-Action Models](/202605/29/2605.29438v1-elegantvla-learning-when-to-think-for-efficient-vision-language-action-models)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：面向实时机器人控制的高效VLA模型
-10. [VLA-Pro: Cross-Task Procedural Memory Transfer for Vision-Language-Action Models](/202605/29/2605.29562v1-vla-pro-cross-task-procedural-memory-transfer-for-vision-language-action-models)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：带程序记忆迁移的VLA模型
-11. [VisualThink-VLA: Visual Intermediate Reasoning for Effective and Low-Latency Vision-Language-Action Policies](/202605/29/2605.30011v1-visualthink-vla-visual-intermediate-reasoning-for-effective-and-low-latency-vision-language-action-policies)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：低延迟VLA动作策略
-12. [minWM: A Full-Stack Open-Source Framework for Real-Time Interactive Video World Models](/202605/29/2605.30263v1-minwm-a-full-stack-open-source-framework-for-real-time-interactive-video-world-models)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：实时交互式视频扩散世界模型
-13. [Qwen-VLA: Unifying Vision-Language-Action Modeling across Tasks, Environments, and Robot Embodiments](/202605/29/2605.30280v1-qwen-vla-unifying-vision-language-action-modeling-across-tasks-environments-and-robot-embodiments)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：VLA连续动作与轨迹生成
-14. [Gaze2Act: Gaze-Conditioned Vision-Language-Action Policies for Interactive Robot Manipulation](/202605/29/2605.30282v1-gaze2act-gaze-conditioned-vision-language-action-policies-for-interactive-robot-manipulation)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：凝视条件VLA动作策略
-
-### 速读区论文标签
-1. [Learning High-Frequency Continuous Action Chunks in Latent Space](/202605/29/2605.24931v1-learning-high-frequency-continuous-action-chunks-in-latent-space)  
-   标签：评分：8.5/10、query:upstream-ad-planning-idea
-   evidence：高频机器人策略的时序一致性
-2. [Scaling World-Model Reinforcement Learning Through Diffusion Policy Optimization](/202605/29/2605.26282v1-scaling-world-model-reinforcement-learning-through-diffusion-policy-optimization)  
-   标签：评分：8.5/10、query:upstream-ad-planning-idea
-   evidence：世界模型强化学习与扩散策略优化
-3. [Sparse Compositional Flow Matching by geometric assembly from motion primitives](/202605/29/2605.23341v1-sparse-compositional-flow-matching-by-geometric-assembly-from-motion-primitives)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：面向具身轨迹与运动基元的流匹配
-4. [SCOPE: Simulating Cross-game Operations in Playable Environments for FPS World Models](/202605/29/2605.23345v1-scope-simulating-cross-game-operations-in-playable-environments-for-fps-world-models)  
+   evidence：视觉语言动作预测
+2. [SCOPE: Simulating Cross-game Operations in Playable Environments for FPS World Models](/202605/30/2605.23345v2-scope-simulating-cross-game-operations-in-playable-environments-for-fps-world-models)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
    evidence：动作条件视频扩散世界模型
-5. [stable-worldmodel: A Platform for Reproducible World Modeling Research and Evaluation](/202605/29/2605.21800v1-stable-worldmodel-a-platform-for-reproducible-world-modeling-research-and-evaluation)  
+3. [Causal Physics Steering in Video World Models via Concept Activation Vectors](/202605/30/2605.24322v1-causal-physics-steering-in-video-world-models-via-concept-activation-vectors)  
+   标签：评分：8.0/10、query:upstream-ad-planning-idea
+   evidence：视频世界模型中的可控物理推理
+4. [ParkingWorld: End-to-End Autonomous Parking Reinforcement Learning from Corrective Experience in 3DGS Simulation](/202605/30/2605.25029v2-parkingworld-end-to-end-autonomous-parking-reinforcement-learning-from-corrective-experience-in-3dgs-simulation)  
+   标签：评分：8.0/10、query:q5
+   evidence：端到端自动泊车策略用于车辆机动规划
+5. [UWM-JEPA: Predictive World Models That Imagine in Belief Space](/202605/30/2605.25313v1-uwm-jepa-predictive-world-models-that-imagine-in-belief-space)  
+   标签：评分：8.0/10、query:upstream-ad-planning-idea
+   evidence：动作条件预测世界模型
+6. [Capability and Robustness Cannot Both Be Free: An Information-Theoretic Bound for Vision-Language-Action Models](/202605/30/2605.25889v1-capability-and-robustness-cannot-both-be-free-an-information-theoretic-bound-for-vision-language-action-models)  
+   标签：评分：8.0/10、query:upstream-ad-planning-idea
+   evidence：机器人动作策略的VLA鲁棒性
+7. [DRIFT: Driving Risk Inference via Field Transmission for Human-like Autonomous Driving](/202605/30/2605.27964v1-drift-driving-risk-inference-via-field-transmission-for-human-like-autonomous-driving)  
+   标签：评分：8.0/10、query:q2
+   evidence：用于自动驾驶决策的时空风险场
+
+### 速读区论文标签
+1. [Drift-Resistant Navigation World Model with Anchored Epipolar Guidance](/202605/30/2605.24761v1-drift-resistant-navigation-world-model-with-anchored-epipolar-guidance)  
+   标签：评分：8.0/10、query:upstream-ad-planning-idea
+   evidence：抗漂移导航世界模型
+2. [Back to Parsimonious Latents: Learning Task-Centric World Models from Visual Foundations](/202605/30/2605.25620v1-back-to-parsimonious-latents-learning-task-centric-world-models-from-visual-foundations)  
+   标签：评分：8.0/10、query:upstream-ad-planning-idea
+   evidence：面向任务的动作条件世界模型
+3. [HumanFlow -- Diffusion-Driven MAV Navigation Among Humans via Tightly-Coupled Motion Tracking, Forecasting, and Control](/202605/30/2605.25685v1-humanflow----diffusion-driven-mav-navigation-among-humans-via-tightly-coupled-motion-tracking-forecasting-and-control)  
+   标签：评分：8.0/10、query:upstream-ad-planning-idea
+   evidence：扩散驱动的导航预测与控制
+4. [RePlan-Bot: Multi-Level Replanning for Embodied Instruction Following](/202605/30/2605.25851v1-replan-bot-multi-level-replanning-for-embodied-instruction-following)  
+   标签：评分：8.0/10、query:upstream-ad-planning-idea
+   evidence：具身智能体连续重规划
+5. [IntentionNav: A Benchmark for Intent-Driven Object Navigation from Implicit Human Instruction](/202605/30/2605.23187v1-intentionnav-a-benchmark-for-intent-driven-object-navigation-from-implicit-human-instruction)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：面向规划智能体的世界模型平台
-6. [Bernini: Latent Semantic Planning for Video Diffusion](/202605/29/2605.22344v1-bernini-latent-semantic-planning-for-video-diffusion)  
+   evidence：基于隐式语言意图的具身导航
+6. [Signal Temporal Logic Motion Planning via Graphs of Convex Sets](/202605/30/2605.23240v1-signal-temporal-logic-motion-planning-via-graphs-of-convex-sets)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：视频扩散的语义规划
-7. [Dreaming Smoothly and Sample Efficiently with Gradient Penalized Latent Dynamics](/202605/29/2605.23089v1-dreaming-smoothly-and-sample-efficiently-with-gradient-penalized-latent-dynamics)  
+   evidence：连续时间机器人平滑轨迹规划
+7. [Unified 3D Scene Understanding Through Physical World Modeling](/202605/30/2605.24321v1-unified-3d-scene-understanding-through-physical-world-modeling)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：平滑潜在世界模型动力学
-8. [Autonomous Frontier-Based Exploration with VLM Guidance](/202605/29/2605.23165v1-autonomous-frontier-based-exploration-with-vlm-guidance)  
+   evidence：面向3D交互的物理世界模型
+8. [PACT: Proactive Asking for Continual Task Assistance in Human-Robot Collaboration](/202605/30/2605.24350v1-pact-proactive-asking-for-continual-task-assistance-in-human-robot-collaboration)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：VLM引导机器人探索规划
-9. [Generative Modeling by Value-Driven Transport](/202605/29/2605.22507v1-generative-modeling-by-value-driven-transport)  
-   标签：评分：6.5/10、query:q4
-   evidence：与流式规划相关的传输生成策略
-10. [VLA-Hijack: A Transferable Patch Attack against Vision-Language-Action Models via Visual Proprioception Hijacking](/202605/29/2605.28083v1-vla-hijack-a-transferable-patch-attack-against-vision-language-action-models-via-visual-proprioception-hijacking)  
-   标签：评分：6.5/10、query:upstream-ad-planning-idea
-   evidence：针对VLA通用策略的鲁棒性攻击
-11. [ChronoMedicalWorld: A Medical World Model for Learning Patient Trajectories from Longitudinal Care Data](/202605/29/2605.21963v1-chronomedicalworld-a-medical-world-model-for-learning-patient-trajectories-from-longitudinal-care-data)  
+   evidence：利用交互历史的机器人记忆辅助
+9. [RS2AD-LiDAR: End-to-End Autonomous Driving LiDAR Data Generation from Roadside Sensor Observations](/202605/30/2605.23406v1-rs2ad-lidar-end-to-end-autonomous-driving-lidar-data-generation-from-roadside-sensor-observations)  
+   标签：评分：6.0/10、query:q5
+   evidence：端到端自动驾驶数据生成
+10. [DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation](/202605/30/2605.23445v1-dfsattn-dynamic-fine-grained-sparse-attention-for-efficient-video-generation)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：动作条件潜在世界模型与轨迹
-12. [Short-Term-to-Long-Term Memory Transfer for Knowledge Graphs under Partial Observability](/202605/29/2605.22142v1-short-term-to-long-term-memory-transfer-for-knowledge-graphs-under-partial-observability)  
+   evidence：扩散视频生成的高效稀疏注意力
+11. [One-Forcing: Towards Stable One-Step Autoregressive Video Generation](/202605/30/2605.23458v1-one-forcing-towards-stable-one-step-autoregressive-video-generation)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：强化学习中的短长期记忆迁移
+   evidence：一步低延迟视频生成
+12. [Precise: SDE-Consistent Stochastic Sampling for RL Post-Training of Flow-Matching Models](/202605/30/2605.23522v1-precise-sde-consistent-stochastic-sampling-for-rl-post-training-of-flow-matching-models)  
+   标签：评分：6.0/10、query:upstream-ad-planning-idea
+   evidence：流匹配策略的随机采样
 
 
 <div class="dpr-home-promo-card">

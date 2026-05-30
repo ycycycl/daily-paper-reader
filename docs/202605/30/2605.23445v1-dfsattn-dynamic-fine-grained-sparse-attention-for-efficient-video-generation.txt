@@ -1,0 +1,1159 @@
+Title: DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation
+
+URL Source: https://arxiv.org/pdf/2605.23445v1
+
+Published Time: Mon, 25 May 2026 00:51:26 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+Jie Hu 1 Zixiang Gao 1 Yutong He 1 Kun Yuan 1
+
+## Abstract 
+
+Diffusion transformers have achieved remarkable success in high-quality video generation, yet their reliance on spatiotemporal 3D full attention in-curs prohibitive computational cost due to the quadratic complexity of attention. Block sparse attention is a common approach to mitigate this by focusing computation on important regions. How-ever, attention maps in DiTs exhibit inherently dynamic and fine-grained sparsity, which causes existing block sparse attention methods to degrade significantly in quality, especially at high sparsity ratios. In this paper, we revisit block sparse atten-tion and derive a theoretical lower bound on atten-tion recall to characterize the key factors govern-ing its effectiveness. Guided by these insights, we propose DFSAttn, a training-free sparse attention framework that enables dynamic, fine-grained sparsification efficiently. DFSAttn incorporates three core designs: Hilbert curve–based token re-ordering to achieve fine-grained sparsity while preserving efficient GPU execution, hierarchical block scoring for accurate block importance es-timation, and sparse mask caching with adaptive ratios to balance accuracy and efficiency. Exper-imental results demonstrate that DFSAttn con-sistently outperforms prior methods under high sparsity, achieving up to 2.1 × end-to-end speedup while maintaining high generation quality. Our code is open-sourced and available at this link. 
+
+## 1. Introduction 
+
+Diffusion Transformers (DiTs) (Peebles & Xie, 2023) have achieved remarkable success in various applications. Recent state-of-the-art video DiTs (Yang et al., 2025; Zheng et al., 2024; Kong et al., 2024; Wan et al., 2025) demonstrate im-pressive capability in synthesizing high-fidelity videos by      
+
+> 1Peking University. Correspondence to: Kun Yuan <kun-yuan@pku.edu.cn >.
+> Proceedings of the 43 rd International Conference on Machine Learning , Seoul, South Korea. PMLR 306, 2026. Copyright 2026 by the author(s).
+
+adopting spatiotemporal 3D full attention. Despite its effec-tiveness, 3D full attention incurs prohibitive computational overhead due to the quadratic computational complexity of attention (Vaswani et al., 2017). For example, generating a 129-frame 720p video with HunyuanVideo (Kong et al., 2024) requires approximately 30 minutes on an NVIDIA H100 PCIe GPU, severely limiting practical deployment. Fortunately, attention maps exhibit inherent sparsity (Zhang et al., 2023; Xiao et al., 2024), where only a small sub-set of critical tokens dominate the output. Sparse atten-tion methods exploit this property by constructing sparse masks to omit redundant computations. In particular, block sparse attention, which skips computations at the block level, aligns naturally with modern hardware and efficient kernels such as FlashAttention (Dao et al., 2022), enabling high-performance attention computation. Existing training-free sparse attention methods for DiTs can be broadly categorized into static and dynamic approaches, depending on whether the block sparse mask is fixed offline or constructed on-the-fly during inference. Static methods (Yuan et al., 2024; Xi et al., 2025; Zhang et al., 2025b; Chen et al., 2026; Zhao et al., 2026; Li et al., 2026) rely on em-pirically designed mask patterns, while dynamic methods (Zhang et al., 2025a; Xu et al., 2025; Zhang et al., 2026; Xia et al., 2025; Shen et al., 2025; Yang et al., 2026; Liu et al., 2026a;b) aim to identify important blocks during infer-ence. However, methods from both paradigms suffer from severe quality degradation under high sparsity. We argue that this limitation stems from a fundamental mismatch be-tween GPU-efficient block-wise attention operations and the distinctive attention characteristics of DiTs, which are not adequately captured by existing designs. Our first key observation is that attention maps in DiTs exhibit a dynamic and fine-grained sparsity pattern. As illus-trated in Figure 2, attention patterns vary significantly across layers and heads, with salient interactions scattered through-out the attention map. Consequently, static or coarse-grained sparse masks inevitably discard critical dependencies and lead to accuracy loss. Moreover, we observe that block sparse attention becomes progressively more effective as the diffusion process advances (Figure 3), indicating that the effectiveness of sparsification is closely tied to the evolving statistical structure of the attention score matrix. 1
+
+> arXiv:2605.23445v1 [cs.CV] 22 May 2026
+
+DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation Width                  
+
+> Height
+> Frame
+> Query
+> Key
+> 3D Hilbert Curve Token Reordering
+> Sub -block -wise
+> Attention Map
+> Aggregation
+> Fine -grained Sparsity
+> of Original Space
+> Block -wise
+> Importance
+> skip do do skip skip skip skip
+> Diffusion Timestep
+> Sparse Flash Attention
+> Step 𝒊 Step 𝒊 +∆Step 𝒊 +𝟏
+> Input Output reordering
+> Cache Mask
+> …
+> Update mask
+> Reuse Mask
+> ……
+> Block Sparse Mask
+> Top -K Block
+> Selection
+> Downsampling
+
+a) 
+
+b) 
+
+c) 
+
+Figure 1. Overview of DFSAttn: a) Video tokens are reordered using a 3D Hilbert curve, and sub-block attention scores are aggregated to estimate block-wise importance. The resulting masks are applied via sparse Flash Attention, while cross-attention remains dense to preserve text–video alignment. b) Sparse masks are cached and reused across diffusion timesteps. c) Structured block sparsity in the reordered sequence induces fine-grained sparsity of original spatiotemporal space. 
+
+To systematically investigate the underlying factors of effec-tive block sparse attention, we develop a token representa-tion model and derive a theoretical lower bound on attention recall, which characterizes the fraction of important atten-tion interactions preserved after sparsification. Our analysis identifies three key factors governing sparsification quality: the sparsity budget, the inter-block similarity gap, and the block-level semantic diversity. Motivated by these insights, we introduce DFSAttn, a training-free dynamic fine-grained sparse attention method for accelerating video generation. DFSAttn incorporates three core designs, each directly addressing one of the iden-tified factors. First, DFSAttn reorders video tokens using a 3D Hilbert curve, implicitly inducing fine-grained spar-sity while aligning with GPU execution. This reordering preserves spatiotemporal locality in the 1D token sequence, thereby enlarging the inter-block similarity gap. Second, DFSAttn introduces a hierarchical block scoring mechanism that refines block importance estimation through sub-block aggregation, alleviating inaccuracies caused by mixed se-mantics within a block. Finally, DFSAttn adaptively reallo-cates the sparsity budget across diffusion steps and employs sparse mask caching, enabling a favorable balance between generation quality and efficiency. We evaluate DFSAttn on state-of-the-art video diffusion models: HunyuanVideo (Kong et al., 2024), and Wan2.1 (Wan et al., 2025). Experimental results show that DFSAttn consistently outperforms existing work in generation qual-ity under high sparsity. Specifically, DFSAttn achieves an end-to-end speedup of 2.1 × at an 80% sparsity ratio on Hun-yuanVideo, while maintaining high visual fidelity, reaching PSNR up to 29.38. Our contributions are as follows: • We identify the mismatch between block-wise sparse attention and DiTs’ distinctive attention patterns, and derive a theoretical lower bound on attention recall to characterize key factors governing effective block sparse attention. • We introduce DFSAttn, a training-free sparse atten-tion framework that enables dynamic and fine-grained sparsification via token reordering, hierarchical block scoring, and adaptive sparse mask caching. • DFSAttn significantly improves video generation qual-ity under high sparsity and delivers substantial end-to-end speedups across video diffusion models. 
+
+## 2. Related Work 
+
+2.1. Efficient video generation 
+
+Numerous techniques have been developed to accelerate diffusion models. One major direction reduces inference cost by decreasing the number of sampling steps, through improved solvers or schedules such as DDIM (Song et al., 2020) and DPM-Solver (Lu et al., 2022), or via distilla-2DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+tion and consistency-based models (Salimans & Ho, 2022; Song et al., 2023) that approximate the full diffusion tra-jectory with few steps. System-level approaches, such as DistriFusion (Li et al., 2024), parallelize diffusion infer-ence across multiple devices. Another line of work exploits inter-timestep redundancy by caching and reusing interme-diate activations or attention results, including PAB (Zhao et al., 2025), TeaCache (Liu et al., 2025), and AdaCache (Kahatapitiya et al., 2025). These caching-based approaches reduce redundant computation across diffusion steps but do not modify the attention computation within each step. DF-SAttn is orthogonal to these methods and can be combined with them for further acceleration. 
+
+2.2. Sparse attention 
+
+Sparse attention has been widely studied in large language models to alleviate the quadratic complexity of attention (Zhang et al., 2023; Xiao et al., 2024; Jiang et al., 2024; Xu et al., 2025; Lai et al., 2025; Zhang et al., 2025a). More recently, sparse attention mechanisms have been adapted to DiTs for video generation, typically operating at the block level for GPU efficiency. Existing methods can be broadly categorized into static and dynamic approaches. Static methods predefine sparsity patterns offline, such as spatial-temporal masks (Xi et al., 2025), 3D sliding win-dows (Zhang et al., 2025b), energy-decay-based radial spar-sity (Li et al., 2026). While efficient, these fixed patterns lack flexibility. Dynamic methods identify sparse masks on-the-fly during inference, aiming to select critical blocks. XAttention (Xu et al., 2025) estimates block importance using the sum of antidiagonal values of attention scores, and SpargeAttn (Zhang et al., 2025a) employs a two-stage online filter based on block-wise mean values. SVG2 (Yang et al., 2026) applies k-means clustering to tokens and leverages cluster centroids for selection. MOD-DiT (Liu et al., 2026b) predicts dynamic sparse masks by modeling the mixture of attention distributions across denoising steps. However, ex-isting methods suffer from severe quality degradation under high sparsity, as they rely on coarse block-level represen-tations that do not fully capture the fine-grained sparsity patterns. Recent work FG-Attn (Durvasula et al., 2025) proposes a fine-grained sparse attention kernel for DiTs. In contrast, DFSAttn is a kernel-free approach that leverages fine-grained sparsity through token reordering and block-wise execution. 
+
+## 3. Preliminary 
+
+3.1. 3D full attention in DiTs 
+
+State-of-the-art video diffusion transformers (Kong et al., 2024; Wan et al., 2025) process videos by first encoding a 3D video clip into a latent representation using a VAE. The resulting latent tensor has spatial–temporal dimensions  
+
+> Figure 2. 3D full attention maps in DiTs exhibit dynamic and fine-grained sparsity patterns.
+
+(f, h, w ), corresponding to the number of frames, height, and width, respectively. This 3D latent is then flattened into a single token sequence before being fed into the trans-former. Consequently, the input sequence length for each transformer block is N = f × h × w. For simplicity, we omit text-conditioning tokens here, as their length is typi-cally negligible compared to video tokens. Within each transformer block, DiTs employ 3D full atten-tion, where each video token attends to all others across all dimensions. Formally, for a single attention head, let 
+
+Q, K, V ∈ RN ×d denote the query, key, and value, where d
+
+is the head dimension. Attention is computed as 
+
+A = softmax 
+
+ QK ⊤
+
+√d
+
+
+
+, O = AV, (1) where A ∈ RN ×N is the attention score matrix and O is the output. While 3D full attention enables rich spatiotemporal interactions, its computational complexity scales quadrat-ically with N . As a result, attention becomes the domi-nant bottleneck in video generation, especially for high-resolution or long-duration videos where N is large. 
+
+3.2. Block sparse attention 
+
+Sparse attention methods reduce computational cost by ap-plying a binary mask M ∈ { 0, 1}N ×N to the attention matrix, yielding eA = A ⊙ M . However, such element-wise sparsity is poorly aligned with the execution of modern GPU attention kernels. Efficient implementations such as FlashAttention (Dao et al., 2022) compute attention in a block-wise manner to reduce memory overhead. As a result, element-wise sparse attention often fails to deliver practical speedups. Block sparse attention addresses this by partitioning the 3DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+sequence into M = N/B blocks of size B (with N padded to be divisible by B), and applying sparsity via a block mask M ∈ { 0, 1}M ×M . Dynamic block sparse attention methods construct this mask by estimating block impor-tance without explicitly computing the full attention ma-trix. Prior approaches typically compute a block-wise atten-tion score matrix ˆA and derive M by ranking these scores. Specifically, queries and keys are grouped into blocks and form block-level representations ˆQ = [ˆ q1, . . . , ˆqM ] and 
+
+ˆK = [ ˆk1, . . . , ˆkM ] using a method-dependent function. The block-wise attention score is then computed as 
+
+ˆA = softmax ˆQ ˆK⊤
+
+√d
+
+!
+
+. (2) The matrix ˆA serves as a proxy for the importance of in-teractions between query and key blocks. For each query block, only the key blocks with the highest scores in ˆA are retained. To quantify sparsification quality, we measure the attention score recall 
+
+R = ∥ eA∥1
+
+∥A∥1
+
+, (3) which captures the fraction of attention mass preserved after applying the sparse mask. 0 10 20 30 40  
+
+> Diffusion Step (Early Late)
+> 0.72
+> 0.74
+> 0.76
+> 0.78
+> 0.80
+> Attention Recall
+> Mean Attention Recall
+> ±1 Std. Dev.
+
+Figure 3. The mean attention recall (solid line) rises monotonically across diffusion steps, with low variance across various samples (shaded region). 
+
+## 4. Motivation 
+
+In this section, we identify the intrinsic sparsity patterns of attention in diffusion transformers and show that the effec-tiveness of block sparse attention is fundamentally governed by the statistical structure of attention scores. To formalize this connection, we introduce a token representation model and derive a theoretical lower bound on attention recall un-der block sparsity. Our analysis reveals three key factors that determine performance: the sparsity budget, the inter-block similarity gap, and the block-level semantic diversity. 
+
+4.1. Experimental observation 
+
+To better exploit attention sparsity in DiTs, we begin with an empirical analysis of attention maps across layers and attention heads. As illustrated in Figure 2, sparsity patterns vary substantially both across layers and among heads, in-dicating that static sparsity schemes may be suboptimal. This observation motivates the design of dynamic sparsity mechanisms that can adapt to various patterns. We further study a typical block sparse attention scheme that constructs block-level representations via block-wise mean pooling and evaluate its attention score recall. As shown in Figure 3, the recall, averaged across all layers and attention heads, consistently increases as the diffusion process proceeds. Notably, this improvement occurs with a fixed sparsity ratio, suggesting that block sparse attention becomes more effective at later denoising steps. This trend can be attributed to the inherent dynamics of diffusion models. At early denoising steps, latent represen-tations are dominated by noise, leading to diffuse attention distributions. As denoising proceeds, the latents gradually converge toward the data manifold, resulting in increasingly concentrated attention. Motivated by these observations, we develop a probabilistic model of attention in the following section to systematically analyze the factors governing the performance of block sparse attention. 
+
+4.2. Theoretical lower bound 
+
+We develop a token representation model to characterize when block sparse attention can reliably recover the domi-nant attention mass. The key intuition is that tokens within the same block tend to share underlying semantic compo-nents, which induce coherent block-level structure. 
+
+Assumption 4.1 (T OKEN REPRESENTATION MODEL ). Let 
+
+Bu and Bv denote the u-th query block and v-th key block, respectively. Each query and key vector is decomposed as 
+
+qi = ¯ qu + ξ(q) 
+
+> u
+
++ ε(q) 
+
+> i
+
+, kj = ¯kv + ξ(k) 
+
+> v
+
++ ε(k) 
+
+> j
+
+, (4) where i ∈ B u and j ∈ B v . Here, ¯qu and ¯kv are deterministic block centroids, ξ(·) denote block-level semantic drift shared across tokens within a block, and ε(·) capture token-level perturbations. We assume ξ(·) ∼ N (0 , τ 2I) and ε(·) ∼N (0 , σ 2I), independent across tokens and blocks. Under this model, we analyze the block sparse attention paradigm that relies on block-wise pooled representations. 
+
+Definition 4.2 (POOLED BLOCK CENTROIDS ). For block 
+
+Bu and Bv of size B, we define the pooled query and key centroids as 
+
+ˆqu := 1
+
+B
+
+X
+
+> i∈B u
+
+qi, ˆkv := 1
+
+B
+
+X
+
+> j∈B v
+
+kj (5) 4DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+For a fixed query block, the softmax normalization term is shared across all key blocks. Therefore, block selection can be approximated by ranking dot products between centroids. 
+
+Definition 4.3 (A PPROXIMATE BLOCK SCORE ). We define the block-level score used for Top-K selection as 
+
+ˆSuv := ⟨ˆqu, ˆkv ⟩, (6) and denote the selected blocks as 
+
+ˆTK := arg K
+
+max  
+
+> v∈{ 1,...,M }
+
+ˆSuv . (7) To evaluate the accuracy of block selection, we compare 
+
+ˆTK with the oracle Top-K blocks defined by exact attention mass. Specifically, Let 
+
+TK := arg K
+
+max   
+
+> v∈{ 1,...,M }
+
+αuv , αuv := X
+
+> i∈B u
+
+X
+
+> j∈B v
+
+Aij , (8) where Aij denotes the full attention matrix. 
+
+Theorem 4.4 (P ROBABILITY OF CORRECT BLOCK SELEC -
+
+> TION
+
+). Let 
+
+∆μmin := min   
+
+> v∈T K,v ′/∈T K
+
+⟨¯qu, ¯kv − ¯kv′ ⟩
+
+denote the minimum similarity gap between relevant and irrelevant block centroids, and assume ∥¯qu∥2, ∥¯kv ∥2 ≤ C.Then, there exists a constant c such that 
+
+P(TK = ˆTK ) ≥ 1 − X
+
+> v∈T K
+
+X 
+
+> v′/∈T K
+
+e−ϕ1 + e−ϕ2  (9) 
+
+where 
+
+ϕ1 = ∆μ2min 
+
+48 Cδ 2 , ϕ2 = c min 
+
+ ∆μ2min 
+
+δ4d , ∆μmin 
+
+δ2
+
+
+
+and δ2 = τ 2 + σ2/B .
+
+The bound highlights that correct block recovery is primarily determined by the minimum centroid similarity gap. Larger token-level noise σ2 and block-level semantic drift τ 2 de-grade selection reliability. Finally, we relate block selection accuracy to attention recall. 
+
+Corollary 4.5 (E XPECTED ATTENTION RECALL ). Let γ =
+
+K/M denote the sparsity budget. The expected attention recall for query block Bu satisfies 
+
+E[Ru] ≥ γ · P( ˆTK = TK ). (10) 
+
+4.3. Determinants of effective block sparse attention 
+
+From Corollary 4.5, the key factors affecting the perfor-mance of block sparse attention are the sparsity budget, the minimum inter-block similarity gap, the token-level pertur-bations, and the block-level drift. The derived lower bound of attention recall motivates us to propose an optimized block sparse attention through the following aspects: en-larging the inter-block similarity gap, reducing the block semantic diversity, and reallocating the sparsity budget. 
+
+Algorithm 1 DFSAttn 
+
+Input: Q, K, V ∈ RN ×d, block size B, sub-block size 
+
+Bs, permutation P, sparsity budget γt, cached mask M,mask update interval ∆, diffusion step t
+
+Step 1: 3D Hilbert Curve Token Reordering 
+
+Q′
+
+← P (Q), K ′
+
+← P (K), V ′
+
+← P (V )
+
+Step 2: Hierarchical Block Scoring if t ≡ 0 (mod ∆) then 
+
+ˆQ ← AvgPool (Q′
+
+, B s), ˆK ← AvgPool (K′
+
+, B s)ˆA ← softmax( ˆQ ˆKT /√d)ˆSuv ← Aggregation ( ˆA, B, B s) ▷ Equation (11) 
+
+Mt ← TopK-Selection ( ˆS, γ t) ▷ Equation (12) 
+
+M ← M t ▷ Update cached mask 
+
+else 
+
+Mt ← M ▷ Reuse cached mask 
+
+end if Step 3: Block Sparse Attention 
+
+O′
+
+← SparseFlashAttn (Q′
+
+, K ′
+
+, V ′
+
+, Mt)
+
+O ← P −1(O′
+
+) ▷ Restore original order 
+
+Output: O
+
+## 5. Method 
+
+In this section, we introduce DFSAttn, a training-free dy-namic sparse attention method for accelerating video gener-ation in diffusion transformers. As illustrated in Figure 1, DFSAttn comprises three key strategies that jointly improve efficiency without compromising generation quality. First, we reorder video tokens using a 3D Hilbert curve, implic-itly inducing fine-grained sparsity while preserving efficient GPU execution(Section 5.1). Second, we introduce hierar-chical block score estimation, which refines block-level im-portance approximation via fine-grained sub-block aggrega-tion (Section 5.2). Third, we cache and reuse sparse masks across diffusion steps with an adaptive sparsity budget, fur-ther reducing the computational overhead (Section 5.3). frame 
+
+> width
+> height
+> End
+> Start
+
+Figure 4. The 3D Hilbert curve in 4 × 4 × 4 space. 
+
+5DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation       
+
+> Table 1. Reordering reduces the intra-block variance of queries and keys. Var (q)Var (k)
+> w/o reordering 1.22 1.25 w reordering 0.98 1.02
+
+5.1. 3D Hilbert curve token reordering 
+
+As analyzed in Section 4.3, enlarging the inter-block sim-ilarity gap is critical for effective block sparse attention. Equivalently, tokens assigned to the same block should be as semantically coherent as possible. In video data, seman-tic relevance is strongly correlated with spatial–temporal proximity: tokens corresponding to nearby pixels across adjacent frames tend to share similar semantics. However, DiTs flatten 3D video tokens to a 1D sequence using per-frame row-major ordering, which disrupts the locality. Con-sequently, tokens that are spatially or temporally adjacent in the original video may be far apart in the sequence, leading to scattered attention patterns, as observed in Figure 2. To address this mismatch, we reorder video tokens using a 3D Hilbert space-filling curve (Hilbert, 1891). The Hilbert curve is a continuous fractal curve with strong locality-preserving properties and has been widely adopted in vision models (Li & Xu, 2025; Zheng et al., 2025). While Jenga (Zhang et al., 2026) introduces Hilbert reordering applied re-cursively within each block, our approach performs a global reordering directly over the entire video tensor without any block-level decomposition. As illustrated in Figure 4, this mapping preserves spatial–temporal neighborhoods when projecting 3D video tokens to a 1D sequence. Formally, as detailed in Algorithm 1, we define the reorder-ing as a token permutation P. Tokens are reordered at the beginning of each transformer block, block sparse attention is applied to the reordered sequence, and the inverse permu-tation P−1 is applied to the attention output. This design ensures that spatial–temporal neighboring tokens-typically those with high semantic relevance—remain adjacent in the 1D sequence. Consequently, each block in the reordered sequence corresponds to a coherent video region, while different blocks tend to capture distinct regions, naturally enlarging the inter-block similarity gap. Empirically, we further quantify the effect of reordering by measuring the average intra-block variance of queries and keys before and after applying 3D Hilbert reordering. As reported in Ta-ble 1, the proposed reordering strategy reduces intra-block variance by approximately 20% for both queries and keys, which is consistent with the intuition. Critically, this reordering induces fine-grained sparsity while retaining GPU-friendly block-sparse operations. Al-though prior work such as SpargeAttn (Zhang et al., 2025a) employs the Hilbert curve for sparse mask identification, it does not alter the contiguous block partitioning of the original sequence. In contrast, as illustrated in Figure 1, block-level sparsity applied to the reordered sequence trans-lates into a substantially finer-grained sparsity pattern in the original spatiotemporal space. 
+
+5.2. Hierarchical block scoring 
+
+As shown in Section 4.3, reducing block-level semantic drift improves the lower bound on attention recall, highlighting the importance of accurate block-level representations in block sparse attention. However, existing methods typically construct block representations via coarse pooling, which implicitly assumes semantic homogeneity within each block. When a block contains multiple semantic centroids, pooling forces all tokens to be represented by a single vector, leading to inaccurate estimation of block-level importance. To address this limitation, we propose a hierarchical block scoring strategy that aggregates fine-grained importance from sub-blocks. As detailed in Algorithm 1, each block is first partitioned into smaller sub-blocks, within which semantic variation is more locally coherent. We then com-pute sub-block-wise attention scores and aggregate them to form the block-level score. Formally, for a given atten-tion head, let ˆA denote the sub-block-wise attention score, 
+
+{i′
+
+, j ′
+
+} index sub-blocks within the query and key blocks. The block-level importance score is defined as 
+
+ˆSuv = X 
+
+> i′∈B u
+
+X 
+
+> j′∈B v
+
+ˆAi′ j′ (11) By performing aggregation over smaller sub-blocks, hierar-chical block scoring yields a more faithful approximation of token-level attention interactions, leading to more reliable block ranking. For each query block, we rank key blocks by ˆSuv and select the most critical ones. Specifically, the selected block set Iu and the corresponding sparse mask are given by 
+
+Iu = arg γM 
+
+max  
+
+> v∈{ 1,...,M }
+
+ˆSuv , M [u, Iu] = 1 . (12) Finally, DFSAttn applies Flash Attention only to the block pairs specified by the sparse mask, significantly reducing the computational overhead of attention. 
+
+5.3. Sparse mask caching with adaptive ratio 
+
+As illustrated in Figure 3, under a fixed sparsity ratio, block sparse attention becomes increasingly effective as the diffu-sion process advances. Equivalently, achieving comparable accuracy at earlier diffusion steps requires a larger sparsity budget than at later steps. Leveraging this insight, we re-allocate the overall computational budget across diffusion 6DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation                                                                                                                                       
+
+> Table 2. Quality and efficiency results of DFSAttn and other baselines.
+> Method Quality Efficiency
+> PSNR ↑SSIM ↑LPIPS ↓AQ ↑BC ↑IQ ↑MS ↑SC ↑Sparsity ↑Latency ↓Speedup ↑
+> Wan2.1 –––59.77 95.09 65.49 98.72 94.35 0% 1884s 1.00 ×
+> Radial 17.405 0.624 0.357 59.29 95.23 64.27 98.79 94.01 73.78% 1098s 1.72 ×
+> SVG 17.393 0.612 0.362 57.92 95.42 65.24 98.85 93.79 65.71% 1079s 1.75 ×
+> SVG2 18.034 0.640 0.338 57.71 95.20 63.28 98.78 93.75 68.19% 992s 1.90 ×
+> Ours 22.370 0.764 0.183 58.61 94.86 64.97 98.72 93.91 78.51% 1050s 1.79 ×
+> Hunyuan –––57.75 96.75 65.95 99.34 96.87 0% 1752s 1.00 ×
+> Radial 20.897 0.750 0.285 57.21 97.01 67.16 99.39 96.72 72.67% 1006s 1.74 ×
+> SVG 26.825 0.853 0.141 56.86 97.10 65.89 99.41 96.64 75.24% 911s 1.92 ×
+> SVG2 28.577 0.864 0.139 55.10 96.77 63.13 99.36 96.42 71.88% 796s 2.20 ×
+> Ours 29.381 0.898 0.087 57.18 96.47 66.06 99.32 96.73 80.53% 836s 2.10 ×
+
+steps by adopting an adaptive sparsity schedule, where the sparsity budget decreases monotonically over time. To further improve the accuracy-efficiency trade-off, we introduce a sparse mask caching strategy inspired by prior work on caching intermediate features in DiTs (Zhao et al., 2025; Liu et al., 2025). As detailed in Algorithm 1, DFSAttn identifies block sparse attention masks for each layer and head in the initial iteration and subsequently updates them at a fixed interval. Importantly, while the sparse masks are cached and reused across diffusion steps, the corresponding sparse attention outputs are recomputed at every step, ensur-ing that the dynamic evolution of token representations is fully preserved. By jointly applying budget reallocation and sparse mask caching, DFSAttn achieves higher generation quality while substantially accelerating inference, demonstrating a favor-able balance between accuracy and efficiency. 
+
+## 6. Experiment 
+
+6.1. Setup Models and datasets. We evaluate DFSAttn on two state-of-the-art text-to-video diffusion models: HunyuanVideo-T2V-13B (Kong et al., 2024) and Wan2.1-T2V-14B (Wan et al., 2025), generating 129-frame and 81-frame videos at 720p resolution, respectively. All experiments use text prompts from the Penguin Benchmark (Kong et al., 2024). 
+
+Metrics. We measure the fidelity of sparse attention outputs relative to full attention using PSNR, SSIM, and LPIPS. In addition, we assess the video quality with VBench (Huang et al., 2024), reporting aesthetic quality (AQ), background consistency (BC), imaging quality (IQ), motion smoothness (MS) and subject consistency (SC). The efficiency of sparse attention methods is quantified by sparsity, defined as the fraction of attention computations eliminated compared to full attention. 
+
+Baselines. We compare DFSAttn with state-of-the-art sparse attention methods, including static approaches SVG (Xi et al., 2025) and RadialAttention (Li et al., 2026), as well as the dynamic method SVG2 (Yang et al., 2026). 
+
+Implementation details. We employ the Block-Sparse Attention kernel from (Guo et al., 2024) and benchmark DFSAttn on an NVIDIA H100 GPU with CUDA 12.4. The default attention backend is FlashAttention-2 (Dao, 2024). Following prior work (Li et al., 2026; Xi et al., 2025), sparse attention is bypassed during the first 25% of the denoising steps for all methods. Our adaptive sparsity budget is ini-tialized at 0.3 and decreased by 0.1 every subsequent 25% of denoising steps, resulting in an average sparsity level of approximately 80% over the remaining steps. We use a block size of 128 and a sub-block size of 16. Since Ra-dialAttention (Li et al., 2026) does not natively support 720p resolution, we pad video tokens to apply its attention mask. All baseline methods are evaluated using their official codebase, as detailed in Appendix B. 
+
+6.2. Quality and efficiency results 
+
+As shown in Table 2, DFSAttn consistently outperforms all baseline methods across similarity metrics: PSNR, SSIM, and LPIPS, even at higher sparsity levels. Notably, at ap-proximately 80% sparsity, DFSAttn achieves an average PSNR of 22.37 on Wan2.1 and 29.38 on HunyuanVideo, demonstrating its ability to preserve fidelity under extreme compression. Corresponding qualitative results in Figure 5 further illustrate that DFSAttn generates videos highly con-sistent with full attention, preserving fine-grained details and temporal consistency compared to baselines. On the VBench benchmark, DFSAttn closely matches full atten-tion across all evaluation metrics, highlighting its ability to maintain overall video quality. Additional video samples are provided in Appendix D. In terms of inference efficiency, DFSAttn delivers 2.1 ×
+
+and 1.8 × end-to-end speedups on HunyuanVideo and Wan 7DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation Dense 
+
+> Sparsity=0%
+> Ours
+> Sparsity= 78.51%
+> PSNR= 27.73
+> SVG2
+> Sparsity=68.19%
+> PSNR=18.38
+> SVG
+> Sparsity= 65.71 %
+> PSNR= 18.10
+> Radial
+> Sparsity= 73.78 %
+> PSNR= 18.32
+> Prompt: "A female student in a gray coat slowly stands up in the rain. The entire video presents a melancholic atmosphere." Prompt: "Under the azure sky, a polar bear stands in the snow, turning its head to look at its cub behind him."
+
+Figure 5. Examples of videos generated by DFSAttn and other baselines on Wan2.1-T2V-14B. 
+
+Table 3. Ablation of token reordering on HunyuanVideo. Method PSNR ↑ SSIM ↑ LPIPS ↓
+
+Raster 27.794 0.874 0.124 Hilbert2D 29.265 0.893 0.090 Block3D 29.156 0.897 0.090 Hilbert3D 29.378 0.901 0.087 
+
+Table 4. Ablation of sub-block size on HunyuanVideo. Sub-block size PSNR ↑ SSIM ↑ LPIPS ↓ Latency 16 29.378 0.901 0.087 830.4s 32 29.151 0.898 0.089 828.9s 64 28.894 0.892 0.092 827.8s w/o sub-block 28.565 0.887 0.098 827.3s 
+
+2.1, respectively, outperforming RadialAttention and SVG. Although SVG2 achieves slightly higher speedups with cus-tomized kernels, it suffers from a substantial degradation in visual quality. For example, DFSAttn achieves imaging quality scores of 66.06 and 64.97 on HunyuanVideo and Wan2.1, whereas SVG2 attains only 63.13 and 63.28, respec-tively. Additionally, we evaluate the scalability of DFSAttn under resolutions and frames in Appendix C.1. These re-sults demonstrate that DFSAttn consistently maintains high fidelity under higher sparsity while delivering substantial acceleration, effectively balancing efficiency and quality. 
+
+6.3. Ablation study Token reordering. Beyond the default Raster scan, we evaluate two alternative strategies: Hilbert2D , which ap-plies Hilbert ordering independently within each frame, and 
+
+Block3D , which partitions tokens into 4 × 4 × 4 cubes 90% 80% 70% 60% 
+
+> Sparsity
+> 27
+> 28
+> 29
+> 30
+> 31
+> 32
+> PSNR
+> Fixed
+> Adaptive
+> 700
+> 750
+> 800
+> 850
+> 900
+> 950
+> 1000
+> 1050
+> Latency (s)
+
+Figure 6. PSNR (solid, left) and latency (dashed, right) vs. overall sparsity. Main results are evaluated under adaptive 80% sparsity. 
+
+followed by local raster traversal. As shown in Table 3, locality-aware reordering consistently outperforms the stan-dard Raster scan across all metrics. Among the evalu-ated strategies, Hilbert3D achieves the best performance by jointly preserving spatial and temporal locality throughout the sequence. In contrast, Hilbert2D ignores temporal con-tinuity across frames, while Block3D introduces artificial partition boundaries that hinder global locality preservation. These results indicate that effective token traversal orders should maintain spatio-temporal locality simultaneously, which is precisely the design principle of Hilbert3D. The computational overhead of reordering is minimal in prac-tice. The traversal order is computed once per inference and implemented as a static index mapping. For sequences con-taining approximately 120K tokens, the reordering overhead accounts for only 2% of total runtime, which is negligible relative to the efficiency gains. 
+
+Sub-block size. Table 4 evaluates the effect of sub-block granularity of hierarchical block scoring. Smaller sub-8DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+blocks consistently improve reconstruction quality, as finer partitioning provides more accurate block-level representa-tions for estimating attention importance. Notably, latency remains largely unchanged across all settings, suggesting that finer sub-block partitioning introduces negligible addi-tional overhead. Additionally, we fix the block size to 128 throughout all experiments to align with GPU kernel design and maximize sparse attention execution efficiency. 
+
+Mask update interval. In the main experiments, we up-date the sparse attention mask every 25% of the total denois-ing steps. This setting preserves comparable video quality while reducing inference latency compared with per-step mask recomputation. The update interval is not fixed, and can be adjusted according to the sampling schedule. For example, in reduced-step distilled models, the shorter sam-pling trajectory naturally limits the opportunities for mask reuse; nevertheless, DFSAttn still provides per-step acceler-ation through sparse attention computation. We provide ad-ditional results on a 4-step distilled model in Appendix C.2. 
+
+Adaptive sparsity budget. Figure 6 presents the trade-off between video quality and inference latency under differ-ent overall sparsity budgets. We compare a fixed sparsity schedule, which applies a constant sparsity ratio through-out denoising, with the proposed adaptive schedule, where sparsity is dynamically adjusted across diffusion steps. As sparsity increases from 60% to 90%, both methods exhibit the expected degradation in PSNR together with reduced la-tency. However, the adaptive strategy consistently achieves superior reconstruction quality at comparable runtime, in-dicating that reallocating the sparsity budget across denois-ing steps substantially improves the effectiveness of block sparse attention. Based on this trade-off, we adopt the adap-tive 80% sparsity setting as the default configuration for the main experiments. 
+
+## 7. Conclusion 
+
+In this paper, we identify the fundamental challenges that limit the effectiveness of block sparse attention in high-sparsity regimes induced by the dynamic and fine-grained attention patterns of diffusion transformers. Guided by the derived theoretical lower bound of attention recall, we pro-pose DFSAttn, a training-free sparse attention framework that integrates 3D Hilbert curve–based token reordering, hierarchical block scoring, and sparse mask caching with adaptive ratio, enabling fine-grained sparsification while preserving efficient GPU execution. Extensive experiments demonstrate that DFSAttn consistently outperforms exist-ing sparse attention methods, achieving superior generation quality under a high sparsity level. 
+
+## Acknowledgements 
+
+This work is funded by the National Key Research and Development Program of China (No. 2024YFA1012902) and the National Natural Science Foundation of China (No. W2441021, 12288101). This research is also supported by the AI for Science Institute, Beijing, China and the Na-tional Engineering Laboratory for Big Data Analytics and Applications. 
+
+## Impact Statement 
+
+This paper presents work whose goal is to advance the field of Machine Learning. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here. 
+
+## References 
+
+Chen, P., Zeng, X., Zhao, M., Shen, M., Cheng, W., Yu, G., and Chen, T. Sparse-vdit: Unleashing the power of sparse attention to accelerate video diffusion transform-ers. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pp. 2957–2965, 2026. Dao, T. Flashattention-2: Faster attention with better paral-lelism and work partitioning. In International Conference on Learning Representations , volume 2024, pp. 35549– 35562, 2024. Dao, T., Fu, D., Ermon, S., Rudra, A., and R ´e, C. Flashat-tention: Fast and memory-efficient exact attention with io-awareness. Advances in neural information processing systems , 35:16344–16359, 2022. Durvasula, S., Sreedhar, K., Moustafa, Z., Kothawade, S., Gondimalla, A., Subramanian, S., Shahidi, N., and Vijaykumar, N. FG-Attn: Leveraging Fine-Grained Sparsity In Diffusion Transformers. arXiv preprint arXiv:2509.16518 , 2025. Guo, J., Tang, H., Yang, S., Zhang, Z., Liu, Z., and Han, S. Block Sparse Attention. https://github.com/ mit-han-lab/Block-Sparse-Attention ,2024. Hilbert, D. Ueber die stetige Abbildung einer Line auf ein Fl ¨achenst ¨uck. Mathematische Annalen , 38(3):459– 460, September 1891. ISSN 1432-1807. doi: 10.1007/ BF01199431. URL https://doi.org/10.1007/ BF01199431 .Huang, Z., He, Y., Yu, J., Zhang, F., Si, C., Jiang, Y., Zhang, Y., Wu, T., Jin, Q., Chanpaisit, N., et al. Vbench: Compre-hensive benchmark suite for video generative models. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 21807–21818, 2024. 9DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+Jiang, H., Li, Y., Zhang, C., Wu, Q., Luo, X., Ahn, S., Han, Z., Abdi, A. H., Li, D., Lin, C.-Y., et al. Minference 1.0: Accelerating pre-filling for long-context llms via dy-namic sparse attention. Advances in Neural Information Processing Systems , 37:52481–52515, 2024. Kahatapitiya, K., Liu, H., He, S., Liu, D., Jia, M., Zhang, C., Ryoo, M. S., and Xie, T. Adaptive caching for faster video generation with diffusion transformers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pp. 15240–15252, 2025. Kong, W., Tian, Q., Zhang, Z., Min, R., Dai, Z., Zhou, J., Xiong, J., Li, X., Wu, B., Zhang, J., et al. Hunyuan-video: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. Lai, X., Lu, J., Luo, Y., Ma, Y., and Zhou, X. Flex-prefill: A context-aware sparse attention mechanism for efficient long-sequence inference. arXiv preprint arXiv:2502.20766 , 2025. Li, M., Cai, T., Cao, J., Zhang, Q., Cai, H., Bai, J., Jia, Y., Li, K., and Han, S. Distrifusion: Distributed parallel infer-ence for high-resolution diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 7183–7193, 2024. Li, X., Li, M., Cai, T., Xi, H., Yang, S., Lin, Y., Zhang, L., Yang, S., Hu, J., Peng, K., et al. Radial Attention: 
+
+O(n log n) Sparse Attention with Energy Decay for Long Video Generation. Advances in Neural Information Pro-cessing Systems , 38:16822–16852, 2026. Li, Y. and Xu, L. Hilbert-Guided Block-Sparse Local At-tention. arXiv preprint arXiv:2511.05832 , 2025. Liu, A., Zhang, Z., Li, Z., Bai, X., Xing, Y., Han, Y., Tang, J., Wu, J., Yang, M., Chen, W., et al. FPSAttention: Training-Aware FP8 and Sparsity Co-Design for Fast Video Diffusion. Advances in Neural Information Pro-cessing Systems , 38:138786–138816, 2026a. Liu, F., Zhang, S., Wang, X., Wei, Y., Qiu, H., Zhao, Y., Zhang, Y., Ye, Q., and Wan, F. Timestep Embedding Tells: It’s Time to Cache for Video Diffusion Model. In Pro-ceedings of the Computer Vision and Pattern Recognition Conference , pp. 7353–7363, 2025. Liu, Y., Hu, Y., Zhang, Z., Jiang, K., and Yuan, K. Mixture of distributions matters: Dynamic sparse attention for efficient video diffusion transformers. arXiv preprint arXiv:2601.11641 , 2026b. Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., and Zhu, J. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in neural information processing systems , 35:5775–5787, 2022. Peebles, W. and Xie, S. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF interna-tional conference on computer vision , pp. 4195–4205, 2023. Rudelson, M. and Vershynin, R. Hanson-Wright inequality and sub-Gaussian concentration. 2013. Salimans, T. and Ho, J. Progressive distillation for fast sampling of diffusion models. arXiv preprint arXiv:2202.00512 , 2022. Shen, X., Han, C., Zhou, Y., Xie, Y., Gong, Y., Wang, Q., Wang, Y., Wang, Y., Zhao, P., and Gu, J. Draftattention: Fast video diffusion via low-resolution attention guidance. 
+
+arXiv preprint arXiv:2505.14708 , 2025. Song, J., Meng, C., and Ermon, S. Denoising diffusion implicit models. arXiv preprint arXiv:2010.02502 , 2020. Song, Y., Dhariwal, P., Chen, M., and Sutskever, I. Consis-tency models. 2023. Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. At-tention is all you need. Advances in neural information processing systems , 30, 2017. Wan, T., Wang, A., Ai, B., Wen, B., Mao, C., Xie, C.-W., Chen, D., Yu, F., Zhao, H., Yang, J., et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. Xi, H., Yang, S., Zhao, Y., Xu, C., Li, M., Li, X., Lin, Y., Cai, H., Zhang, J., Li, D., et al. Sparse videogen: Acceler-ating video diffusion transformers with spatial-temporal sparsity. arXiv preprint arXiv:2502.01776 , 2025. Xia, Y., Ling, S., Fu, F., Wang, Y., Li, H., Xiao, X., and Cui, B. Training-free and adaptive sparse attention for efficient long video generation. In Proceedings of the IEEE/CVF International Conference on Computer Vision ,pp. 15982–15993, 2025. Xiao, G., Tian, Y., Chen, B., Han, S., and Lewis, M. Effi-cient streaming language models with attention sinks. In 
+
+International Conference on Learning Representations ,volume 2024, pp. 21875–21895, 2024. Xu, R., Xiao, G., Huang, H., Guo, J., and Han, S. Xattention: Block sparse attention with antidiagonal scoring. arXiv preprint arXiv:2503.16428 , 2025. Yang, S., Xi, H., Zhao, Y., Li, M., Zhang, J., Cai, H., Lin, Y., Li, X., Xu, C., Peng, K., et al. Sparse videogen2: Accelerate video generation with sparse attention via semantic-aware permutation. Advances in Neural In-formation Processing Systems , 38:96965–96991, 2026. 10 DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+Yang, Z., Teng, J., Zheng, W., Ding, M., Huang, S., Xu, J., Yang, Y., Hong, W., Zhang, X., Feng, G., et al. Cogvideox: Text-to-video diffusion models with an ex-pert transformer. In International Conference on Learn-ing Representations , volume 2025, pp. 83048–83077, 2025. Yuan, Z., Zhang, H., Pu, L., Ning, X., Zhang, L., Zhao, T., Yan, S., Dai, G., and Wang, Y. Ditfastattn: Attention com-pression for diffusion transformer models. Advances in Neural Information Processing Systems , 37:1196–1219, 2024. Zhang, J., Xiang, C., Huang, H., Wei, J., Xi, H., Zhu, J., and Chen, J. Spargeattn: Accurate sparse attention accelerat-ing any model inference. In International Conference on Machine Learning (ICML) , 2025a. Zhang, P., Chen, Y., Su, R., Ding, H., Stoica, I., Liu, Z., and Zhang, H. Fast video generation with sliding tile attention. arXiv preprint arXiv:2502.04507 , 2025b. Zhang, Y., Xing, J., Liu, S., PENG, B., Tao, X., Wan, P., Lo, E., Jia, J., et al. Training-free efficient video gen-eration via dynamic token carving. Advances in Neural Information Processing Systems , 38:81913–81946, 2026. Zhang, Z., Sheng, Y., Zhou, T., Chen, T., Zheng, L., Cai, R., Song, Z., Tian, Y., R ´e, C., Barrett, C., et al. H2o: Heavy-hitter oracle for efficient generative inference of large language models. Advances in Neural Information Processing Systems , 36:34661–34710, 2023. Zhao, T., Hong, K., Yang, X., Xiao, X., Li, H., Ling, F., Xie, R., Chen, S., Zhu, H., Yichong, Z., et al. Paroattention: Pattern-aware reordering for efficient sparse and quan-tized attention in visual generation models. Advances in Neural Information Processing Systems , 38:126484– 126511, 2026. Zhao, X., Jin, X., Wang, K., and You, Y. Real-time video generation with pyramid attention broadcast. In Interna-tional Conference on Learning Representations , volume 2025, pp. 3296–3319, 2025. Zheng, S., Lu, W., Xia, Y., Liu, H., and Wang, S. HilbertA: Hilbert Attention for Image Generation with Diffusion Models. arXiv preprint arXiv:2509.26538 , 2025. Zheng, Z., Peng, X., Yang, T., Shen, C., Li, S., Liu, H., Zhou, Y., Li, T., and You, Y. Open-sora: Democratiz-ing efficient video production for all. arXiv preprint arXiv:2412.20404 , 2024. 11 DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+## A. Proof of Theorem 4.4 and Corollary 4.5 
+
+Before proving Theorem 4.4, we need a few lemmas. 
+
+Lemma A.1 (Pooled Centroid Distribution) . Under Assumption 4.1, The pooled block centroids satisfy 
+
+ˆqu = ¯ qu + ξ(q) 
+
+> u
+
++ ¯ ε(q) 
+
+> u
+
+, ˆkv = ¯kv + ξ(k) 
+
+> v
+
++ ¯ ε(k) 
+
+> v
+
+(13) 
+
+where ¯ε(q) 
+
+> u
+
+∼ N 
+
+
+
+0, σ2 
+
+> B
+
+I
+
+
+
+, ¯ε(k) 
+
+> v
+
+∼ N 
+
+
+
+0, σ2 
+
+> B
+
+I
+
+
+
+.
+
+Proof. By definition, 
+
+ˆqu = 1
+
+B
+
+X
+
+> i∈B u
+
+ ¯qu + ξ(q) 
+
+> u
+
++ ε(q)
+
+> i
+
+ = ¯ qu + ξ(q) 
+
+> u
+
++ 1
+
+B
+
+X
+
+> i∈B u
+
+ε(q) 
+
+> i
+
+. (14) Defining ¯ε(q) 
+
+> u
+
+:= 1
+
+> B
+
+P 
+
+> i∈B u
+
+ε(q) 
+
+> i
+
+, by independence and ε(q) 
+
+> i
+
+∼ N (0 , σ 2I), we have ¯ε(q) 
+
+> u
+
+∼ N (0 , σ2 
+
+> B
+
+I). The derivation for ˆkv
+
+is analogous. 
+
+Lemma A.2 (Expectation of Approximate Block Score) . Under Assumptions 4.1: 
+
+E[ ˆSuv ] = ⟨¯qu, ¯kv ⟩ (15) 
+
+Proof. Let 
+
+ζ(q) 
+
+> u
+
+:= ξ(q) 
+
+> u
+
++ ¯ ε(q) 
+
+> u
+
+, ζ(k) 
+
+> v
+
+:= ξ(k) 
+
+> v
+
++ ¯ ε(k) 
+
+> v
+
+(16) According to Assumption 4.1, ζ(q) 
+
+> u
+
+and ζ(k) 
+
+> v
+
+are independent and they satisfy: 
+
+ζ(q) 
+
+> u
+
+∼ N  0, δ 2I , ζ(k) 
+
+> v
+
+∼ N  0, δ 2I . (17) where δ2 = τ 2 + σ2 
+
+> B
+
+. From Lemma A.1, we can expand ˆSuv as 
+
+ˆSuv = ⟨¯qu, ¯kv ⟩ + ⟨¯qu, ζ (k) 
+
+> v
+
+⟩ + ⟨¯kv , ζ (q) 
+
+> u
+
+⟩ + ⟨ζ(q) 
+
+> u
+
+, ζ (k) 
+
+> v
+
+⟩ (18) Since all random terms are zero-mean and independent, the last three terms vanish in expectation. Therefore, 
+
+E[ ˆSuv ] = ⟨¯qu, ¯kv ⟩. (19) 
+
+Lemma A.3 (Pairwise score ordering) . Define Dvv ′ := ˆSuv − ˆSuv ′ and ∆μvv ′ := ⟨¯qu, ¯kv − ¯kv′ ⟩. There exists a universal constant c > 0 such that 
+
+P(Dvv ′ < 0) ≤ exp − ∆μ2
+
+> vv ′
+
+8 ∥¯kv − ¯kv′ ∥2 + 2 ∥¯qu∥2δ2
+
+!
+
++ exp 
+
+
+
+−c min 
+
+ ∆μ2
+
+> vv ′
+
+δ4d , ∆μvv ′
+
+δ2
+
+ 
+
+. (20) 
+
+Proof. From Equation (18), we can write 
+
+Dvv ′ = ⟨¯qu, ¯kv − ¯kv′ ⟩ + ⟨¯qu, ζ (k) 
+
+> v
+
+− ζ(k) 
+
+> v′
+
+⟩ + ⟨¯kv − ¯kv′ , ζ (q) 
+
+> u
+
+⟩ + ⟨ζ(q) 
+
+> u
+
+, ζ (k) 
+
+> v
+
+− ζ(k) 
+
+> v′
+
+⟩. (21) By Lemma A.2, E[Dvv ′ ] = ∆ μvv ′ . Let μD := E[Dvv ′ ] and write 
+
+Dvv ′ − μD = ⟨¯qu, ζ (k) 
+
+> v
+
+− ζ(k) 
+
+> v′
+
+⟩ + ⟨¯kv − ¯kv′ , ζ (q) 
+
+> u
+
+⟩
+
+| {z }
+
+> linear term
+
++ ⟨ζ(q) 
+
+> u
+
+, ζ (k) 
+
+> v
+
+− ζ(k) 
+
+> v′
+
+⟩
+
+| {z }
+
+> quadratic term
+
+. (22) We collect the Gaussian variables into 
+
+z =
+
+
+
+ζ(q)
+
+> u
+
+ζ(k)
+
+> v
+
+ζ(k)
+
+> v′
+
+ ∈ R3d, z ∼ N (0 , Σ) , Σ = diag( δ2Id, δ 2Id, δ 2Id). (23) 12 DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+Then the linear term can be written as ℓ⊤z for a deterministic vector ℓ, and the quadratic term as z⊤Az , where 
+
+A = 12
+
+ 0 I −II 0 0
+
+−I 0 0
+
+ .
+
+Hence, 
+
+Dvv ′ − μD = ℓ⊤z +  z⊤Az − E[z⊤Az ]. (24) Applying a union bound, 
+
+P(Dvv ′ < 0) ≤ P
+
+
+
+ℓ⊤z ≤ − μD
+
+2
+
+
+
++ P
+
+
+
+z⊤Az − E[z⊤Az ] ≤ − μD
+
+2
+
+
+
+. (25) The first term is Gaussian with variance ∥Σ1/2ℓ∥22, yielding 
+
+P
+
+
+
+ℓ⊤z ≤ − μD
+
+2
+
+
+
+= Φ 
+
+
+
+− μD
+
+2∥Σ1/2ℓ∥2
+
+
+
+≤ exp − μ2
+
+> D
+
+8 ∥¯kv − ¯kv′ ∥2 + 2 ∥¯qu∥2δ2
+
+!
+
+.
+
+(26) For the quadratic term, the Hanson–Wright inequality (Rudelson & Vershynin, 2013) implies that there exists a constant c′
+
+such that 
+
+P
+
+ z⊤Az − E[z⊤Az ] ≤ − μD
+
+2
+
+
+
+≤ exp 
+
+
+
+−c′ min 
+
+ μ2
+
+> D
+
+4K4∥A∥2
+
+> F
+
+, μD
+
+2K2∥A∥
+
+ 
+
+. (27) where K = max i ∥zi∥ψ2 is the subgaussian norm of z, ∥A∥2 
+
+> F
+
+is the Frobenius norm of the matrix, and ∥A∥ is the operator norm of the matrix. Since z is Gaussian, the subgaussian norm satisfies 
+
+∥zi∥ψ2 ≤ Cψ2 δ
+
+for all coordinates zi, where Cψ2 > 0 is a universal constant. Combing ∥A∥2 
+
+> F
+
+= O(d) and ∥A∥ = O(1) , By absorbing all constants into c, we have 
+
+P
+
+
+
+z⊤Az − E[z⊤Az ] ≤ − μD
+
+2
+
+
+
+≤ exp 
+
+
+
+−c min 
+
+ μ2
+
+> D
+
+δ4d , μD
+
+δ2
+
+ 
+
+, (28) Combining Equation (25), (26) and (28) completes the proof. Now we are ready to prove Theorem 4.4. We first restate the theorem. 
+
+Theorem A.4 (P ROBABILITY OF CORRECT BLOCK SELECTION ). Let 
+
+∆μmin := min   
+
+> v∈T K,v ′/∈T K
+
+⟨¯qu, ¯kv − ¯kv′ ⟩
+
+denote the minimum similarity gap between relevant and irrelevant block centroids, and assume ∥¯qu∥2, ∥¯kv ∥2 ≤ C. Then, there exists a constant c such that 
+
+P(TK = ˆTK ) ≥ 1 − X
+
+> v∈T K
+
+X 
+
+> v′/∈T K
+
+e−ϕ1 + e−ϕ2  (29) 
+
+where 
+
+ϕ1 = ∆μ2min 
+
+48 Cδ 2 , ϕ2 = c min 
+
+ ∆μ2min 
+
+δ4d , ∆μmin 
+
+δ2
+
+
+
+and δ2 = τ 2 + σ2/B .
+
+13 DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+Proof. By the definition in Theorem A.3, TK = ˆTK if and only if: 
+
+Dvv ′ > 0 ∀v ∈ T K , v ′ /∈ T K .
+
+Therefore, the probability that selected blocks align with the true top blocks is 
+
+P(TK = ˆTK ) = P
+
+ \  
+
+> v∈T K,v ′/∈T K
+
+{Dvv ′ > 0}
+
+
+
+≥ 1 − X
+
+> v∈T K
+
+X 
+
+> v′/∈T K
+
+P(Dvv ′ ≤ 0) .
+
+(30) From Lemma A.3, 
+
+P(Dvv ′ < 0) ≤ exp − ∆μ2
+
+> vv ′
+
+8  ∥¯kv − ¯kv′ ∥2 + 2 ∥¯qu∥2 δ2
+
+!
+
++ exp 
+
+
+
+−c min 
+
+ ∆μ2
+
+> vv ′
+
+δ4d , ∆μvv ′
+
+δ2
+
+ 
+
+. (31) Since ∥¯qu∥2, ∥¯kv ∥2 ≤ C, based on the definition of ∆μmin :
+
+P(Dvv ′ < 0) ≤ exp 
+
+
+
+− ∆μ2min 
+
+48 Cδ 2
+
+
+
++ exp 
+
+
+
+−c min 
+
+ ∆μ2min 
+
+δ4d , ∆μmin 
+
+δ2
+
+ 
+
+. (32) Combining Equation (30) and (32) completes the proof. 
+
+Corollary A.5 (E XPECTED ATTENTION RECALL ). Let γ = K/M denote the sparsity budget. The expected attention recall for query block Bu satisfies 
+
+E[Ru] ≥ γ · P( ˆTK = TK ). (33) 
+
+Proof. Since the attention weights is non-negative, we have 
+
+E [Ru] ≥ E
+
+h
+
+Ru|T K = ˆTK
+
+i
+
+P(TK = ˆTK ) (34) According to the definition of true Top-K blocks in Equation (8): 
+
+E
+
+h
+
+Ru|T K = ˆTK
+
+i
+
+=
+
+P 
+
+> v∈T K
+
+αuv 
+
+PMv=1 αuv 
+
+≥ KM (35) Combine with Theorem 4.4 yields the conclusion. 
+
+## B. Implementation Details 
+
+All baseline methods are evaluated using their official codebases and recommended settings. For RadialAttention (Li et al., 2026), the decay factor is set to be 0.95 for HunyuanVideo and 0.2 for Wan2.1. For SVG (Xi et al., 2025), the sparsity parameter for constructing the attention mask is set to 0.3 on Wan2.1 and 0.25 on HunyuanVideo. For SVG2, we adopt the recommended clustering parameters Cq = 100 , C k = 500 , with a top-p sparsity parameter of 0.9 to control token selection. The reported sparsity levels of baselines are provided by their official codebases. As for DFSAttn, in practice, we set the sparse mask update interval to be 12 (approximately 25% of the 50 diffusion steps in the main experiments), and skip the sparsification of the first transformer block on Wan2.1. For end-to-end speedup comparison, we integrates the fast QK-Norm and RoPE CUDA kernels from Sparse-VideoGen. 1
+
+> 1
+
+https://github.com/svg-project/Sparse-VideoGen 
+
+14 DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation  
+
+> Table 5. Performance of DFSAttn across resolutions and frames on HunyuanVideo.
+
+height × width × frame PSNR ↑ SSIM ↑ LPIPS ↓ Speedup ↑
+
+544 × 960 × 129 28.3176 0.9059 0.0784 1.61 ×
+
+720 × 1280 × 65 29.7371 0.9174 0.0786 1.57 ×
+
+720 × 1280 × 129 28.6809 0.8952 0.0804 1.81 ×
+
+720 × 1280 × 193 29.6944 0.8906 0.0862 1.95 × 
+
+> Table 6. Performance of DFSAttn on the Wan2.1 4-step distilled model. DFSAttn uses the same hyperparameter configuration as in the main experiments, with mask reuse disabled in this distilled setting.
+
+Method AQ ↑ BC ↑ IQ ↑ MS ↑ SC ↑ Speedup ↑
+
+Full 0.3750 0.9228 0.3618 0.9804 0.8540 1.00 ×
+
+DFSAttn 0.3742 0.9187 0.3580 0.9810 0.8523 1.19 ×
+
+## C. Additional Results 
+
+C.1. Scalability 
+
+We evaluate DFSAttn under varying resolutions and frames, as shown in Table 5. The results demonstrate that DFSAttn maintains stable generation quality across all settings, while achieving an increasing speedup at larger scales. This trend is expected, as the computational overhead of attention scales quadratically with sequence length, making sparsification become more pronounced for higher resolutions and longer videos. These results demonstrate that DFSAttn scales effectively without compromising visual quality, highlighting its suitability for high-resolution and long-video generation. Notably, the experiments here are conducted on an NVIDIA A100 GPU, which delivers smaller overall speedups compared to the H100 GPU in the main experiments. 
+
+C.2. Results on Distilled Models 
+
+Many production-oriented video diffusion models employ step distillation or consistency distillation to reduce the number of denoising steps at inference time. This setting differs from standard multi-step sampling, where DFSAttn can further benefit from reusing sparse attention masks across nearby denoising steps. In reduced-step models, the shortened sampling trajectory naturally decreases the opportunities for mask reuse. We therefore evaluate whether DFSAttn remains effective when applied to a distilled model where acceleration mainly comes from per-step sparse attention computation. Specifically, we evaluate DFSAttn on the 4-step distilled Wan2.1 model released by LightX2V. 2 We use the same DFSAttn hyperparameters as in the main experiments, while disabling mask reuse in this distilled setting. Sparse attention is bypassed at the first denoising step, and the sparse mask is recomputed every three subsequent steps using the adaptive sparsity budget. Table 6 reports the results. DFSAttn achieves a 1.19 × speedup over full attention on the 4-step distilled model, while maintaining comparable generation quality across all evaluated metrics. The changes in AQ, BC, IQ, and SC are minor, and MS remains on par with full attention. These results show that DFSAttn is compatible with distilled video diffusion models. Although reduced-step sampling limits the potential benefit of mask reuse, the per-step acceleration from sparse attention remains effective and provides complementary inference speedup without retraining or modifying the distilled checkpoint. 
+
+## D. Examples of Generated Videos 
+
+We provide several examples of videos generated by DFSAttn and full attention on HunyuanVideo and Wan2.1 in Figure 7 and Figure 8 respectively. The visualization further demonstrate that DFSAttn generates videos highly consistent with full attention, preserving fine-grained details and temporal consistency. 
+
+> 2https://huggingface.co/lightx2v/Wan2.1-Distill-Models
+
+15 DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+Figure 7. Video generation examples from dense attention and DFSAttn on HunyuanVideo. 
+
+16 DFSAttn: Dynamic Fine-grained Sparse Attention for Efficient Video Generation 
+
+Figure 8. Video generation examples from dense attention and DFSAttn on Wan2.1-T2V-14B. 
+
+17

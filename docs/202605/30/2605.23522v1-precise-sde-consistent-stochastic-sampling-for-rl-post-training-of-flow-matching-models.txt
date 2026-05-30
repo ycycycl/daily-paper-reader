@@ -1,0 +1,906 @@
+Title: Precise: SDE-Consistent Stochastic Sampling for RL Post-Training of Flow-Matching Models
+
+URL Source: https://arxiv.org/pdf/2605.23522v1
+
+Published Time: Mon, 25 May 2026 00:59:00 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+2026-05-25 
+
+# PRECISE : SDE-Consistent Stochastic Sampling for RL Post-Training of Flow-Matching Models 
+
+Jade Zou 1,2, ∗,‡ , Tao Huang 2, ∗,‡ , Weijie Kong 2, ∗, Junzhe Li 1,2,‡ , Yue Wu 2, Qi Tian 2,Jiangfeng Xiong 2, Jianwei Zhang 2,† , Liefeng Bo 2, Zhao Zhong 2,§ 1Peking University 2Tencent Hunyuan  
+
+> ∗
+
+Equal Contribution, § Corresponding Author, † Project Leader  
+
+> ‡
+
+Work done during internship at Tencent Hunyuan 
+
+## Abstract 
+
+Reinforcement learning (RL) has become an effective way to improve prompt alignment and perceptual quality in diffusion and flow-matching generators. A critical step for applying online RL to flow matching is turning the deterministic sampling trajectory into a stochastic policy, typically by replacing the reverse-time Ordinary Differential Equation (ODE) with a Stochastic Differential Equation (SDE). The stochastic sampler, controlling the exploration behavior and denoising dynamics, is thus part of the policy, and its design can significantly affect the reward optimization performance. We break down the sampler design into two interdependent components: choosing the right amount of stochastic exploration, and discretizing the resulting SDE faithfully at the small step counts used in RL. To address the first component, we analyze the inherent tension between exploration and stability in denoising and derive an SDE schedule that balances the two. Turning to the discretization challenge, we use a toy example to show that existing samplers can deviate from the flow-matching process, either by introducing excessive discretization noise or by relying on heuristic rules that do not guarantee convergence to the data distribution. To address these issues, we propose P RECISE , a new stochastic sampler that balances effective exploration with stability. Crucially, P RECISE keeps the denoising trajectory SDE-consistent through a novel approximation that freezes the clean-latent posterior mean, resolving the excess noise issue in standard samplers. Extensive experiments demonstrate that this formulation leads to significantly faster and more stable reward optimization via reinforcement learning, achieving state-of-the-art alignment scores (e.g., PickScore, HPSv2.1) while requiring 13.1–53.2% less wall-clock training time to match the best in-domain performance of prior samplers. Code is open-source at https://github.com/Tencent-Hunyuan/Precise .
+
+## 1 Introduction 
+
+Diffusion and flow-matching models are central to visual generation. Diffusion models and score-based SDEs sample by reversing a gradual noising process (Ho et al., 2020; Song et al., 2020b), while flow matching and rectified flow cast generation as continuous transport (Lipman et al., 2022; Liu et al., 2022). Although these pretrained generators provide strong visual priors, they do not directly optimize downstream criteria such as prompt following, perceptual quality, and task-specific constraints. RL post-training addresses this gap by optimizing image-level rewards or preferences via reward supervision, preference optimization, and policy gradients (Xu et al., 2023; Wallace et al., 2024; Black et al., 2023; Fan et al., 2023), with recent extensions to online RL for flow-matching and visual generation models (Liu et al., 2025; Xue et al., 2025). In online RL, the stochastic sampler is not merely an inference-time choice. It defines the policy whose action probabilities enter the policy-gradient objective (Liu et al., 2025; Xue et al., 2025), determines the exploration available for within-prompt advantage estimation, and controls the denoising trajectory on which the model makes predictions. Thus, for flow-matching models, converting the deterministic ODE into a stochastic sampler creates a sampler-design problem: the sampler must explore enough to support reward optimization while remaining faithful to the denoising dynamics learned during pretraining. This balance is especially delicate because online RL for diffusion and flow-matching models typically restricts the rollout to a small number of denoising steps (e.g., 6-30) to mitigate the massive computational bottleneck of iterative generation. Maintaining faithful trajectory exploration in this extreme low-NFE regime is not merely an efficiency trick, but a fundamental prerequisite for scaling RLHF to high-dimensional continuous domains (Liu et al., 2025; Xue et al., 2025). To systematically resolve this tension and enable stable exploration under restricted budgets, we deconstruct the stochastic sampler design into two interdependent components. First, the exploration schedule must balance diversity and stability: if the injected noise is too small, sampled groups have limited reward variation and policy improvement is slow; if it is too large, the trajectory can become unstable and reward estimates become less reliable. Second, the finite-step discretization must remain consistent with the intended reverse SDE at a small step count, which becomes harder as the injected noise increases. If the discretization is inconsistent, the model can be forced 1              
+
+> arXiv:2605.23522v1 [cs.LG] 22 May 2026 N= 20
+> Flow-GRPO CPS Precise
+> N= 80
+> 0.5 1.0 0.5 1.0 0.5 1.0
+> 0.5 1.0 0.5 1.0 0.5 1.0
+
+Figure 1: Left: Sampler design has two coupled axes: the exploration-stability balance and SDE consistency. Existing stochastic samplers occupy different trade-offs, while P RECISE improves both. Right: The double-ring example illustrates failure modes of existing samplers: Flow-GRPO (Liu et al., 2025) introduces excess noise, while CPS (Wang & Yu, 2025) biases the marginal distribution. to extrapolate beyond its training distribution, leading to poor sample quality. Viewed through the lens of these two requirements, existing samplers expose critical shortcomings. For instance, the Euler-style sampler used in prior flow-matching RL pipelines (Liu et al., 2025; Xue et al., 2025) introduces stochasticity, but can add excess noise under coarse discretization. CPS (Wang & Yu, 2025) reduces this artifact by preserving the nominal signal and noise coefficients, but coefficient preservation alone does not ensure convergence to the correct data distribution, and the exploration-stability tradeoff still requires careful tuning. As shown in Figure 1, existing samplers occupy different tradeoff points in the design space. To transcend these suboptimal tradeoffs, we propose P RECISE , a principled stochastic sampler explicitly designed for online RL post-training. Our framework resolves the tension through two key observations. First, exploration should respect the local geometry of the denoising process. A log signal-to-noise ratio (logSNR) analysis gives a principled time-varying schedule: inject more noise where the model can reliably return to the data manifold, and less where extra randomness would destabilize the trajectory. Second, the finite-step transition should account for the fact that injected noise immediately changes the latent state on which the velocity and score are predicted. Euler-style samplers freeze these quantities within a step, therefore missing this feedback. We instead observe that the clean-latent posterior mean ˆz0(t) = E[z0 | zt] is more stable under noise injection, because estimating ˆz0(t)
+
+is naturally a denoising task. This motivates freezing ˆz0(t) rather than the velocity or score, and computing the exact transition under this approximation. The resulting transition rule remains faithful to the intended SDE while avoiding excess discretization noise. We empirically evaluate P RECISE on Stable Diffusion 3.5 Medium (SD3.5-M) (Esser et al., 2024) and FLUX.2 Klein 4B Base (Black Forest Labs, 2025; 2026). P RECISE achieves state-of-the-art alignment scores (e.g., PickScore, HPSv2.1) while requiring 13.1–53.2% less wall-clock training time to match the best in-domain performance of prior samplers, and remains competitive on held-out metrics. Additional ablations show that it is robust to hyperparameter and NFE changes, and that both the exploration schedule and the novel approximation contribute to its performance. Code is open-source at https://github.com/Tencent-Hunyuan/Precise , including the P RECISE sampler and reproduction scripts. Our contributions are summarized as follows: • We identify stochastic sampler design in RL as a fundamentally coupled problem of exploration scheduling and few-step reverse-SDE discretization, establishing it as a critical component of the RL policy. • We mathematically prove the systematic biases of prior samplers: Euler-style transitions inject excessive noise at small step counts, while coefficient-preserving (CPS) rules suffer from covariance contraction that biases the marginal distribution. • We introduce P RECISE , featuring a theoretically principled logSNR-derived exploration schedule and an SDE-consistent closed-form transition. Using a novel "frozen clean-latent posterior mean" approximation, it rigorously eliminates excess discretization noise. • Extensive experiments demonstrate that P RECISE achieves state-of-the-art alignment scores (e.g., PickScore, HPSv2.1). Crucially, it matches the best prior baselines while requiring 13.1–53.2% less wall-clock training time, remaining highly robust even in extreme low-budget regimes. 22 Related Work 
+
+Diffusion and flow-matching models. Modern visual generators use denoising diffusion and score-SDE for-mulations (Ho et al., 2020; Song et al., 2020b) or continuous-transport formulations such as flow matching and rectified flow (Lipman et al., 2022; Liu et al., 2022). These frameworks underpin many current image and video systems (Esser et al., 2024; Black Forest Labs, 2025; Wan et al., 2025; Gao et al., 2025; Cao et al., 2025; Kong et al., 2024; Wu et al., 2025). 
+
+RL post-training for diffusion and flow-matching models. RL post-training aligns visual generators to down-stream rewards or preferences via methods such as DDPO, DPOK, ImageReward/ReFL, Diffusion-DPO, and D3PO (Black et al., 2023; Fan et al., 2023; Xu et al., 2023; Wallace et al., 2024; Yang et al., 2024). Recent work extends these ideas to ODE-based generators through Dance-GRPO and Flow-GRPO (Xue et al., 2025; Liu et al., 2025); follow-ups improve rollout efficiency (Li et al., 2025a;b; Ding & Ye, 2025) and optimization stability (Wang et al., 2025a). CPS (Wang & Yu, 2025) is closest to ours: it targets the stochastic sampler used by Flow-GRPO and Dance-GRPO, replacing the Euler transition with a coefficient-preserving rule. Our work further improves the sampler while staying agnostic to the RL objective or training wrapper. 
+
+Few-step sampler design. Another line of work studies accurate few-step discretization. Fixed-dynamics solvers such as DDIM, DEIS, DPM-Solver, and UniPC reduce inference error without retraining (Song et al., 2020a; Zhang & Chen, 2022; Lu et al., 2022; Zhao et al., 2023), while accelerators learn or distill trajectories into very small NFE (Salimans & Ho, 2022; Song et al., 2023; Luo et al., 2023). P RECISE is closest in spirit to fixed-dynamics samplers, but targets a different regime: in RL post-training, stochasticity is the exploration mechanism rather than a nuisance, so the transition must be both few-step accurate and stochastic inside policy optimization. 
+
+## 3 Preliminaries 
+
+3.1 Flow matching and reverse-time sampling 
+
+We write a general diffusion or interpolation path as zt = αtz0 + σtϵ, where ϵ ∼ N (0, I), t ∈ [0, 1 ] indexes the noise level, and larger t corresponds to a noisier state. In the flow-matching parameterization, αt = 1 − t and 
+
+σt = t:
+
+zt = ( 1 − t)z0 + tϵ. (1) The target velocity is ut = ϵ − z0. A flow-matching model learns to predict ut from (zt, t). At test time, sampling integrates the probability-flow ODE backward from t = 1 to t = 0.For later use, define the clean-latent posterior mean as ˆz0(t) ≜ E[z0 | zt]. Under the linear path in Eq. (1) , the posterior mean of the noise and the score are 
+
+ˆϵ(t) = zt − (1 − t) ˆz0(t)
+
+t , (2) 
+
+∇z log pt(zt) = − ˆϵ(t)
+
+t = (1 − t) ˆz0(t) − zt
+
+t2 . (3) This follows by differentiating the Gaussian conditional density p(zt | z0) with respect to zt and taking the posterior expectation over z0.
+
+3.2 RL post-training for flow matching 
+
+RL post-training requires stochastic rollouts. Flow-GRPO (Liu et al., 2025) and Dance-GRPO (Xue et al., 2025) therefore replace the deterministic reverse-time ODE with the reverse-time SDE 
+
+dzt =
+
+
+
+ut − 12 ε2 
+
+> t
+
+∇z log pt(zt)
+
+
+
+dt + εt dwt, (4) where εt ≥ 0 controls exploration and wt is Brownian motion. In ideal continuous time with exact scores, this SDE preserves the flow-matching marginals for any εt. In practice, εt and the finite-step discretization of Eq. (4) both matter because training uses imperfect predictions and a small NFE budget. Given a stochastic sampler, recent work optimizes groups of trajectories {τi}Gi=1 with a GRPO-style clipped policy objective and group-normalized rewards (Shao et al., 2024). 
+
+## 4 Method and Analysis 
+
+The stochastic sampler used for RL post-training has two coupled design axes: the exploration schedule εt and the finite-step transition rule. The schedule determines how much randomness the policy injects at each noise level, while the transition rule determines whether the resulting reverse SDE is faithfully realized at small training NFE. 3We first derive a schedule that balances exploration and denoising stability. We then show how existing samplers deviate from the flow-matching process, and derive P RECISE , an SDE-consistent closed-form transition under a local approximation that freezes the clean-latent posterior mean. 
+
+4.1 Balancing exploration and stability 
+
+We start with the exploration schedule εt. As shown in Eq. (4) , εt controls the strength of the injected noise while also scaling the score term. We choose εt to balance exploration and reliability: large enough for diversity, yet stable enough to keep model error controlled along the denoising trajectory. To formalize this tradeoff, we analyze how much denoising progress is made by the velocity term utdt and the score term − 12 ε2 
+
+> t
+
+∇z log pt(zt)dt, and how much is canceled by the stochastic term εt dwt. We use log signal-to-noise ratio (logSNR) to measure denoising progress, following prior SNR and noise-level parameterizations (Kingma et al., 2021; Karras et al., 2022). For zt = αtz0 + σtϵ, define SNR (t) ≜ α2 
+
+> t
+
+/σ2 
+
+> t
+
+and λt ≜ log SNR (t); under flow matching, (αt, σt) = ( 1 − t, t), so λt = log (( 1 − t)2/t2).Under this progress measure, we can analyze the first-order contribution of each term to the logSNR change independently. Consider the reverse SDE in Eq. (4) . Over an infinitesimal reverse step from t to t − ∆t, there are the velocity term −ut∆t, score term 12 ε2 
+
+> t
+
+∇z log pt(zt)∆t, and stochastic term εt
+
+√∆t w, with w ∼ N (0, I). The first-order logSNR contributions of the three terms are as follows. 
+
+Lemma 4.1 (First-order logSNR decomposition) . For the flow-matching reverse SDE, as ∆t → 0,
+
+∆λvel = 2∆tt(1 − t) + o(∆t), ∆λsco = ε2 
+
+> t
+
+∆tt2 + o(∆t), ∆λsto = − ε2 
+
+> t
+
+∆tt2 + o(∆t),
+
+where the three quantities denote the first-order contributions of the velocity term, score term, and stochastic term, respectively. 
+
+Lemma 4.1 shows that the net first-order progress is produced by the velocity term and is independent of εt, while the intermediate score and noise cancelation scales like ε2 
+
+> t
+
+/t2. The score-term progress is nevertheless not free: before it is canceled by re-randomization, it asks the model to produce extra denoising progress beyond the normal ODE velocity progress. If this extra progress is much larger than the velocity-induced progress, model prediction errors can be amplified. We therefore control this burden by keeping the ratio R(t) ≜ ∆λsco /∆λvel constant in time, with its magnitude set by a scalar parameter, giving the schedule 
+
+εt = η
+
+r t
+
+1 − t , (5) where η > 0 sets the magnitude of the extra model-driven progress. Under this schedule, R(t) = ( ε2 
+
+> t
+
+/t2)/(2/ (t(1 −
+
+t))) = η2/2 . Thus η directly controls the score-to-velocity progress ratio; in practice, values around √2 work well across tasks, where the score-induced progress is comparable to the normal velocity progress. 
+
+4.2 Existing samplers deviate from the flow-matching process 
+
+After fixing the exploration schedule, and therefore the denoising SDE, the remaining design problem is the finite-step sampler. It should follow the reverse SDE closely enough that reward optimization sees a faithful stochastic policy with minimal discretization artifact. 
+
+Euler sampler introduces excess discretization noise. Consider the standard Euler–Maruyama discretization of the reverse SDE used by Flow-GRPO (Liu et al., 2025) and Dance-GRPO (Xue et al., 2025). One step from t to 
+
+t′ < t is 
+
+zEuler  
+
+> t′
+
+= zt +
+
+
+
+− ut + 12 ε2 
+
+> t
+
+∇z log pt(zt)
+
+
+
+∆t + εt
+
+√∆t w,
+
+with ∆t = t − t′. This discretization freezes the velocity and score at time t. That approximation is mostly harmless for the deterministic ODE, but problematic once new noise is injected: the noise changes both the velocity and score inside the step, while Euler transition ignores that feedback. A point-mass toy example, following (Wang & Yu, 2025), exposes the mismatch. Assume the data distribution is a point mass at z⋆. Solving Eq. (1) for ϵ and plugging the resulting velocity and score into the Euler step gives 
+
+zEuler  
+
+> t′
+
+= ( 1 − t′)z⋆ +
+
+
+
+t′ − ε2 
+
+> t
+
+∆t
+
+2t
+
+
+
+ϵ + εt
+
+√∆t w.
+
+Because w is independent of ϵ, the noise coefficient becomes 
+
+q
+
+(t′ − ε2 
+
+> t
+
+∆t/(2t)) 2 + ε2 
+
+> t
+
+∆t, which is strictly larger than t′ whenever εt > 0. Thus Euler adds excess noise even with a perfect model and the simplest data law. 4CPS preserves coefficients while collapsing residual uncertainty. CPS (Wang & Yu, 2025) proposes transition rules of the form 
+
+zCPS  
+
+> t′
+
+= ( 1 − t′) ˆz0(t) + k1 ˆϵ(t) + k2w, k21 + k22 = t′2.
+
+This coefficient-preserving rule is necessary for exactness under the point-mass model. For non-degenerate data distributions, coefficient preservation leaves the marginal law underdetermined because posterior means discard residual uncertainty in z0 | zt. Specifically, the deterministic part of the CPS transition is the posterior mean of a coefficient-preserved random variable. Total covariance then shows that CPS contracts the covariance whenever that variable still has posterior uncertainty after conditioning on zt. For a simple local case, take t′ ≈ t with k1 = 0
+
+and k2 = t′. The transition becomes zCPS  
+
+> t′
+
+= ( 1 − t′)E[z0 | zt] + t′w, whereas the corresponding flow-matching marginal would use (1 − t′)z0 + t′ϵ. The covariance contraction, defined as the target covariance minus the CPS covariance, is exactly (1 − t′)2Ezt [Cov (z0 | zt)] , so any remaining ambiguity about the clean latent is removed by the posterior mean. Appendix B gives the general derivation and a double-ring example where this contraction appears as a persistent marginal bias. 
+
+4.3 PRECISE : an SDE-consistent finite-step transition 
+
+The finite-step transition should preserve reverse-SDE dynamics while remaining usable at small NFE budgets required by RL. The previous two cases isolate two constraints: Euler freezing ignores the feedback from freshly injected noise, while coefficient preservation alone can bias the sample distribution. We therefore retain the SDE but seek a local anchor robust to injected noise. The natural choice is the clean-latent posterior mean given the current state, ˆz0(t) = E[z0 | zt]. Since estimating this posterior mean is naturally a denoising task, this anchor generally moves much more slowly than the noisy latent under isotropic perturbations. Unlike CPS, we use it only to anchor the linearized reverse SDE; the residual stochastic variance is still set by the SDE transition. Using Eqs. (2) and (3), the reverse SDE can be rewritten as 
+
+dzt =
+
+ zt − ˆz0(t)
+
+t + ε2
+
+> t
+
+2t2
+
+ zt − (1 − t) ˆz0(t)
+
+dt + εt dwt. (6) 
+
+Assumption 4.2 (Frozen posterior mean on one step) . For a reverse step from t to t′ < t, we treat the clean-latent posterior mean along the step as approximately constant, i.e., ˆz0(s) ≈ ˆz0(t) for all s ∈ [t′, t].Assumption 4.2 is exact for point-mass data and serves as a local approximation over one step. Under this assumption, the SDE becomes linear and admits the following closed-form transition. 
+
+Theorem 4.3 (Exact transition under frozen posterior mean) . Assume Assumption 4.2. Then the exact transition from zt to zt′ is 
+
+zt′ = ( 1 − t′) ˆz0(t) + t′
+
+t e−A(t′,t)/2  zt − (1 − t) ˆz0(t) + t′p
+
+1 − e−A(t′,t) w,
+
+where A(t′, t) ≜ R tt′ ε2 
+
+> s
+
+/s2 ds and w ∼ N (0, I) is independent of zt.
+
+The proof is given in Appendix A.3. In practice, we replace the exact ˆz0(t) by the model clean-latent prediction and evaluate A(t′, t) analytically or numerically, depending on εt.For the exploration schedule in Eq. (5) , A(t′, t) = η2 R tt′ 1/ (s(1 − s)) ds = η2 log (t(1 − t′)/(t′(1 − t))) , so Eq. (2) turns Theorem 4.3 into the explicit transition rule 
+
+zt′ = ( 1 − t′) ˆz0(t) + t′ρ(t′, t) ˆϵ(t) + t′
+
+q
+
+1 − ρ(t′, t)2 w,
+
+with 
+
+ρ(t′, t) ≜
+
+ t′(1 − t)
+
+t(1 − t′)
+
+η2/2 
+
+, (7) obtaining the final transition rule used by P RECISE .
+
+4.4 Discussion 
+
+The main approximation in P RECISE is local: during one finite reverse step, we treat the clean-latent posterior mean as nearly fixed. Intuitively, once the denoiser has low posterior uncertainty about the clean latent, fresh noise can move the noisy state substantially while moving the model clean-latent prediction only mildly. Appendix A.2 formalizes this intuition. The posterior covariance controls the Jacobian of the posterior mean (Lemma A.1), and 5Figure 2: SD3.5-M clean-latent stability under forward-style renoising on adjacent logSNR-grid pairs; the band shows one standard deviation over prompts, seeds, and noise repeats. the one-step transition error between the true reverse SDE and the frozen-posterior-mean SDE remains small when this mean is locally Lipschitz in state and time (Proposition A.2). We verify the stability empirically on SD3.5-M (Esser et al., 2024). To plot Fig. 2, we replay deterministic denoising trajectories on a schedule whose anchors form a uniform logSNR grid over [−5, 1.5 ]. For each adjacent pair, we take the higher-logSNR latent zt′ from the trajectory and construct a lower-logSNR renoised latent 
+
+ezt = ( 1 − t)/(1 − t′) zt′ +
+
+q
+
+t2 − (( 1 − t)t′/(1 − t′)) 2 ξ by scaling and adding fresh Gaussian noise. We then measure the RMS ratio ∥ ˆz0(ezt, t) − ˆz0(zt′ , t′)∥/∥ezt − zt′ ∥. Fig. 2 shows that this ratio stays below 1 across the measured range. This supports the approximation as a local model for the reverse SDE. 
+
+## 5 Experiments 
+
+We evaluate the sampler induced by Theorem 4.3, abbreviated as P RECISE , against Dance-GRPO (Xue et al., 2025), Flow-GRPO (Liu et al., 2025), and CPS (Wang & Yu, 2025) for GRPO-based reward optimization of flow-matching models. 
+
+5.1 Experimental setup Rewards. For rule-based optimization, we use GenEval (Ghosh et al., 2023). For model-based rewards, we train with PickScore (Kirstain et al., 2023), CLIPScore (Hessel et al., 2021), and HPSv2.1 (Wu et al., 2023), and report ImageReward (Xu et al., 2023), UnifiedReward (Wang et al., 2025b), and Aesthetics (LAION-AI, 2022) at evaluation. These metrics cover complementary axes of reward alignment, text-image matching, and perceptual quality. 
+
+Prompt datasets. GenEval prompts are synthetic object-centric prompts from task templates over COCO cat-egories (Ghosh et al., 2023). PickScore, CLIPScore, and HPSv2.1 prompts come from Pick-a-Pic training cap-tions (Kirstain et al., 2023), filtered to unique captions with at least six whitespace-separated words and split by holding out 2,048 shuffled captions for evaluation. In all cases, we use the prompt splits distributed with Flow-GRPO codebase (Liu et al., 2025). 
+
+Training and evaluation protocol. We base our experiments on the Flow-GRPO codebase (Liu et al., 2025). Our main backbone is Stable Diffusion 3.5 Medium (SD3.5-M) (Esser et al., 2024), a pretrained text-to-image flow-matching model, at 512 × 512 resolution. We fine-tune with LoRA ( r = 32 , α = 64 ) and use GRPO-Guard (Wang et al., 2025a). We use no classifier-free guidance during training or evaluation and no KL loss during training. We use the same NFE for training and evaluation. Unless stated otherwise, results use the final checkpoint and each method’s default scalar exploration parameter η: 0.3 for Dance-GRPO (Xue et al., 2025), 0.7 for Flow-GRPO (Liu et al., 2025), 0.7 for CPS (Wang & Yu, 2025), and 1.5 for P RECISE . We keep the rest of the Flow-GRPO recipe and dataset splits fixed, changing only the sampler and exploration setting. All runs use 8 × NVIDIA H20 GPUs, taking about 80GB GPU memory per H20. 65.2 Main results 
+
+We train all four samplers on SD3.5-M under two protocols: 10-NFE/3000-iteration and 30-NFE/1000-iteration, both taking about 3 days. We report final-checkpoint training rewards and held-out metrics, 1 using mean and standard deviation over three evaluation seeds where available, and plot training curves for the three in-domain rewards. We also include DiffusionNFT (Zheng et al., 2025) as a reference, using their default 25-NFE training setting, training for 3 days, and evaluating at 30 NFE. 2
+
+Table 1: Main SD3.5-M results under the 10-NFE/3000-iteration and 30-NFE/1000-iteration protocols. Multi-seed entries are mean ±standard deviation over three evaluation seeds. Higher is better for every metric.    
+
+> Training rewards Held-out metrics Method PickScore
+
+↑ CLIPScore ↑ HPSv2.1 ↑ ImageReward ↑ UnifiedReward v2 ↑ Aesthetics ↑ 
+
+> 10-NFE protocol
+> Dance-GRPO (Xue et al., 2025) 22.428
+
+±0.007 0.942 ±0.000 0.340 ±0.000 1.350 ±0.010 0.647 ±0.000 6.620 ±0.007 Flow-GRPO (Liu et al., 2025) 23.242 ±0.003 1.018 ±0.001 0.377 ±0.000 1.627 ±0.004 0.652 ±0.000 6.530 ±0.003 CPS (Wang & Yu, 2025) 23.670 ±0.002 1.026 ±0.001 0.389 ±0.000 1.607 ±0.005 0.650 ±0.000 6.667 ±0.003  
+
+> PRECISE 23.745
+
+±0.004 1.038 ±0.001 0.391 ±0.000 1.615 ±0.004 0.654 ±0.000 6.652 ±0.003  
+
+> 30-NFE protocol
+> Dance-GRPO (Xue et al., 2025) 22.237
+
+±0.004 0.868 ±0.001 0.330 ±0.000 1.082 ±0.008 0.652 ±0.001 6.568 ±0.005 Flow-GRPO (Liu et al., 2025) 23.227 ±0.006 0.967 ±0.001 0.374 ±0.000 1.528 ±0.002 0.656 ±0.000 6.736 ±0.004 CPS (Wang & Yu, 2025) 23.288 ±0.007 0.994 ±0.001 0.379 ±0.000 1.542 ±0.001 0.652 ±0.000 6.693 ±0.002 PRECISE 23.421 ±0.006 1.002 ±0.001 0.379 ±0.000 1.548 ±0.004 0.658 ±0.000 6.766 ±0.003            
+
+> DiffusionNFT (Zheng et al., 2025) 23.349 1.010 0.363 1.573 0.660 6.494 0750 1500 2250 3000
+> 22.0
+> 22.5
+> 23.0
+> 23.5
+> 24.0
+> 24.5
+
+PickScore      
+
+> 14% fewer iterations
+> 0750 1500 2250 3000
+> 0.9
+> 1.0
+> 1.1
+
+CLIPScore     
+
+> 22% fewer iterations
+> 0750 1500 2250 3000
+> 0.32
+> 0.34
+> 0.36
+> 0.38
+> 0.40
+
+HPSv2.1                  
+
+> 17% fewer iterations
+> 0250 500 750 1000
+> 22.0
+> 22.5
+> 23.0
+> 23.5 53% fewer iterations
+> 0250 500 750 1000
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> 1.05 13% fewer iterations
+> 0250 500 750 1000
+> 0.32
+> 0.34
+> 0.36
+> 0.38
+> 0.40
+> 21% fewer iterations
+> 10 NFE 30 NFE
+> Training iteration
+> Dance-GRPO Flow-GRPO CPS Precise
+
+Figure 3: Training trajectories under the two main protocols. Higher is better. As shown in Table 1 and Figure 3, P RECISE ranks first on all three training rewards and remains competitive on held-out metrics, and the same ordering holds through most of optimization. Using the best value among the prior samplers on each metric as the target, P RECISE reaches the PickScore, CLIPScore, and HPSv2.1 targets with 14.2%–22.1% fewer iterations in the 10-NFE protocol, and 13.1%–53.2% fewer iterations in the 30-NFE protocol, directly translating to wall-clock savings since sampler overhead is negligible. The gaps among stochastic samplers highlight both sampler-design components: exploration-stability balance and SDE consistency. Dance-GRPO uses a constant noise schedule εt = η, too conservative in early denoising and too aggressive in late steps, according to our analysis in Section 4. It yields little layout variation and corrupts fine details, causing training collapse. A similar, smaller gap exists between P RECISE and CPS. In contrast, the gap between P RECISE and Flow-GRPO mainly stems from removing excess discretization noise, which boosts sample quality and reward scores. Since Dance-GRPO underperforms, we exclude it from later experiments for efficiency. 
+
+> 1
+
+For Dance-GRPO in the 30-NFE protocol, we report iteration 600, the highest checkpoint before training becomes unstable. 
+
+> 2
+
+We tried to accelerate DiffusionNFT with 10-NFE training, but it is less stable and diverges after two days. The best pre-divergence checkpoint is worse than the default setting. 
+
+75.3 Task-level validation 
+
+As a task-level check, we isolate one rule-based reward and one model-based reward in the 10-NFE/3000-iteration protocol. Table 2 shows that P RECISE is best on both GenEval and PickScore. Table 2: Head-to-head results under the 10-NFE protocol. Higher is better. 
+
+Method GenEval ↑ PickScore ↑
+
+Flow-GRPO (Liu et al., 2025) 0.969 24.283 CPS (Wang & Yu, 2025) 0.972 24.594 PRECISE 0.980 24.668 
+
+5.4 Results on FLUX.2 
+
+We further evaluate on FLUX.2 Klein 4B Base (Black Forest Labs, 2025; 2026) at 512 × 512 resolution. We fine-tune with LoRA ( r = 16 , α = 16 ) under a 20-NFE/1000-iteration protocol, and train for about 1 day on 8 ×
+
+NVIDIA H20 GPUs. Table 3 and Figure 4 report final rewards and training curves. Table 3: FLUX.2 Klein 20-NFE results at 1000 iterations. Entries are mean ±standard deviation over three evaluation seeds. Higher is better for every metric.                                         
+
+> Training rewards Held-out metrics Method PickScore ↑CLIPScore ↑HPSv2.1 ↑ImageReward ↑UnifiedReward v2 ↑Aesthetics ↑
+> Flow-GRPO (Liu et al., 2025) 22.591 ±0.006 0.905 ±0.001 0.355 ±0.000 1.266 ±0.001 0.654 ±0.000 6.676 ±0.005 CPS (Wang & Yu, 2025) 22.486 ±0.005 0.898 ±0.001 0.362 ±0.000 1.334 ±0.010 0.649 ±0.001 6.513 ±0.000 PRECISE 22.791 ±0.010 0.930 ±0.001 0.366 ±0.000 1.410 ±0.006 0.653 ±0.000 6.677 ±0.007 0250 500 750 1000
+> 22.0
+> 22.5
+> 23.0
+> PickScore
+> 24% fewer iterations
+> 0250 500 750 1000
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00 CLIPScore
+> 46% fewer iterations
+> 0250 500 750 1000
+> 0.32
+> 0.34
+> 0.36
+> 0.38 HPSv2.1
+> 18% fewer iterations
+> Training iteration
+> Flow-GRPO CPS Precise
+
+Figure 4: FLUX.2 Klein training trajectories under the 20-NFE protocol. Higher is better. Table 3 shows that gains transfer from SD3.5-M to the newer FLUX.2 backbone. At the final checkpoint, P RECISE 
+
+ranks first on five of six metrics and remains within 0.001 of the best sampler on UnifiedReward v2. Figure 4 shows the same trend: P RECISE rises faster and finishes higher on the three training rewards. Using the best value among the prior samplers as the target, P RECISE reaches the PickScore, CLIPScore, and HPSv2.1 targets with 18.4%–46.3% fewer iterations. 
+
+5.5 Ablations Exploration schedule and discretization. We isolate the two sampler-design components with a progression from Dance-GRPO (Xue et al., 2025) to P RECISE . First, we replace the Euler-style transition in Dance-GRPO with our SDE-consistent finite-step transition while keeping the constant exploration schedule. Second, we replace the constant schedule with the logSNR-derived schedule in Eq. (5) , giving P RECISE . We set η = 0.7 for the intermediate sampler, about a 2× increase over default Dance-GRPO, enabled by the improved stability from our discretization. 8Table 4: Ablation on exploration schedule and discretization under the SD3.5-M 10-NFE protocol at 3000 iterations. The first row reports Dance-GRPO raw scores; later rows report absolute changes over the previous row. Higher is better for every metric.                                
+
+> Training rewards Held-out metrics Ablation PickScore ↑CLIPScore ↑HPSv2.1 ↑ImageReward ↑UnifiedReward v2 ↑Aesthetics ↑
+> Dance-GRPO (Xue et al., 2025) 22.428 0.942 0.340 1.350 0.647 6.620 + SDE-consistent discretization +0.826 +0.043 +0.037 +0.151 +0.003 +0.008 + logSNR exploration schedule +0.491 +0.053 +0.014 +0.114 +0.004 +0.024
+
+Table 4 shows that replacing Dance-GRPO’s Euler transition with the SDE-consistent finite-step transition improves all reported metrics, and replacing the constant schedule with the logSNR-derived schedule gives another consistent gain. Thus, both the finite-step transition and exploration schedule contribute to reward optimization. 
+
+NFE and exploration strength. We additionally test whether P RECISE is robust to NFE and exploration strength. 6 10 20 30     
+
+> NFE
+> 23.4
+> 23.6
+> 23.8
+> 24.0
+> 24.2
+> 24.4
+> 24.6
+> 24.8
+> PickScore
+> Flow-GRPO
+> CPS
+> Precise 0800 1600 2400 3000
+> Iteration
+> 22.5
+> 23.0
+> 23.5
+> 24.0
+> 24.5
+> 25.0
+> PickScore
+> = 0.5
+> = 1.0
+> = 1.5
+> = 2.0
+> = 2.5
+
+Figure 5: Ablations on NFE and exploration strength. Left: NFE ablation on PickScore. Right: η ablation on PickScore. Higher is better. The NFE ablation trains each sampler for 3000 iterations at N ∈ { 6, 10, 20, 30 } on PickScore. In the left panel of Figure 5, P RECISE leads at every tested NFE, with the clearest margin in the aggressive 6-NFE regime. Flow-GRPO (Liu et al., 2025) degrades sharply at low NFE because of excess noise. To test robustness to the exploration strength η, we sweep η ∈ { 0.5, 1.0, 1.5, 2.0, 2.5 } for P RECISE in the 10-NFE PickScore setting. As shown in the right panel of Figure 5, performance is stable across η ∈ { 1.0, 1.5, 2.0 } and degrades gracefully at the more extreme values, due to lack of exploration or denoising instability. Thus, P RECISE 
+
+is robust across a practical range of NFE budgets and exploration strengths. 
+
+## 6 Additional Qualitative Comparisons 
+
+Figures 6 and 7 qualitatively compare images sampled by Flow-GRPO, CPS, and P RECISE under the two SD3.5-M protocols in Section 5.2. In the 10-NFE setting, P RECISE more reliably preserves global composition, local texture, and prompt-specific attributes than Flow-GRPO and CPS, while Flow-GRPO samples still exhibit noise artifacts after training. Under 30-NFE training and evaluation, similar qualitative differences remain visible on identity, attribute binding, and scene structure. 
+
+## 7 Conclusion 
+
+We presented P RECISE , a stochastic sampler for online RL post-training of flow-matching models. P RECISE treats the sampler as part of the policy and addresses its two design choices: how to balance exploration and stability, and how to discretize the resulting SDE at a small NFE budget. It combines a logSNR-based exploration schedule with an SDE-consistent finite-step transition derived under a new frozen posterior-mean approximation. Extensive experiments demonstrate that P RECISE consistently improves reward optimization over prior samplers, both in terms of final reward and training time. 9Figure 6: Qualitative examples under the 10-NFE protocol. P RECISE is the most consistent on global structure and attribute binding. 
+
+Figure 7: Qualitative examples under the 30-NFE protocol. P RECISE remains the most stable on identity and scene layout. 
+
+## References 
+
+Kevin Black, Michael Janner, Yilun Du, Ilya Kostrikov, and Sergey Levine. Training diffusion models with reinforcement learning. arXiv preprint arXiv:2305.13301 , 2023. 10 Black Forest Labs. FLUX.2: Analyzing and enhancing the latent space of FLUX – representation comparison. 
+
+https://bfl.ai/research/representation-comparison , 2025. Technical report. Black Forest Labs. FLUX.2 [klein]: Towards interactive visual intelligence. https://bfl.ai/blog/ flux2-klein-towards-interactive-visual-intelligence , 2026. Release article. Siyu Cao, Hangting Chen, Peng Chen, Yiji Cheng, Yutao Cui, Xinchi Deng, Ying Dong, Kipper Gong, Tianpeng Gu, Xiusen Gu, et al. Hunyuanimage 3.0 technical report. arXiv preprint arXiv:2509.23951 , 2025. Zheng Ding and Weirui Ye. Treegrpo: Tree-advantage grpo for online rl post-training of diffusion models. arXiv preprint arXiv:2512.08153 , 2025. Patrick Esser, Sumith Kulal, Andreas Blattmann, Rahim Entezari, Jonas Müller, Harry Saini, Yam Levi, Dominik Lorenz, Axel Sauer, Frederic Boesel, et al. Scaling rectified flow transformers for high-resolution image synthesis. In Forty-first international conference on machine learning , 2024. Ying Fan, Olivia Watkins, Yuqing Du, Hao Liu, Moonkyung Ryu, Craig Boutilier, Pieter Abbeel, Mohammad Ghavamzadeh, Kangwook Lee, and Kimin Lee. Dpok: Reinforcement learning for fine-tuning text-to-image diffusion models. Advances in Neural Information Processing Systems , 36:79858–79885, 2023. Yu Gao, Haoyuan Guo, Tuyen Hoang, Weilin Huang, Lu Jiang, Fangyuan Kong, Huixia Li, Jiashi Li, Liang Li, Xiaojie Li, et al. Seedance 1.0: Exploring the boundaries of video generation models. arXiv preprint arXiv:2506.09113 , 2025. Dhruba Ghosh, Hannaneh Hajishirzi, and Ludwig Schmidt. Geneval: An object-focused framework for evaluating text-to-image alignment. Advances in Neural Information Processing Systems , 36:52132–52152, 2023. Jack Hessel, Ari Holtzman, Maxwell Forbes, Ronan Le Bras, and Yejin Choi. Clipscore: A reference-free evaluation metric for image captioning. In Proceedings of the 2021 conference on empirical methods in natural language processing , pp. 7514–7528, 2021. Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based generative models. Advances in neural information processing systems , 35:26565–26577, 2022. Diederik Kingma, Tim Salimans, Ben Poole, and Jonathan Ho. Variational diffusion models. Advances in neural information processing systems , 34:21696–21707, 2021. Yuval Kirstain, Adam Polyak, Uriel Singer, Shahbuland Matiana, Joe Penna, and Omer Levy. Pick-a-pic: An open dataset of user preferences for text-to-image generation. Advances in neural information processing systems , 36: 36652–36663, 2023. Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. LAION-AI. LAION-Aesthetics Predictor V1. https://github.com/LAION-AI/ aesthetic-predictor , 2022. Junzhe Li, Yutao Cui, Tao Huang, Yinping Ma, Chun Fan, Yiming Cheng, Miles Yang, Zhao Zhong, and Liefeng Bo. Mixgrpo: Unlocking flow-based grpo efficiency with mixed ode-sde. arXiv preprint arXiv:2507.21802 , 2025a. Yuming Li, Yikai Wang, Yuying Zhu, Zhongyu Zhao, Ming Lu, Qi She, and Shanghang Zhang. Branchgrpo: Stable and efficient grpo with structured branching in diffusion models. arXiv preprint arXiv:2509.06040 , 2025b. Yaron Lipman, Ricky TQ Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative modeling. arXiv preprint arXiv:2210.02747 , 2022. Jie Liu, Gongye Liu, Jiajun Liang, Yangguang Li, Jiaheng Liu, Xintao Wang, Pengfei Wan, Di Zhang, and Wanli Ouyang. Flow-grpo: Training flow matching models via online rl. arXiv preprint arXiv:2505.05470 , 2025. Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. arXiv preprint arXiv:2209.03003 , 2022. Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in neural information processing systems ,35:5775–5787, 2022. 11 Simian Luo, Yiqin Tan, Longbo Huang, Jian Li, and Hang Zhao. Latent consistency models: Synthesizing high-resolution images with few-step inference. arXiv preprint arXiv:2310.04378 , 2023. Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervision. In International conference on machine learning , pp. 8748–8763. PMLR, 2021. Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. arXiv preprint arXiv:2202.00512 , 2022. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. 
+
+arXiv preprint arXiv:2402.03300 , 2024. Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. arXiv preprint arXiv:2010.02502 , 2020a. Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 , 2020b. Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. In Proceedings of the 40th International Conference on Machine Learning , volume 202 of Proceedings of Machine Learning Research , pp. 32211–32252. PMLR, 2023. Bram Wallace, Meihua Dang, Rafael Rafailov, Linqi Zhou, Aaron Lou, Senthil Purushwalkam, Stefano Ermon, Caiming Xiong, Shafiq Joty, and Nikhil Naik. Diffusion model alignment using direct preference optimization. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 8228–8238, 2024. Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, Jianyuan Zeng, Jiayu Wang, Jingfeng Zhang, Jingren Zhou, Jinkai Wang, Jixuan Chen, Kai Zhu, Kang Zhao, Keyu Yan, Lianghua Huang, Mengyang Feng, Ningyi Zhang, Pandeng Li, Pingyu Wu, Ruihang Chu, Ruili Feng, Shiwei Zhang, Siyang Sun, Tao Fang, Tianxing Wang, Tianyi Gui, Tingyu Weng, Tong Shen, Wei Lin, Wei Wang, Wei Wang, Wenmeng Zhou, Wente Wang, Wenting Shen, Wenyuan Yu, Xianzhong Shi, Xiaoming Huang, Xin Xu, Yan Kou, Yangyu Lv, Yifei Li, Yijing Liu, Yiming Wang, Yingya Zhang, Yitong Huang, Yong Li, You Wu, Yu Liu, Yulin Pan, Yun Zheng, Yuntao Hong, Yupeng Shi, Yutong Feng, Zeyinzi Jiang, Zhen Han, Zhi-Fan Wu, and Ziyu Liu. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. Feng Wang and Zihao Yu. Coefficients-preserving sampling for reinforcement learning with flow matching. arXiv preprint arXiv:2509.05952 , 2025. Jing Wang, Jiajun Liang, Jie Liu, Henglin Liu, Gongye Liu, Jun Zheng, Wanyuan Pang, Ao Ma, Zhenyu Xie, Xintao Wang, et al. Grpo-guard: Mitigating implicit over-optimization in flow matching via regulated clipping. arXiv preprint arXiv:2510.22319 , 2025a. Yibin Wang, Yuhang Zang, Hao Li, Cheng Jin, and Jiaqi Wang. Unified reward model for multimodal understanding and generation. arXiv preprint arXiv:2503.05236 , 2025b. Bing Wu, Chang Zou, Changlin Li, Duojun Huang, Fang Yang, Hao Tan, Jack Peng, Jianbing Wu, Jiangfeng Xiong, Jie Jiang, et al. Hunyuanvideo 1.5 technical report. arXiv preprint arXiv:2511.18870 , 2025. Xiaoshi Wu, Yiming Hao, Keqiang Sun, Yixiong Chen, Feng Zhu, Rui Zhao, and Hongsheng Li. Human preference score v2: A solid benchmark for evaluating human preferences of text-to-image synthesis. arXiv preprint arXiv:2306.09341 , 2023. Jiazheng Xu, Xiao Liu, Yuchen Wu, Yuxuan Tong, Qinkai Li, Ming Ding, Jie Tang, and Yuxiao Dong. Imagereward: Learning and evaluating human preferences for text-to-image generation. Advances in Neural Information Processing Systems , 36:15903–15935, 2023. Zeyue Xue, Jie Wu, Yu Gao, Fangyuan Kong, Lingting Zhu, Mengzhao Chen, Zhiheng Liu, Wei Liu, Qiushan Guo, Weilin Huang, et al. Dancegrpo: Unleashing grpo on visual generation. arXiv preprint arXiv:2505.07818 , 2025. Kai Yang, Jian Tao, Jiafei Lyu, Chunjiang Ge, Jiaxin Chen, Weihan Shen, Xiaolong Zhu, and Xiu Li. Using human feedback to fine-tune diffusion models without any reward model. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 8941–8951, 2024. Qinsheng Zhang and Yongxin Chen. Fast sampling of diffusion models with exponential integrator. arXiv preprint arXiv:2204.13902 , 2022. 12 Wenliang Zhao, Lujia Bai, Yongming Rao, Jie Zhou, and Jiwen Lu. Unipc: A unified predictor-corrector framework for fast sampling of diffusion models. Advances in Neural Information Processing Systems , 36:49842–49869, 2023. Kaiwen Zheng, Huayu Chen, Haotian Ye, Haoxiang Wang, Qinsheng Zhang, Kai Jiang, Hang Su, Stefano Ermon, Jun Zhu, and Ming-Yu Liu. Diffusionnft: Online diffusion reinforcement with forward process. arXiv preprint arXiv:2509.16117 , 2025. 13 A Proofs and Extensions for the Sampler Analysis 
+
+This appendix contains the formal derivations behind the sampler analysis in the main text. The key point is local: posterior covariance controls how much the clean-latent posterior mean moves, and once this mean is frozen, the reverse SDE has an exact Gaussian transition. Lemma 4.1 gives the first-order logSNR balance among the velocity term, score term, and stochastic term. Lemma A.1 and Proposition A.2 bound the local error introduced by freezing the posterior mean, and Theorem 4.3 gives the exact finite-step transition of the frozen-posterior-mean SDE. 
+
+A.1 Proof of Lemma 4.1 
+
+Proof. Over a reverse step from t to t − ∆t, write the one-step change as the sum of three parts: (velocity term) − ut∆t,
+
+(score term) 12 ε2 
+
+> t
+
+∇z log pt(zt)∆t,
+
+(stochastic term) εt
+
+√∆t w, w ∼ N (0, I).
+
+The velocity term takes 
+
+zt = ( 1 − t)z0 + tϵ
+
+to 
+
+zt−∆t = ( 1 − (t − ∆t)) z0 + ( t − ∆t)ϵ,
+
+so its logSNR increment is 
+
+∆λvel = log (1 − t + ∆t)2
+
+(t − ∆t)2 − log (1 − t)2
+
+t2
+
+= 2
+
+t(1 − t) ∆t + o(∆t).
+
+Next isolate the stochastic term while keeping the time index fixed at t. This replaces the noise coefficient t by 
+
+q
+
+t2 + ε2 
+
+> t
+
+∆t,
+
+hence 
+
+∆λsto = log t2
+
+t2 + ε2 
+
+> t
+
+∆t
+
+= − ε2
+
+> t
+
+t2 ∆t + o(∆t).
+
+To isolate the score contribution, we freeze time at t and consider the score drift together with its paired stochastic diffusion. With respect to the frozen marginal pt, this pair forms a Langevin operator whose Fokker–Planck adjoint annihilates pt. Hence the combined score-noise substep has no first-order effect on the marginal. Consequently, the first-order score contribution must cancel the isolated stochastic perturbation: 
+
+∆λsco = −∆λsto = ε2
+
+> t
+
+t2 ∆t + o(∆t).
+
+Together with the identity for the velocity term above, this proves the three first-order contributions claimed in Lemma 4.1. 
+
+A.2 Local stability of the frozen posterior-mean approximation 
+
+The frozen posterior-mean approximation is controlled when the clean-latent posterior mean changes slowly under local state and time perturbations. Let mt(z) ≜ E[z0 | zt = z] denote the clean-latent posterior mean as a function of the current latent. 
+
+Lemma A.1 (Posterior-covariance control of the clean-latent posterior mean) . For the flow-matching path zt =(1 − t)z0 + tϵ, with ϵ ∼ N (0, I), assume regularity conditions that justify differentiating the posterior mean with respect to the conditioning variable, such as a regular conditional density, local domination, and finite second moments. Then 
+
+∇zmt(z) = 1 − tt2 Cov (z0 | zt = z). (8) 
+
+Consequently, on any convex local region where 
+
+λmax (Cov (z0 | zt = z)) ≤ Lz
+
+t2
+
+1 − t ,
+
+this mean map is locally Lz-Lipschitz in state. 
+
+14 Lemma A.1 recovers the point-mass case as the zero-covariance limit, where this mean is exactly constant. When the posterior covariance is small but nonzero, it gives a local sensitivity bound that can be converted into a one-step transition-law bound. 
+
+Proposition A.2 (One-step transition error under local regularity) . Consider one reverse step from t to t′ = t − ∆
+
+on a compact time interval away from the endpoints. Let Kt,t′ (· | zt) denote the conditional transition law of the original reverse SDE in Eq. (6) , and let eKt,t′ (· | zt) denote the conditional transition law of the frozen posterior-mean SDE obtained by replacing ms(zs) with mt(zt) throughout the step. Suppose the two processes are synchronously coupled and remain in a local tube where the drift is Cz-Lipschitz in the state and Cm-Lipschitz in the clean-latent posterior mean. If 
+
+E ∥ms(Zs) − mt(zt)∥ ≤ ω(s), s ∈ [t′, t],
+
+then the transition laws satisfy 
+
+W1
+
+
+
+Kt,t′ (· | zt), eKt,t′ (· | zt)
+
+
+
+≤ CmeCz ∆  
+
+> Ztt′
+
+ω(s) ds. (9) 
+
+In particular, if the posterior mean is Ls-Lipschitz in time and Lz-Lipschitz in state along the step, and if E∥Zs −
+
+zt∥ ≤ B(t − s) + ¯ε√t − s, then the right-hand side is at most 
+
+CmeCz ∆
+
+ Ls + Lz B
+
+2 ∆2 + 2Lz ¯ε
+
+3 ∆3/2 
+
+
+
+.
+
+Thus the approximation is accurate on steps where the posterior mean is locally stable in time and state. Proof of Lemma A.1. Write at = 1 − t. For a fixed t ∈ (0, 1 ), the posterior density of z0 given zt = z is proportional to 
+
+p0(x) exp 
+
+
+
+− ∥z − atx∥2
+
+2t2
+
+
+
+.
+
+Let qt(x | z) denote this posterior density. Its score with respect to the conditioning variable is 
+
+∇z log qt(x | z) = atx − z
+
+t2 − ∇ z log pt(z).
+
+Differentiating the posterior mean under the integral and using the standard identity ∇zEqt [ f ] = Cov qt ( f , ∇z log qt)
+
+gives 
+
+∇zmt(z) = Cov 
+
+
+
+z0, atz0 − z
+
+t2 − ∇ z log pt(z) zt = z
+
+
+
+= at
+
+t2 Cov (z0 | zt = z),
+
+because the terms depending only on z have zero posterior covariance with z0. Since at = 1 − t, this proves Eq. (8) .The Lipschitz statement follows by bounding the operator norm of the Jacobian and applying the mean-value theorem on the region. 
+
+Proof of Proposition A.2. Let eZs denote the frozen posterior-mean process coupled to Zs with the same Brownian path and the same initial condition at time t. The Brownian terms cancel in the synchronous coupling. By the local Lipschitz assumptions, the coupled difference δs ≜ Zs − eZs satisfies the integral inequality 
+
+E∥δr ∥ ≤  
+
+> Ztr
+
+CzE∥δs∥ ds + Cm 
+
+> Ztr
+
+E ∥ms(Zs) − mt(zt)∥ ds, r ∈ [t′, t],
+
+Gronwall’s inequality and the definition of ω give 
+
+E∥δt′ ∥ ≤ CmeCz ∆  
+
+> Ztt′
+
+ω(s) ds.
+
+This endpoint coupling upper-bounds W1, proving Eq. (9). For the explicit Lipschitz corollary, decompose for s ∈ [t′, t]
+
+∥ms(Zs) − mt(zt)∥ ≤ ∥ ms(Zs) − mt(Zs)∥ + ∥mt(Zs) − mt(zt)∥≤ Ls(t − s) + Lz∥Zs − zt∥.
+
+Combining this with the assumed path-increment bound and integrating over the step gives the stated explicit rate. 15 A.3 Proof of Theorem 4.3 
+
+Proof. We prove the exact transition of the frozen-posterior-mean SDE. Fix a step from t to t′ < t and write 
+
+m ≜ mt(zt).
+
+Under Assumption 4.2, the state-dependent value ms(zs) is replaced by this fixed value throughout the interval 
+
+[t′, t]. Equation (6) then reduces to the linear SDE 
+
+dzs =
+
+ zs − m
+
+s + ε2
+
+> s
+
+2s2
+
+ zs − (1 − s)m
+
+ds + εs dws. (10) Introduce the descending-time parameter 
+
+τ ∈ [0, t − t′], s(τ) ≜ t − τ,
+
+and define the normalized residual 
+
+rτ ≜ zs(τ) − (1 − s(τ)) m
+
+s(τ) .
+
+Because s(τ) decreases with τ, we have ds = −dτ. Using 
+
+zs(τ) = ( 1 − s(τ)) m + s(τ)rτ
+
+and substituting into Eq. (10), a direct calculation gives 
+
+drτ = − ε2
+
+> s(τ)
+
+2s(τ)2 rτ dτ + εs(τ)
+
+s(τ) dBτ , (11) where Bτ denotes the Brownian driver in descending time. Equation (11) is a linear SDE. Its solution is 
+
+rτ = exp − 12 
+
+> Zτ
+> 0
+
+ε2
+
+> s(u)
+
+s(u)2 du
+
+!
+
+r0
+
++ 
+
+> Zτ
+> 0
+
+exp − 12 
+
+> Zτ
+> u
+
+ε2
+
+> s(v)
+
+s(v)2 dv
+
+! εs(u)
+
+s(u) dBu.
+
+The stochastic integral is Gaussian with mean zero. By Itô isometry, its covariance is  
+
+> Zτ
+> 0
+
+exp − 
+
+> Zτ
+> u
+
+ε2
+
+> s(v)
+
+s(v)2 dv
+
+! ε2
+
+> s(u)
+
+s(u)2 duI = 1 − exp − 
+
+> Zτ
+> 0
+
+ε2
+
+> s(u)
+
+s(u)2 du
+
+!! 
+
+I.
+
+Hence 
+
+rτ = e−A(s(τ),t)/2 r0 +
+
+p
+
+1 − e−A(s(τ),t) w,
+
+where w ∼ N (0, I) is independent of r0, and 
+
+A(s(τ), t) =  
+
+> Zts(τ)
+
+ε2
+
+> u
+
+u2 du.
+
+Now 
+
+r0 = zt − (1 − t)m
+
+t .
+
+Evaluating the solution at τ = t − t′ so that s(τ) = t′ and then transforming back to zt′ = ( 1 − t′)m + t′rt−t′
+
+gives 
+
+zt′ = ( 1 − t′)m + t′
+
+t e−A(t′,t)/2  zt − (1 − t)m + t′p
+
+1 − e−A(t′,t) w,
+
+which is exactly the claimed formula. 
+
+## B Why CPS does not guarantee consistency 
+
+This appendix expands the CPS covariance argument in Section 4. With perfect prediction, Flow-GRPO (Liu et al., 2025) is Euler-Maruyama applied to the oracle reverse SDE, and P RECISE has the same first-order expansion, so both share the correct continuous-time limit as the step size goes to zero. CPS (Wang & Yu, 2025) addresses the point-mass failure mode of Euler-style transitions by preserving the nominal signal and noise coefficients, but the same rule can collapse residual posterior uncertainty for non-degenerate data distributions. 16 40 80 160 320 640 1280  
+
+> Number of Steps N
+> 0.38
+> 0.40
+> 0.42
+> 0.44
+> 0.46
+> 0.48
+> 0.50
+> Outer-Ring Mass
+> Target
+> CPS
+
+Figure 8: CPS outer-ring mass on the equal-mass double-ring distribution. The target value is 0.5 , but CPS remains biased toward the inner ring as NFE increases. 
+
+Posterior means discard residual uncertainty. Consider the flow-matching forward process from Eq. (1), 
+
+zt = ( 1 − t)z0 + tϵ,
+
+and let 
+
+ˆz0(t) ≜ E[z0 | zt].
+
+The posterior mean of the noise is 
+
+ˆϵ(t) = E[ϵ | zt] = zt − (1 − t) ˆz0(t)
+
+t .
+
+CPS (Wang & Yu, 2025) applies a coefficient-preserving transition 
+
+zCPS  
+
+> t′
+
+= ( 1 − t′) ˆz0(t) + k1 ˆϵ(t) + k2w, k21 + k22 = t′2,
+
+where w ∼ N (0, I) is independent of (z0, ϵ). Define 
+
+L ≜ (1 − t′)z0 + k1ϵ.
+
+Then the deterministic component of the CPS transition is the posterior mean of the coefficient-preserved random variable L:
+
+(1 − t′) ˆz0(t) + k1 ˆϵ(t) = E[L | zt].
+
+By the law of total covariance, 
+
+Cov (zCPS  
+
+> t′
+
+) = Cov (E[L | zt]) + k22I = Cov (L) − Ezt [Cov (L | zt)] + k22I.
+
+Since z0 and ϵ are independent, 
+
+Cov (L) + k22I = ( 1 − t′)2 Cov (z0) + ( k21 + k22)I = ( 1 − t′)2 Cov (z0) + t′2I.
+
+Thus CPS has covariance 
+
+Cov (zCPS  
+
+> t′
+
+) ⪯ (1 − t′)2 Cov (z0) + t′2I,
+
+with strict trace contraction whenever Ezt [tr Cov (L | zt)] > 0. Thus coefficient preservation fixes the point-mass case, but it does not by itself preserve the full marginal law. Whenever zt does not determine the coefficient-preserved random variable L, replacing L by its posterior mean removes the conditional covariance that should remain in the next-step marginal. 
+
+Double-ring example. The double-ring example in Figure 1 visualizes this contraction as an inward bias. We use an equal-mass 2D distribution supported on rings of radii 0.5 and 1.0 , and approximate the oracle clean-latent posterior mean ˆz0(t) = E[z0 | zt] with a dense discrete support on both rings. We use η = 0.7 for Flow-GRPO (Liu et al., 2025) and CPS (Wang & Yu, 2025), and η = 1.5 for P RECISE , matching the main experimental protocol. As shown in Figure 1, CPS samples remain biased toward the inner ring even at N = 80 .Figure 8 isolates the large-N regime by tracking the CPS outer-ring mass as the NFE increases to N = 1280 . The target outer-ring mass is 0.5 , but the curve does not approach that value as N increases, demonstrating that the coefficient-preserving rule does not guarantee convergence to the correct distribution. 17 C External Assets, Licenses, and Terms of Use 
+
+We use existing code, prompt datasets, pretrained backbones, reward models, and evaluation metrics. Table 5 lists the original sources and licenses. We use these assets for research evaluation and do not redistribute third-party model weights or datasets beyond their stated terms. Following the Flow-GRPO codebase (Liu et al., 2025), reported CLIPScore values are the raw image-text similarity multiplied by 10/3 . This scale does not affect training dynamics since rewards are normalized to compute advantages. Table 5: External assets used in this work.                             
+
+> Asset Source License Flow-GRPO codebase Official Flow-GRPO repository (Liu et al., 2025) MIT Stable Diffusion 3.5 Medium Stability AI SD3.5-M checkpoint (Esser et al., 2024) Stability AI Community License FLUX.2 Klein 4B Base Black Forest Labs FLUX.2 Klein 4B Base (Black Forest Labs, 2025; 2026) Apache-2.0 GenEval GenEval benchmark (Ghosh et al., 2023) MIT PickScore PickScore benchmark and implementation (Kirstain et al., 2023) MIT CLIPScore / CLIP CLIPScore with OpenAI CLIP (clip-vit-large-patch14 )(Hessel et al., 2021; Rad-ford et al., 2021) MIT HPSv2.1 HPSv2.1 checkpoint and code (Wu et al., 2023) Apache-2.0 ImageReward ImageReward package and checkpoint (Xu et al., 2023) Apache-2.0 UnifiedReward v2 UnifiedReward checkpoint (Wang et al., 2025b) MIT Aesthetic predictor LAION-Aesthetics Predictor V1 (LAION-AI, 2022) MIT
+
+## D Broader Societal Impacts 
+
+This work can make visual generation systems more controllable and efficient to adapt, supporting creative, accessibility, and educational uses. However, stronger post-training can also increase misuse risks, amplify reward-model bias, reduce diversity, or weaken safeguards, so deployment should include audits, safety filters, provenance mechanisms where appropriate, and evaluations for bias, diversity, memorization, and misuse-sensitive content. 18
