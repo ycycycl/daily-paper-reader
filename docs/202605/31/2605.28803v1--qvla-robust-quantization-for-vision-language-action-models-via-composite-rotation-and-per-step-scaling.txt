@@ -1,0 +1,548 @@
+Title: Ω-QVLA: Robust Quantization for Vision-Language-Action Models via Composite Rotation and Per-step Scaling
+
+URL Source: https://arxiv.org/pdf/2605.28803v1
+
+Published Time: Thu, 28 May 2026 01:48:12 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# Ω-QVLA : Robust Quantization for Vision-Language-Action Models via Composite Rotation and Per-step Scaling 
+
+Xinyu Wang 1,6,* , Mingze Li 2,* , Sicheng Lyu 1,5,6,* , Dongxiu Liu 3, Kaicheng Yang 4,Ziyu Zhao 1, Yufei Cui 1,5 , Xiao-Wen Chang 1, Peng Lu 2,† 
+
+> 1
+
+McGill University, 2Université de Montréal, 3Beijing University of Posts and Telecommunications, 
+
+> 4
+
+Shanghai Jiao Tong University, 5Mila – Quebec AI Institute, 6SimpleWay.ai 
+
+Abstract 
+
+Vision-Language-Action (VLA) models unify perception, reasoning, and control within a single policy, yet their multi-billion-parameter backbones and diffusion-based action heads make on-device deployment prohibitively ex-pensive. Prior quantization efforts offer only partial solutions—compressing the LLM back-bone while leaving the DiT action head at full precision, or resorting to mixed-precision schemes—driven by the belief that uniformly quantizing the action head is inherently un-stable. We challenge this assumption with 
+
+Ω-QVLA , the first training-free post-training quantization framework that compresses both the language backbone and the entire diffu-sion action head of a VLA model to a uni-form W4A4 precision, eliminating the need for mixed-precision allocation. Ω-QVLA com-bines (1) a composite SVD ·Hadamard rotation that equalizes per-channel weight energy while diffusing residual activation outliers, with (2) per-step DiT activation scaling quantization that absorbs dynamic-range drift across denois-ing steps. On LIBERO, Ω-QVLA compresses Pi 0.5 and GR00T N1.5 to W4A4 with 98.0% 
+
+and 87.8% task success rates—matching or ex-ceeding their FP16 references (97.1%, 87.0%)— while reducing the static memory footprint by 
+
+71.3% . Real-world manipulation experiments further confirm smooth, accurate manipulation where prior methods fail. Code is available at 
+
+§ Ω-QVLA. 
+
+1 Introduction 
+
+Vision-Language-Action (VLA) models (Kim et al., 2024; Intelligence et al., 2025; Bjorck et al., 2025) unify visual perception, language reasoning, and action generation within a single policy, offering a promising path toward generalist robot control.    
+
+> *Equal contribution. Emails: xinyu.wang5@mail.mcgill.ca, mingzeli996@gmail.com, sicheng.lyu@mail.mcgill.ca.
+> †Corresponding author. Email: peng.lu@umontreal.ca.
+
+By inheriting pretrained backbones from large lan-guage models (LLMs) (Touvron et al., 2023) and vision-language models (VLMs) (Li et al., 2022), VLA systems can parse natural-language instruc-tions, reason over visual observations, and out-put executable actions in one forward pass. How-ever, this unification comes at a steep cost: deploy-ing a VLA policy on real robot hardware requires running a multi-billion-parameter language back-bone alongside a diffusion-based action head (Chi et al., 2025) under tight latency and memory bud-gets. Making these models efficient enough for on-device deployment is therefore an urgent and open problem. Post-training quantization (PTQ) (Xiao et al., 2023; Lin et al., 2024a) has become the standard recipe for compressing LLMs and VLMs without retraining. Yet a striking gap emerges when we survey existing work on VLA efficiency: no prior method quantizes the full DiT action head of a VLA model at a uniform low-bit precision. Across all prior work we examined, the DiT-based action head either remains at full precision or is only selectively quantized—and the authors are explicit about why: they consider it too sensitive to compress. This is no coincidence. Unlike the language backbone, the action head produces continuous control signals that directly interface with physical actuators in a closed-loop setting. Quantization-induced pertur-bations that would be imperceptible in a language benchmark are amplified by contact forces and physical dynamics. Mainstream PTQ methods— built around outlier management via rotations, per-mutations, or saliency-based protections—offer no mechanism to account for this cumulative error propagation. We challenge the premise that the DiT action head cannot survive uniform low-bit quantiza-tion. Rather than routing around the action head’s sensitivity, we address it directly at its source: channel-level energy imbalance and denoising-step 1
+
+> arXiv:2605.28803v1 [cs.CV] 27 May 2026
+
+dynamic-range drift. We present Ω-QVLA , the first training-free PTQ framework to compress both the language backbone and the entire DiT action head of a VLA model to a uniform W4A4 precision— eliminating the need for mixed-precision allocation altogether. Our contributions are threefold: 1. We introduce Ω-QVLA , a post-training quan-tization framework combining a composite SVD ·Hadamard rotation that equalizes per-channel weight energy and diffuses activation outliers, with per-step DiT activation calibra-tion that absorbs dynamic-range drift across denoising steps. 2. On the LIBERO benchmark (Liu et al., 2023), 
+
+Ω-QVLA compresses Pi 0.5 and GR00T N1.5 to W4A4 with average task success rates of 
+
+98.0% and 87.8% , matching or exceeding their FP16 references (97.1% and 87.0%), while reducing the static memory footprint by 71.3% .3. We validate Ω-QVLA through real-world bi-manual manipulation experiments, demon-strating smooth and accurate control under uniform W4A4 quantization where prior meth-ods exhibit degraded performance. 
+
+2 Related Work 
+
+2.1 LLM quantization 
+
+The core challenge in LLM quantization is acti-vation outliers: a small number of channels carry disproportionately large values that dominate the quantization error. SmoothQuant (Xiao et al., 2023) handles this by rescaling activations against their corresponding weights, pushing the quantiza-tion difficulty from activations to weights, which are easier to compress. Rotation-based methods— QuaRot (Ashkboos et al., 2024), FlatQuant (Sun et al., 2024), DuQuant (Lin et al., 2024a), OS-TQuant (Hu et al., 2025)—take a different ap-proach: they apply orthogonal transformations to spread outliers evenly across channels before quan-tization, so no single dimension suffers excessive error. Weight-only schemes like AWQ (Lin et al., 2024b) and GPTQ (Frantar et al., 2022) sidestep ac-tivation quantization entirely by compressing only the weights, which works well for memory-bound deployment but leaves compute-bound scenarios unaddressed. 
+
+2.2 DiT quantization 
+
+Unlike standard autoregressive language models, diffusion transformers (DiTs) exhibit highly dy-namic activation statistics that fluctuate continu-ously across the multi-step denoising process. Rec-ognizing this severe limitation, recent research has pivoted toward developing bespoke, DiT-specific compression strategies. For example, SVDQuant (Li et al., 2024) addresses this tem-poral variance by absorbing prominent activation outliers through the addition of full-precision, low-rank branches. Similarly, ViDiT-Q (Zhao et al., 2024) introduces a granular, per-group dynamic quantization method that adaptively captures and adjusts to the shifting activation ranges at each specific timestep. The fundamental inadequacy of directly transferring text-based techniques is systematically formalized by the PTQ4DiT bench-mark (Wu et al., 2024). Their extensive evaluations definitively show that off-the-shelf LLM quantiza-tion recipes degrade both the spatial and temporal consistencies of diffusion models. 
+
+2.3 VLA quantization 
+
+Progress in one component of a VLA system does not automatically transfer to others. For exam-ple, improvements in quantization techniques for LLMs do not guarantee similar gains in multi-modal or action - generation modules, and meth-ods designed for one modality often fail to en-sure efficient or stable behavior when applied to the full VLA pipeline. QuantVLA (Zhang et al., 2026), QVLA (Xu et al., 2026), and similar recent efforts address this gap by developing compres-sion strategies explicitly tailored for the unique architectural and operational demands of embod-ied control. Specifically, QuantVLA introduces a scale-calibrated post-training quantization frame-work that selectively quantizes both the language backbone and the diffusion transformer (DiT) ac-tion head to preserve operator schedules and con-trol fidelity. Taking a complementary approach, QVLA highlights the compounding execution er-rors caused by naive, uniform-bit LLM quantiza-tion, proposing instead an action-centric, channel-wise bit allocation method that explicitly measures and minimizes action-space sensitivity. Collec-tively, these works demonstrate that effectively compressing VLA systems requires holistic, action-aware optimization rather than the direct transfer of language-centric techniques. 2LLM  
+
+> Backbone
+> DiT
+> Action
+> Head
+> H
+> W
+> H
+> W
+> H'
+> W'
+> H'
+> W'
+> ViT
+> Two-
+> level
+> Rotation
+> QH'
+> QW'
+> QH'
+> QW'
+> Per-Step
+> Scale RTN
+> RTN
+> RTN
+> RTN
+> W4A4
+> LLM
+> BackBone
+> DiT
+> Action
+> Head
+> ViT
+> Two-
+> level
+> Rotation
+> W16A16
+> Hard to Quantize
+> Easy to Quantize
+> W16A16 Figure 1: The overall quantization pipeline of our Ω-QVLA , where RTN means round-to-nearest-neighbor.
+
+3 Background 
+
+3.1 Vision Language Action (VLA) Model 
+
+VLA models form a class of embodied systems that jointly process visual observations, interpret textual instructions, and generate action representations ex-ecutable on physical robotic platforms operating in dynamic environments. Similar to models that map sensory inputs and prompts to action sequences, VLAs integrate vision encoders (e.g., ViTs), lan-guage models (e.g., LLMs), and action-generation modules or planners to produce task-conditioned behaviors (e.g., DiTs). Their architectures typically extend multimodal fusion techniques established in vision–language models—such as cross-attention, concatenated embeddings, or token-level unifica-tion—to align sensory inputs, linguistic directives, and action representations within a unified control framework. 
+
+3.2 Model Quantization 
+
+Quantization maps full -precision parameters W
+
+to a low - precision representation ˆW = Q(W )
+
+through a discrete transformation. The objective is to design a quantizer that preserves model behavior under reduced precision. Consider a weight matrix 
+
+W from a linear layer Y = XW + b. Uniform quantization computes a single scaling factor αW
+
+for the entire tensor and maps all full - precision values to kw- bit integers Wq. The de -quantized weights are then recovered as ˆW = αW Wq, yield-ing an approximation of the original computation, 
+
+i.e. , Y ≈ ˆX ˆW+b, where ˆX denotes the quantized activations. To accelerate computation, modern commercial GPUs require both weights and acti-vations to be quantized to the same bit width. Oth-erwise, if the bit widths differ, the lower-precision values must be upcast to match the higher-precision ones (or vice versa), which negates the performance benefits of quantization. 
+
+4 Methodology 
+
+In this work, we propose Ω-QVLA , a post-training quantization framework for VLA models with a unified two-stage pipeline for the LLM back-bone and DiT action head. Ω-QVLA mitigates this via: (1) Two-level Rotation , using a composite SVD ·Hadamard rotation to suppress channel-level outliers before quantization; and (2) Per-step DiT Activation Scaling Quantization to handle timestep-dependent shifts from iterative denoising. 
+
+4.1 VLA Quantization via Composite Rotation 
+
+Rotation-based quantization mitigates outliers by applying an orthogonal transformation before quan-tization. Given a linear layer Y = XW , where X
+
+is the input and W is the weight matrix, it can be rewritten as Y = ( XR )( R⊤W) with RR ⊤ = I,enabling quantization in a rotated space with bet-ter statistical properties. In per-channel low-bit quantization, large inter-channel variance causes high-energy channels to be quantized too coarsely while wasting precision on low-energy channels. Reducing this variance improves overall bit uti-lization. We focus on W4A4 quantization, where both weight and activation outliers are especially challenging. Therefore, we propose a two-level rotation method to address the outliers for weight and activation, respectively. 30 5 10 15 20 25 30 35 40                                                                 
+
+> Row norm
+> 0
+> 10
+> 20
+> 30
+> Output channel
+> Original W
+> max/min = 26×, = 9.9
+> 0510 15 20 25 30 35 40
+> Row norm
+> RSVD W
+> max/min = 6×, = 4.9
+> 0510 15 20 25 30 35 40
+> Row norm
+> HW
+> max/min = 19×, = 7.0
+> 0510 15 20 25 30 35 40
+> Row norm
+> (RSVD H)W
+> max/min = 6×, = 5.5
+> 0510 15 20 25 30
+> Input channel
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Column norm
+> Original X
+> max/min = 20×, max|elem| = 13
+> 0510 15 20 25 30
+> Input channel
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25 RSVD from W
+> no guarantee for X
+> XR SVD
+> max/min = 17×, max|elem| = 13
+> 0510 15 20 25 30
+> Input channel
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> XH
+> max/min = 1.5×, max|elem| = 3.0
+> 0510 15 20 25 30
+> Input channel
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> XR SVD H
+> max/min = 1.6×, max|elem| = 3.7
+> Weights Activations
+
+Figure 2: Per-channel distribution of weights (top) and activations (bottom) under four rotation settings. RSVD ,adapted to W, equalizes weight row norms effectively (26 × → 6×, σ: 9.9 → 4.9), whereas the data-independent 
+
+H provides limited improvement (19 ×, σ=7.0). Conversely, H smooths activations (20 × → 1.5 ×) via ∥zH ∥∞ ≤∥z∥2/√n, while RSVD , derived entirely from W, leaves activation outliers intact (20 × → 17 ×). The composite 
+
+RSVD H inherits both strengths (weights: 6 ×, σ=5.5; activations: 1.6 ×). Note that randomized Hadamard HD 
+
+(D = diag( ±1) ) yields identical per-channel norms, since sign flips do not alter row or column norms. 
+
+SVD rotation. Given a weight matrix W ∈
+
+RCin ×Cout , we compute its singular value decom-position: 
+
+W = UΣV ⊤, (1) 
+
+RSVD = U. (2) Applying the rotation yields fW = R⊤
+
+SVD W =
+
+U⊤W = ΣV ⊤. In the original parameteriza-tion, the row-wise energy of W is ∥wi∥22 =Prk=1 σ2
+
+ku2
+
+ik , where uik denotes the (i, k )-th entry of U. Thus, when the left singular vectors are un-evenly aligned with the coordinate basis, dominant singular values may concentrate disproportionately in a few rows, producing channel-wise outliers and large inter-channel variance. After SVD rotation, the rotated weight matrix satisfies ∥ ewi∥22 = σ2
+
+i ,meaning that each row energy is directly controlled by the singular spectrum rather than coordinate-dependent mixing. Consequently, the rotation re-moves coordinate-induced energy concentration, yielding a smoother row-wise magnitude distribu-tion that is more amenable to low-bit quantization (Figure 2, top row). 
+
+Hadamard rotation. Since RSVD is derived en-tirely from W, it provides no guarantee on the activation side: whether XU has a more uniform channel distribution than X depends on the align-ment between the activation outliers and U’s col-umn structure, which is data-dependent and can leave activation outliers intact (Figure 2, bottom middle). To mitigate this issue, we therefore com-pose RSVD with a normalized Hadamard matrix 
+
+H ∈ {± 1/√Cin }Cin ×Cin , defining the composite rotation as: 
+
+R = RSVD · H. (3) As a uniform mixing matrix, H redistributes the energy of any dominant channel uniformly across all n output channels. Formally, for any z ∈ Rn:
+
+Block-wise Implementation. Nevertheless, di-rectly instantiating R = RSVD · H as a dense 
+
+Cin × Cin matrix is computationally prohibitive and incurs substantial memory overhead. We instead approximate R in a block-wise manner: 
+
+ˆR = BlockDiag( R1, . . . , RK ), (4) 
+
+Rb = USVD 
+
+
+
+W⊤
+
+b
+
+
+
+· Hc, (5) where each Wb is a contiguous row partition of 
+
+W, c is the corresponding row dimension of Wb,
+
+USVD is the matrix of left singular vectors. How-ever, since each block rotation operates indepen-dently within its partition, outlier channels clus-tered within the same block remain jointly sup-pressed under a single group scale, thus the magni-tude of different blocks could have large difference. To avoid outliers concentrate on some blocks, we follow Lin et al. (2024a) and introduce an orthog-onal permutation matrix P satisfying PP ⊤ = I
+
+that reorders channels prior to block partitioning. We sort channels by descending weight column norm ∥Wj, :∥22 and distribute them across the K
+
+blocks in a zigzag order, such that each block re-ceives channels of alternating high and low norms rather than a homogeneous range. This balances 4the energy distribution across blocks, preventing high-norm channels from concentrating within any single partition. The complete transformation is then: 
+
+X′ =X P ˆR, (6) 
+
+W′ =P⊤ ˆR⊤ W, (7) where P is determined solely by weight column norms, without requiring activation statistics, to avoid overfitting to the calibration distribution. 
+
+4.2 Per-step DiT Activation Scaling Quantization 
+
+Quantization is applied after the composite rota-tion, yielding the rotated weight W′ and activation 
+
+X′. Both are quantized using symmetric uniform quantization. For a generic tensor Z at bit-width 
+
+k, let qmax = 2 k−1 − 1 and define the scale and quantized representation as: 
+
+∆Z = max( |Z|)
+
+qmax 
+
+, (8) 
+
+QZ = clamp 
+
+j Z
+
+> ∆Z
+
+m
+
+, −qmax , q max 
+
+
+
+. (9) The dequantized value is reconstructed as Q(Z) = ∆Z QZ. For weights, ∆W′ is computed per output channel at bit-width kw; for LLM backbone acti-vations, ∆X′ is computed per token at bit-width 
+
+ka.However, a single static scale is suboptimal for the DiT action head, whose activation magnitudes vary substantially across denoising steps. We there-fore introduce per-step activation calibration : a per-step, per-layer, per-channel scale table precom-puted offline from calibration trajectories. For layer 
+
+ℓ, step t, and channel j:
+
+∆ℓ,t,j = ˆσ X′(ℓ)
+
+> t, :,j
+
+
+
+qmax 
+
+, (10) where ˆσ(·) is a robust peak estimator. At inference, the scale for the current step is retrieved and the activation is quantized via Eq. 9 with ∆ℓ,t, · in place of ∆Z. The low-bit linear operation is then: 
+
+X′W′ ≈ ∆X′ ∆W′ QX′ QW′ . (11) 
+
+5 Experiments and Results 
+
+In this section, we describe our experimental setup and report results on both simulation benchmarks and real-world manipulation tasks, evaluated across two VLA model families. 
+
+5.1 Experimental Settings Simulation Benchmark. We evaluate Ω-QVLA 
+
+on two state-of-the-art VLA policies, OpenPI 
+
+π0.5 (Intelligence et al., 2025) and GR00T N1.5 (Bjorck et al., 2025), both employing a DiT-based action head that maps fused visual–language features to action sequences. The two backbones span complementary regimes— π0.5 prioritizes ef-ficient inference, while GR00T N1.5 offers higher capacity and richer action modeling—enabling a ro-bust assessment across different coupling strengths between perception and control. Evaluation uses the LIBERO (Liu et al., 2023) simulator with four task suites that target distinct capabilities: Spa-tial tests relational reasoning and precise place-ment, Object focuses on object-centric grasping and manipulation, Goal measures instruction-to-goal alignment, and Long examines temporal de-composition and control of accumulated error. We follow the standard LIBERO protocol and report success rates on each suite as well as the four-suite average. 
+
+Real-World Experiments. To verify the effec-tiveness of Ω-QVLA on physical hardware, we eval-uate on five bimanual manipulation tasks of in-creasing difficulty: the relatively simple Pick Cup ,the intermediate Put Blocks and Put Fruit , and the more challenging long-horizon Put Flowers and 
+
+Fold Towel . The experimental setup and task il-lustrations are shown in Fig. 4. All experiments are conducted on a dual-arm ARX R5 platform equipped with two 6-DoF arms with parallel-jaw grippers and three RGB camera views. We use Pi-0.5 as the full-precision base model and compare two W4A4 quantization approaches: QuantVLA as the baseline and the proposed Ω-QVLA . Since each task consists of multiple sequential stages, we adopt a stage-wise progress score for fine-grained evaluation; detailed scoring criteria are provided in Appendix A.2. We report the progress score averaged over 10 rollouts per task. 
+
+Implementation Details. Unless otherwise stated, Ω-QVLA is applied with a uniform W4A4 precision on all linear layers across language backbone and DiT action head. Following the composite rotation in Section 4, we use block-wise SVD ·Hadamard rotation with block size 64 and a zigzag weight-norm channel permutation. The LLM side uses GPTQ-style weight quantization (block size 128 , damping ratio 0.01 ); the DiT 5Method Precision Quantization Setting GR00T N1.5 Pi 0.5 Goal Spatial Object Long Average Goal Spatial Object Long Average                                                                                                                                                                                                 
+
+> Full Precision FP16 No quantization 86.0 92.0 92.0 76.0 87.0 98.5 99.0 97.5 93.5 97.1 GPTQ W4A16 w/o DiT attention 81.0 91.0 81.0 68.0 80.3 76.0 85.0 91.0 75.0 81.8 AWQ W4A16 w/o DiT attention 51.0 92.0 95.0 75.0 78.3 67.0 85.0 92.0 82.0 81.5 OmniQuant W4A16 w/o DiT attention 86.0 90.0 68.0 76.0 80.0 74.0 85.0 94.0 78.0 82.8 GPTQ W4A16 Full quantization 49.0 43.0 73.0 60.0 56.3 10.0 15.0 39.0 0.0 16.0 AWQ W4A16 Full quantization 51.0 38.0 74.0 64.0 56.8 11.0 4.0 29.0 2.0 11.5 OmniQuant W4A16 Full quantization 43.0 39.0 65.0 53.0 50.0 10.0 8.0 23.0 0.0 10.3 SmoothQuant W4A8 Full quantization 89.0 82.0 94.0 80.0 86.3 96.0 99.0 98.0 94.0 96.8 DuQuant W4A8 Full quantization 83.0 75.0 86.0 77.0 80.3 93.0 96.0 99.0 92.0 95.0 QuantVLA W4A8 Full quantization 53.0 44.0 50.0 77.0 56.0 90.0 92.0 98.0 56.0 84.0 QuantVLA W4A8 w/o DiT attention 90.0 96.0 92.0 74.0 88.0 98.0 98.5 98.0 96.0 97.6 SmoothQuant W4A4 Full quantization 83.0 87.0 84.0 82.0 84.0 40.0 83.0 88.0 26.0 59.3 DuQuant W4A4 Full quantization 62.0 66.0 74.0 78.0 70.0 94.0 96.0 99.0 88.0 94.3 QuantVLA W4A4 Full quantization 63.0 71.0 71.0 74.0 69.8 80.0 94.0 98.0 56.0 82.0 QuantVLA W4A4 w/o DiT attention 60.0 62.0 74.0 70.0 66.5 98.0 96.0 100.0 86.0 95.0
+> Ω-QVLA W4A4 Full quantization 91.0 86.0 92.0 82.0 87.8 100.0 99.0 97.0 96.0 98.0
+
+Table 1: Quantization performance comparison on LIBERO with calibration sample size n = 10 . All numbers are success rates (%). “w/o DiT attention” denotes excluding DiT attention layers from quantization. Ω-QVLA is highlighted in green.                         
+
+> Model Cup Blocks Fruit Flowers Towel Avg.
+> Pi-0.5 Base 88.0 57.5 55.0 22.5 25.0 49.6 QuantVLA 26.0 45.0 17.0 21.0 16.0 25.0
+> Ω-QVLA 84.0 67.5 42.0 38.5 23.0 51.0
+
+Table 2: Real-world manipulation results using Pi-0.5 under W4A4 quantization. 
+
+side uses RTN with the per-step activation scale table calibrated over T = 8 Euler denoising steps. All scales are estimated from a small unlabeled calibration buffer of n = 10 trajectories and folded into dequantization at inference time. All experiments are run on NVIDIA A100 GPUs. Hyperparameters for Ω-QVLA and all baselines are detailed in Appendix A.1.1. 
+
+5.2 Main Results 
+
+Table 1 reports the simulation results on LIBERO under calibration sample size n = 10 . We eval-uate two representative VLA backbones, GR00T N1.5 and Pi-0.5, and compare Ω-QVLA with both weight-only and weight-activation PTQ baselines. The results show that full-stack quantization is sub-stantially harder than selectively excluding DiT attention. Under W4A16, excluding DiT attention keeps the average success rate around 78–80% on GR00T N1.5 and 81–83% on Pi-0.5, whereas quan-tizing the full stack causes a sharp drop, especially on Pi-0.5 where GPTQ, AWQ, and OmniQuant fall to 16.0%, 11.5%, and 10.3%, respectively. This confirms that DiT attention is a major source of quantization sensitivity in VLA models. Despite this difficulty, Ω-QVLA remains effective under the aggressive W4A4 full-quantization set-ting. On GR00T N1.5, Ω-QVLA achieves 87.8% average success rate, matching the FP16 reference performance of 87.0% and outperforming W4A4 full-quantization baselines such as SmoothQuant, DuQuant, and QuantVLA. On Pi-0.5, Ω-QVLA 
+
+achieves 98.0% average success rate, slightly ex-ceeding the FP16 reference of 97.1%. Compared with QuantVLA under W4A4 full quantization, 
+
+Ω-QVLA improves the average success rate from 82.0% to 98.0%, with particularly large gains on the long-horizon suite (56.0% → 96.0%). These results indicate that Ω-QVLA can quantize the full VLA stack, including the DiT attention layers, with-out sacrificing task performance. Overall, the simulation results demonstrate two key points. First, naively applying standard PTQ methods to the complete VLA model is unstable, especially when the action head attention layers are included. Second, the proposed rotation and per-step calibration design substantially mitigates this failure mode, allowing W4A4 full-stack quan-tization to reach or even surpass full-precision per-formance on both evaluated backbones. 6Figure 3: Activation outlier suppression of rotation with SVD (Zhang et al., 2026) versus our SVD-Hadamard. Per-channel/per-token magnitude surfaces |X · R| of one representative layer in GR00T-N1.5 (top) and pi0.5 (bottom), shown after applying progressively richer rotations: identity, channel permutation, DuQuant with SVD, and our SVD-Hadamard (which composes a within-block Hadamard transform on top of the SVD basis). The peak magnitude (annotated on each panel) drops monotonically across the pipeline on both models, illustrating how the additional Hadamard step diffuses the residual outliers that survive the SVD rotation — the source of the dynamic-range headroom needed for 4-bit activation quantization. 
+
+5.3 Real-world experiment results 
+
+Table 2 reports results on five real-world manip-ulation tasks (task descriptions and scoring cri-teria in Appendix A.2). Under W4A4, Ω-QVLA 
+
+reaches an average progress score of 51.0, slightly surpassing the FP16 Pi-0.5 baseline (49.6), while QuantVLA collapses to 25.0 with unreliable ex-ecution across multiple tasks. The two policies also differ qualitatively: QuantVLA produces jerky end-effector trajectories that accumulate over long horizons into task failures, whereas Ω-QVLA yields substantially smoother actions. This behavioral gap is corroborated by the open-loop action analysis in Appendix A.3, where Ω-QVLA tracks the reference trajectories closely while QuantVLA produces fre-quent spikes across action dimensions. 
+
+6 Discussion and Analysis 
+
+In this section, we present a comprehensive anal-ysis comprising efficiency benchmarks, ablation studies of individual components, and an evalua-tion of the rotation method’s effect on quantization quality. 
+
+6.1 Memory Efficiency and Metadata Overhead 
+
+Table 3 reports the static model footprint across quantization configurations. The W4A16 GPTQ baseline establishes the upper bound for memory reduction ( ∼74% on both models), since it only stores per-group scaling factors. Ω-QVLA (W4A4) incurs a negligible overhead of ∼90 MB on Pi-0.5 and 56 MB on GR00T-N1.5—accounting for the block-wise SVD rotation matrices, zigzag permuta-tion indices, and per-step activation scale tables— while retaining 72.0% and 71.3% savings. The gap to selective baselines widens on attention-heavy models. QuantVLA quantizes only MLP layers and keeps attention in FP16, so on GR00T-N1.5—where DiT attention occupies a prominent portion of the network—its savings drop sharply to 61.3%, a 10-point gap below Ω-QVLA .The gap narrows on Pi-0.5 due to its more compact attention sub-structures, confirming that selective quantization scales poorly with attention allocation. Note that static footprint is dictated entirely by the weight bit-width (W4); A8 →A4 affects runtime activation memory rather than disk size. 7Configuration # Q-Layers Footprint Savings                         
+
+> Pi-0.5 (FP16 baseline: 4.27 GB)
+> FP16 baseline 252 4.27 GB 0.0% W4A16 GPTQ (Frantar et al., 2022) 252 1.11 GB 74.0%
+> QuantVLA W4A8 (Zhang et al., 2026) 180 1.28 GB 70.0%
+> Ω-QVLA 252 1.20 GB 72.0%
+> GR00T-N1.5 (FP16 baseline: 1.99 GB)
+> FP16 baseline 180 1.99 GB 0.0% W4A16 GPTQ (Frantar et al., 2022) 180 530 MB 74.0%
+> QuantVLA W4A8 (Zhang et al., 2026) 116 790 MB 61.3%
+> Ω-QVLA 180 586 MB 71.3%
+
+Table 3: Static memory footprint and storage savings across quantization configurations. “# Q-Layers” de-notes the number of layers executing in the quantized format.                         
+
+> Rotation Matrix PS Object Spatial Goal Long 4-avg
+> SVD ✓87 82 73 75 79.25 SVD ·Hadamard ×93 83 92 75 85.75 SVD ·Hadamard ✓91 86 92 82 87.75
+
+Table 4: Ablation study on the rotation matrix and per-step scaling strategy under the W4A4 setting. All vari-ants use GPTQ for the LLM and RTN for the DiT. "PS" means applying per-step scaling on DiT steps. 
+
+6.2 Ablation Study 
+
+Table 4 isolates the contributions of our proposed SVD ·Hadamard rotation and per-step scaling under the W4A4 setting (using GPTQ for the LLM and RTN for the DiT). Replacing the baseline SVD rotation with our combined SVD ·Hadamard matrix improves the 4-task average by 8.5 points (79.25 
+
+→ 87.75), driven by a remarkable 19-point surge in the Goal task. Additionally, disabling per-step scaling degrades the overall average by 2.0 points and triggers a severe 7-point drop on the Long suite, as extended horizons strongly amplify inter-step activation drift. The 8.5-point gain has a clean microscopic explanation: across 10 sampled W4A4 lay-ers, SVD ·Hadamard achieves the lowest nMSE on 9/10, with 2-5× reductions over SVD-only (e.g., LLM.L02.q_proj : 0.139 → 0.028 ). The Hadamard mixing diffuses residual single-channel concentration across the 64 channels of each block—the failure mode an SVD basis fitted on weights alone cannot address. One outlier case (LLM.L02.down_proj , channel-skew ∼5 × 10 4)further motivates pairing the rotation with GPTQ on the LLM, while the DiT side uses plain RTN; full layer breakdowns are in Appendix A.5 and A.6. This design is further validated by a cross-model pattern: SmoothQuant and DuQuant flip orderings between backbones (GR00T: 84.0 vs. 70.0; Pi-0.5: 59.3 vs. 94.3), reflecting that GR00T’s sharply-peaked outliers favor per-channel migration while Pi-0.5’s diffuse outliers favor rotation. Ω-QVLA ’s block-wise SVD ·Hadamard handles both regimes uniformly—SVD adapts to each block’s local out-lier basis, Hadamard spreads residual energy across 64 channels—and is the only entry in Table 1 that si-multaneously reaches 87.8% on GR00T and 98.0% on Pi-0.5. 
+
+6.3 Smoothing Effect of Composite Rotation 
+
+Figure 3 illustrates activation outlier suppression via rotation with SVD (Zhang et al., 2026) com-pared to the proposed SVD-Hadamard method. The figure presents per-channel and per-token mag-nitude surfaces |X · R| for a representative layer in the GR00T-N1.5 (top row) and pi0.5 (bottom row) models. The surfaces are shown after the appli-cation of progressively more expressive rotations: identity, channel permutation, DuQuant with SVD, and the proposed SVD-Hadamard transform, which composes a within-block Hadamard transform with the SVD basis. The peak magnitude, annotated in each panel, decreases monotonically across the se-quence of transformations for both architectures. This consistent reduction demonstrates that the ad-ditional Hadamard step effectively diffuses residual outliers that persist after the SVD rotation, thereby providing the dynamic-range headroom necessary for 4-bit activation quantization. 
+
+7 Conclusion 
+
+We presented Ω-QVLA , the first training-free PTQ framework that uniformly quantizes both the language backbone and the DiT action head of a VLA model to W4A4, without mixed-precision allocation. Ω-QVLA combines a compos-ite SVD ·Hadamard rotation that diffuses weight and activation outliers with a per-step DiT activa-tion calibration that absorbs dynamic-range drift across denoising steps. On LIBERO, Ω-QVLA 
+
+reaches 87.8% on GR00T N1.5 and 98.0% on Pi-0.5 under W4A4—matching or exceeding the FP16 references while shrinking the static footprint by 71.3%—and real-world bimanual experiments con-firm smoother, more reliable control than prior W4A4 methods. These results overturn the prevail-ing belief that the DiT action head is too sensitive to uniformly quantize. 8Limitations 
+
+Our evaluation focuses on two DiT-based VLA backbones (Pi-0.5 and GR00T N1.5) and one benchmark family (LIBERO + an ARX R5 real-world setup); broader validation on autoregressive or flow-matching action heads and on additional hardware platforms is left for future work. The vision encoder (ViT) is kept at FP16 in our cur-rent pipeline, since it accounts for a comparatively small fraction of the inference cost; extending the composite rotation to the vision encoder is a natu-ral next step. Real-world results are averaged over 10 rollouts per task, which is sufficient to expose qualitative behavioral differences but leaves non-trivial statistical variance on the individual progress scores. We report static memory savings and end-to-end task performance, but not wall-clock la-tency: realizing the throughput benefits of W4A4 requires kernel-level support that is hardware- and toolchain-dependent and beyond the scope of this paper. Finally, we focus on the W4A4 regime as the current sweet spot between hardware support and accuracy; pushing further to W3 or W2 precision— where outlier suppression and per-step calibration alone are unlikely to suffice—is a promising direc-tion that may require complementary techniques such as low-rank residual branches or learned code-books. 
+
+AI Tool Usage 
+
+During the preparation of this manuscript, the au-thors only used AI tools for refining the language and presentation of the written text. All scientific content, experimental design, analysis, and conclu-sions were produced entirely by the authors. The authors reviewed and edited all AI-assisted output and take full responsibility for the final manuscript. 
+
+References 
+
+Saleh Ashkboos, Amirkeivan Mohtashami, Maximil-ian L Croci, Bo Li, Martin Jaggi, Dan Alistarh, Torsten Hoefler, and James Hensman. 2024. Quarot: Outlier-free 4-bit inference in rotated llms. arXiv preprint arXiv:2404.00456 .Johan Bjorck, Fernando Castañeda, Nikita Cherniadev, Xingye Da, Runyu Ding, Linxi Fan, Yu Fang, Di-eter Fox, Fengyuan Hu, Spencer Huang, and 1 oth-ers. 2025. Gr00t n1: An open foundation model for generalist humanoid robots. arXiv preprint arXiv:2503.14734 .Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. 2025. Diffusion policy: Visuomotor policy learning via action diffusion. The Interna-tional Journal of Robotics Research , 44(10-11):1684– 1704. Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. 2022. Gptq: Accurate post-training quantization for generative pre-trained transformers. 
+
+arXiv preprint arXiv:2210.17323 .Xing Hu, Yuan Cheng, Dawei Yang, Zukang Xu, Zhi-hang Yuan, Jiangyong Yu, Chen Xu, Zhe Jiang, and Sifan Zhou. 2025. Ostquant: Refining large language model quantization with orthogonal and scaling transformations for better distribution fitting. 
+
+arXiv preprint arXiv:2501.13987 .Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fu-sai, and 1 others. 2025. π0.5: a vision–language– action model with open-world generalization. arXiv preprint arXiv:2504.16054 .Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan Foster, Grace Lam, Pannag San-keti, and 1 others. 2024. Openvla: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 .Junnan Li, Dongxu Li, Caiming Xiong, and Steven Hoi. 2022. Blip: Bootstrapping language-image pre-training for unified vision-language understanding and generation. In International conference on ma-chine learning , pages 12888–12900. PMLR. Muyang Li, Yujun Lin, Zhekai Zhang, Tianle Cai, Xiuyu Li, Junxian Guo, Enze Xie, Chenlin Meng, Jun-Yan Zhu, and Song Han. 2024. Svdquant: Absorbing outliers by low-rank components for 4-bit diffusion models. arXiv preprint arXiv:2411.05007 .Haokun Lin, Haobo Xu, Yichen Wu, Jingzhi Cui, Ying-tao Zhang, Linzhan Mou, Linqi Song, Zhenan Sun, and Ying Wei. 2024a. Duquant: Distributing outliers via dual transformation makes stronger quantized llms. Advances in Neural Information Processing Systems , 37:87766–87800. Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. 2024b. Awq: Activation-aware weight quantization for on-device llm compression and acceleration. Proceed-ings of machine learning and systems , 6:87–100. Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qiang Liu, Yuke Zhu, and Peter Stone. 2023. Libero: Benchmarking knowledge transfer for lifelong robot learning. Advances in Neural Information Process-ing Systems , 36:44776–44791. 
+
+9Wenqi Shao, Mengzhao Chen, Zhaoyang Zhang, Peng Xu, Lirui Zhao, Zhiqian Li, Kaipeng Zhang, Peng Gao, Yu Qiao, and Ping Luo. 2023. Omniquant: Omnidirectionally calibrated quantization for large language models. In The Twelfth International Con-ference on Learning Representations .Yuxuan Sun, Ruikang Liu, Haoli Bai, Han Bao, Kang Zhao, Yuening Li, Jiaxin Hu, Xianzhi Yu, Lu Hou, Chun Yuan, and 1 others. 2024. Flatquant: Flat-ness matters for llm quantization. arXiv preprint arXiv:2410.09426 .Hugo Touvron, Louis Martin, Kevin Stone, Peter Al-bert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, and 1 others. 2023. Llama 2: Open foun-dation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 .Junyi Wu, Haoxuan Wang, Yuzhang Shang, Mubarak Shah, and Yan Yan. 2024. Ptq4dit: Post-training quantization for diffusion transformers. Advances in neural information processing systems , 37:62732– 62755. Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song Han. 2023. Smoothquant: Accurate and efficient post-training quantization for large language models. In International conference on machine learning , pages 38087–38099. PMLR. Yuhao Xu, Yantai Yang, Zhenyang Fan, Yufan Liu, Yum-ing Li, Bing Li, and Zhipeng Zhang. 2026. QVLA: Not all channels are equal in vision-language-action model’s quantization. In The Fourteenth Interna-tional Conference on Learning Representations .Jingxuan Zhang, Yunta Hsieh, Zhongwei Wan, Haokun Lin, Xin Wang, Ziqi Wang, Yingtie Lei, and Mi Zhang. 2026. Quantvla: Scale-calibrated post-training quantization for vision-language-action mod-els. CoRR , abs/2602.20309. Tianchen Zhao, Tongcheng Fang, Haofeng Huang, En-shu Liu, Rui Wan, Widyadewi Soedarmadji, Shiyao Li, Zinan Lin, Guohao Dai, Shengen Yan, and 1 oth-ers. 2024. Vidit-q: Efficient and accurate quantiza-tion of diffusion transformers for image and video generation. arXiv preprint arXiv:2406.02540 .
+
+A Appendix 
+
+A.1 Description of Baselines and Benchmarks Benchmark. We evaluate all methods on LIBERO (Liu et al., 2023), a standard benchmark for VLA policy evaluation in robotic manipulation. LIBERO consists of four task suites: • Goal : goal-conditioned manipulation tasks that require following language instructions. • Spatial : tasks emphasizing spatial relations and precise object placement. • Object : object-centric manipulation tasks in-volving object recognition and interaction. • Long : long-horizon tasks requiring multiple sequential manipulation steps. We report the success rate on each suite and the four-suite average. 
+
+Baselines. We compare Ω-QVLA against repre-sentative post-training quantization baselines: • GPTQ (Frantar et al., 2022): a second-order, layer-wise weight quantization method that minimizes reconstruction error using calibra-tion activations. • AWQ (Lin et al., 2024b): an activation-aware weight quantization method that pro-tects salient channels based on activation statistics. • OmniQuant (Shao et al., 2023): a PTQ method that optimizes clipping ranges and scaling factors through layer-wise reconstruc-tion. • SmoothQuant (Xiao et al., 2023): a weight-activation quantization method that migrates activation outliers into weights before quanti-zation. • DuQuant (Lin et al., 2024a): a rotation-based PTQ method that improves low-bit weight-activation quantization through distribution-aware transformations. • QuantVLA (Zhang et al., 2026): a VLA-specific quantization baseline that combines low-bit quantization with VLA-oriented cali-bration components. 
+
+Calibration and evaluation protocol. For all quantization methods that require calibration data (including Ω-QVLA and all baselines), we use the 
+
+same unlabeled calibration buffer for fairness. The buffer consists of 10 trajectories per task suite— one trajectory from each of the 10 tasks within the suite, sampled from a single fixed initial state— collected by rolling out the FP16 base model in simulation. We then evaluate on 10 trials per task with initial states held out from calibration, ensur-ing no overlap between calibration and evaluation conditions. The success rates reported in Table 1 are averaged across all tasks within each suite. 10 A.1.1 Key Hyperparameters 
+
+Table 5 summarizes the configurations of all meth-ods reported in the main LIBERO comparison (Ta-ble 1). 
+
+A.2 Real-World Manipulation Tasks 
+
+To evaluate Ω-QVLA in real-world scenarios, we construct five manipulation tasks with varying lev-els of difficulty, ranging from simple object place-ment to long-horizon bimanual manipulation. As summarized in Table 6, each task is decomposed into multiple sequential stages and evaluated using a progress score, enabling a fine-grained assess-ment of task completion. Detailed scoring criteria are provided in Table 6. 
+
+A.3 Open-Loop Action Analysis 
+
+Figure 8 presents an open-loop comparison of the predicted action trajectories on real-world tasks. The blue dashed curves denote the proposed 
+
+Ω-QVLA , while the red curves correspond to the baseline quantization method, QuantVLA. Specifically, we feed observations from the dataset into the model and visualize the predicted actions across all 14 action dimensions. Although both quantized models introduce prediction deviations relative to the ground truth, Ω-QVLA consistently generates action trajectories that more closely match the reference actions. As shown in the figure, the baseline method occasionally produces noticeable spikes and abrupt deviations in several action dimensions, indicating that quantization errors may be amplified into extreme action outputs. In contrast, Ω-QVLA yields smoother and more consistent trajectories, suggesting that the proposed quantization strategy better preserves the original action distribution. Similar trends can also be observed in the gripper action dimensions, where Ω-QVLA exhibits smaller fluctuations and more stable predictions. Such improvements are particularly important for closed-loop manipula-tion, as unstable action outputs may accumulate over time and result in jerky motions or inaccurate object interactions. We believe this observation partially explains why Ω-QVLA achieves superior real-world manipulation performance under the same W4A4 quantization setting. 
+
+A.4 Selection of Weight Quantization Solvers 
+
+Figure 5 measures the layer-wise W4 weight-only output error after the SVD-Hadamard rotation, with and without an additional GPTQ pass on the resid-ual. Two observations stand out. First, GPTQ unambiguously reduces the numer-ical per-layer quantization error on both sides of both models. Across all 16 module-kind combina-tions on gr00t and pi0.5, SVD-Hadamard + GPTQ has a strictly lower bar than SVD-Hadamard + RTN — roughly a 40-50% reduction in relative output error on average, consistent with what GPTQ-style inter-column error compensation is supposed to de-liver after activation outliers have been spread by rotation. Second, the absolute quantization difficulty af-ter rotation is asymmetric between the two sides. On the LLM side (gr00t eagle, pi0.5 paligemma), even after SVD-Hadamard the relative error re-mains in the 0.07-0.13 range, with the LLM down_proj layers consistently the hardest — gr00t LLM.L02/L05/L09.down_proj all sit above 0.10, reflecting the residual outlier structure that survives Hadamard mixing. On the DiT/expert side (gr00t action head, pi0.5 expert), SVD-Hadamard alone already brings most layers to 0.04-0.07; GPTQ pushes them further down, but the absolute head-room GPTQ can claim is much smaller than on the LLM side. This per-side asymmetry maps directly onto what we observe end-to-end: adding GPTQ on the LLM side yields a measurable LIBERO success gain, because rotation alone does not eliminate the LLM down_proj difficulty and GPTQ’s column-wise compensation buys real precision back. On the DiT side, however, the same numerical improvement does not translate into a downstream score gain; We attribute this to the fact that, with the SVD-Hadamard rotation already producing near-uniform per-row column magnitudes on the DiT weights, GPTQ’s inter-column error propagation has little structure left to exploit and instead introduces a calibration-dependent bias that interacts poorly with the per-step diffusion dynamics. The figure therefore makes concrete the asymmetric design choice underlying Ω-QVLA :GPTQ is applied only on the LLM side, while the DiT side retains plain RTN. 
+
+A.5 Effectiveness of the SVD-Hadamard Rotation 
+
+Figure 6 quantifies the gain from adding the Hadamard tail to the per-block SVD rotation, mea-sured on 10 sampled GR00T layers (5 LLM + 5 11 Table 5: Key configurations of all methods reported in the main LIBERO comparison. 
+
+Method Setting Key hyperparameters / runtime configuration 
+
+FP16 FP16 Original full-precision model without quantization; used as the reference upper bound. GPTQ (Frantar et al., 2022) W4A16 Weight-only quantization with FP16 activations. Block size 128 , damping ratio 
+
+0.01 , Hessian-aware layer-wise reconstruction. The input Hessian is estimated from the calibration activations. AWQ (Lin et al., 2024b) W4A16 Weight-only activation-aware quantization. Activation-based channel saliency, grid-based scale search with 20 candidates, maximum shrink ratio 0.5, and 512 
+
+sampled calibration tokens for clipping and scale search. OmniQuant (Shao et al., 2023) W4A16 Weight-only PTQ with optimized clipping and scaling parameters. Layer-wise reconstruction with learnable quantization parameters, optimized with Adam at learning rate 5×10 −3 for 200 iterations. SmoothQuant (Xiao et al., 2023) W4A8 / W4A4 Weight-activation quantization with smoothing coefficient α = 0 .5 and clipping threshold 10 3. The per-channel smoothing scale is estimated from calibration activations and absorbed into the weight matrix before quantization. Activations are quantized to 8 or 4 bits according to the setting. DuQuant (Lin et al., 2024a) W4A8 / W4A4 Rotation-based weight-activation quantization. Block-wise rotation with block size 64 , SVD-based rotation, weight-energy channel permutation, and row-rotation restore. Activation calibration uses percentile p = 99 .9 over calibration steps. QuantVLA (Zhang et al., 2026) W4A4 VLA-specific quantization baseline built on DuQuant-style low-bit quantization, with DuQuant defaults, ATM calibration, and Output-Head Boosting as proposed in the original paper. Following the released setting, DiT attention layers are kept in FP16 unless otherwise noted. 
+
+Ω-QVLA W4A4 Uniform W4A4 quantization across the LLM backbone and DiT action head. Rota-tion: block-wise SVD ·Hadamard rotation with block size 64 , preceded by a zigzag weight-norm channel permutation (Sec. 4). Solver: GPTQ-style weight quanti-zation on the LLM side (block size 128 , damping ratio 0.01 ); plain RTN on the DiT side, motivated by the layer-wise error asymmetry analysis in Appendix A.4. 
+
+Activation calibration: per-step, per-channel scale table calibrated over T = 8 
+
+Euler denoising steps on n = 10 unlabeled calibration trajectories. All scales are folded into dequantization at inference. (a) Pick Cup (b) Put Blocks (c) Put Fruit (d) Put Flowers (e) Fold Towel 
+
+Figure 4: Experimental setup of the real-world manipulation tasks. (a) Pick Cup : move the plate to the center and place the cup onto it. (b) Put Blocks : place colored blocks into their matching plates. (c) Put Fruit : place the fruit into the designated container according to the language instruction. (d) Put Flowers : insert three flowers into a vase. (e) Fold Towel : pick up, flatten, fold, and place the towel back. 
+
+DiT) under a true W4A4 quantization sweep. Two complementary metrics are reported: the left panel shows the end-to-end normalized MSE between the FP16 and the W4A4 layer output (what the down-stream forward pass actually consumes), while the right panel shows the 99th-percentile per-row max-imum of the rotated activation X · R, which sets the A4 scale on the heaviest rows and therefore upper-bounds how much dynamic range A4 must accommodate. The two metrics agree closely. For 9 of the 10 sampled layers, SVD-Hadamard yields both the lowest layer-output nMSE and the lowest A4 scale ceiling, with the gain over SVD-only often exceeding 2-5 × — for example, LLM.L02.q_proj drops from 0.139 (SVD-only) to 
+
+0.028 (SVD-Hadamard), and DiT.L02.q_proj from 
+
+0.051 to 0.019 . This confirms the geometric intu-ition that an SVD basis fitted block-by-block on the weight matrix does not, by itself, address activation-side outliers; the Hadamard mixing applied on top spreads any residual single-channel concentration across the 64 channels of the block, simultaneously lowering both the per-row dynamic range and the resulting W4A4 reconstruction error. The one revealing exception is LLM.L02.down_proj, a layer with channel-12 Task ID Task Name Task Description Scoring Criteria            
+
+> 1Pick Cup Place a cup onto a plate using bimanual coor-dination. 40 points are awarded for grasping the cup with the right arm, 30 points for moving the plate to the center with the left arm, 20 points for placing the cup onto the plate, and 10 points for returning both arms to the home position. 2Put Blocks Place four colored blocks into the plates with matching colors. 25 points are awarded for each correctly matched block, resulting in a maximum score of 100 points. 3Put Fruit Place the target fruit into the corresponding container according to the language instruc-tion. 40 points are awarded for grasping the target fruit, 50 points for placing it into the correct container, and 10 points for returning both arms to the home position. 4Put Flowers Insert three flowers into a vase. For each flower, 15 points are awarded for grasping and 15 points for successful insertion. Completing all three flowers yields 90 points, while returning both arms to the home position yields an additional 10 points. 5Fold Towel Fold a towel and place it back to the designated area. 20 points are awarded for picking up the towel, 30 points for flattening it, 30 points for completing the folding operation, and 20 points for placing the folded towel back in the designated area.
+
+Table 6: Descriptions and progress-score criteria for the five real-world manipulation tasks. Each task is decomposed into multiple stages, and the progress score is computed according to the completion of intermediate subtasks. 
+
+skew on the order of 5 × 10 4. Here pure SVD is actively harmful: its nMSE inflates from 0.001 on raw to 0.148 — roughly two orders of magnitude worse — because the dominant SVD direction aligns with the outlier channel and concentrates rather than disperses it. SVD-Hadamard restores partial sanity ( 0.056 ) but does not fully recover the raw baseline, indicating that for this extreme outlier the Hadamard √64 ≈ 8× attenuation is not enough on its own. The picture here is consistent with the per-(token,block) heatmap evidence (Figure 8) and explains why our final pipeline pairs the SVD-Hadamard rotation with calibrated W-side GPTQ on the LLM, while the DiT side — where rotation alone already pushes nMSE below the level at which inter-column compensation could help — uses plain RTN. 
+
+A.6 Necessity of Per-Step Activation Scaling for DiT 
+
+Figure 7 (left) plots the 99.9-percentile activation magnitude across the 8 Euler denoising steps for four sampled DiT layer kinds. We observe a sharp layer-type asymmetry: attn1.to_q/k/v 
+
+(the QKV projections that follow norm1 ) exhibit a monotonic 15–20% drop in q999 from step t = 0 
+
+(pure noise input) to step t = 7 (near-converged ac-tion signal), while ff.net[0] (the MLP projection following norm3 ) is essentially flat (within 2%). The remaining attention output ( attn1.to_out )and MLP output ( ff.net[2] , down_proj ) sit in between with 5–10% drift. The source-code structure of the DiT block explains this asymmetry: 
+
+norm1 is an AdaLayerNorm whose per-step scale and shift are functions of the timestep embedding t,so its output explicitly carries the time-conditioned magnitude into the QKV input; norm3 is a plain 
+
+LayerNorm that strips time-dependent magnitude variation away before the MLP. The layers that benefit from per-step act_scale are exactly those that read a time-conditioned activation. The right panel translates this distributional drift into a quantization cost. For each DiT layer × dif-fusion step, we measure the relative MSE of int4 symmetric quantization under (i) a step-specific per-channel scale (computed from that step’s own q999) and (ii) a single-bucket scale (the mean q999 over all 8 steps). Per-step MSE stays low and flat across the 8 steps; single-bucket MSE rises at the steps whose q999 deviates most from the across-step mean, with the shaded gap quantifying the wasted int4 budget. Aggregating across the 4 layer 13 Figure 5: Per-component W4 weight quantization error across gr00t-N1.5 and pi0.5. Relative output error |XW ⊤ −   
+
+> XR, Q (W R )⊤|F/|XW ⊤|Fmeasured layer-by-layer for three weight pipelines: RTN with no rotation, SVD-Hadamard rotation + RTN, and SVD-Hadamard rotation + GPTQ. Activation quantization is excluded so the bars isolate the structural contribution of each weight-quant step.
+
+kinds × 3 depth samples × 8 steps gives a mean per-(layer, step) MSE gap of 2.5% , dominated by 
+
+q_proj -style layers (gap up to 11%) and essentially zero for ff.net[0] . Compounded over the ∼16 DiT blocks and 8 Euler steps of a single action prediction, this per-step waste maps empirically to an end-to-end loss of −2.0 pp 4-suite average and −7.0 pp on the long-horizon suite (with vs. without per-step scaling; rows 2 and 3 of Table 4), confirming that per-step act_scale is necessary in the W4A4 regime—and confirming that the ne-cessity is concentrated on the post-AdaLayerNorm 
+
+attention inputs rather than uniformly across all DiT linears. 
+
+B Quantization Error with Different Rotation 
+
+Figure 9 further compares the layer-wise quantiza-tion error under different rotation strategies on both GR00T-N1.5 and Pi-0.5. We evaluate three settings: the original unrotated representation, SVD-only ro-tation, and the proposed SVD-Hadamard rotation. The error is measured after low-bit quantization and reflects how well each transformed representa-tion preserves the full-precision layer output. Across both backbones, SVD-Hadamard gener-ally yields lower quantization error than the unro-tated baseline and the SVD-only variant. This trend supports the motivation of our composite rotation: SVD reduces weight-side channel imbalance, while the Hadamard transform further diffuses residual activation outliers that are not necessarily aligned with the SVD basis. In contrast, SVD-only rota-14 Figure 6: Per-layer W4A4 quantization quality on GR00T-N1.5. Left: normalized MSE between FP16 and W4A4 layer outputs. Right: 99th-percentile per-row max of rotated activations (sets the A4 scale ceiling). Bars compare raw, SVD-only, and SVD-Hadamard (A2-lite) rotation across 5 LLM + 5 DiT sampled layers. SVD-Hadamard yields the lowest nMSE and lowest scale ceiling on 9/10 layers. The single exception is LLM.L02.down_proj, whose extreme channel-skew (≈ 50000) aligns with the SVD basis and is only partially mitigated by the within-block Hadamard mixing. 
+
+tion can improve weight smoothness but does not consistently control activation-side dynamic range, which explains its less stable behavior across layers and models. 15 Figure 7: Necessity of per-step act_scale on the DiT side. Left: per-channel q999 across the 8 Euler denoising steps for four DiT layer kinds (normalized to t = 0 ). Right: int4 quantization MSE per step under a step-specific scale (circles) vs a single-bucket scale (squares); shaded area = waste from collapsing 8 step-scales into one. Time-conditioned magnitude drift only appears at layers reading the AdaLayerNorm output (attention QKV projections), and per-step scaling helps exactly those layers. 
+
+16 Figure 8: Open-loop action trajectory comparison across all 14 action dimensions. The blue dashed curves denote 
+
+Ω-QVLA and the red curves denote QuantVLA. Ω-QVLA generates trajectories that more closely match the ground-truth trajectories and exhibits fewer spikes, abrupt deviations, and extreme outputs. Such improved action stability may reduce control jitter during closed-loop execution, providing a plausible explanation for the superior real-world manipulation performance achieved by Ω-QVLA .
+
+17 original svd only svd hadamard 
+
+0.00 
+
+0.01 
+
+0.02 
+
+0.03 
+
+0.04 
+
+0.05 
+
+0.00 
+
+0.01 
+
+0.02 
+
+0.03 
+
+0.04 
+
+0.05 
+
+0.06 
+
+0.00 
+
+0.01 
+
+0.02 
+
+0.03 
+
+0.04 
+
+0.00 
+
+0.01 
+
+0.02 
+
+0.03 
+
+0.04 
+
+0.05 
+
+0.06 
+
+> gr00t pi0.5
+
+Figure 9: The quantization error with different Rotation methods. 
+
+18

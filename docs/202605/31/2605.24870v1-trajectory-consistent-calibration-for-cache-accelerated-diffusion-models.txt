@@ -1,0 +1,496 @@
+Title: Trajectory-Consistent Calibration for Cache-Accelerated Diffusion Models
+
+URL Source: https://arxiv.org/pdf/2605.24870v1
+
+Published Time: Tue, 26 May 2026 01:19:17 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# Trajectory-Consistent Calibration for Cache-Accelerated Diffusion Models 
+
+Mingyu Liang ∗ Dingkun Xu ∗ Jingwei Xu †
+
+Laboratory for Novel Software Technology, Nanjing University, China 
+
+{522025330055, 502025330057}@smail.nju.edu.cn jingweix@nju.edu.cn 
+
+# Abstract 
+
+Diffusion Transformers require repeated denoiser evaluations during iterative sam-pling, making inference computationally expensive. Cache-based acceleration reduces this cost by reusing intermediate representations across denoising steps, but can introduce representation deviations and degrade generation quality. In this paper, we analyze these deviations and show that effective calibration should consider both the direct mismatch caused by reuse and the subsequent trajec-tory shift induced by earlier corrections. To address this challenge, we propose 
+
+Trajectory-Consistent Calibration (TCC), a training-free method that calibrates cached representations toward their full-computation counterparts. Specifically, rather than estimating all calibration priors from a single uncorrected cache tra-jectory, TCC uses an offline iterative procedure so that each prior accounts for the trajectory shift induced by preceding calibrations. Experiments on PixArt-α
+
+and DiT-XL/2 show that TCC consistently improves FID across representative cache-based acceleration methods while preserving their underlying reuse policies. Notably, in a representative PixArt-α cache-acceleration setting based on FORA, TCC reduces FID from 29.83 to 27.35, slightly surpassing the full-computation baseline. 
+
+# 1 Introduction 
+
+Diffusion Transformers (DiTs) [Peebles and Xie, 2023] have substantially advanced visual generation by bringing scalable transformer backbones to diffusion models. However, their iterative denoising procedure requires repeated forward passes of a large backbone, making inference computationally expensive. Since generating a single sample involves multiple denoising steps [Ho et al., 2020, Song et al., 2021a], reducing repeated computation has become critical for efficient diffusion sampling. Cache-based acceleration methods address this challenge by caching and reusing intermediate representations across nearby denoising steps in DiT. By exploiting temporal redundancy along the diffusion trajectory, they reduce repeated computation and provide a practical training-free route to faster inference [Ma et al., 2024b, Wimbauer et al., 2024]. However, cache reuse is inherently approximate rather than lossless. Because a reused representation is computed from a previous or neighboring denoising state [Ma et al., 2024b], it can deviate from the representation that full computation would produce at the current state. As sampling proceeds, this approximation error can further propagate through later denoising steps, causing the cache-accelerated trajectory to drift from the full-computation trajectory and ultimately degrade generation quality. A key observation of this work is that the deviation introduced by cache reuse is not purely local. Instead, effective calibration for cache reuse should account for two coupled effects: the direct 
+
+> ∗Equal contribution.
+> †Corresponding author. Preprint.
+> arXiv:2605.24870v1 [cs.CV] 24 May 2026
+
+Figure 1: Qualitative comparison on PixArt-α under cache-accelerated sampling, with prompts shown verbatim. TCC recovers prompt-relevant content weakened by cache reuse, such as the parking sign and green fire hydrants, and mitigates detail degradation when semantics are preserved, e.g., facial details. The third row shows that TCC preserves visual quality under complex compositions. All comparisons use matched prompts, seeds, and sampling settings. 
+
+mismatch between a reused representation and its full-computation counterpart at the current denoising step, and the trajectory shift induced when earlier reuse and calibration alter the subsequent cache-side trajectory. Existing cache acceleration methods mainly improve reuse itself. One line of work focuses on reuse decisions, designing or learning cache schedules that determine which timesteps, layers, tokens, or states can be safely reused [Selvaraju et al., 2024, Ma et al., 2024a, Zou et al., 2024]. Another line introduces optimization, calibration, or compensation mechanisms to better approximate the computation skipped by caching [Chen et al., 2025, Qiu et al., 2025a]. However, these approaches do not explicitly model the coupled effect of direct mismatch and the trajectory shift introduced by reuse correction. Prior correction methods typically estimate a fixed error prior from the original cache and full-computation trajectories. In contrast, TCC treats calibration as part of the trajectory and estimates each subsequent prior under the corrected history induced by previous calibrations. To address this challenge, we propose Trajectory-Consistent Calibration (TCC), a training-free method that calibrates cache-induced direct mismatch and trajectory shift without modifying the underlying cache schedule or model parameters. TCC takes the full-computation trajectory as a reference and estimates calibration priors from paired cache-side and full-computation representations to correct direct mismatch at each calibration stage. To account for trajectory shift induced by earlier reuse and calibration, these priors are estimated offline and iteratively along the corrected cache trajectory, so that each stage matches the history shaped by preceding corrections. This trajectory-consistent prior estimation preserves the base reuse policy with only a small transformation cost. We validate TCC on PixArt-α and DiT-XL/2 across representative cache baselines, including FORA, ToCa, and L2C. TCC consistently improves FID in both text-to-image and class-conditional genera-tion, with representative gains from 29.83 to 27.35 on PixArt-α and from 6.82 to 5.70 on DiT-XL/2. Qualitative examples are shown in Figure 1 and Appendix B.5. Our contributions are summarized as follows: • We formulate the cache-induced degradation in diffusion transformers as arising from two coupled effects: direct mismatch between cache-side and full-computation representations, and trajectory shift induced by preceding reuse and calibration. 2• We propose Trajectory-Consistent Calibration (TCC), a training-free method that jointly handles these two effects via statistical calibration and iterative trajectory-consistent prior estimation without modifying the cache strategy or model parameters. • We validate TCC on PixArt-α and DiT-XL/2 with representative cache baselines. TCC consistently improves FID, including in aggressive-reuse settings, and ablations verify the stability advantage of trajectory-consistent prior estimation over one-shot calibration. 
+
+# 2 Problem Formulation 
+
+Diffusion sampling generates a sample by progressively updating a sequence of denoising states 
+
+xT , x T −1, . . . , x 0. At each timestep t, a transformer-based denoiser performs a forward pass on the current state xt to produce the prediction used for the next update. During this forward pass, the denoiser produces intermediate representations at multiple internal sites. We denote such a site u by 
+
+u = ( t, ℓ, m ),
+
+where t is the timestep, ℓ is a transformer layer, and m specifies a module output site, such as self-attention, cross-attention, or MLP outputs in transformer-based denoisers. Let hu denote the output representation at site u, with h<u denoting the local incoming representation immediately before this site. Let Fu denote the fresh computation performed at site u, which maps 
+
+h<u to hu. We use the superscript full to denote quantities obtained along the full-computation trajectory, where all denoiser computations are freshly evaluated. The full-computation representation at site u is then written as 
+
+hfull  
+
+> u
+
+= Fu(hfull  
+
+> <u
+
+).
+
+We model an existing cache-based accelerator as a cache strategy π that specifies how each intermedi-ate site is evaluated. Under this formulation, π is represented by a set of cache-affected sites Sπ and site-wise reuse or approximation operators {Φπu}u∈S π , both of which may depend on the preceding trajectory history for adaptive cache strategies. To describe this history dependence, let Hfull  
+
+> <u
+
+denote the trajectory history reached before site u when all preceding computations are freshly evaluated, and let Hπ<u denote the trajectory history reached before site u when the base cache strategy π is applied along the preceding trajectory without additional calibration. At site u, the cache-side representation under π, with local incoming representation hπ<u , is written as 
+
+hπu =
+
+Fu(hπ<u ), u / ∈ S π ,
+
+Φπu(hπ<u , Hπ<u ), u ∈ S π .
+
+The realization of Sπ and Φπu is determined by the base cache strategy. Given the base cache strategy 
+
+π, we select a set of calibration sites Scal ⊆ S π and construct calibration operators C = {C u}u∈S cal 
+
+for these selected cache-affected sites. Cache-affected sites outside Scal follow the base cache strategy without an additional calibration operator. 
+
+Direct representation mismatch. For a cache-affected site u ∈ S π , the cache-side representation 
+
+hπu is generally an approximation to its full-computation counterpart hfull  
+
+> u
+
+, as Φπu replaces the fresh computation Fu. This discrepancy can also reflect preceding cache decisions, which may make the incoming representation hπ<u differ from hfull  
+
+> <u
+
+. We refer to the resulting discrepancy between hπu
+
+and hfull  
+
+> u
+
+as direct representation mismatch. At selected calibration sites, Cu is applied to reduce this direct mismatch before the representation is consumed by subsequent denoising computation. 
+
+Trajectory-induced prior mismatch. The second mismatch concerns the trajectory on which calibration priors are estimated and applied. A calibration operator estimated from cache-side representations collected under one trajectory history may no longer match its application context after earlier calibrations have changed the subsequent cache-side trajectory. We use Hcorr  
+
+> <u
+
+to denote the history reached before site u after previous calibration operators have been applied along the same base cache strategy π. For u ∈ S cal , with local incoming representation hcorr  
+
+> <u
+
+, the representation passed to the subsequent denoising computation is 
+
+hcorr  
+
+> u
+
+= Cu(Φ πu(hcorr  
+
+> <u
+
+, Hcorr  
+
+> <u
+
+)) .
+
+Because calibrated representations propagate forward, later calibration operators are applied under trajectory histories shaped by preceding calibrations. If the corresponding priors are instead estimated 3Figure 2: Overview of trajectory-consistent calibration (TCC). In Stage 1, at each calibration timestep, TCC probes selected calibration sites, e.g., attention and MLP outputs, under cache strategy 
+
+π, estimates calibration transforms from cache-side to full-computation representations, and performs a calibrated advance so that subsequent priors are collected on the trajectory induced by previous calibrations. In Stage 2, each selected reused representation is calibrated before propagation to subsequent layers, while non-calibrated sites follow the base cache strategy. without accounting for these preceding calibrations, they can become mismatched to their application contexts. This motivates trajectory-consistent prior estimation, where each prior is collected along the corrected trajectory on which it will be applied. Accordingly, TCC addresses these two effects with local statistical calibration and trajectory-consistent prior estimation, respectively. 
+
+# 3 Method 
+
+This section presents Trajectory-Consistent Calibration (TCC), a training-free calibration method for cache-accelerated diffusion models. Given a cache strategy π, TCC operates on selected calibration sites Scal ⊆ S π , without modifying the denoiser, sampler, or cache strategy. As illustrated in Figure 2, TCC consists of two stages. In the offline prior estimation stage, it estimates local calibration priors from paired full-computation and cache-side representations along the corrected cache trajectory, so that each prior is matched to the trajectory history under which it will later be applied. In the calibrated inference stage, the cache strategy first produces a cache-side representation, and the corresponding local calibration operator is then applied before the representation is consumed by subsequent denoising computation. We next define the local calibration operator and the trajectory-consistent prior estimation procedure. 
+
+3.1 Local Statistical Calibration 
+
+For a cache-affected site u ∈ S cal , our goal is to construct a local calibration operator that maps the cache-side representation toward its full-computation counterpart. We model the direct representation mismatch as a statistical transformation from cache-side representations to their full-computation representations. Our key assumption is that, given a site u, these two sets of representations exhibit a systematic statistical shift that can be estimated from representative samples. Given N representative samples indexed by i, let ai = hfull  
+
+> u,i
+
+denote the full-computation output representation at site u, and let bi denote the corresponding cache-side output representation, whose collection is described in Section 3.2. We collect the paired representations 
+
+{(ai, b i)}Ni=1 .
+
+We stack these paired vectors as rows of 
+
+A = [ a1; . . . ; aN ], B = [ b1; . . . ; bN ],
+
+which form the full-computation and cache-side representation matrices, with each row indexed by i
+
+providing one paired representation vector. In our implementation, for class-conditioned DiT, we average representation vectors from several sampled trajectories of the same class; for text-conditioned PixArt-α, each text prompt serves as one representative sample. 4We instantiate this local operator with a closed-form rotation-scale fit based on paired representation statistics, inspired by scaled Orthogonal Procrustes alignment [Schönemann, 1966]. This fit uses first-order moments to correct mean shifts and second-order cross-covariance statistics to estimate the geometric mismatch between the cache-side and full-computation representation distributions. The resulting local calibration operator is closed-form and training-free: it centers cache-side rep-resentations by their own mean, rotates them toward the full-computation representation geometry, rescales their magnitude, and then shifts them to the full-computation mean. Specifically, with μA and μB denoting the row means of A and B, we center the representation as 
+
+Ac = A − μA, Bc = B − μB .
+
+We then estimate an orthogonal rotation R and a non-negative scale s by solving a scaled Orthogonal Procrustes problem: 
+
+(R, s ) = arg min 
+
+> R⊤R=I, s ≥0
+
+∥Ac − sB cR∥2 
+
+> F
+
+.
+
+We compute the singular value decomposition of the cross-covariance matrix as B⊤ 
+
+> c
+
+Ac = U ΣV ⊤.
+
+The Procrustes rotation and scale are then obtained as 
+
+R = U V ⊤,s = ⟨Ac, B cR⟩∥BcR∥2 
+
+> F
+
++ ϵ .
+
+The corresponding full statistical transform is 
+
+T (h) = μA + s(h − μB )R, 
+
+where R rotates the centered cache-side representation and s rescales it before shifting it to the full-computation mean. Combining mean alignment, rotation, and scale, we define the fitting rule 
+
+Fit( A, B ; α) that returns the local calibration operator C:
+
+C = Fit( A, B ; α), C(h) = h + α T (h) − h. (1) Here α controls the calibration strength, and the returned function C is applied to cache-side represen-tations during calibrated inference. When α = 0 , C reduces to the identity map, so TCC reduces to the base cache strategy. When α = 1 , C applies the full statistical calibration transform. Intermediate values interpolate between the uncalibrated cache-side representation and its calibrated representation. We treat α as an experimental hyperparameter and analyze its effect empirically. In practice, for token or spatial dimensions, we obtain representative vectors through lightweight pooling to keep prior estimation compact. The fitting rule above returns the calibration operator used at the fixed calibration site u; in the site-indexed notation of the formulation, this operator is written as Cu. The next subsection describes how these paired batches are formed under corrected trajectory histories. 
+
+3.2 Trajectory-Consistent Prior Estimation 
+
+Given a timestep t, we fit local calibration operators for the selected sites u in this timestep using the fitting rule defined in Section 3.1. The prior-estimation procedure advances the full-computation and corrected cache trajectories timestep by timestep. When it reaches timestep t, the corrected cache trajectory already contains the effect of earlier calibrated timesteps. Therefore, the calibration priors for selected sites in timestep t should be estimated from cache-side representations produced under the trajectory history in which the corresponding calibration operators will be applied. For representative samples i = 1 , . . . , N , and for each selected site u = ( t, ℓ, m ) ∈ S cal in timestep 
+
+t, we instantiate the paired matrices A and B in Section 3.1 as the site-specific batches 
+
+Afull  
+
+> u
+
+= Fu
+
+ hfull 
+
+> <u,i
+
+ Ni=1 = [ hfull  
+
+> u,i
+
+]Ni=1 ,Bprobe  
+
+> u
+
+= Φπu
+
+ hcorr 
+
+> <u,i
+
+, Hcorr 
+
+> <u,i
+
+ Ni=1 .
+
+Here Afull  
+
+> u
+
+is collected from the full-computation trajectory. The cache-side batch Bprobe  
+
+> u
+
+is collected by advancing a probe cache-side trajectory through timestep t from the current corrected history 5Algorithm 1 Offline trajectory-consistent prior estimation 
+
+Require: Cache strategy π, calibration sites Scal , representative samples, calibration strength α 
+
+> 1:
+
+Initialize Hfull and Hcorr on the same samples  
+
+> 2:
+
+for each timestep t do  
+
+> 3:
+
+if timestep t contains selected calibration sites then  
+
+> 4:
+
+Advance the full-computation trajectory through timestep t from Hfull ,recording Afull  
+
+> u
+
+for selected sites u in this timestep and updating Hfull  
+
+> 5:
+
+Advance a probe cache-side trajectory through timestep t from Hcorr using π,recording Bprobe  
+
+> u
+
+for selected sites u in this timestep without updating Hcorr  
+
+> 6:
+
+for each selected site u in this timestep do  
+
+> 7:
+
+Estimate Cu ← Fit( Afull  
+
+> u
+
+, B probe  
+
+> u
+
+; α) 
+
+> 8:
+
+end for  
+
+> 9:
+
+Advance the cache-side trajectory through timestep t from Hcorr using π,applying Cu at selected sites in this timestep and updating Hcorr  
+
+> 10:
+
+else  
+
+> 11:
+
+Advance and update Hfull through timestep t under full computation  
+
+> 12:
+
+Advance and update Hcorr through timestep t using the cache strategy π 
+
+> 13:
+
+end if  
+
+> 14:
+
+end for  
+
+> 15:
+
+return {C u}u∈S cal 
+
+using π, while recording the selected sites in this timestep without updating Hcorr . The probe pass records the cache-side representations used to fit Cu but does not commit its output to Hcorr ; only the following calibrated advance updates Hcorr . A calibration prior estimated without accounting for preceding calibrations would generally be mismatched to the cache-side representations encountered during calibrated inference. TCC therefore estimates each calibration prior under its inference-time trajectory history. Using the fitting rule defined in Equation 1, the local calibration operator at site u
+
+is fitted from Afull  
+
+> u
+
+and Bprobe  
+
+> u
+
+:
+
+Cu = Fit  Afull  
+
+> u
+
+, B probe  
+
+> u
+
+; α .
+
+After the local operators for timestep t are fitted, TCC performs a calibrated cache-side advance through timestep t from the same incoming corrected history. During this calibrated advance, each 
+
+Cu is applied at its corresponding selected site before the representation is consumed by subsequent denoising computation, and the timestep update advances Hcorr . This trajectory-consistent prior estimation procedure is summarized in Algorithm 1. Consequently, later timesteps are reached under the corrected history updated by earlier calibrated timestep advances. TCC therefore preserves site-local calibration operators while estimating their priors under the corrected trajectory histories induced by preceding calibrations. 
+
+# 4 Experiments 
+
+4.1 Experiment Settings Model configurations. We evaluate TCC on two representative generation tasks: text-to-image generation and class-conditional image generation, using NVIDIA H800 80GB GPUs. For text-to-image generation, we use PixArt-α [Chen et al., 2023] with DPM-Solver++ [Lu et al., 2025] sampling at 256 × 256 resolution and 20 sampling steps. We compare TCC with representative training-free cache-based acceleration baselines, including FORA [Selvaraju et al., 2024] and ToCa [Zou et al., 2024]. We do not include L2C [Ma et al., 2024a] in this setting, since the original L2C work trains and evaluates its router on class-conditional DiT models. For class-conditional generation, we adopt DiT-XL/2 [Peebles and Xie, 2023] with the DDIM [Song et al., 2021a] sampler and evaluate two 20-step settings: 256 × 256 and 512 × 512 generation. On DiT-XL/2, we compare with representative cache-based acceleration methods, including the learned-policy L2C and the training-free FORA. We further compare with EOC [Qiu et al., 2025b], a recent training-free cache-optimization method that also aims to mitigate cache-induced quality degradation, but does so through a different mechanism from TCC. 6Table 1: Text-conditional image generation on MS-COCO 2017 with PixArt-α. Latency is measured end-to-end, including ToCa’s dynamic token weighting and TCC calibration; hyperparameters are in Appendix A.2.                                                         
+
+> Method Latency (s) ↓FLOPs ↓Speed ↑MS-COCO2017 FID-30K ↓CLIP ↑
+> PixArt-α0.9832 11.1225 1.00 ×28.15 31.03 50% steps 0.4997 5.5613 1.97 ×37.47 30.50 FORA ( N= 3 )0.4580 3.8902 2.15 ×29.83 30.98 FORA ( N= 3 ) + TCC 0.5388 4.3469 1.82 ×27.35 30.75 ToCa ( N= 3 ,R= 60% )0.9720 6.5357 1.01 ×28.03 30.95 ToCa ( N= 3 ,R= 90% )0.9210 4.6580 1.07 ×29.63 30.95 ToCa ( N= 3 ,R= 90% ) + TCC 1.0480 5.1146 0.94 ×27.79 30.33
+
+Prior statistics and evaluation. TCC estimates calibration statistics offline and applies the resulting calibration transforms during cached sampling. For PixArt-α, we construct a prompt-level prior set using 1K prompts sampled from the MS-COCO-2017 [Lin et al., 2015] training captions, without overlap with the 30K prompts used for FID [Heusel et al., 2018] evaluation. For DiT-XL/2, we construct class-wise priors on ImageNet [Deng et al., 2009] by generating 100 samples per class and averaging token-pooled representations to obtain class-level representative statistics. All prior statistics and calibration matrices are computed in FP32. Offline prior estimation is performed once for each model and base cache setting and is therefore not included in per-sample inference latency; the reported latency includes the calibration transforms applied during cached sampling. We report both FLOPs and wall-clock latency because dynamic token selection and memory movement can make FLOPs an incomplete proxy for end-to-end speed. We provide a diagnostic analysis of the TCC application window in Appendix A.1. For text-to-image generation, we follow the MS-COCO-30K protocol used by ToCa and report FID-30K for image quality and CLIP Score for image-text alignment. The CLIP Score is computed using CLIP ViT-B/32 [Radford et al., 2021]. For class-conditional generation, we follow the standard DiT evaluation protocol by uniformly sampling 50,000 images from the 1,000 ImageNet classes. We report FID-50K, sFID, and Inception Score [Salimans et al., 2016]. For each base cache strategy and evaluation setting, we use a fixed calibration window, site set, and correction strength for all generated samples, rather than adapting these choices per sample. Further details on hyperparameter selection are provided in Appendix A.2. 
+
+Code availability. Our code is available at https://github.com/NJUDeepEngine/TCC .
+
+4.2 Main Results Text-to-image generation. Table 1 reports the results on PixArt-α. TCC improves FID-30K for both FORA and ToCa. For FORA with N = 3 , TCC reduces FID-30K from 29.83 to 27.35, improving over both the cache baseline and the full-computation PixArt-α baseline. For ToCa, the aggressive R = 90% setting lowers FLOPs compared with the milder R = 60% setting, but increases FID-30K from 28.03 to 29.63. Applying TCC to this aggressive setting reduces FID-30K to 27.79, suggesting that TCC can recover cache-induced quality degradation under stronger reuse. This gain is mainly reflected in FID: CLIP Score remains close for FORA+TCC but decreases under the aggressive ToCa+TCC setting, indicating that calibration does not uniformly improve all evaluation metrics. The lower wall-clock speedup of ToCa+TCC reflects ToCa’s dynamic token-level overhead and the added calibration cost; a detailed breakdown is provided in Appendix B.7. For module-level cache methods such as FORA, TCC preserves clear wall-clock acceleration while improving FID. 
+
+Class-conditional image generation. Table 2 summarizes the class-conditional results on DiT-XL/2. On ImageNet 256 × 256 , TCC improves both L2C and FORA, reducing FID from 3.50 to 3.45 for L2C and from 6.82 to 5.70 for FORA. Compared with EOC, TCC achieves the same FID and better sFID on L2C, and a lower FID on FORA. On ImageNet 512 × 512 , TCC consistently improves both cache baselines: it reduces FID from 6.18 to 6.03 for L2C and from 12.13 to 10.99 for FORA. We omit EOC at 512 × 512 because the original paper does not report this setting. The improvements are most consistent on distributional image-quality metrics such as FID and sFID, while Inception 7Table 2: Results on ImageNet with DiT-XL/2 under 20-step DDIM sampling. TCC hyperparameters are summarized in Appendix A.2.                                                                                               
+
+> Resolution Method Latency (s) ↓FLOPs ↓Speed ↑FID ↓sFID ↓IS ↑
+> 256 ×256
+> DiT 0.8164 9.5055 1.00 ×3.51 4.93 223.54 L2C 0.6704 7.4006 1.22 ×3.50 4.66 225.44
+> L2C + EOC 0.7249 7.4100 1.12 ×3.45 4.68 223.96 L2C + TCC 0.7127 7.6887 1.15 ×3.45 4.62 224.54 FORA ( N= 2 )0.4727 4.7634 1.73 ×6.82 8.65 190.01 FORA ( N= 2 ) + EOC 0.5533 4.7700 1.48 ×5.82 5.34 195.84
+> FORA ( N= 2 ) + TCC 0.5208 5.0678 1.57 ×5.70 5.57 194.57
+> 512 ×512
+> DiT 4.6796 42.0977 1.00 ×4.98 6.56 186.18 L2C 3.7654 32.7711 1.24 ×6.18 8.15 178.29 L2C + TCC 3.9908 33.9235 1.17 ×6.03 6.94 178.56
+> FORA ( N= 2 )2.5709 21.0647 1.82 ×12.13 12.02 136.98 FORA ( N= 2 ) + TCC 2.6790 21.9778 1.75 ×10.99 11.06 139.27
+
+Score remains broadly comparable across calibrated and uncalibrated cache variants. Together with the PixArt-α results, these results show that TCC is effective across both text-to-image and class-conditional generation, and across different cache reuse policies. 
+
+4.3 Ablation Study 
+
+Figure 3: Sensitivity to the correction strength 
+
+α on ImageNet 256 ×256 with 20-step DDIM sampling under FORA( N = 2 ). When α =0, both variants reduce to the FORA( N =2) baseline. One-shot calibration becomes increasingly harmful as α grows, while TCC remains stable and improves FID within the tested range. For readability, one-shot points with very large FID are clipped and marked. 
+
+Trajectory-consistent prior estimation. We first study whether calibration statistics should be esti-mated once from an uncorrected cache trajectory or iteratively collected along the corrected trajec-tory. This ablation is conducted on DiT-XL/2 at ImageNet 256 × 256 with 20-step DDIM sampling, using FORA( N = 2 ) as the cache baseline. We com-pare a one-shot calibration variant, which estimates all calibration transforms from the original uncor-rected cache trajectory and keeps them fixed during sampling, with TCC, which estimates each subse-quent calibration transform after preceding calibra-tions have been applied. Thus, TCC collects calibra-tion statistics under the trajectory distribution induced by earlier calibrations. Figure 3 shows the sensitivity to the correction strength α. The two variants start from the same baseline at α = 0 . As α increases, one-shot calibration rapidly over-corrects the cached representations, leading to severe degradation. This indicates that calibration transformations estimated only once from the uncorrected trajectory do not re-main well matched after the sampling trajectory has been altered by prior calibrations. In contrast, TCC remains stable and improves FID within the tested range. This supports the main design of TCC: calibration statistics should be estimated in a trajectory-consistent manner, rather than being fixed from a single uncorrected cache trajectory. The corresponding numerical results are provided in Appendix B.1. 
+
+Effect of transformation components. We further ablate the transformation components used by TCC. Under the same FORA( N = 2 ) setting, we compare three variants: shift-only calibration, which only aligns the representation mean; scale+shift calibration, which aligns the mean and a global scalar scale while removing the rotation component; and full TCC, which uses the complete similarity transformation. As shown in Table 3, shift-only calibration barely improves FID and slightly worsens sFID, indicating that mean alignment alone is insufficient. Scale+shift calibration recovers a large portion of the FID gain, but remains clearly worse than TCC in sFID. TCC with 8Table 3: Ablation on transformation components under FORA( N = 2 ) on DiT-XL/2 (ImageNet 
+
+256 × 256 , 20-step DDIM). For each calibration variant, we report the best result over the tested α
+
+values, with the selected α shown in parentheses.                 
+
+> Method FID ↓sFID ↓
+> FORA( N= 2 ) baseline 6.82 8.65 Shift-only calibration ( α= 0 .50 )6.81 8.87 Scale+shift calibration ( α= 2 .00 )5.81 6.63 TCC ( α= 1 .75 )5.70 5.57
+
+the complete similarity transformation achieves the best FID and sFID trade-off, suggesting that the complete transformation is important for preserving both image quality and structural fidelity. Full curves for FID and sFID are provided in Appendix B.2. 
+
+# 5 Related Work 
+
+Fast sampling for diffusion models. Diffusion inference can be accelerated by reducing the number of sampling steps or denoiser evaluations. Timestep-scheduling methods optimize sampling schedules along the denoising trajectory [Xue et al., 2024, Sabour et al., 2024]. Solver-based methods instead formulate generation as a reverse-time SDE or probability-flow ODE [Song et al., 2021b], leading to fast numerical samplers with fewer denoiser evaluations [Liu et al., 2022, Lu et al., 2022, Zhao et al., 2023, Zhou et al., 2024]. Training-based approaches learn few-step generative dynamics through distillation or consistency modeling [Salimans and Ho, 2022, Song et al., 2023]. 
+
+Cache-based acceleration for diffusion models. Cache-based methods can be organized by the signals and granularity used for reuse decisions, including heuristic schedules, adaptive criteria, learned predictors, and fine-grained reuse policies. Heuristic and fixed-schedule methods exploit temporal redundancy by reusing module outputs, block-level representations, or high-level features across denoising steps [Selvaraju et al., 2024, Ma et al., 2024b, Wimbauer et al., 2024]. Adaptive methods use proxy signals such as feature similarity, timestep embeddings, sample-dependent complexity, or sensitivity to estimate cacheability [Liu et al., 2025a, 2024, Kahatapitiya et al., 2024, Haghighi and Alahi, 2026]. Other methods learn or predict reuse decisions across layers, tokens, or timesteps [Ma et al., 2024a, Lou et al., 2026], refine token- or region-level reuse [Zou et al., 2024, Liu et al., 2025b], or optimize cache schedules across sampling steps [Chu et al., 2025, Aggarwal et al., 2026]. Overall, these works mainly improve reuse decisions, including when, where, and at what granularity representations are reused. 
+
+Cache-induced error correction. After reuse decisions have been made, reused representations can still deviate from their full-computation counterparts and propagate errors through subsequent denoising steps, motivating correction before they are consumed by subsequent computation. Error-optimization and low-rank calibration methods estimate correction signals or structured transforma-tions to compensate for discrepancies between reused and full-computation representations [Qiu et al., 2025b, Chen et al., 2025], but their priors are not explicitly estimated under the corrected history induced by previously applied corrections. Gradient-optimized caching models progressive cache-induced perturbations and compensates for them through gradient propagation during inference [Qiu et al., 2025a], while cumulative-error minimization optimizes cache strategies with an offline cumulative-error model and dynamic pro-gramming under acceleration budgets [Shao et al., 2026]. These studies indicate that correcting reuse-induced discrepancies is distinct from designing cache schedules, while leaving room for calibration procedures that account for the corrected trajectory induced by previous corrections. 
+
+# 6 Conclusion 
+
+We have presented Trajectory-Consistent Calibration (TCC), a training-free calibration method for cache-accelerated diffusion inference. TCC estimates local calibration priors from paired full-9computation and cache-side representations along the corrected cache trajectory, matching each operator to its inference-time history. Experiments on PixArt-α and DiT-XL/2 show that TCC improves FID across representative cache strategies without modifying the denoiser, sampler, or base cache strategy. These results suggest that trajectory-consistent calibration is a useful complement to cache-based diffusion acceleration. We discuss limitations and broader-impact considerations in Appendix C, with additional overhead analysis in Appendix B.7. 10 References 
+
+Anirud Aggarwal, Abhinav Shrivastava, and Matthew Gwilliam. Evolutionary caching to accelerate your off-the-shelf diffusion model, 2026. URL https://arxiv.org/abs/2506.15682 .Junsong Chen, Jincheng Yu, Chongjian Ge, Lewei Yao, Enze Xie, Yue Wu, Zhongdao Wang, James Kwok, Ping Luo, Huchuan Lu, and Zhenguo Li. Pixart-α: Fast training of diffusion transformer for photorealistic text-to-image synthesis, 2023. Zhiyuan Chen, Keyi Li, Yifan Jia, Le Ye, and Yufei Ma. Accelerating diffusion transformer via increment-calibrated caching with channel-aware singular value decomposition, 2025. URL 
+
+https://arxiv.org/abs/2505.05829 .Huanpeng Chu, Wei Wu, Guanyu Fen, and Yutao Zhang. Omnicache: A trajectory-oriented global perspective on training-free cache reuse for diffusion transformer models, 2025. URL https: //arxiv.org/abs/2508.16212 .Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li Fei-Fei. Imagenet: A large-scale hier-archical image database. In 2009 IEEE Conference on Computer Vision and Pattern Recognition ,pages 248–255, 2009. doi: 10.1109/CVPR.2009.5206848. Yasaman Haghighi and Alexandre Alahi. Sencache: Accelerating diffusion model inference via sensitivity-aware caching. arXiv preprint arXiv:2602.24208 , 2026. Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter. Gans trained by a two time-scale update rule converge to a local nash equilibrium, 2018. URL 
+
+https://arxiv.org/abs/1706.08500 .Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin, editors, Advances in Neural Information Processing Systems , volume 33, pages 6840–6851. Curran Associates, Inc., 2020. URL https://proceedings.neurips.cc/paper_files/paper/2020/file/ 4c5bcfec8584af0d967f1ab10179ca4b-Paper.pdf .Kumara Kahatapitiya, Haozhe Liu, Sen He, Ding Liu, Menglin Jia, Chenyang Zhang, Michael S. Ryoo, and Tian Xie. Adaptive caching for faster video generation with diffusion transformers. 
+
+arXiv preprint arXiv:2411.02397 , 2024. Tsung-Yi Lin, Michael Maire, Serge Belongie, Lubomir Bourdev, Ross Girshick, James Hays, Pietro Perona, Deva Ramanan, C. Lawrence Zitnick, and Piotr Dollár. Microsoft coco: Common objects in context, 2015. URL https://arxiv.org/abs/1405.0312 .Feng Liu, Shiwei Zhang, Xiaofeng Wang, Yujie Wei, Haonan Qiu, Yuzhong Zhao, Yingya Zhang, Qixiang Ye, and Fang Wan. Timestep embedding tells: It’s time to cache for video diffusion model. 
+
+arXiv preprint arXiv:2411.19108 , 2024. Joseph Liu, Joshua Geddes, Ziyu Guo, Haomiao Jiang, and Mahesh Kumar Nandwana. Smoothcache: A universal inference acceleration technique for diffusion transformers. In Proceedings of the Computer Vision and Pattern Recognition Conference (CVPR) Workshops , pages 3229–3238, June 2025a. Luping Liu, Yi Ren, Zhijie Lin, and Zhou Zhao. Pseudo numerical methods for diffusion models on manifolds. In International Conference on Learning Representations , 2022. URL https: //openreview.net/forum?id=PlKWVd2yBkY .Ziming Liu, Yifan Yang, Chengruidong Zhang, Yiqi Zhang, Lili Qiu, Yang You, and Yuqing Yang. Region-adaptive sampling for diffusion transformers, 2025b. URL https://arxiv.org/abs/ 2502.10389 .Jinming Lou, Wenyang Luo, Yufan Liu, Bing Li, Xinmiao Ding, Weiming Hu, Yuming Li, and Chenguang Ma. Token caching for diffusion transformer acceleration, 2026. URL https: //arxiv.org/abs/2409.18523 .11 Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. arXiv preprint arXiv:2206.00927 , 2022. Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver++: Fast solver for guided sampling of diffusion probabilistic models. Machine Intelligence Research , 22: 730–751, 2025. doi: 10.1007/s11633-025-1562-4. Xinyin Ma, Gongfan Fang, Michael Bi Mi, and Xinchao Wang. Learning-to-cache: Accelerating diffusion transformer via layer caching, 2024a. Xinyin Ma, Gongfan Fang, and Xinchao Wang. Deepcache: Accelerating diffusion models for free. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 15762–15772, 2024b. doi: 10.1109/CVPR52733.2024.01492. William Peebles and Saining Xie. Scalable diffusion models with transformers. In 2023 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 4172–4182, 2023. doi: 10.1109/ ICCV51070.2023.00387. Junxiang Qiu, Lin Liu, Shuo Wang, Jinda Lu, Kezhou Chen, and Yanbin Hao. Accelerating diffu-sion transformer via gradient-optimized cache. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , pages 17608–17617, 2025a. Junxiang Qiu, Shuo Wang, Jinda Lu, Lin Liu, Houcheng Jiang, Xingyu Zhu, and Yanbin Hao. Accelerating diffusion transformer via error-optimized cache, 2025b. URL https://arxiv.org/ abs/2501.19243 .Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever. Learning transferable visual models from natural language supervision, 2021. URL https: //arxiv.org/abs/2103.00020 .Amirmojtaba Sabour, Sanja Fidler, and Karsten Kreis. Align your steps: Optimizing sampling schedules in diffusion models, 2024. Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. In 
+
+International Conference on Learning Representations , 2022. URL https://openreview.net/ forum?id=TIdIXIpzhoI .Tim Salimans, Ian Goodfellow, Wojciech Zaremba, Vicki Cheung, Alec Radford, and Xi Chen. Improved techniques for training gans, 2016. URL https://arxiv.org/abs/1606.03498 .Peter H. Schönemann. A generalized solution of the orthogonal procrustes problem. Psychometrika ,31(1):1–10, 1966. doi: 10.1007/BF02289451. Pratheba Selvaraju, Tianyu Ding, Tianyi Chen, Ilya Zharkov, and Luming Liang. Fora: Fast-forward caching in diffusion transformer acceleration. arXiv preprint arXiv:2407.01425 , 2024. Tong Shao, Yusen Fu, Guoying Sun, Jingde Kong, Zhuotao Tian, and Jingyong Su. Plug-and-play fidelity optimization for diffusion transformer acceleration via cumulative error minimization. In The Fourteenth International Conference on Learning Representations , 2026. URL https: //openreview.net/forum?id=pt4iKnAm0M .Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In Inter-national Conference on Learning Representations , 2021a. URL https://openreview.net/ forum?id=St1giarCHLP .Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. In International Conference on Learning Representations , 2021b. URL https://openreview.net/forum?id= PxTIG12RRHS .Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. arXiv preprint arXiv:2303.01469 , 2023. 12 Felix Wimbauer, Bichen Wu, Edgar Schoenfeld, Xiaoliang Dai, Ji Hou, Zijian He, Artsiom Sanakoyeu, Peizhao Zhang, Sam Tsai, Jonas Kohler, Christian Rupprecht, Daniel Cremers, Peter Vajda, and Jialiang Wang. Cache me if you can: Accelerating diffusion models through block caching. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 6211–6220, 2024. doi: 10.1109/CVPR52733.2024.00594. Shuchen Xue, Zhaoqiang Liu, Fei Chen, Shifeng Zhang, Tianyang Hu, Enze Xie, and Zhenguo Li. Accelerating diffusion sampling with optimized time steps. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 8292–8301, 2024. doi: 10.1109/ CVPR52733.2024.00792. Wenliang Zhao, Lujia Bai, Yongming Rao, Jie Zhou, and Jiwen Lu. Unipc: A unified predictor-corrector framework for fast sampling of diffusion models. NeurIPS , 2023. Zhenyu Zhou, Defang Chen, Can Wang, and Chun Chen. Fast ode-based sampling for diffusion models in around 5 steps. In 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 7777–7786, 2024. doi: 10.1109/CVPR52733.2024.00743. Chang Zou, Xuyang Liu, Ting Liu, Siteng Huang, and Linfeng Zhang. Accelerating diffusion transformers with token-wise feature caching. arXiv preprint arXiv:2410.05317 , 2024. 13 A Technical Diagnostics 
+
+A.1 Within-label dispersion during late denoising 
+
+Class-wise calibration relies on statistics estimated for each ImageNet label. This implicitly assumes that, at a given denoising step and layer, the class-level mean activation remains a reasonable representative of individual samples from the same class. To examine when this assumption becomes weak, we measure the within-label dispersion of DiT activations during sampling. We follow the reverse DDIM order, where denoising proceeds from step 19 to step 0. Thus, smaller step indices correspond to later denoising stages. For a fixed ImageNet class, we generate 100 samples and collect conditional activations from each DiT block at every denoising step. For each branch and layer, we compute the RMS of the within-label standard deviation across samples and compare it with the RMS of the corresponding class-mean activation. As shown in Figure 4, within-label dispersion generally increases as denoising proceeds. Panel A reports the absolute RMS statistics averaged over layers. In the early-to-middle stages, the class-mean activation remains comparable to, or larger than, the within-label standard deviation. However, the within-label standard deviation grows rapidly in later steps. Panel B summarizes this trend by measuring the fraction of layers whose within-label standard-deviation RMS exceeds the RMS of their corresponding class mean. After the trajectory passes step 12 toward step 0, more than half of the layers satisfy this condition. Panel C further shows the relative dispersion, defined as the ratio between within-label standard-deviation RMS and class-mean RMS. Values above 1 indicate that within-label variation exceeds the activation scale of the corresponding class mean. The ratio rises sharply after the middle steps and remains above 1 for most late denoising stages. This observation supports our choice not to apply class-wise TCC uniformly throughout the entire denoising trajectory. Under the DiT-256 20-step DDIM setting, we restrict TCC to an early-to-middle window, typically steps 19–12. The exact window may vary with the sampler, model, and caching schedule, and we select it jointly with validation performance. Nevertheless, this statistic provides a useful diagnostic: class-wise calibration is more reliable before late-stage activations become dominated by sample-specific variation. 
+
+Figure 4: Within-label activation dispersion increases along the reverse denoising trajectory. 
+
+We analyze 100 samples from the same ImageNet class and collect conditional activations from DiT blocks at each DDIM step. The reverse trajectory proceeds from step 19 to step 0. A: Absolute RMS statistics averaged over layers; solid lines denote within-label standard-deviation RMS, and dashed lines denote class-mean RMS. B: Fraction of layers whose within-label standard-deviation RMS exceeds their class-mean RMS. The horizontal line marks 50% of layers. C: Relative dispersion, measured as within-label standard-deviation RMS divided by class-mean RMS. Values above 1 indicate that within-label variation exceeds the class-mean activation scale. 
+
+A.2 Calibration window and hyperparameter selection 
+
+TCC introduces two main hyperparameters: the calibration strength α and the application window over denoising steps. We select them according to the scale and granularity of the errors induced by each base cache strategy, while keeping the denoiser, sampler, and cache schedule unchanged. The calibration strength α controls how strongly the fitted statistical transform is applied. Since different cache policies reuse representations at different granularities, they induce representation deviations of different magnitudes. For module-level cache methods such as FORA on DiT, reusing entire attention or MLP outputs can tolerate a relatively stronger calibration. In contrast, learned 14 Table 4: Summary of TCC hyperparameters used in the reported experiments. The denoiser, sampler, and base cache schedule are kept unchanged in all settings.                                         
+
+> Model / setting Base cache αWindow
+> PixArt-α256 ×256, 20-step FORA (N= 3) 0.50 19–14 PixArt-α256 ×256, 20-step ToCa (N= 3 , R = 90%) 0.25 19–14 DiT-XL/2 256 ×256, 20-step FORA (N= 2) 1.75 19–12 DiT-XL/2 256 ×256, 20-step L2C 0.50 19–12 DiT-XL/2 512 ×512, 20-step FORA (N= 2) 1.25 19–14 DiT-XL/2 512 ×512, 20-step L2C 0.50 19–12 DiT-XL/2 256 ×256, 50-step FORA (N= 2) 1.75 49–30 DiT-XL/2 256 ×256, 50-step L2C / ToCa 0.50 49–30
+
+layer-level reuse or token-level reuse, as in L2C and ToCa, tends to require smaller α values to avoid over-correction. The optimal strength can also vary across model families; for PixArt-α, we use more conservative strengths for both FORA and ToCa. Within the same base method, moderate α values are relatively stable across nearby resolutions and sampling-step settings. The application window is chosen to cover the early-to-middle part of the reverse denoising trajectory. As discussed in Appendix A.1, late denoising steps contain stronger sample-specific variation, making class- or prompt-level calibration statistics less reliable. Therefore, we avoid applying TCC uniformly to all steps and restrict calibration to a fixed early-to-middle window. For 20-step DDIM sampling on DiT-XL/2, we typically apply TCC to steps 19–12; for the 512 ×512 FORA setting, we use a slightly shorter window 19–14. For 50-step sampling, we use the corresponding relative early-to-middle range, namely steps 49–30. For PixArt-α with 20-step DPM-Solver++ sampling, we apply TCC to steps 19–14. Table 4 summarizes the hyperparameters used in the main experiments and additional ablations. For all settings, within the selected application window, TCC is applied to the cached attention outputs and MLP outputs of all transformer blocks. For PixArt-α, the attention outputs include both self-attention and cross-attention. These settings are selected from a small pilot sweep and then fixed for the reported evaluation. All prior statistics and calibration matrices are computed in FP32. 
+
+# B Additional Experimental Details and Ablations 
+
+B.1 Numerical results for one-shot calibration and TCC 
+
+Table 5 reports representative points from the coarse α sweep used in Figure 3. When α = 0 , both variants reduce to the original FORA( N = 2 ) baseline, since no correction is applied. Even with a weak correction strength, one-shot calibration already degrades generation quality. As α increases, the degradation becomes severe, indicating that a fixed calibration transform estimated from the uncorrected trajectory is not compatible with the trajectory shifted by previous calibrations. In contrast, TCC remains stable and improves FID as the correction strength increases within the tested range. Table 5: Comparison between one-shot calibration and TCC on ImageNet 256 × 256 with 20-step DDIM sampling under FORA( N = 2 ). All variants apply calibration to all cached attention and MLP outputs.                                  
+
+> Method αFID ↓sFID ↓
+> FORA( N= 2 )06.82 8.65 FORA( N= 2 ) + One-shot calibration 0.1 8.55 14.69 FORA( N= 2 ) + TCC 0.1 6.71 8.77 FORA( N= 2 ) + One-shot calibration 0.5 55.61 198.80 FORA( N= 2 ) + TCC 0.5 6.65 8.78 FORA( N= 2 ) + One-shot calibration 1.5 318.75 225.75 FORA( N= 2 ) + TCC 1.5 5.81 6.51
+
+15 B.2 Full curves for transformation-component ablation 
+
+This subsection provides the full results for the transformation-component ablation discussed in the main experimental section. In the main text, we report a compact comparison among shift-only calibration, scale+shift calibration, and the complete TCC transformation. Here, we further show the complete FID and sFID curves under different correction strengths α.Since different calibration forms may reach their best FID and sFID at different correction strengths, a single α value may not fully reflect their respective behavior. Therefore, we evaluate a range of commonly used α values under the same experimental setting and plot the resulting curves in Figures 5a and 5b. All variants are evaluated on DiT-XL/2 at ImageNet 256 × 256 with 20-step DDIM sampling, using FORA( N = 2 ) as the cache baseline. TCC is applied to the cached attention and MLP outputs in the same application window and layer range as in the main ablation. The results are consistent with the compact table in the main text. Shift-only calibration is clearly insufficient, indicating that mean alignment alone cannot adequately correct the deviation introduced by representation reuse. Scale+shift calibration recovers a large portion of the FID improvement and reaches a FID close to the complete TCC transformation. However, its sFID remains noticeably worse than TCC. In contrast, the complete TCC transformation achieves the best overall trade-off, with both the lowest FID and a substantially better sFID. This suggests that the rotation component is important for preserving structural statistics, and supports the necessity of using the full TCC calibration rather than only shift or scale+shift alignment.    
+
+> (a) FID versus α.(b) sFID versus α.
+
+Figure 5: Transformation-component ablation under FORA( N = 2 ). Markers denote measured results, and curves are quadratic fits for visualizing the trend. Shift-only calibration remains close to the cache baseline, while scale+shift calibration substantially improves FID and approaches TCC. Compared with scale+shift, full TCC achieves a much lower sFID, showing that the complete transformation is more effective in preserving structural fidelity. 
+
+B.3 Pooling strategy for calibration statistics 
+
+We ablate how calibration statistics are pooled when constructing the TCC calibration transforms. Table 6 compares three pooling strategies on ImageNet 256 × 256 under different correction strengths. Across all settings, class-pool performs much worse than token-aware variants, suggesting that collapsing calibration statistics into class-level averages discards token-specific spatial and structural variations and can lead to severe over-correction. Introducing token-level statistics substantially improves performance. At α = 1 .75 , mixed token-wise pooling reduces FID from 20.43 to 7.34, while token-pool further improves it to 5.70. The same trend also holds at α = 1 .50 , where token-pool achieves the best FID, sFID, and IS among all pooling strategies. These results indicate that preserving fine-grained token-level statistics provides a more reliable calibration direction for cached representations. 16 Table 6: Ablation on pooling strategy for TCC under different correction strengths. All results are evaluated on ImageNet 256 × 256 and use all transformer layers. 
+
+α Pooling strategy FID ↓ sFID ↓ IS ↑
+
+1.25 Class-pool 15.05 33.93 132.78 1.25 Mixed 8.58 13.81 176.46 1.25 Token-pool 6.13 7.20 194.32 
+
+1.50 Class-pool 17.37 40.48 121.20 1.50 Mixed 8.00 10.94 179.21 1.50 Token-pool 5.81 6.27 196.72 
+
+1.75 Class-pool 20.43 49.43 107.20 1.75 Mixed 7.34 8.08 182.11 1.75 Token-pool 5.70 5.57 194.57 B.4 Additional ImageNet results with 50-step DDIM sampling 
+
+We further evaluate TCC on ImageNet class-conditional generation with DiT-XL/2 under the 256 ×
+
+256 , 50-step DDIM setting. This setting allows us to compare with L2C, FORA, and ToCa under the same benchmark. In contrast, ToCa does not report a tuned token-caching ratio for the 20-step setting, and directly reusing the reported ratio leads to a poor baseline. Therefore, we use the 20-step setting in the main paper for L2C and FORA, and provide the 50-step comparison here as an additional result. Table 7: Class-conditional image generation on ImageNet 256 × 256 with 50-step DDIM sampling. For ToCa, we use R = 93% ; TCC hyperparameters are summarized in Table 4.                                                                             
+
+> Method Latency (s) ↓FLOPs ↓Speed ↑FID ↓sFID ↓IS ↑Precision ↑Recall ↑
+> DiT 2.0435 23.7637 1.00 ×2.26 4.32 238.21 0.81 0.60 L2C 1.6494 18.1264 1.24 ×2.25 4.28 246.47 0.81 0.58 L2C + TCC 1.7638 18.8494 1.16 ×2.22 4.32 245.16 0.81 0.59 FORA( N= 2 )1.1929 11.9085 1.71 ×2.65 4.71 238.04 0.80 0.59 FORA( N= 2 ) + TCC 1.3163 12.6695 1.55 ×2.49 4.69 237.00 0.80 0.59 ToCa( N= 2 )1.5386 13.5404 1.33 ×2.60 4.43 236.57 0.80 0.58 ToCa( N= 2 ) + TCC 1.6186 14.3775 1.26 ×2.55 4.49 235.84 0.80 0.59
+
+As shown in Table 7, TCC improves FID for all three cache baselines in this setting. For L2C, TCC reduces FID from 2.25 to 2.22, while keeping precision unchanged and slightly improving recall from 0.58 to 0.59. For FORA( N = 2 ), TCC reduces FID from 2.65 to 2.49 and slightly improves sFID from 4.71 to 4.69. For ToCa( N = 2 ), TCC reduces FID from 2.60 to 2.55, with a slight increase in sFID. These results provide additional evidence that TCC can be applied to different cache schedules and acceleration mechanisms beyond the 20-step main setting. 
+
+B.5 Additional qualitative comparisons 
+
+We provide additional qualitative comparisons to further illustrate the visual effect of TCC under cache-accelerated sampling. These examples complement the quantitative results in the main paper by showing how TCC affects generated samples under matched prompts or class labels, random seeds, and sampling configurations. For text-to-image generation, we show more PixArt-α comparisons under the same setting as Fig. 1. Specifically, we compare the base cache-accelerated sampler with its TCC-calibrated counterpart using matched MS-COCO prompts, seeds, and 20-step DPM-Solver++ sampling at 256 × 256 
+
+resolution. As shown in Fig. 6, TCC generally preserves the overall layout of the cached samples while improving prompt-relevant details and reducing local visual degradation introduced by cache reuse. 17 Figure 6: Additional qualitative comparisons on PixArt-α under cache-accelerated text-to-image generation. All comparisons use matched prompts, random seeds, and sampling settings. TCC preserves the overall composition while improving prompt-relevant details and mitigating local degradation caused by cache reuse. 18 For class-conditional generation, we additionally visualize DiT-XL/2 samples on ImageNet at 256 ×
+
+256 resolution with 20-step DDIM sampling and classifier-free guidance scale 4.0. We compare the corresponding cache baseline and TCC-calibrated results under matched class labels and random seeds. As shown in Fig. 7, TCC improves visual fidelity in several cases, especially by reducing artifacts and recovering finer object or texture details, while maintaining the semantic category of the generated image. These qualitative results are consistent with the quantitative improvements reported in the main paper and suggest that TCC improves cache-accelerated generation not only in distribution-level metrics such as FID, but also in sample-level visual quality. 19 Figure 7: Additional qualitative comparisons on DiT-XL/2 for ImageNet class-conditional generation at 256 × 256 resolution with 20-step DDIM sampling and classifier-free guidance scale 4.0. All comparisons use matched class labels, random seeds, and sampling settings. 20 B.6 Number of prompts for PixArt representative selection 
+
+We further study how many text prompts are needed to estimate representative TCC statistics for text-to-image generation. In this experiment, PixArt-α is used as the base model, ToCa is used as the cache acceleration method, and TCC is applied as a calibration module. We fix the ToCa configuration to N = 3 and R = 90% , and only vary the number of MS-COCO2017 captions used for representative selection. To isolate the effect of prompt count, all settings use the same correction strength α = 0 .25 and the same application window 19–14. Table 8 compares the results obtained with 1k, 2k, and 5k representative prompts. The three settings yield similar FID and CLIP scores, indicating that the estimated TCC statistics are not sensitive to the prompt-set size within this range. Table 8: Ablation on the number of representative prompts used to estimate TCC statistics for PixArt-α under the same ToCa-accelerated sampling pipeline.           
+
+> Prompts MS-COCO2017 FID-30K ↓CLIP ↑
+> 1k 27.36 30.37
+> 2k 28.13 30.25 5k 27.79 30.33
+
+The results show that increasing the representative prompt set from 1k to 5k does not lead to consistent improvements. The 1k setting performs slightly best among the tested choices, suggesting that a relatively small prompt set is already sufficient for estimating stable TCC statistics in this setting. We therefore use 1k representative prompts for PixArt experiments unless otherwise specified. 
+
+B.7 Latency overhead of ToCa on PixArt-α
+
+Latency and FLOPs measurement. Latency is measured with batch size 8 using CUDA events. The latency values reported in the tables correspond to the end-to-end wall-clock time for generating one batch of eight images. For each method, we first perform one warm-up sampling run and then report the average latency over five timed sampling runs under the same sampling configuration. The speedup values are computed from these batch latency measurements relative to the corresponding full-computation baseline. The FLOPs reported in the tables are normalized per generated image. They are computed separately from the CUDA-event timing: for DiT and PixArt-α cache/TCC variants, FLOPs are obtained from analytical estimators matched to the corresponding cache schedule and TCC application window; for the DiT-ToCa baseline, FLOPs are taken from the original ToCa FLOPs counter. Computing FLOPs separately avoids adding profiling overhead to the latency measurements and makes the FLOPs numbers reflect estimated dense model-computation cost rather than measured runtime. Since all methods within each table are compared under the same batch-size and FLOPs-normalization protocol, these numbers are intended to support relative speed–cost comparisons rather than to equate wall-clock latency and FLOPs units directly. The FLOPs estimates include the denoiser forward computations and the additional TCC calibration transforms, while excluding VAE decoding, text encoding, I/O, and metric computation. The additional FLOPs introduced by TCC come only from applying the fitted calibration transforms at selected cached sites. For cache baselines, reused cached representations are counted as zero additional dense-computation FLOPs, and only the freshly computed modules or tokens are counted according to the corresponding cache schedule. 
+
+Latency analysis of ToCa+TCC. The end-to-end latency numbers in Table 1 are measured under the above protocol and are used for the main speed-quality comparison. To further explain the apparently unusual latency behavior of ToCa+TCC, especially the fact that it can be slower in wall-clock time despite lower estimated FLOPs, we conduct an additional fine-grained profiling experiment on a single sampling pass. This extra profiling run is not used to report the main latency numbers; it is used only to analyze the relative composition of ToCa’s runtime overhead. 21 As shown in Table 1, ToCa reduces the estimated model FLOPs on PixArt-α, but the corresponding wall-clock acceleration is limited. This discrepancy mainly comes from two sources. First, ToCa performs token-level reuse rather than whole-module reuse. Even under aggressive reuse, fresh tokens are still recomputed in the cross-attention and MLP modules, so a non-trivial portion of transformer computation remains. Second, ToCa introduces a dynamic token-management path, including token scoring, freshness reweighting, sorting, token gathering/scattering, and cache-index updates. These operations contribute modestly to model FLOPs, but can introduce noticeable wall-clock overhead due to indexing, memory movement, synchronization, and many small GPU kernels. For this analysis, we further instrument ToCa-r90 on PixArt-α at 256 × 256 resolution with 20 sampling steps using CUDA events. This profiling is used only to analyze the relative latency composition. Because module-level profiling requires additional CUDA events and synchronization points, the profiled absolute latency is not intended to match the end-to-end latency reported in Table 1. 
+
+Figure 8: Latency breakdown of ToCa-r90 on PixArt-α at 256 ×256 resolution with 20 sampling steps. Blue bars denote dynamic token-selection overhead, green bars denote fresh-token recomputation in cached modules, and the gray bar denotes common sampling runtime, including regular forward computation, residual normalization, cache reuse operations, and other non-ToCa-specific sampling costs. Percentages are normalized by the total profiled latency. Figure 8 shows the measured latency composition. In this profiling run, ToCa-r90 takes 1474 .4 ms per batch in total. The dynamic token-selection path accounts for 420 .1 ms, including token selection before cross-attention cache computation and before MLP cache computation: 
+
+cross_token_select = 216 .2 ms , mlp_token_select = 203 .8 ms .
+
+Together, these two selection stages contribute 28 .5% of the total profiled latency. Inside this dynamic path, the main measured components include score evaluation ( 146 .7 ms, 9.9% ), spatial bonus computation ( 71 .2 ms, 4.8% ), sorting ( 41 .6 ms, 2.8% ), and cache-index maintenance ( 39 .3 ms, 
+
+2.7% ). These costs are not well captured by model-FLOPs counting, since they are dominated by memory access, indexing, synchronization, and small-kernel overheads rather than dense matrix multiplication. The dynamic selection path, however, is not the only reason for the limited latency speedup. As shown in Figure 8, fresh-token recomputation in cached modules also takes a substantial fraction of runtime: 180 .2 ms ( 12 .2% ) for cross-attention and 68 .1 ms ( 4.6% ) for MLP. Therefore, even if the measured selection overhead were removed, the ToCa-r90 latency would decrease from 1474 .4
+
+ms to about 1054 .3 ms, which is still not close to the acceleration suggested by FLOPs reduction alone. This is because ToCa still performs partial token computation in attention and MLP modules, whereas static cache methods such as FORA reuse whole module outputs on cache steps. Overall, the latency gap of ToCa on PixArt-α comes from the combination of retained fresh-token computation and dynamic token-management overhead. This explains why ToCa has wall-clock 22 latency close to the native PixArt-α baseline in Table 1, despite reducing the estimated FLOPs. TCC further applies a calibration transform to cached representations. Although this adds less than 10% extra FLOPs over the ToCa-r90 setting, the base ToCa latency is already close to the native baseline. Therefore, ToCa+TCC can become slower than native PixArt-α in wall-clock time. The ToCa+TCC result on PixArt-α should thus be interpreted as a quality-recovery setting under aggressive token-level reuse, with an explicit latency trade-off. 
+
+B.8 Compute resources 
+
+The reported experiments were conducted on NVIDIA H800 GPUs with 80GB memory. We report approximate compute in H800 GPU-hours, computed as wall-clock time multiplied by the number of GPUs. For our DiT-XL/2 ImageNet evaluations, 50K-sample 20-step TCC runs take about 1–2 GPU-hours per method setting at 256 × 256 and about 6–8 GPU-hours at 512 × 512 . The corresponding offline prior construction takes about 2 GPU-hours at 256 × 256 and up to about 25 GPU-hours for the largest 512 × 512 setting. For PixArt-α, MS-COCO-30K sampling runs take about 1–2 GPU-hours per method setting, and prior-construction runs, including prompt-count ablations up to 5K prompts, take about 1 GPU-hour per method pack. For storage overhead, in the DiT-XL/2 256 ×256 20-step FORA( N = 2 ) setting, the stored calibration operators for one calibrated cache timestep occupy about 0.3GB. This size is determined mainly by the DiT backbone and the selected calibration sites, rather than by the particular base cache policy. For example, four calibrated cache timesteps within the 19–12 apply window require about 1.2GB of stored calibration operators in the DiT-XL/2 256 × 256 20-step FORA( N = 2 ) setting. This calibration pack is constructed with 5 H800 GPUs in parallel. 
+
+# C Limitations and Broader Impact 
+
+TCC requires an offline prior-estimation stage and additional calibration transforms during cached inference, which introduce extra FLOPs and can reduce wall-clock speedup when the underlying cache method already incurs dynamic token-selection or memory-movement overhead; a detailed overhead analysis is provided in Appendix B.7. Calibration strength and sites are chosen empirically per base cache strategy, reflecting strategy-dependent error magnitudes and granularities. Although TCC consistently improves FID, gains do not transfer uniformly to all metrics; CLIP Score or sFID can be slightly less favorable in some settings. By improving quality preservation in cache-accelerated image generation, TCC may reduce compute and energy costs, but may also lower the cost of misusing generative models for deceptive or harmful synthetic content. 23

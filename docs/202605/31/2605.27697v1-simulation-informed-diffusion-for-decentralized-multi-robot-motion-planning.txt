@@ -1,0 +1,552 @@
+Title: Simulation-Informed Diffusion for Decentralized Multi-robot Motion Planning
+
+URL Source: https://arxiv.org/pdf/2605.27697v1
+
+Published Time: Thu, 28 May 2026 00:22:44 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# SIMULATION -I NFORMED DIFFUSION FOR DECENTRALIZED 
+
+# MULTI -ROBOT MOTION PLANNING 
+
+Jinhao Liang 
+
+University of Virginia 
+
+jliang@email.virginia.edu 
+
+Sven Koenig 
+
+University of California, Irvine 
+
+sven.koenig@uci.edu 
+
+Ferdinando Fioretto 
+
+University of Virginia 
+
+fioretto@virginia.edu 
+
+# ABSTRACT 
+
+Decentralized multi-robot motion planning requires each robot to generate collision-free trajectories from local observations, without global sensing or reliable communication. However, most existing planners, whether classical or learning-based, generate trajectories from a static snapshot of the local observation, which limits their ability to anticipate the future behavior of neighboring robots. This limitation is critical as the number of robots increases and the environment becomes more cluttered. To overcome this challenge, this paper introduces Simulation-Informed Diffusion (SID), a decentralized framework built on constraint-aware diffusion models (CADM). SID first uses CADM to simulate the future trajectories of neighboring robots from their currently observed states, and then uses the same CADM to plan each robot’s own trajectory under safety constraints informed by these simulations. Crucially, the accurate simulation of neighbors enables a minimal communication scheme that triggers coordination only when necessary in highly congested scenarios. Experiments across diverse environments show that SID consistently outperforms baseline methods in terms of planning effectiveness and constraint satisfaction, and scales to scenarios with 108 robots and 160 obstacles. 
+
+Keywords Diffusion models · Decentralized multi-robot motion planning 
+
+# 1 Introduction 
+
+Multi-Robot Motion Planning (MRMP) seeks collision-free trajectories for multiple robots operating in a shared environment, and underpins applications ranging from automated warehouses to drone fleets and autonomous driving systems [Antonyshyn et al., 2023]. Many MRMP methods assume a centralized planner with full access to all robot states [Liang et al., 2025b, Shaoul et al., 2024]. However, this assumption is often violated in practical systems, where communication may be limited or unreliable, and each robot may operate under partial observability of the environment [Chen et al., 2021]. The key challenge in such settings is to generate collision-free trajectories from local observations with minimal communication. A common way to address this decentralized planning problem is to compute feasible actions or trajectories based on the current local observation. In particular, reactive methods , such as ORCA [Van Den Berg et al., 2011], select an immediate feasible action by reasoning over the current positions and velocities of nearby robots and obstacles. These methods are efficient and decentralized, but they are inherently myopic: a feasible action computed from a single snapshot ignores future interactions and may fail in dense environments. To mitigate this issue, learning-based methods have been proposed to learn mappings from local observations to actions or future states [Sartoretti et al., 2019, Wang et al., 2023]. These methods can capture more complex relationships between observations and actions, extending the reactive paradigm but inherit its myopia, since plans still derive from the current observation alone. Finally, prediction-based planning methods predict future trajectories of neighboring robots and use these as planning references [Zhu et al., 2021, Lindemann et al., 2023]. These methods provide forward-looking signals, but the limited accuracy of the predictions may cause a substantial mismatch with the trajectories neighbors actually execute. This mismatch ultimately undermines the reliability of these references for decentralized planning. 
+
+> arXiv:2605.27697v1 [cs.RO] 26 May 2026
+
+Liang, Koenig and Fioretto – preprint. (a) Local Observation  (b) CADM as Simulator  (c) CADM as Planner  (d) Infeasible Planning  (e) Communication 
+
+Same CADM for simulation and planning  Communication only when necessary 
+
+Figure 1: Overview of SID. From a local observation, the robot uses CADM first to simulate feasible future trajectories for neighboring robots and then to plan its own trajectory under safety constraints. If the local planner cannot find a feasible trajectory under the current simulated constraints, SID triggers communication among the affected robots to coordinate actions. To overcome these challenges, this paper introduces Simulation-Informed Diffusion (SID) , a decentralized framework in which each robot uses a single constraint-aware diffusion model (CADM) as both simulator and planner. The proposed constraint-aware diffusion model generates trajectories that satisfy collision-avoidance and kinematic constraints; it augments standard diffusion sampling with a proximal term and uses a Lagrangian dual method to solve the resulting constrained optimization problem. As a simulator, CADM generates accurate future trajectories for neighboring robots from their current observed states. As a planner, it combines these simulated trajectories with the current local observation to generate a collision-free trajectory by projecting diffusion samples onto the planning constraint set. Crucially, the accuracy of this constraint-aware diffusion-based simulator enables each robot to greatly minimize communication. The proposed communication scheme triggers messages only when local planning cannot resolve a conflict, eliminating unnecessary exchange in sparse conditions. In particular, SID develops a communication mechanism driven by simulation-informed conflict detection. Robots exchange messages only when local simulation and planning cannot resolve predicted conflicts, reducing communication while maintaining planning performance. In an extensive MRMP benchmark of increasing size and complexity, SID outperforms representative reactive, learning-based, and prediction-based planning methods (ORCA [Van Den Berg et al., 2011], IA-MPC [Zhu et al., 2021], and MIMIC-D [Dong et al., 2025]) in trajectory quality and constraint satisfaction, and in large-scale congested scenarios it remains effective using up to 108 robots and 160 obstacles. Figure 1 summarizes the SID framework. 
+
+# 2 Related Work 
+
+Multi-robot Motion Planning. Multi-robot motion planning has traditionally been formulated as a joint planning problem, where a centralized planner computes collision-free trajectories for all robots. Classical approaches typically instantiate this view through optimization-based formulations [Augugliaro et al., 2012, Marcucci et al., 2024, Jaitly et al., 2025]. These methods can reason about global feasibility and robot-robot interactions, but they require a central planner that collects all robot states, solves a coupled planning problem, and distributes commands. This creates a single point of failure [Sheng et al., 2006] and requires reliable communication, which is difficult to maintain in distributed environments [Wiktor et al., 2014]. These limitations motivated decentralized MRMP, where each robot plans from local observations and limited communication. In such a setting, reactive collision-avoidance methods [Van Den Berg et al., 2011, Guo et al., 2021, Alonso-Mora et al., 2013] removed the need for a central planner by allowing each robot to select locally safe actions from nearby robot states and obstacles; however, given their myopic nature, they often fail in dense environments where future interactions determine safety. Learning-based decentralized planners extend this local decision-making paradigm by learning policies or planning rules from local observations [Sartoretti et al., 2019, Damani et al., 2021, Wang et al., 2023]. These methods improve expressiveness over hand-designed reactive rules, but many remain tied to snapshot-based inputs [Wang et al., 2021]. More recent methods predict future trajectories of neighboring robots and use them as planning references [Zhu et al., 2021, Lindemann et al., 2023]. This line of work introduces an important capability: local planners can reason about where nearby robots may be over the planning horizon, rather than only where they are now. However, standard neural predictors are not themselves constrained planners. As a result, they can produce trajectories that are dynamically infeasible, nonsmooth, or inconsistent with the trajectories that neighboring robots will actually execute. SID addresses this limitation by replacing unconstrained prediction with constraint-aware simulation, generating feasible future references that are aligned with the planner’s trajectory distribution. 2Liang, Koenig and Fioretto – preprint. 
+
+Generative Models for Motion Planning. Generative models have recently provided a different route for motion planning: instead of searching for a single trajectory under a hand-designed cost, they learn distributions over feasible or high-quality trajectories. This is particularly attractive in continuous motion planning, where the solution space is multimodal and where a robot may need to choose among qualitatively different homotopy classes. Such approaches have been applied to single-robot motion planning [Carvalho et al., 2025, Luo et al., 2024] and centralized MRMP [Luan et al., 2025, Shaoul et al., 2024], with projection and discrete guidance improving safety and scalability [Liang et al., 2025a,b]. Recent work has also explored decentralized MRMP. However, they either condition each robot only on local observations [Zhu et al., 2024, Dong et al., 2025], which limits their ability to anticipate future neighbor behavior, or require fixed-frequency communication among robots [Lew et al., 2025], which increases communication burden. SID closes this gap by using the same constraint-aware diffusion model as a local simulator and planner. Each robot simulates feasible future trajectories for its neighbors, conditions its own planning on these simulated futures, and communicates only when simulation-informed planning cannot resolve a predicted conflict. 
+
+# 3 Preliminaries 
+
+The paper focuses on decentralized multi-robot motion planning under partial observability and limited communication. We first introduce the problem formulation, then review generative diffusion models, which are the foundation of our proposed method. 
+
+Decentralized multi-robot motion planning. Consider a set A = {1, . . . , N } of N robotic agents operating within an environment W ⊂ R2. The environment contains a set of static obstacles O, defining the free space as F := W \O .Each robot i ∈ A starts from an initial state si and aims to reach a goal state gi. Unlike centralized MRMP, where a planner observes the full joint state of all robots, in the decentralized setting each robot plans from local information alone. Robot i receives a local observation oi encoding the portion of the environment and neighboring robots visible within its sensing range [Chen et al., 2021]. When communication is available, robot i may also receive messages ci = {mj→i}j∈N i from neighboring robots in its communication neighborhood Ni [Wang et al., 2023]. The decentralized planner πθ aims to map these local inputs to a collision-free trajectory of horizon H. This planned trajectory for robot i is denoted as τi = ( p0 
+
+> i
+
+, p1 
+
+> i
+
+, . . . , pHi ). The planner is defined as: 
+
+τi = πθ (oi, ci, gi). (1) Following a standard convention in MRMP, this work models each robot i as a disk of radius ri and assumes a maximum speed vmax [Shaoul et al., 2024, Liang et al., 2025a]. A set of trajectories {τi}i∈A is feasible if it satisfies obstacle avoidance, inter-robot separation, and kinematic constraints at every planning step: 
+
+dist( pψi , O) ≥ ri, ∀i ∈ A , ψ ∈ [H],
+
+∥pψi − pψj ∥2 ≥ ri + rj ; ∀i, j ∈ A , i ̸ = j, ψ ∈ [H],
+
+∥pψ+1  
+
+> i
+
+− pψi ∥2 ≤ vmax , ∀i ∈ A , ψ ∈ [H−1] ,
+
+(2) where ψ denotes the planning step. The first constraint requires each robot to remain in the obstacle-free region with clearance at least its radius. The second enforces pairwise separation between robots. The third imposes a maximum displacement between consecutive planning steps, which acts as a speed limit. SID uses these constraints both to guide trajectory generation and to determine when local simulation is insufficient and communication is required. 
+
+Generative diffusion models for trajectory planning. Generative diffusion models Sohl-Dickstein et al. [2015], Ho et al. [2020] produce high-fidelity complex data by operating in two phases: a forward step , which gradually introduces noise to clean data samples, followed by a reverse denoising step , in which a deep neural network is trained to iteratively remove noise. This forward process defines a Markov chain {xt}Tt=0 , with initial sample x0 ∼ p(x0) and each transition 
+
+q(xt|xt−1) realized by adding Gaussian noise according to a variance schedule αt. In trajectory planning, the clean sample is a trajectory over a finite horizon, e.g., x0 ≡ τi = ( p0 
+
+> i
+
+, p1 
+
+> i
+
+, . . . , pHi ), or a vectorized representation of it. In 
+
+score-based diffusion Song and Ermon [2019], Song et al. [2020], the reverse process relies on a learned score function 
+
+sθ (xt, t ) = ∇xt log pt(xt) which points toward regions of higher probability under the noisy distribution. This score function is trained to minimize 
+
+min  
+
+> θ
+
+Et∼[1 ,T ],p (x0),q(xt|x0)
+
+(1 − αt)
+
+h
+
+∥sθ (xt, t ) − ∇ xt log q(xt|x0)∥2i
+
+. (3) where αt is a variance schedule that controls the noise level at each step. Once trained, the model generates a trajectory by initializing xT ∼ N (0, I) and iteratively denoising it. This is also known as the sampling phase, which commonly follows the Stochastic Gradient Langevin Dynamics update rule [Song and Ermon, 2019]: 
+
+xt = xt+1 + ϵ
+
+2 sθ (xt+1 , t +1)+ √ϵz, (4) where ϵ denotes the step size and z is Gaussian noise. 3Liang, Koenig and Fioretto – preprint. 
+
+# 4 Simulation-Informed Diffusion for Decentralized MRMP 
+
+This section presents Simulation-Informed Diffusion (SID), a diffusion-based framework for decentralized MRMP. We first describe the Constraint-aware Diffusion Model (CADM), which generates feasible trajectories under safety constraints. We then use CADM as a local simulator to predict feasible future trajectories for neighboring robots. Finally, we present a simulation-guided diffusion planner that conditions each robot’s trajectory generation on these simulated futures, together with a minimal communication mechanism that activates only when local planning becomes infeasible. 
+
+Constraint-aware Diffusion Models. Diffusion models can capture complex trajectory distributions, but they may still produce infeasible trajectories, limiting their use in robotic systems [Carvalho et al., 2025, Liang et al., 2025a, 2026]. To enforce collision-avoidance and kinematic constraints during sampling, we build on projected diffusion methods for motion planning [Christopher et al., 2024, Liang et al., 2025a] and define the constrained target density at diffusion step 
+
+t as ˜pt(xt) ∝ pt(xt)I(xt ∈ C ), where C denotes the feasible set induced by the planning constraints. Unlike standard diffusion sampling, which seeks only high-probability samples under pt, this formulation seeks high-probability trajectories while requiring every diffusion iterate to lie in C. Operationally, CADM modifies the SGLD update in Eq. 4 to include a projection step: 
+
+xt = PC
+
+
+
+xt+1 + ϵ
+
+2 sθ (xt+1 , t +1)+ √ϵz
+
+
+
+, (5) where PC (xt) = arg min y∈C ∥y − xt∥22 is the Euclidean projection operator onto the constraint set C. This projection enforces feasibility at every sampling step and guides the diffusion model toward constraint-satisfying trajectories. Given the non-convexity of C, this projection is non-trivial. However, the structure of the constraints allows for efficient optimization. The obstacle avoidance and inter-robot separation constraints can be expressed as differentiable functions of the trajectory, while the kinematic constraints are simple norm bounds on consecutive trajectory points. We write 
+
+C = {y | h(y) ≤ 0}, where h(y) stacks the collision-avoidance and kinematic inequality constraints, and solve the resulting projection problem using the augmented Lagrangian: 
+
+Lρ(y, ν) = ∥y − xt∥22 + ν⊤h(y) + ρ
+
+2 ∥ max( 0, h(y)) ∥22, (6) where ν ≥ 0 are the Lagrange multipliers and ρ > 0 is the penalty parameter. The projection sub-problem is solved by leveraging the classical primal-dual optimization method: we alternate gradient descent on the primal variable y and dual ascent on ν, with update ν ← max( 0, ν + ρ h(y)) [Neal et al., 2011, Boyd and Vandenberghe, 2004]. After each round, ρ is increased, and the process is repeated until the constraints are satisfied. 
+
+Neighbor Trajectory Simulation. Even if trajectory feasibility can be enforced by the CADM sampler, in decentralized MRMP, the inter-robot constraints in Eq. 2 depend on the future positions of neighboring robots over the planning horizon. If these future positions are unavailable, the planning robot can only constrain its trajectory against the currently observed neighbor states, which reduces CADM to a reactive collision-avoidance planner. SID avoids this limitation by using CADM not only to plan the agent’s trajectory, but also to simulate feasible future trajectories for observed neighbors. These simulated trajectories define the time-indexed references against which each robot enforces inter-robot safety. Formally, robot i applies the simulator πθ independently to each observed neighbor: 
+
+ˆτj = πθ (oi, ci, gj ), ∀j ∈ N i, (7) where ˆτj = (ˆ p0 
+
+> j
+
+, ˆp1 
+
+> j
+
+, . . . , ˆpHj ) denotes the simulated trajectory of neighbor j over the planning horizon H. The key role of this step is not merely to predict where neighbor j may move, but to produce a realistic trajectory reference generated by the same constraint-aware diffusion mechanism used for planning, as shown in Figure 1(b). To serve as a reliable planning reference, ˆτj must satisfy obstacle avoidance, kinematic limits, and inter-robot separation. When simulating neighbor j, robot i treats the stored planned trajectories of the other observed neighbors from the previous planning round as fixed references; denote these trajectories by τl = ( p0 
+
+> l
+
+, . . . , pHl ). The resulting simulation constraint set is: 
+
+Csim (j) = 
+
+
+
+ˆτj
+
+dist(ˆ phj , O) ≥ rj , h ∈ [H],
+
+∥ˆph+1  
+
+> j
+
+− ˆphj ∥2 ≤ vmax , h ∈ [H−1] ,
+
+∥ˆphj − phl ∥2 ≥ rj + rl, ∀l ∈ N i \ { j}, h ∈ [H]
+
+
+
+. (8) 
+
+Simulation-guided Diffusion-based Decentralized Planning. Given the simulated neighboring trajectories { ˆτj }j∈N i ,robot i uses them as dynamic references for planning its trajectory, which is illustrated in Figure 1(c). We adopt a receding-horizon control (RHC) scheme for decentralized planning Zhu et al. [2024], Dong et al. [2025]. At planning time ψ, robot i acquires a local observation oψi , simulates the future trajectories of observed neighbors, and then 4Liang, Koenig and Fioretto – preprint. generates a trajectory τi = ( p0 
+
+> i
+
+, p1 
+
+> i
+
+, . . . , pHi ). Although the planner optimizes over all H future steps, it executes only the first k, where 1 ≤ k < H . After execution, robot i receives a new local observation oψ+ki , re-simulates the neighboring trajectories { ˆτ ψ+kj }j∈N ψ+ki
+
+, and replans over the next horizon. This observation-simulation-planning-execution loop lets the local plan adapt as interactions evolve. To guarantee safety in each planning round, the planned trajectory for robot i must satisfy environmental obstacle avoidance, kinematic limits, and inter-robot safety with respect to the simulated neighboring trajectories. The planning constraint set can be written as: 
+
+Cplan (i) = 
+
+τi
+
+dist( phi , O) ≥ ri, h ∈ [H],
+
+∥ph+1  
+
+> i
+
+− phi ∥2 ≤ vmax , h ∈ [H−1] ,
+
+∥phi − ˆphj ∥2 ≥ ri + rj , ∀j ∈ N i, h ∈ [H]
+
+ . (9) 
+
+Algorithm 1 Simulation-guided Decentralized Planning  
+
+> 1:
+
+Input: Robot i, goal gi, CADM πθ , RHC window k 
+
+> 2:
+
+Initialize planning time ψ ← 0 
+
+> 3:
+
+while robot i not at gi do  
+
+> 4:
+
+Acquire oi and observed neighbors Ni 
+
+> 5:
+
+for each neighbor j ∈ N i do  
+
+> 6:
+
+Simulate ˆτj with πθ under Csim (j) 
+
+> 7:
+
+end for  
+
+> 8:
+
+Define Cplan (i) and eCplan (i) using { ˆτj }j∈N i 
+
+> 9:
+
+Define Chold (i) using space-time A ∗ on eCplan (i) 
+
+> 10:
+
+Generate τi with πθ under Cplan (i) ∩ C hold (i) 
+
+> 11:
+
+Execute the first k time steps of τi 
+
+> 12:
+
+Advance planning time ψ ← ψ + k 
+
+> 13:
+
+end while 
+
+The set Cplan (i) enforces feasibility with respect to environmental obstacles and simulated neigh-boring trajectories, but it does not determine when robot i should reach its goal. In diffusion-based planning, the travel time is typically pre-defined because the planner samples trajectories over a fixed horizon [Shaoul et al., 2024, Liang et al., 2025a]. However, a fixed arrival schedule is restrictive in decentralized MRMP: robots in sparse regions should reach their goals sooner, whereas robots in congested regions may need more time to avoid neighbors safely. To address this issue, we estimate an adaptive ar-rival time for each robot at each RHC round and impose it as a goal-holding constraint, allowing the planner to reduce travel time while preserv-ing safe goal reaching. Specifically, at each planning round, robot i runs a space-time A ∗
+
+search on a discretized version of the local planning problem under Cplan (i) [Silver, 2005]. Let eCplan (i) denote the result-ing discretized feasible set. The search returns the earliest feasible arrival step ai = min {h ∈ { 0, . . . , H } | ˜phi = gi}.
+
+Because space-time A ∗ operates on a discretized feasible set, ai may be later than the shortest feasible arrival time in the continuous trajectory space used by SID. We therefore treat ai as a conservative arrival step. Given ai, we define goal-holding constraints 
+
+Chold (i) = τi phi = gi, h = ai, . . . , H . (10) Overall, robot i plans under the combined feasible set Cplan (i) ∩ C hold (i). This combined constraint keeps the trajectory safe with respect to obstacles and simulated neighbors while ensuring that it reaches the goal by the conservative target step and remains there afterward. The complete procedure is summarized in Algorithm 1. 
+
+Communication Mechanism Design. Simulation-guided planning resolves most local interactions (a) Initial state  (b) Coordination 
+
+Conflict 
+
+(c) High -
+
+priority Plan 
+
+(d) Low -
+
+priority Plan   
+
+> yield outside
+> go first
+> conflict resolved
+
+Figure 2: Example of a narrow corridor bottleneck. by using simulated future trajecto-ries as references for local trajectory generation. However, some crowded interactions require explicit coordi-nation rather than simulation alone, as shown in Figure 1(d)–(e). Con-sider a case in which several robots may try to enter a narrow passage that admits only one robot at a time. Local observations and simulated tra-jectories alone cannot determine a passing order, as illustrated in Fig-ure 2, panels (a) and (b). In such cases, robots need communication to share planned trajectories and break the symmetry of the interaction. 5Liang, Koenig and Fioretto – preprint.    
+
+> (a) Basic. (b) Dense. (c) Room. (d) Shelf.
+
+Figure 3: Examples of benchmark maps used for MRMP experiments. To address this issue while minimizing communication, we add a minimal communication mechanism on top of the simulation-guided planner. Accurate simulation and simulation-guided planning give SID a con-crete trigger for intervention: if Algorithm 1 cannot find a feasible trajectory under Cplan (i), then robot i
+
+has reached a coordination bottleneck that local simulation alone cannot resolve. The mechanism there-fore remains inactive during routine planning and activates only when local planning becomes infeasible. 
+
+Algorithm 2 Minimal Communication Mechanism  
+
+> 1:
+
+Input: Robot i, planning constraint Cplan (i), neighbors Ni 
+
+> 2:
+
+Identify bottleneck set Bi ⊆ N i ∪ { i} 
+
+> 3:
+
+Compute dj = ∥pj − gj ∥2 for all j ∈ B i 
+
+> 4:
+
+Rank robots in Bi by ascending dj 
+
+> 5:
+
+Remove inter-robot constraints involving Bi \ { i} from Cplan (i) 
+
+> 6:
+
+if i is not first in this order then  
+
+> 7:
+
+Receive one trajectory τj from each earlier robot j 
+
+> 8:
+
+Add τj to Cplan (i) for each earlier robot j 
+
+> 9:
+
+end if  
+
+> 10:
+
+Generate τi under the updated Cplan (i) 
+
+> 11:
+
+Broadcast τi once to later robots in Bi 
+
+> 12:
+
+return τi
+
+When this trigger fires, robot i first identifies the robots involved in the unresolved local interaction. We de-note this bottleneck set by Bi. SID then assigns priority within Bi us-ing each robot’s remaining distance to goal, dj = ∥pj − gj ∥2 for j ∈Bi. Robots with smaller dj receive higher priority, which yields a deter-ministic passing order, as illustrated in Figure 2, panels (c) and (d). The fallback planner replans robots in Bi according to this priority order, as shown in Algorithm 2. Before re-planning, each robot removes from its planning constraint set the inter-robot constraints associated with robots in Bi \ { i}. The first robot in the order therefore plans without constraints from later robots and broadcasts its trajectory once. Each later robot waits for the planned trajectories of all earlier robots. For each earlier robot j, the current robot adds the communicated trajectory τj
+
+to its planning constraint set and replans under the updated constraints. After replanning, it broadcasts its own trajectory to later robots in Bi. Thus, communication is restricted to the bottleneck set, and each robot transmits at most one trajectory during a fallback episode. The communicated trajectories convert an ambiguous simultaneous interaction into an ordered planning problem, resolving the symmetry that caused planning infeasibility. 
+
+# 5 Experiments 
+
+Settings. This paper evaluates decentralized MRMP algorithms in two complementary settings. (1) The first setting tests Feasibility, Scalability, and Quality on a modified MRMP benchmark adapted from Liang et al. [2025a]. Each map has spatial extent 2 × 2. The benchmark includes four representative map types: random maps with varying obstacle densities (basic and dense), and structured maps that mimic real-world environments (room and shelf layouts), as shown in Figure 3. Colorful spheres and plates denote the starts and goals of robots, and white objects indicate obstacles. We evaluate each map type with 3, 6, and 9 robots across 25 different configurations. To test scalability beyond the original benchmark, we further extend the basic and dense maps to larger teams with 12, 15, and 18 robots. The local observation range is measured as a fraction of the map size and is set to 0.5 by default. The receding-horizon controller executes k = 8 steps at each planning round, and the diffusion model outputs trajectories with a maximum length of 64 steps. We further analyze sensitivity to the observation range and execution window. (2) The second setting evaluates SID on challenging scenarios . These scenarios test scalability under severe congestion, including large-scale instances with 108 robots and 160 obstacles. 6Liang, Koenig and Fioretto – preprint. 
+
+Map Robots ORCA IA-MPC MIMIC-D SID S C A T S C A T S C A T S C A T
+
+> Basic
+
+3 88 0 0.24 21.92 36 8 0.15 63.00 8 0 0.47 63.00 100 0.05 1.06 41.11 6 64 0 0.28 22.89 4 8 0.08 63.00 0 0 N/A N/A 100 0.04 1.23 41.94 9 52 0 0.32 23.33 0 8 N/A N/A 0 0 N/A N/A 100 0.07 1.03 42.35 
+
+> Dense
+
+3 96 0 0.26 23.35 20 8 0.16 63.00 12 0 0.65 63.00 100 0 1.17 41.45 6 64 0 0.30 24.27 0 8 N/A N/A 0 0 N/A N/A 100 0.06 1.16 42.49 9 28 0 0.33 25.25 0 8 N/A N/A 0 0 N/A N/A 100 0.06 1.12 42.48 
+
+> Room
+
+3 68 0 0.20 22.02 52 8 0.13 63.00 40 0 0.59 63.00 100 0.08 0.81 39.93 6 36 0 0.24 23.28 4 8 0.06 63.00 24 0 0.38 63.00 100 0.88 1.09 40.05 9 20 0 0.27 22.62 0 8 N/A N/A 12 0 0.26 63.00 84 3.08 0.97 39.92 
+
+> Shelf
+
+3 64 0 0.16 20.94 52 8 0.12 29.82 52 0 0.56 63.00 100 0.08 0.68 42.83 6 28 0 0.22 21.71 4 8 0.07 41.67 36 0 0.37 63.00 92 0.92 1.15 41.89 9 12 0 0.26 21.78 0 8 N/A N/A 8 0 0.24 63.00 96 1.12 1.02 41.29 
+
+Table 1: Results for the original benchmark robot counts. S denotes success rate (%), C denotes communication frequency, A denotes acceleration-based smoothness, and T denotes travel time measured by average arrival time. Smoothness and travel time are calculated within feasible instances. Values in column A are reported in units of 10 −2.
+
+Evaluation Metrics. We evaluate each algorithm using Success rate , Communication Frequency , Smoothness , and Travel time . A test case is successful only if every robot reaches its goal and no collision occurs at any time. Success rate is the percentage of successful test cases. Communication Frequency is the total number of communication events in an instance divided by the number of robots, averaged over test instances. Smoothness is computed from the squared discrete acceleration along each trajectory and reported as the mean per-agent accumulated value. Travel time is the mean arrival time across all robots in a successful instance. Smoothness and Travel time are computed only on successful test cases. 
+
+Competing Methods. We compare SID with three competitive decentralized baselines that cover the main families of multi-robot coordination methods: 1. Optimal Reciprocal Collision Avoidance (ORCA) is a classical decentralized reactive planner that selects collision-avoiding velocities under reciprocal responsibility assumptions [Van Den Berg et al., 2011]. 2. Interaction-Aware Model Predictive Control (IA-MPC) combines learned interaction-aware trajectory prediction with model predictive control, providing a predictive optimization baseline for dynamic multi-robot interactions [Zhu et al., 2021]. 3. Multi-agent Coordination with Decentralized Diffusion Policies (MIMIC-D) learns decentralized diffusion policies for multi-agent coordination through multimodal imitation, providing a state-of-the-art generative planning baseline [Dong et al., 2025]. All methods use the same observation range and execution window during evaluation. All neural-network-based methods are trained on the same dataset. The details of the implementation, additional results, and visualizations for challenging scenarios are provided in Appendices A and B. We also provide videos of the generated trajectories in the supplementary material. 
+
+5.1 Comparison across Methods 
+
+Table 1 evaluates each method at the robot counts used in the original benchmarks. ORCA degrades significantly as robot count and map complexity increase. Specifically, its success drops from 88% on Basic maps with three robots to 28% on Dense maps, 20% on Room maps, and 12% on Shelf maps with nine robots. This drop reflects a limitation of reactive planning, which uses only the current local observation and does not anticipate neighboring robots. 
+
+IA-MPC performs worse. Although it uses an RNN to predict neighboring robots’ future trajectories as references for decentralized planning, large prediction errors can mislead the planner, yielding zero success with nine robots across all four map types. MIMIC-D uses diffusion models as decentralized planners, but generated trajectories are not guaranteed to satisfy planning constraints in complex environments. This limitation is consistent with observations in diffusion-based centralized planning [Shaoul et al., 2024, Liang et al., 2025a]. Because MIMIC-D also plans from the 7Liang, Koenig and Fioretto – preprint. 
+
+## Map Robots ORCA IA-MPC MIMIC-D SID S C A T S C A T S C A T S C A T
+
+> Basic
+
+## 12 28 0 0.35 24.57 0 8 N/A N/A 0 0 N/A N/A 100 0.08 1.12 42.48 15 4 0 0.37 25.93 0 8 N/A N/A 0 0 N/A N/A 92 0.20 0.92 42.21 18 0 0 N/A N/A 0 8 N/A N/A 0 0 N/A N/A 80 0.33 0.96 41.90 
+
+> Dense
+
+## 12 8 0 0.35 25.83 0 8 N/A N/A 0 0 N/A N/A 92 0.21 1.08 42.51 15 8 0 0.36 26.43 0 8 N/A N/A 0 0 N/A N/A 96 0.15 0.98 42.44 18 4 0 0.38 27.94 0 8 N/A N/A 0 0 N/A N/A 88 0.41 1.05 41.57 
+
+Table 2: Scalability results on the extended basic and dense maps. 0.1 0.3 0.5          
+
+> Observation range
+> 60%
+> 80%
+> 100%
+> Success Rate
+> 0.1 0.3 0.5
+> Observation range
+> 0.0
+> 0.5
+> 1.0
+> Communication
+> 0.1 0.3 0.5
+> Observation range
+> 0.006
+> 0.008
+> 0.010
+> Smoothness
+> 0.1 0.3 0.5
+> Observation range
+> 35
+> 40
+> Travel Time
+> RHC Execution window 816 32
+
+Figure 5: Sensitivity of SID on Basic maps with 9 robots. We sweep the local observation range and the execution window k in receding-horizon control. current local observation, it cannot anticipate neighboring robots. It fails on Basic and Dense maps with nine robots and reaches only 12% and 8% success on Room and Shelf maps. In contrast, SID achieves perfect success on Basic and Dense maps with up to nine robots, and reaches 84% and 96% success on Room and Shelf maps with nine robots. These results improve over the strongest baseline by 4.2 × and 8.0 × on the two structured maps. SID also requires much less communication than IA-MPC. IA-MPC communicates before every planning round to collect neighboring trajectory histories, whereas SID simulates neighbors from the current local observation and communicates only when coordina-tion is needed. Thus, SID’s communication frequency stays close to that of communication-free methods.  
+
+> (a) Basic map. (b) Dense map.
+
+Figure 4: Trajectories generated by SID with 18 robots. SID has higher acceleration because accel-eration is measured only on feasible trajec-tories, and harder successful cases often re-quire more complex motions; the absolute values remain small. Finally, unlike the fixed-horizon arrival schedule used by IA-MPC and MIMIC-D, SID uses Cψ
+
+> hold
+
+(i) to reduce per-robot travel time. Table 2 shows that SID scales beyond the baselines as team size increases. IA-MPC and MIMIC-D solve no extended cases. ORCA succeeds in only a few settings. As the team grows from 12 to 18 robots, ORCA drops from 28% to 0% on Basic maps and from 8% to 4% on Dense maps. SID maintains high success across 12, 15, and 18 robots: 100%, 92%, and 80% on Basic maps, and 92%, 96%, and 88% on Dense maps. At 18 robots, SID is the only successful method on Basic maps and exceeds ORCA by 84 percentage points on Dense maps. SID communicates sparsely, with frequency at most 0.41 compared with the fixed value of eight for IA-MPC. Figure 4 shows representative 18-robot trajectories generated by SID. 8Liang, Koenig and Fioretto – preprint.  
+
+> (a) All 108 generated trajectories. (b) Highlighted trajectories of 8 agents with longer travel paths.
+
+Figure 6: Representative trajectories generated by SID in a large-scale scenario with 108 robots and 160 obstacles. Left: all generated trajectories. Right: eight agents with longer travel paths are highlighted to illustrate SID’s ability to handle heterogeneous start–goal distances and long-horizon interactions. 
+
+5.2 Sensitivity Analysis 
+
+Figure 5 studies the sensitivity of SID to two deployment parameters: the local observation range and the receding-horizon execution window k. The observation range primarily affects the quality of local interaction modeling. With a larger neighborhood, each robot can simulate more relevant neighbors, which improves success and reduces communication. At k = 16 , success increases from 72% at observation range 0.1 to 100% at ranges 0.3 and 0.5, while communication decreases from 0.97 to 0.16 and 0.07. The execution window k controls the feedback frequency. Smaller windows replan more often and are therefore more robust to interaction uncertainty, while larger windows execute longer trajectory segments before replanning. In the tested settings, increasing k from 8 to 32 reduces travel time from approximately 42.4 steps to 32.4–33.2 steps and reduces acceleration from approximately 0.010 to 0.006, but also lowers success from 96–100% to 56–80%. These trends show that the gains from longer execution windows are not free: they reduce feedback and can make the planner less robust. For the Basic-map benchmark with nine robots, k = 16 with observation range 0.3 or 0.5 achieves the most balanced empirical behavior among the tested configurations, combining 100% success, low communication, and shorter travel time than the k = 8 setting. 
+
+5.3 Challenging Scenarios 
+
+We further evaluate SID in large-scale environments that combine multiple obstacle patterns within a single map. These scenarios contain 108 robots and 160 obstacles, creating dense interactions and narrow passages. The 108 robots are assigned start–goal pairs with varying travel distances, resulting in heterogeneous interaction patterns. Figure 6 visualizes SID in a large-scale scenario with 108 robots. The generated trajectories show that SID can coordinate many robots through cluttered regions and narrow passages while preserving decentralized execution, illustrating the scalability of the proposed simulation-guided planning and communication mechanism beyond the standard benchmark sizes. To the best of our knowledge, no existing diffusion-based decentralized MRMP method has been demonstrated on environments of this scale and complexity. We also highlight eight robots with longer travel paths, showing that SID remains effective for both short-range and long-horizon agents within the same dense environment. This finding is important because the method is not simply scaling a centralized diffusion planner to more robots; instead, it preserves decentralization by keeping both simulation and planning local to each robot. 9Liang, Koenig and Fioretto – preprint. 
+
+# 6 Conclusion 
+
+This paper introduced Simulation-Informed Diffusion (SID), a decentralized MRMP framework that uses a constraint-aware diffusion model both to simulate neighboring robots and to plan each robot’s own trajectory under safety constraints. By replacing snapshot-based reactive planning with simulated future references, SID accounts for spatial and temporal interactions over the planning horizon. The same simulation signal also supports a minimal communication mechanism that activates only at coordination bottlenecks where local planning becomes infeasible. Across diverse settings and challenging 100-robot scenarios, SID improves success rates over reactive, predictive, and diffusion-policy baselines while keeping communication sparse. 
+
+Limitations and future work. While SID provides state-of-the-art results in 2D decentralized MRMP tasks, several directions remain open. A natural next step is to extend the framework to richer robotic settings, including 3D manipulation. Moreover, extending the proposed framework to settings where constraints are specified implicitly remains a promising direction for future work. 
+
+# Acknowledgment 
+
+This research at the University of Virginia was partially supported by NSF grants 2334936, 2334448, NSF CAREER Award 2401285, and DARPA Contract No. #HR0011252E005. The research at the University of California, Irvine was supported by NSF grants 2544613, 2434916, 2321786, 2112533, as well as gifts from Amazon Robotics and the Donald Bren Foundation. The authors acknowledge Research Computing at the University of Virginia for providing computational resources that have contributed to the results reported within this paper. The views and conclusions contained in this document are those of the authors and should not be interpreted as representing the official policies, either expressed or implied, of the sponsoring organizations, agencies, or the U.S. government. 10 Liang, Koenig and Fioretto – preprint. 
+
+# References 
+
+Javier Alonso-Mora, Andreas Breitenmoser, Martin Rufli, Paul Beardsley, and Roland Siegwart. Optimal reciprocal collision avoidance for multiple non-holonomic robots. In Distributed autonomous robotic systems: The 10th international symposium , pages 203–216. Springer, 2013. Luke Antonyshyn, Jefferson Silveira, Sidney Givigi, and Joshua Marshall. Multiple mobile robot task and motion planning: A survey. ACM Computing Surveys , 55(10):1–35, 2023. Federico Augugliaro, Angela P. Schoellig, and Raffaello D’Andrea. Generation of collision-free trajectories for a quadrocopter fleet: A sequential convex programming approach. In 2012 IEEE/RSJ International Conference on Intelligent Robots and Systems , pages 1917–1922, 2012. Stephen Boyd and Lieven Vandenberghe. Convex optimization . Cambridge university press, 2004. João Carvalho, An Thai Le, Piotr Kicki, Dorothea Koert, and Jan Peters. Motion planning diffusion: Learning and adapting robot motion planning with diffusion models. IEEE Transactions on Robotics , 41:4881–4901, 2025. doi: 10.1109/TRO.2025.3593109. Yuxiao Chen, Ugo Rosolia, and Aaron D. Ames. Decentralized task and path planning for multi-robot systems. IEEE Robotics and Automation Letters , 6(3):4337–4344, 2021. doi: 10.1109/LRA.2021.3068103. Jacob K Christopher, Stephen Baek, and Ferdinando Fioretto. Constrained synthesis with projected diffusion models. In Advances in Neural Information Processing Systems , volume 37. Curran Associates, Inc., 2024. Mehul Damani, Zhiyao Luo, Emerson Wenzel, and Guillaume Sartoretti. Primal 2: Pathfinding via reinforcement and imitation multi-agent learning - lifelong. IEEE Robotics and Automation Letters , 6(2):2666–2673, 2021. doi: 10.1109/LRA.2021.3062803. Dayi Dong, Maulik Bhatt, Seoyeon Choi, and Negar Mehr. Mimic-d: Multi-modal imitation for multi-agent coordination with decentralized diffusion policies. arXiv preprint arXiv:2509.14159 , 2025. Ke Guo, Dawei Wang, Tingxiang Fan, and Jia Pan. Vr-orca: Variable responsibility optimal reciprocal collision avoidance. IEEE Robotics and Automation Letters , 6(3):4520–4527, 2021. doi: 10.1109/LRA.2021.3067851. Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. Akshay Jaitly, Jack Cline, and Siavash Farzan. A milp-based solution to multi-agent motion planning and collision avoidance in constrained environments. In 2025 IEEE 21st International Conference on Automation Science and Engineering (CASE) , pages 2200–2207. IEEE, 2025. Jeric Lew, Yuhong Cao, Derek Ming Siang Tan, and Guillaume Sartoretti. Aid: Agent intent from diffusion for multi-agent informative path planning. arXiv preprint arXiv:2512.02535 , 2025. Jinhao Liang, Jacob K Christopher, Sven Koenig, and Ferdinando Fioretto. Simultaneous multi-robot motion planning with projected diffusion models. In Proceedings of the 42nd International Conference on Machine Learning , volume 267 of Proceedings of Machine Learning Research , pages 37162–37180. PMLR, 13–19 Jul 2025a. Jinhao Liang, Sven Koenig, and Ferdinando Fioretto. Discrete-guided diffusion for scalable and safe multi-robot motion planning. arXiv preprint arXiv:2508.20095 , 2025b. Xiaoxuan Liang, Saeid Naderiparizi, Yunpeng Liu, Berend Zwartsenberg, and Frank Wood. Improved constrained generation by bridging pretrained generative models. arXiv preprint arXiv:2603.06742 , 2026. Lars Lindemann, Matthew Cleaveland, Gihyun Shim, and George J. Pappas. Safe planning in dynamic environments using conformal prediction. IEEE Robotics and Automation Letters , 8(8):5116–5123, 2023. doi: 10.1109/LRA.2023. 3292071. Hao Luan, Yi Xian Goh, See-Kiong Ng, and Chun Kai Ling. Projected coupled diffusion for test-time constrained joint generation. arXiv preprint arXiv:2508.10531 , 2025. Yunhao Luo, Chen Sun, Joshua B Tenenbaum, and Yilun Du. Potential based diffusion motion planning. arXiv preprint arXiv:2407.06169 , 2024. Tobia Marcucci, Jack Umenberger, Pablo Parrilo, and Russ Tedrake. Shortest paths in graphs of convex sets. SIAM Journal on Optimization , 34(1):507–532, 2024. Parikh Neal, Chu Eric, Peleato Borja, and Eckstein Jonathan. Distributed optimization and statistical learning via the alternating direction method of multipliers. Foundations and Trends® in Machine learning , 3(1):1–122, 2011. Guillaume Sartoretti, Justin Kerr, Yunfei Shi, Glenn Wagner, T. K. Satish Kumar, Sven Koenig, and Howie Choset. Primal: Pathfinding via reinforcement and imitation multi-agent learning. IEEE Robotics and Automation Letters , 4 (3):2378–2385, 2019. doi: 10.1109/LRA.2019.2903261. 11 Liang, Koenig and Fioretto – preprint. Yorai Shaoul, Itamar Mishani, Shivam Vats, Jiaoyang Li, and Maxim Likhachev. Multi-robot motion planning with diffusion models. arXiv preprint arXiv:2410.03072 , 2024. Weihua Sheng, Qingyan Yang, Jindong Tan, and Ning Xi. Distributed multi-robot coordination in area exploration. 
+
+Robotics and autonomous systems , 54(12):945–955, 2006. David Silver. Cooperative pathfinding. In Proceedings of the aaai conference on artificial intelligence and interactive digital entertainment , volume 1, pages 117–122, 2005. Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using nonequilibrium thermodynamics. In International conference on machine learning , pages 2256–2265. PMLR, 2015. Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data distribution. Advances in neural information processing systems , 32, 2019. Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 , 2020. Jur Van Den Berg, Stephen J Guy, Ming Lin, and Dinesh Manocha. Reciprocal n-body collision avoidance. In Robotics research: the 14th international symposium ISRR , pages 3–19. Springer, 2011. Rose Wang, J. Chase Kew, Dennis Lee, Tsang-Wei Lee, Tingnan Zhang, Brian Ichter, Jie Tan, and Aleksandra Faust. Model-based reinforcement learning for decentralized multiagent rendezvous. In Jens Kober, Fabio Ramos, and Claire Tomlin, editors, Proceedings of the 2020 Conference on Robot Learning , volume 155 of Proceedings of Machine Learning Research , pages 711–725. PMLR, 16–18 Nov 2021. URL https://proceedings.mlr.press/ v155/wang21d.html .Yutong Wang, Bairan Xiang, Shinan Huang, and Guillaume Sartoretti. Scrimp: Scalable communication for reinforcement- and imitation-learning-based multi-agent pathfinding. In 2023 IEEE/RSJ International Confer-ence on Intelligent Robots and Systems (IROS) , pages 9301–9308, 2023. doi: 10.1109/IROS55552.2023.10342305. Adam Wiktor, Dexter Scobee, Sean Messenger, and Christopher Clark. Decentralized and complete multi-robot motion planning in confined spaces. In 2014 IEEE/RSJ International Conference on Intelligent Robots and Systems , pages 1168–1175, 2014. doi: 10.1109/IROS.2014.6942705. Hai Zhu, Francisco Martinez Claramunt, Bruno Brito, and Javier Alonso-Mora. Learning interaction-aware trajectory predictions for decentralized multi-robot motion planning in dynamic environments. IEEE Robotics and Automation Letters , 6(2):2256–2263, 2021. doi: 10.1109/LRA.2021.3061073. Zhengbang Zhu, Minghuan Liu, Liyuan Mao, Bingyi Kang, Minkai Xu, Yong Yu, Stefano Ermon, and Weinan Zhang. Madiff: Offline multi-agent learning with diffusion models. Advances in Neural Information Processing Systems , 37: 4177–4206, 2024. 12 Liang, Koenig and Fioretto – preprint. 
+
+# A Implementation Details 
+
+A.1 Software and Hardware 
+
+Software used for experiments is Ubuntu 22.04.5, Python 3.8.20, CUDA 12.1, and PyTorch 2.1.2. For each of our experiments, we used 1 NVIDIA RTX A6000 GPU. 
+
+A.2 Training Details 
+
+Our implementation builds upon the official code of Liang et al. [2025a] and Shaoul et al. [2024], with modifications to accommodate our specific requirements. Table 3 shows the hyperparameters used for training diffusion models in our experiments. Table 3: Hyperparameters for Training in Experiments. HyperParameters Value Diffusion Sampling Step 25 Learning Rate 1e-4 Batch Size 64 Optimizer Adam 
+
+A.3 Planning Details. 
+
+All experiments are conducted on 2 × 2 maps. The robot radius was set to 0.03 units across four different maps. Other parameters related to planning are summarized in Table 4. Table 4: Simulation and planning parameters used in our experiments.                          
+
+> Parameter Value Map size 2×2units Robot radius 0.03 units Maximum speed vmax = 0 .05
+> Maximum Planning horizon H= 64
+> Receding-horizon execution window k= 8
+> Receding-horizon execution window in sensitivity analysis k= 8 ,16 ,32
+> Maximum observation range 0.5×map size
+> Maximum observation range in sensitivity analysis 0.5,0.3,0.1×map size
+
+A.4 Benchmark Details. 
+
+The benchmark consists of four map families: basic, dense, room, and shelf. Each type of map contains 25 test instances, where each instance specifies both the obstacle layout and the start–goal pairs. The map configurations are summarized in Table 5. For the standard benchmark, we evaluate 3, 6, and 9 robots on all four maps, resulting in 4 × 3 × 25 = 300 
+
+test instances per method. For the extended scalability benchmark, we additionally evaluate 12, 15, and 18 robots on the basic and dense maps, resulting in another 2 × 3 × 25 = 150 test instances per method. Table 5: Map families used in the benchmark. Each map family contains 25 test instances.                   
+
+> Map family Obstacle configuration Obstacle size Basic 10 randomly placed obstacles 0.1–0.2units Dense 20 randomly placed obstacles 0.1–0.2units Room 2 long rectangular obstacles 0.2×1.0units Shelf 2 long rectangular obstacles 0.2×1.0units
+
+13 Liang, Koenig and Fioretto – preprint. 
+
+A.5 Evaluation Metrics. Success rate. An instance is counted as successful only if all robots reach their goals and the executed trajectories are collision-free with respect to both environmental obstacles and other robots. The reported success rate is 
+
+S = 100 · number of successful instances total number of instances (11) 
+
+Communication frequency. For SID, communication is activated only when the simulation-guided planner cannot find feasible solutions. The instance-level communication frequency is 
+
+Cq = total number of communication events number of robots (12) and the reported communication frequency is 
+
+C =
+
+PQ 
+
+> 1
+
+Cq
+
+total number of instances . (13) In the implementation, ORCA and MIMIC-D use no explicit communication, so their communication frequency is zero. IA-MPC needs to communicate at every receding-horizon planning round; with H = 64 and k = 8 , this yields a fixed communication frequency of H/k = 8 .
+
+Smoothness. Smoothness is measured as the integral of squared discrete acceleration. For robot i in instance q, we compute 
+
+Ai,q = ∆ t
+
+> H−2
+
+X
+
+> t=0
+
+pt+2  
+
+> i,q
+
+− 2pt+1  
+
+> i,q
+
++ pti,q 
+
+∆t2
+
+> 22
+
+. (14) The instance-level smoothness is the mean across robots, 
+
+Aq = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+Ai,q . (15) We report the mean smoothness over successful instances. In the result tables, smoothness values are reported in units of 10 −2.
+
+Travel time. For instance q, we define travel time as the average arrival time across robots. We report the mean travel time over successful instances. 
+
+# B Additional Experimental Results 
+
+This section provides additional results that complement the main experimental evaluation. Table 6 reports the average running time of each method on successful instances. This should be interpreted together with the success rates in Table 1, since running time is averaged only over instances that are successfully solved. Specifically, methods with lower success rates may exhibit lower reported running times, as they tend to succeed primarily on easier instances that can be solved quickly. ORCA is the fastest method because it relies on lightweight reactive velocity selection, but its success rate decreases substantially in complex environments. IA-MPC and MIMIC-D often fail to solve any instances in harder settings. In particular, the running time of IA-MPC decreases as the number of robots increases on basic maps because the few instances it solves are comparatively simple. SID achieves the highest success rates while maintaining reasonable running times.                                                                
+
+> Map ORCA IA-MPC MIMIC-D SID 369369369369
+> Basic 0.11 0.35 0.68 48.24 38.45 N/A 7.52 N/A N/A 76.01 125.04 175.92 Dense 0.34 0.87 1.75 115.50 N/A N/A 4.89 N/A N/A 140.03 205.73 261.74 Room 0.09 0.26 0.39 54.71 29.27 N/A 19.99 36.80 52.33 67.58 294.04 381.67 Shelf 0.10 0.29 0.51 58.96 33.01 N/A 19.37 28.24 51.41 94.24 406.32 552.94
+
+Table 6: Running time on the original benchmark robot counts. Values are reported in seconds and averaged over successful instances only. N/A indicates that the method has no successful instance under the corresponding setting. 14

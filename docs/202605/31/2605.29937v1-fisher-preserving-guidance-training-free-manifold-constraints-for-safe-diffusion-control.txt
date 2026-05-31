@@ -1,0 +1,1593 @@
+Title: Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control
+
+URL Source: https://arxiv.org/pdf/2605.29937v1
+
+Published Time: Fri, 29 May 2026 01:52:40 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+Hao Ren 1 Zetong Bi 1 Yiming Zeng 1 Le Zheng 1 Zhi Li 1 Zhaoliang Wan 2 Lu Qi 2 Hui Cheng 1
+
+# Abstract 
+
+Diffusion models are effective for waypoint pre-diction in visual navigation, but standard sampling and test time guidance can produce unreliable or inefficient trajectories when updates drift off the training manifold. We propose Fisher Preserv-ing Guidance with Outer Product Span Projec-tion, a training-free inference method that avoids large Fisher drift associated with off-distribution actions while optimizing a task objective. Our method computes the Fisher-preserving update via a low-rank Jacobian factorization, requiring only a single backward pass per step and enabling real-time use. We further introduce Truncated Fisher Denoising Sensitivity as an uncertainty signal and use it for robust multi-sample action blending. Experiments on toy and realistic naviga-tion benchmarks, including Maze2D with TSDF-based guidance, PushT with official Diffusion Pol-icy weights, and visual navigation in simulation and on real robots, demonstrate consistent im-provements in performance over strong diffusion-policy baselines without additional training. 
+
+# 1. Introduction 
+
+Visual navigation is a fundamental capability for embodied agents such as mobile robots and autonomous vehicles. The primary challenge is converting first-person image streams into accurate, robust waypoint predictions and temporal distance estimates while accounting for perception noise, dynamic obstacles, and the multi-modal nature of real-world environments. Traditional methods rely on spatial informa-tion such as point clouds, making them difficult to transfer to RGB-only visual navigation tasks (Oriolo et al., 1995; Chalvatzaras et al., 2022). In recent years, end-to-end deep learning approaches for visual navigation trajectory plan-ning have made notable progress (Zhu et al., 2017; Beeching      
+
+> 1Sun Yat-sen University, Guangzhou, China 2Insta360 Re-search, Shenzhen, China. Correspondence to: Hui Cheng
+> <chengh9@mail.sysu.edu.cn >.
+
+et al., 2020; Chen et al., 2021). However, regression-based models struggle to capture multi-modal action distributions, leading to sub-optimal or erroneous actions (Chi et al., 2023; Xing et al., 2025; Li et al., 2025). Recent advances in generative modeling, particularly diffu-sion models, have shown great promise for this task (Sridhar et al., 2024; Gode et al., 2024; Ren et al., 2025). Diffusion-based policies can generate diverse and expressive waypoint distributions, naturally capturing the uncertainty inherent in navigation and supporting flexible, sample-based deci-sion making. However, ensuring that these sampled actions are both reliable and safe in complex, ambiguous scenes re-mains a significant challenge. In practice, sampling methods guided solely by task loss often yield predicted waypoints far from the training data, leading to sub-optimal or out-of-distribution behaviors (Filos et al., 2020; Yang et al., 2024). Meanwhile, the rich uncertainty structure encoded by diffusion processes is rarely fully leveraged. The diffu-sion sampler generates multiple plausible actions, yet most systems either pick one randomly or rely on hand-tuned heuristics (Janner et al., 2022; Chi et al., 2023; Sridhar et al., 2024). Ideally, a navigation policy should constrain its sampling trajectory to remain in domain, well-understood regions of the action space, those supported by the training data or extra constraints during inference, while still allowing flexible guidance toward the goal. Achieving this without sacrificing efficiency has proven challenging (Sun & Song, 2025). To address these limitations, we propose Fisher-Preserving Guidance with Outer Product Span projection (FPG-OPS), an efficient inference framework for diffusion-based visual navigation. FPG-OPS constrains each reverse-diffusion step to lie on a Fisher isosurface by using Outer Product Span projection, thus ensuring the sampling trajectory remains near the data manifold while simultaneously optimizing task objectives like path efficiency. Leveraging the low-rank structure of the model’s residual head, our method computes the required Fisher-preserving update in a low-dimensional latent space with a single backward pass, reducing complex-ity by two orders of magnitude compared to full-rank Fisher computation. Additionally, we propose an action blending 1
+
+> arXiv:2605.29937v1 [cs.RO] 28 May 2026 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control
+
+strategy based on Truncated Fisher Denoising Sensitivity (TFDS) and cluster typicality, jointly leveraging model un-certainty and distributional consensus for robust waypoint selection. This framework can be seamlessly integrated into existing diffusion-based methods without retraining, acceler-ating inference while maintaining model performance, and enabling principled selection and blending of multi-modal actions based on TFDS. Our contributions are as follows: 
+
+1) We propose a training-free Fisher-preserving guidance method that enforces first-order Fisher consistency at each step, preventing off-manifold drift and enhancing reliability. 
+
+2) We develop a low-rank Outer-Product-Span projection method that enables efficient, real-time computation of the Fisher-preserving update with minimal overhead. 
+
+3) We introduce an uncertainty-guided action blending mechanism based on truncated Fisher sensitivity and clus-ter typicality, improving the robustness and efficiency of diffusion policy navigation. 
+
+# 2. Related Work 
+
+Visual Navigation. Visual navigation is an important and enduring challenge in robotics and embodied AI, demand-ing that agents transform raw sensory observations into sequential actions for goal-directed navigation. Classical approaches typically decompose this problem into modular components: visual mapping, metric or topological local-ization, and explicit path planning (Cadena et al., 2016; Yang et al., 2016; Yasuda et al., 2020; Zheng et al., 2025). While effective in structured settings, these pipelines rely heavily on accurate perception and are often brittle in the face of sensor noise, perceptual aliasing, or accumulated localization errors over long horizons (Hu et al., 2023). With the rise of deep learning, end-to-end visuomotor poli-cies have become popular, bypassing explicit mapping and directly predicting actions from image inputs (Zhu et al., 2017; Chen et al., 2021; Majumdar et al., 2022; Al-Halah et al., 2022; Wu et al., 2020; Wan et al., 2026). There has been extensive research in related fields on vision-and-language navigation (Zhou et al., 2024; Li et al., 2024) and target-driven navigation (Xie et al., 2025; Tang et al., 2022). This paper focuses specifically on RGB-only visual navi-gation. Recent work has introduced powerful architectures such as topological memory networks ViNT (Shah et al., 2023b), conditional diffusion-based planners NoMaD (Srid-har et al., 2024), NaviDiffusor (Zeng et al., 2025), Flow-Nav (Gode et al., 2024) and prior injection diffusion pol-icy NaviBridger (Ren et al., 2025). These advances have improved performance and generalization, particularly in unfamiliar or visually complex environments. However, despite these successes, existing methods often overlook a crucial aspect of robust navigation, the ability to reason about the credibility and diversity of candidate actions gen-erated by stochastic policies (Du et al., 2021; Shah et al., 2023a; Sridhar et al., 2024). In most current systems, action selection is based on random sampling or simple confidence metrics, without explicitly modeling the typicality of an action within the policy’s generative distribution or its sta-bility under observation perturbations. This can lead to weak decisions, poor action fusion, and limited robustness to out-of-distribution inputs. 
+
+Fisher Information and Guided Diffusion. Recent work has highlighted the centrality of uncertainty quantification in robust deep learning and generative modeling (Kendall & Gal, 2017; Gal & Ghahramani, 2016; Song & Lai, 2024). In diffusion models, Fisher information and Jacobian-based sensitivity have emerged as useful tools for understand-ing sample reliability and calibration (Zheng et al., 2023; Deng et al., 2023). Several approaches regularize or control Fisher information during training or inference to encour-age smoother mappings and more stable predictions (Song & Lai, 2024; Gao et al., 2024). Directly computing or en-forcing Fisher- or Jacobian-based constraints, however, is often prohibitively expensive in high-dimensional vision and control settings (Jiang et al., 2024; Kou et al., 2023; Deng et al., 2023). Prior work improves scalability through low-rank approximations and efficient estimators, including Hutchinson-style trace estimation (Hutchinson, 1989) and latent-space factorizations (Wang et al., 2025; Song & Lai, 2024). Our work is also related to training-free guided diffusion and posterior sampling, where the reverse diffusion process is modified by external guidance. A representative exam-ple is Manifold Preserving Guided Diffusion (MPGD) (He et al., 2024), which reduces off-manifold drift in guided pos-terior sampling through manifold-consistent guidance and latent/on-manifold projections. While sharing the general goal of structure-preserving guidance, our work focuses on diffusion control rather than conditional generation or poste-rior sampling. We introduce a Fisher-sensitivity-preserving projection and TFDS-based action blending to stabilize ac-tion generation and selection in RGB visual navigation, providing a lightweight training-free mechanism for robust diffusion-policy deployment. 
+
+# 3. Methodology 
+
+3.1. Problem Formulation 
+
+The goal of visual navigation is to learn a policy π that predicts a control action a ∈ Rd and a temporal distance estimate d ∈ R+, given a sequence of past observations 
+
+O = {It}Tt=T −p and a goal image Ig . Each observation 
+
+It is encoded into a feature vector f (It), and the result-ing sequence is fused into a context representation C that 2Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+captures both spatial and temporal information. The policy first predicts the final action a from C by a diffusion policy module. The same context is used to estimate d, reflecting how close the current state is to the goal in temporal terms. For a complete list of notation, see Sec. B. 
+
+3.2. Fisher Denoising Sensitivity Step Fisher Denoising Sensitivity . To quantify the un-certainty of a diffusion policy’s output with respect to the conditional feature C, we define the Fisher Denoising Sen-sitivity (FDS) as follows. For a single denoising step t, the reconstructed action is: 
+
+˜a0(C, a t, t ) = at − √1 − ¯αt ϵθ (C, a t, t )
+
+√¯αt
+
+. (1) We consider the input-output Jacobian: 
+
+J(C, t ) = ∂˜a0
+
+∂C = −√1 − ¯αt
+
+√¯αt
+
+∂ϵ θ (C, a t, t )
+
+∂C . (2) The Fisher information can be approximated as: 
+
+I(C, t ) = ∥J(C, t )∥2 
+
+> F
+
+= 1 − ¯αt
+
+¯αt
+
+∥∇ C ϵθ (C, a t, t )∥2 
+
+> F
+
+, (3) here, the derivative is taken with respect to the conditioning variable C only, because FDS is used to measure observation-conditioned sensitivity rather than to define the action-space guidance direction. This score serves as a proxy for the Fisher information and can be efficiently computed via auto-matic differentiation. The Step Fisher Denoising Sensitivity (Step-FDS) quantifies the local sensitivity of the predicted noise to observation perturbation: 
+
+UFDS (C, t ) = I(C, t ) (4) 
+
+Chain Fisher Denoising Sensitivity. The complete de-noising process involves T steps. Let at−1 = Gt(C, a t)
+
+denote the mean update at step t. Unrolling the chain gives 
+
+a0 = G1
+
+ C, G 2(C, . . . , G T (C, a T )) , and by the multivari-ate chain rule the total Jacobian from C to a0 can be written as: 
+
+J(C) = ∂a 0
+
+∂C =
+
+> T
+
+X
+
+> t=1
+
+Pt← J(C, t ), Pt← =
+
+> T
+
+Y
+
+> s=t+1
+
+∂G s(C, a s)
+
+∂a s
+
+.
+
+(5) For standard samplers Gs(C, a s) = csas − ds ϵθ (C, a s, s ),so ∂G s/∂a s = csI − ds ∂as ϵθ (C, a s, s ). Since cs, d s are known scalar factors that only rescale sensitivity, in prac-tice, we focus on the model-dependent part and use the normalized propagation operator: 
+
+˜Pt← =
+
+> T
+
+Y
+
+> s=t+1
+
+∂as ϵθ (C, a s, s ), (6) which is what we implement when computing CFDS. The overall chain-wise FDS is then defined as the (Frobe-nius) Fisher norm of the total Jacobian: 
+
+UCFDS (C) = I(C) = J(C) 2 
+
+> F
+
+. (7) For high-dimensional J(C), we estimate this efficiently via a Hutchinson-style estimator: 
+
+I(C) ≈ 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+J(C)⊤vk
+
+> 22
+
+, vk ∼ N (0 , I ). (8) Note that J(C) measures how perturbations in the condition affect the final action through the reverse chain, while the reverse diffusion state itself remains at.
+
+Truncation FDS and Error Bound. While the CFDS captures uncertainty over the entire reverse diffusion trajec-tory, its exact evaluation requires computing Jacobians at every denoising step. To address this, we introduce a trun-cated approximation called Truncation Fisher Denoising Sensitivity (TFDS): we accumulate Step-FDS scores only over the final M denoising steps (closest to the data). 
+
+Truncation error. Let the full chain-wise Jacobian be 
+
+J(C) = PTt=1 Pt←J(C, t ). Directly evaluating its Fisher norm ∥J(C)∥2 
+
+> F
+
+is expensive. In practice, we use an additive chain-FDS surrogate: 
+
+¯I(C) := 
+
+> T
+
+X
+
+> t=1
+
+∥Pt←J(C, t )∥2 
+
+> F
+
+, (9) which accumulates the propagated sensitivity contribution from each denoising step. The truncated tail approximation keeps only the last M steps closest to the data: 
+
+¯I(M )tail := 
+
+> M
+
+X
+
+> t=1
+
+∥Pt←J(C, t )∥2 
+
+> F
+
+. (10) The per-step contraction is defined as ρt := 1 − 12 βt ∈ (0 , 1) ,where βt is the noise variance schedule and αt := 1 − βt.Let wt := QTs=t+1 ρ2 
+
+> s
+
+denote the cumulative propagation weight at step t. The relative truncation error of this additive surrogate is 
+
+ηM = ¯I(C) − ¯I(M )tail 
+
+¯I(C) , (11) and admits the following bound, detailed in Sec. E.1: 
+
+ηM ≤ κ
+
+PTt=M +1 wt
+
+PMt=1 wt
+
+, (12) 3Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+where κ bounds the ratio of gradient magnitudes between the discarded head and the retained tail: 
+
+κ := max t>M ∥J(C, t )∥2
+
+> F
+
+min t≤M ∥J(C, t )∥2
+
+> F
+
+≥ 1. (13) 
+
+Practical implication. For typical diffusion schedules used in policy learning, such as the cosine schedule, the tail steps dominate the propagated sensitivity. For instance, with measured κ ≈ 1, taking M = 4 out of T = 10 steps gives a relative surrogate error bound η4 ≤ 8.4% . Empirically, retaining only the last M ∈ [4 , 6] steps captures more than 
+
+90 –95% of the full additive chain-FDS surrogate across all evaluated tasks, with negligible impact on uncertainty-based decision quality. Throughout the remainder, we denote 
+
+bU := ¯I(M )tail (14) as the TFDS score. 
+
+3.3. Fisher-Preserving Guidance and Approximation 
+
+The previous sections quantify the uncertainty of diffusion-policy samples through Step-/Chain-FDS and use it for uncertainty-guided action blending. We now show how to steer the reverse diffusion process while preserving the Fisher sensitivity of the generated action trajectory, thereby reducing off-manifold drift when applying a task guidance loss L (e.g., short-path bias or safety guidance). The com-plete algorithm is summarized in Algorithm 1 in Sec. I. We distinguish two derivatives used in our formulation. FDS is computed with respect to the condition C, measuring the sensitivity of the denoised action to observation perturba-tions. During guided sampling, however, C is fixed and the guidance loss L is differentiated with respect to the cur-rent noisy action trajectory at. Thus, the Fisher-preserving projection is applied in the action-trajectory space, while preserving the FDS value defined by condition sensitivity. 
+
+Fisher isosurface constraint. For a fixed condition C,we define the step-wise FDS as a function of the current diffusion state: 
+
+It(at; C) = 1 − ¯αt
+
+¯αt
+
+∥∇ C εθ (C, a t, t )∥2 
+
+> F
+
+. (15) Here the derivative inside the norm is taken with respect to C, because FDS measures sensitivity to the conditioning observation. During guided sampling, C remains fixed and the updated variable is at. Therefore, for each denoising step, the Fisher isosurface is defined in the action-trajectory space: 
+
+Sκ,t (C) = {at | I t(at; C) = κ}. (16) To keep the guided update on this isosurface to first order, the update direction ∆t should satisfy 
+
+g⊤ 
+
+> t
+
+∆t = 0 , gt := ∇at It(at; C), (17) Off -Manifold Region   
+
+> Training
+> Data
+> Manifold
+> Training
+> Data
+> Manifold
+> Task Guidance Deviation
+> Fisher -Orthogonal Guidance
+> Fisher Normal Component
+> Fisher Isosurface
+
+Figure 1. Comparison of standard task-guided diffusion (left) and Fisher-preserving guidance (right). Task guidance without constraint (red arrows) leads updates away from the training data manifold and into the off-manifold region. In contrast, Fisher-preserving guidance decomposes each update and projects it onto the Fisher isosurface (blue arrows), ensuring that the trajectory remains within the high-confidence region. 
+
+where gt is the Fisher normal direction in the action-trajectory space. Given a task guidance loss L(at, C, t ),we compute the action-space guidance gradient 
+
+ut = ∇at L(at, C, t ), (18) and project it onto the tangent space of the Fisher isosurface: 
+
+∆t = ut − u⊤ 
+
+> t
+
+gt
+
+∥gt∥2 gt. (19) The guided reverse update is then 
+
+at−1 = μt − γ∆t. (20) By construction, ∆t is orthogonal to gt, so the update pre-serves It(at; C) up to first-order approximation, with an 
+
+O(γ2) residual from the Taylor expansion. More deriva-tions are provided in Sec. G. 
+
+Low-rank approximation via Outer Product Span. The exact evaluation of the Fisher normal vector gt in Eq. 17 involves second-order differentiation through the FDS score, which can be expensive in high-dimensional action-trajectory spaces. To reduce this cost, we exploit the low-rank structure of the denoising network head and approxi-mate the Fisher-normal projection within an Outer Product Span (OPS) subspace. Let hθ (C, a t, t ) ∈ RChH denote the latent feature before the final prediction head. We write the predicted residual noise as 
+
+εθ (C, a t, t ) ≈ W h θ (C, a t, t ), (21) where W ∈ RDa×ChH is the final linear projection and Da
+
+is the dimension of the action trajectory. The Jacobian with respect to the condition then admits the factorized form 
+
+∇C εθ (C, a t, t ) ≈ W ∂h θ (C, a t, t )
+
+∂C . (22) 4Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+This factorization indicates that the dominant variations of the denoising update lie in the low-dimensional subspace induced by W , whose rank is bounded by ChH. We there-fore perform the Fisher-preserving projection in this OPS subspace rather than explicitly computing the full Fisher normal direction. To avoid evaluating gt = ∇at It(at; C) exactly, we use a latent proxy gh for the Fisher normal direction in the OPS subspace. This proxy is obtained from the same backward pass used for the FDS-related Jacobian computation. Mean-while, the condition-side gradient can be reused for Step-FDS evaluation: 
+
+(gh, g c) = ∇(h, C)εθ (C, a t, t ), (23) where gh approximates the Fisher-normal direction in the latent OPS coordinates, and gc is reused to compute the condition sensitivity in Eq. 15. More details about OPS are provided in Sec. G.6. 
+
+Fisher-Orthogonal Guidance Projection. When apply-ing an additional task loss L, directly using its action-space gradient may push the reverse diffusion trajectory away from the Fisher isosurface. To enforce the Fisher-preserving constraint efficiently, we restrict the update to the OPS sub-space and remove the component aligned with the latent Fisher-normal direction. Given the action-space task gradient 
+
+ut = ∇at L(at, C, t ), (24) we project it into the OPS coordinates: 
+
+uh = W ⊤ut, M = W ⊤W. (25) Using the pullback metric M , we decompose uh into the Fisher-aligned and Fisher-orthogonal components: 
+
+u∥ 
+
+> h
+
+= g⊤ 
+
+> h
+
+M u h
+
+g⊤ 
+
+> h
+
+M g h
+
+gh, u⊥ 
+
+> h
+
+= uh − u∥
+
+> h
+
+. (26) The projected update direction is then mapped back to the action-trajectory space: 
+
+∆t = W u ⊥ 
+
+> h
+
+. (27) Since u⊥ 
+
+> h
+
+is M -orthogonal to gh, the resulting update satis-fies the projected Fisher-orthogonality condition within the OPS subspace: 
+
+g⊤ 
+
+> h
+
+M u ⊥ 
+
+> h
+
+= 0 . (28) Equivalently, when gt is approximated by its OPS represen-tation W g h, the update approximately satisfies 
+
+g⊤ 
+
+> t
+
+∆t ≈ 0. (29) Thus, the OPS projection provides an efficient approxima-tion to the Fisher-preserving guidance step without explicitly computing second-order Fisher-normal derivatives. This OPS projection reduces the per-step complexity to 
+
+O(ChH), which is substantially cheaper than explicitly eval-uating the full Fisher normal via second-order derivatives. Details are provided in Sec. G.6 and Sec. G.5. 
+
+3.4. Uncertainty-Guided Action Blending 
+
+Diffusion-based policies naturally generate a diverse set of candidate actions by sampling from a multi-modal predic-tive distribution. However, existing decision rules, such as randomly picking a sample or greedily selecting the most confident candidate, fail to fully exploit this diversity. In practice, these naive choices often lead to vacillating or oscillatory behaviors, where the agent hesitates between plausible options, resulting in inefficient navigation, unnec-essary detours, or even collisions (Zeng et al., 2025; Xing et al., 2025). To address this, we propose an uncertainty-guided action blending strategy that fuses both sample-level stability and distributional consensus, thereby producing more robust and decisive navigation. While the FDS provides a principled measure of input-conditioned uncertainty for each action candidate, it does not account for the typicality of a sample within the full set of generated actions. To remedy this, we introduce a cluster typicality score: for a batch of K sampled actions {ak}Kk=1 ,we cluster the actions using an unsupervised algorithm (e.g., DBSCAN), and define the typicality of each action as the normalized size of its assigned cluster: 
+
+CTyp (ak) = |{ j | cj = ck}| 
+
+K (30) where ck is the cluster assignment of ak. This reflects how representative or mainstream an action is among the set of plausible outputs. We then combine FDS-based uncertainty and cluster typi-cality into a composite confidence score: 
+
+C(ak) = exp( −η bU(ak)) · CTyp (ak) (31) where η is a temperature parameter. This score jointly favors actions that are both stable under input perturbations and well-supported by the generative distribution. The final action is computed as a weighted average: 
+
+ablend =
+
+PKk=1 C(ak)ak
+
+PKk=1 C(ak) . (32) 
+
+# 4. Experiments 
+
+This evaluation details the navigation setup (Sec. 4.1) and validates Fisher-Preserving Guidance on toy models 5Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+(Sec. 4.2). We present benchmarks, ablations, and efficiency analysis (Sec. 4.3–4.5), concluding with uncertainty case studies and real-world robotic deployment (Sec. 4.6–4.7). 
+
+4.1. Experimental Setup Datasets . To ensure a fair comparison, our method, along with all baseline approaches, was trained on a unified dataset. The training dataset encompasses a diverse set of environ-ments and robotic platforms, incorporating data from RE-CON (Shah et al., 2021), SCAND (Karnan et al., 2022), GoStanford (Hirose et al., 2019), and SACSoN (Hirose et al., 2023). The dataset comprises sequences of consecutive image frames, each paired with corresponding positional information, providing a comprehensive training scene. 
+
+Baselines . We compare our approach with three state-of-the-art methods in image-based visual navigation: ViNT (Shah et al., 2023b), NoMaD (Sridhar et al., 2024) To evaluate the impact of feature representation, we selected NoMaD, which is the first approach to incorporate diffusion policies into visual navigation tasks. We integrate the proposed method with NoMaD to showcase its plug-and-play nature and the training-free enhancement it provides. We included ViNT, a regression-based model that combines self-attention and MLP for feature fusion, to compare the performance of generative models with regression-based methods in the context of visual navigation. 
+
+Metrics . We report three key evaluation metrics in our experiments to thoroughly assess the performance of our diffusion bridge-based visual navigation method: 
+
+Path Length : For tasks successfully completed, we compute the mean and variance of the path lengths to evaluate both the efficiency and consistency of the navigation. 
+
+Collision : The average number of collisions per trial, serv-ing as an indicator of the navigation system’s safety. 
+
+Success Rate : The percentage of successful trials where the robot reaches the target position within the given constraints. A trial is deemed unsuccessful if the robot does not reach the target, is due to collisions, or exceeds the time limit. 
+
+Implementation details . We train a base model on top of which we apply Fisher-preserving guidance. The policy uses EfficientNet-B0 as the visual backbone, followed by sparse attention and temporal shift to fuse spatio-temporal features, which are then passed to a diffusion policy to predict local actions. By default, we run 4 DDIM denoising steps (Song et al., 2020). For target image selection, we switch targets based on temporal distance following prior work (Savinov et al., 2018; Shah et al., 2023b). We optimize with Adam and a cosine annealing learning-rate schedule, using a batch size of 256 , an initial learning rate of 10 −4, and α = 10 −4. The training objective matches NoMaD (Sridhar et al., 2024). The model pipeline is shown in Figure 6. DDPM FPG         
+
+> (a) (b) (c) FPG+TG
+> Figure 2. Visualization of Maze2D. DP DP+FPG DP DP+FPG
+> Figure 3. Visualization of the action path of push T tasks. The detailed process of the example is shown in Figure 11.
+
+4.2. Toy Model Experiments 
+
+We evaluate Fisher Preserving Guidance on two comple-mentary toy benchmarks, M AZE 2D and P USH T, to probe its effectiveness under two inference regimes: the intrin-sic denoising update induced by the diffusion model and additional test-time task guidance. In both cases, naive gradient-based modifications can shift samples away from the distribution captured by the model and degrade feasibil-ity or stability. Our goal is to test whether FPG improves this tradeoff by orthogonally decomposing the relevant gra-dients and adjusting the update direction to better respect the local geometry implied by the model. Our evaluation uses task specific diffusion backbones and a shared inference interface. For M AZE 2D, the baseline is a DDPM style trajectory generator designed in our frame-work. For a detailed description, see Sec. D. For P USH T, we use the official pretrained weights released with Diffusion Policy (Chi et al., 2023). In all cases, we compare the origi-nal sampling procedure with the same sampler augmented with FPG and report both quantitative results and qualitative rollouts. Table 1 summarizes the main metrics across tasks, and Figures 2 and 3 visualize representative trajectories. 
+
+MAZE 2D: Safety-Constrained Planning. For M AZE 2D, we consider G × G occupancy grids with G = 64 and gen-erate expert trajectories by running classical planning on inflated obstacles, followed by resampling to a fixed horizon 
+
+H. At inference time, we optionally add a guidance term, de-noted as TG, derived from a truncated signed distance field (TSDF) computed from the occupancy grid. It is visualized in Figure 9. Let Ω = [ −1, 1] 2 be the normalized workspace and let s : Ω → R denotes the TSDF, where larger values 6Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control   
+
+> Table 1. Comparison of performance on Maze2D and PushT tasks. The best results are highlighted in bold .
+
+Maze2D PushT Maze2D 
+
+Method Colli. Path Score Method Colli. Path Baseline 0.243 2.17 0.91 Baseline +TG 0.071 2.48 FPG 0.170 2.41 0.94 FPG + TG 0.016 2.43 indicate larger clearance, and s(p) ≤ 0 indicates colli-sion. For a waypoint trajectory p1: H = ( p1, . . . , pH ) with 
+
+pi ∈ Ω, we define the TSDF guidance cost by sampling the TSDF along the trajectory (via bilinear interpolation), denoted ˜s(pi), and penalizing insufficient clearance: 
+
+LTG (p1: H ) = 
+
+> H
+
+X
+
+> i=1
+
+ϕ
+
+ μ − ˜s(pi)
+
+τ
+
+
+
+, (33) where μ > 0 is the desired clearance margin and τ > 0 is a temperature parameter. Here ϕ : R → R+ is a smooth, nondecreasing barrier with ϕ(z) ≈ 0 for z ≤ 0 and increas-ing penalty for z > 0. Following the guidance injection scheme used in (Zeng et al., 2025), we apply gradient-based corrections during reverse diffusion after each denoising update. We additionally enforce endpoint constraints by in-painting, i.e., resetting the start and goal waypoints to their fixed values at every reverse step. The results show that FPG improves safety in M AZE 2D both without and with TG. Without TG, FPG reduces col-lision compared to the DDPM baseline while maintaining competitive path quality, as reported in Table 1. With TG enabled, the baseline already reduces collisions, but FPG fur-ther decreases collision substantially, from 0.071 to 0.016 ,while also slightly improving the resulting path metric from 
+
+2.48 to 2.43 in our setting. The qualitative comparisons in Figure 2 are consistent with these trends. Under the same en-vironments and endpoints, baseline rollouts tend to exhibit unsafe behavior near obstacles or deviate from the ground truth corridor, whereas FPG produces trajectories that track feasible routes with improved clearance. 
+
+PUSH T: Contact-Rich Manipulation. For P USH T, we evaluate FPG as an inference time modification on top of the official Diffusion Policy model, without introducing task specific retraining. We follow the standard closed loop receding horizon execution used by Diffusion Policy and report the task score as the primary metric (Chi et al., 2023). As shown in Table 1, adding FPG improves the score from 
+
+0.91 to 0.94 . Figure 3 visualizes representative action paths and shows that DP with FPG produces more coherent pushes and avoids unstable wandering trajectories observed in the baseline, which aligns with the interpretation that FPG miti-gates harmful distribution shift during guided sampling.  
+
+> Table 2. Average Performance Comparison Across All Scenarios
+
+Method SR (%) ↑ Avg. Colli. ↓ Avg. SPL ↑
+
+ViNT 53.33 0.611 0.504 NoMaD 51.11 0.778 0.478 NoMaD + FPG 60.00 0.644 0.556 NoMaD + Blending 57.78 0.667 0.521 Ours 75.55 0.445 0.653  
+
+> Table 3. Comparison of Different Algorithms on GRScenes
+
+Alg SR (%) Avg. Colli. Avg. SPL VINT 68.0 0.71 0.77 NoMaD 51.0 1.95 0.33 Ours 83.0 0.48 0.83 
+
+Ours w/o both 67.0 0.76 0.65 
+
+4.3. Experiment Results 
+
+To assess robustness and versatility, we evaluate our method in two complementary simulators. First, we use CARLA (Dosovitskiy et al., 2017) with 9 routes across 3 scenes to cover diverse outdoor navigation conditions with varying route lengths and intersection structures (Fig. 10). Second, we validate transfer to constrained indoor naviga-tion using the GRScenes dataset (Wang et al., 2024) within NVIDIA Isaac Sim, where we construct 10 routes across 5 scenes. All experiments compare our method against strong baselines, including ViNT and NoMaD, under identical pro-tocols. Each route repeats 10 times. Table 2 summarizes the average performance across all CARLA scenarios.The performance of each scenario is shown in Table 9. Our method achieves the best overall navigation quality, improving both task completion and path efficiency while also reducing collisions. Relative to ViNT and NoMaD, the results indicate that our policy is not only more likely to reach the goal, but also produces more efficient successful trajectories, reflecting stronger generalization across heterogeneous outdoor layouts. The comparisons with enhanced NoMaD variants in Ta-ble 2 further clarify the contribution of our components. Incorporating Fisher-preserving guidance or uncertainty-aware action blending into NoMaD consistently improves over the vanilla backbone, supporting the plug-and-play and training-free nature of our approach. The full framework performs best overall, suggesting that these modules provide complementary benefits by jointly enhancing goal reaching reliability and navigation safety. The indoor results in Table 3 corroborate these findings in a markedly different setting. Our approach again attains the strongest success and path efficiency while incurring the fewest collisions, demonstrating effective transfer from out-door driving-style tasks to cluttered indoor navigation. The 7Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control  
+
+> Table 4. Ablation Study on All CARLA Scenarios
+
+FPG AB SR (%) Avg. Colli. Avg. SPL 
+
+✓ ✓ 75.55 0.445 0.653 
+
+✗ ✓ 57.78 0.622 0.537 
+
+✓ ✗ 64.44 0.911 0.576 
+
+✓ Random 57.78 0.800 0.518 
+
+✗ ✗ 48.89 0.700 0.463  
+
+> Table 5. Inference efficiency comparison on visual navigation tasks (Test on RTX3060).
+
+Method Step Denoising (ms) Total (ms) NoMaD 10 31.20 55.00 VJP-Fisher 10 85.70 95.32 VJP-Fisher 4 45.19 54.81 Ours 10 52.31 61.93 Ours 4 35.50 45.12 variant without both components exhibits a clear degrada-tion, confirming that Fisher-preserving guidance and action blending are both important for coping with perception noise and partial observability in indoor scenes. Taken together, theevaluations suggest that our framework provides a gen-eral and robust solution for visuomotor navigation across diverse environments and simulators. 
+
+4.4. Ablation Study 
+
+To clarify the contribution of Fisher-preserving guidance (FPG) and action blending (AB), we conduct an ablation study across all CARLA scenarios (Table 4). The full model consistently delivers the best overall performance, achieving the highest success rate and path efficiency while incurring the fewest collisions, which indicates that combining global guidance with uncertainty-aware control produces the most reliable navigation behavior. Removing either component leads to a clear degradation. Without FPG, the policy becomes less goal-directed and tends to follow less efficient trajectories, even though AB partially stabilizes execution. In contrast, keeping FPG but disabling AB preserves coarse planning capability but in-creases unsafe interactions, suggesting that global guidance alone is insufficient when precise local control is required. Replacing AB with random blending further reduces perfor-mance, confirming that AB provides structured action fusion rather than incidental regularization. When both modules are absent, the model performs worst, highlighting that FPG and AB contribute complementary benefits and are jointly necessary for robust, efficient, and safe navigation. Timestep          
+
+> 1
+> 12345
+> 12345
+> 2
+> 2
+> 1
+> 3
+> 4
+> 3
+> 4
+> 5
+> 5
+> Non -nominal
+> turning action
+> Follows planned
+> maneuver
+> Figure 4. Visualization of log uncertainty for nominal and deviated trajectories. Increased uncertainty is observed when the agent en-counters abnormal or erroneous observations. At intersections and other critical locations, the network demonstrates greater sensitiv-ity to visual changes, resulting in higher uncertainty and Fisher information.
+
+4.5. Inference Efficiency Analysis 
+
+To evaluate practical deployability, we compare inference efficiency with NoMaD and VJP-Fisher on an RTX 3060 GPU (Table 5). Under the same denoising-step setting, our method incurs substantially lower latency than VJP-Fisher and remains competitive with NoMaD, indicating that the proposed guidance and blending introduce only modest overhead while improving navigation quality. We further examine a truncated denoising schedule. With fewer steps, our method achieves the lowest overall inference time among all compared approaches, outperforming both NoMaD and VJP-Fisher. Combined with the consistently strong navigation results reported earlier, these efficiency gains suggest that our framework can operate in real-time or near-real-time regimes, making it suitable for deployment in latency-sensitive visual navigation scenarios. 
+
+4.6. Uncertainty Analysis 
+
+To characterize policy behavior under observation perturba-tions, we analyze the log TFDS uncertainty bU along nomi-nal and deviated trajectories (Fig. 4). The uncertainty rises markedly when the agent experiences abnormal or incon-sistent visual inputs, indicating that the policy can detect distributional shifts and correspondingly increase caution, which is critical for robust navigation under imperfect sens-ing. We also observe elevated uncertainty around intersec-tions and other decision-critical regions. This pattern aligns with higher Fisher information and suggests that the policy is more sensitive to visual changes when small perceptual differences can alter the optimal action. Overall, the un-certainty signal provides an interpretable indicator of when 8Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control (a) (b) (c)                                        
+
+> (d) (e) (f)
+> Figure 5. Real-world navigation. Start navigation from (a), follow the sequence as shown in the images to complete the navigation task, and (f) stop after multiple turns when near the target image.
+> Table 6. Success rates (SR) and Collision counts on real-robot settings, including average performance. Method Scene 1 Scene 2 Scene 3 Total SR Coll. SR Coll. SR Coll. SR Coll. ViNT 8/10 0.27/10 0.37/10 0.422 /30 0.37
+> NoMaD 7/10 0.37/10 0.55/10 0.919 /30 0.57
+> FPG 10 /10 0.0 9/10 0.1 9/10 0.2 28 /30 0.10
+
+the agent faces higher semantic ambiguity, supporting the effectiveness of our design in complex navigation scenarios. 
+
+4.7. Real-world Experiments 
+
+We tested the proposed FPG-OPS in a real-world environ-ment. Experiments were conducted using a wheeled robot, Diablo, equipped with an Azure Kinect camera and an NVIDIA Jetson Orin computing platform. As shown in Figure 5, the robot successfully completed the navigation task after multiple turns to reach the destination. Quantita-tive experiments are shown in Sec. C.2 and Table 6. Table 6 demonstrates that FPG improves real-world nav-igation reliability and safety. Compared with ViNT and NoMaD, FPG achieves higher success rates across all scenes while consistently reducing collision frequency, es-pecially in constrained environments. These results indicate that Fisher-preserving guidance helps suppress unsafe off-manifold drift during inference, producing steadier action sequences for real-world execution. 
+
+# 5. Conclusion 
+
+Summary This paper presents a training-free inference framework for diffusion-based visual navigation that im-proves safety and robustness through Fisher-Preserving Guidance and uncertainty-aware action blending. The cen-tral idea is to control the denoising gradient and test-time guidance so that reverse diffusion updates remain close to the model’s learned manifold by enforcing a Fisher-isosurface constraint while optimizing a task objective. To make this practical, we exploit the low-rank structure of the policy head and implement the constraint efficiently with Outer-Product-Span projection. We further introduce Truncated Fisher Denoising Sensitivity as an uncertainty signal and use it to robustly fuse multiple candidate tra-jectories at inference time. Experiments across Maze2D with TSDF guidance, PushT with official Diffusion Pol-icy weights, and visual navigation benchmarks including CARLA, GRScenes, and real-robot evaluation demonstrate consistent gains in safety and task performance without additional training. 
+
+Limitations Our method has two main limitations. First, Fisher denoising sensitivity serves as a practical proxy for local sensitivity and sample typicality, rather than a certi-fied guarantee of physical safety. Second, our evaluation mainly focuses on RGB visual navigation, with only limited additional results on Maze2D and PushT. Future work will extend the method to broader robotic tasks, such as naviga-tion in dynamic-obstacle scenarios and manipulation, and study its integration with stronger uncertainty estimation and safety verification mechanisms. 
+
+# Impact Statement 
+
+This work facilitates the sustainable and wide-scale deploy-ment of diffusion policies by eliminating the energy and data costs associated with retraining. While this encour-ages broader adoption in diverse settings, responsible de-ployment remains crucial: uncertainty estimates are not calibrated safety guarantees, and practitioners must guard against overconfidence in the face of distribution shifts and dataset biases. 
+
+# Acknowledgement 
+
+This work was supported by the National Natural Science Foundation of China (U22A2095). 
+
+# References 
+
+Al-Halah, Z., Ramakrishnan, S. K., and Grauman, K. Zero experience required: Plug & play modular transfer learn-ing for semantic visual navigation. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 17031–17041, 2022. Beeching, E., Dibangoye, J., Simonin, O., and Wolf, C. Learning to plan with uncertain topological maps. In 
+
+European Conference on Computer Vision , pp. 473–490. Springer, 2020. Cadena, C., Carlone, L., Carrillo, H., Latif, Y., Scaramuzza, D., Neira, J., Reid, I., and Leonard, J. J. Past, present, and future of simultaneous localization and mapping: Toward 9Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+the robust-perception age. IEEE Transactions on robotics ,32(6):1309–1332, 2016. Chalvatzaras, A., Pratikakis, I., and Amanatiadis, A. A. A survey on map-based localization techniques for au-tonomous vehicles. IEEE Transactions on intelligent vehicles , 8(2):1574–1596, 2022. Chen, K., Chen, J. K., Chuang, J., V ´azquez, M., and Savarese, S. Topological planning with transformers for vision-and-language navigation. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pp. 11276–11286, 2021. Chi, C., Xu, Z., Feng, S., Cousineau, E., Du, Y., Burchfiel, B., Tedrake, R., and Song, S. Diffusion policy: Visuomo-tor policy learning via action diffusion. The International Journal of Robotics Research , pp. 02783649241273668, 2023. Deng, D., Chen, G., Yu, Y., Liu, F., and Heng, P.-A. Uncer-tainty estimation by fisher information-based evidential deep learning. In International conference on machine learning , pp. 7596–7616. PMLR, 2023. Dosovitskiy, A., Ros, G., Codevilla, F., Lopez, A., and Koltun, V. Carla: An open urban driving simulator. In 
+
+Conference on robot learning , pp. 1–16. PMLR, 2017. Du, Y., Gan, C., and Isola, P. Curious representation learn-ing for embodied intelligence. In Proceedings of the IEEE/CVF International Conference on Computer Vision ,pp. 10408–10417, 2021. Filos, A., Tigkas, P., McAllister, R., Rhinehart, N., Levine, S., and Gal, Y. Can autonomous vehicles identify, re-cover from, and adapt to distribution shifts? In Interna-tional Conference on Machine Learning , pp. 3145–3153. PMLR, 2020. Gal, Y. and Ghahramani, Z. Dropout as a bayesian approx-imation: Representing model uncertainty in deep learn-ing. In international conference on machine learning , pp. 1050–1059. PMLR, 2016. Gao, J., Yao, X., and Xu, C. Fast-slow test-time adapta-tion for online vision-and-language navigation. In Inter-national Conference on Machine Learning , pp. 14902– 14919. PMLR, 2024. Gode, S. et al. Flownav: Learning efficient navigation policies via conditional flow matching. arXiv , 2024. He, Y., Murata, N., Lai, C.-H., Takida, Y., Uesaka, T., Kim, D., Liao, W., Mitsufuji, Y., Kolter, Z., Salakhutdinov, R., et al. Manifold preserving guided diffusion. In Interna-tional Conference on Learning Representations , volume 2024, pp. 44819–44850, 2024. Hirose, N., Xia, F., Mart ´ın-Mart ´ın, R., Sadeghian, A., and Savarese, S. Deep visual mpc-policy learning for nav-igation. IEEE Robotics and Automation Letters , 4(4): 3184–3191, 2019. Hirose, N., Shah, D., Sridhar, A., and Levine, S. Sacson: Scalable autonomous control for social navigation. IEEE Robotics and Automation Letters , 2023. Hu, Y., Yang, J., Chen, L., Li, K., Sima, C., Zhu, X., Chai, S., Du, S., Lin, T., Wang, W., et al. Planning-oriented autonomous driving. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition ,pp. 17853–17862, 2023. Hutchinson, M. F. A stochastic estimator of the trace of the influence matrix for laplacian smoothing splines. Com-munications in Statistics-Simulation and Computation ,18(3):1059–1076, 1989. Janner, M., Du, Y., Tenenbaum, J. B., and Levine, S. Plan-ning with diffusion for flexible behavior synthesis. arXiv preprint arXiv:2205.09991 , 2022. Jiang, W., Lei, B., and Daniilidis, K. Fisherrf: Active view selection and mapping with radiance fields using fisher information. In European Conference on Computer Vision , pp. 422–440. Springer, 2024. Karnan, H., Nair, A., Xiao, X., Warnell, G., Pirk, S., Toshev, A., Hart, J., Biswas, J., and Stone, P. Socially compli-ant navigation dataset (scand): A large-scale dataset of demonstrations for social navigation. IEEE Robotics and Automation Letters , 2022. Kendall, A. and Gal, Y. What uncertainties do we need in bayesian deep learning for computer vision? Advances in neural information processing systems , 30, 2017. Kou, S., Gan, L., Wang, D., Li, C., and Deng, Z. Bayes-diff: Estimating pixel-wise uncertainty in diffusion via bayesian inference. arXiv preprint arXiv:2310.11142 ,2023. Li, J., Padmakumar, A., Sukhatme, G., and Bansal, M. Vln-video: Utilizing driving videos for outdoor vision-and-language navigation. In Proceedings of the AAAI Con-ference on Artificial Intelligence , volume 38, pp. 18517– 18526, 2024. Li, Z., Yang, J., Zhao, Y., Ren, L., Wu, X., Xu, Z., and Zhao, H. Sim-to-real dynamic object manipulation on conveyor systems via optimization path shaping. arXiv preprint arXiv:2508.14042 , 2025. Majumdar, A., Aggarwal, G., Devnani, B., Hoffman, J., and Batra, D. Zson: Zero-shot object-goal navigation using multimodal goal embeddings. Advances in Neural Information Processing Systems , 35:32340–32352, 2022. 10 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+Oriolo, G., Vendittelli, M., and Ulivi, G. On-line map building and navigation for autonomous mobile robots. In Proceedings of 1995 IEEE international conference on robotics and automation , volume 3, pp. 2900–2906. IEEE, 1995. Ren, H., Zeng, Y., Bi, Z., Wan, Z., Huang, J., and Cheng, H. Prior does matter: Visual navigation via denoising diffusion bridge models. In Proceedings of the Computer Vision and Pattern Recognition Conference , pp. 12100– 12110, 2025. Ren, H., Bi, Z., Zeng, Y., Wan, Z., Qi, L., and Cheng, H. Strnet: Visual navigation with spatio-temporal representa-tion through dynamic graph aggregation. arXiv preprint arXiv:2604.02829 , 2026. Savinov, N., Dosovitskiy, A., and Koltun, V. Semi-parametric topological memory for navigation. arXiv preprint arXiv:1803.00653 , 2018. Shah, D., Eysenbach, B., Kahn, G., Rhinehart, N., and Levine, S. Rapid exploration for open-world navigation with latent goal models. arXiv preprint arXiv:2104.05859 ,2021. Shah, D., Sridhar, A., Bhorkar, A., Hirose, N., and Levine, S. Gnm: A general navigation model to drive any robot. In 2023 IEEE International Conference on Robotics and Automation (ICRA) , pp. 7226–7233. IEEE, 2023a. Shah, D., Sridhar, A., Dashora, N., Stachowicz, K., Black, K., Hirose, N., and Levine, S. Vint: A foundation model for visual navigation. arXiv preprint arXiv:2306.14846 ,2023b. Song, J., Meng, C., and Ermon, S. Denoising diffusion implicit models. arXiv preprint arXiv:2010.02502 , 2020. Song, K. and Lai, H. Improving training-free conditional diffusion model via fisher information. arXiv preprint arXiv:2404.18252 , 2024. Sridhar, A., Shah, D., Glossop, C., and Levine, S. No-mad: Goal masked diffusion policies for navigation and exploration. In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pp. 63–70. IEEE, 2024. Sun, Z. and Song, S. Latent policy barrier: Learning robust visuomotor policies by staying in-distribution. arXiv preprint arXiv:2508.05941 , 2025. Tang, T., Du, H., Yu, X., and Yang, Y. Monocular camera-based point-goal navigation by learning depth channel and cross-modality pyramid fusion. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 36, pp. 5422–5430, 2022. Wan, Z., Bi, Z., Zhou, Z., Ren, H., Zeng, Y., Li, Y., Qi, L., Yang, X., Yang, M.-H., and Cheng, H. Rapid hand: Robust, affordable, perception-integrated, dexterous ma-nipulation platform for embodied intelligence. Advances in Neural Information Processing Systems , 38:97012– 97046, 2026. Wang, F., Yin, H., Zhuang, S., Zhu, H., Li, Y., Qian, L., Zhang, C., Zhao, H., Qian, H., and Li, C. Efficiently ac-cess diffusion fisher: Within the outer product span space. In Forty-second International Conference on Machine Learning , 2025. Wang, H., Chen, J., Huang, W., Ben, Q., Wang, T., Mi, B., Huang, T., Zhao, S., Chen, Y., Yang, S., et al. Grutopia: Dream general robots in a city at scale. arXiv preprint arXiv:2407.10943 , 2024. Wu, Q., Manocha, D., Wang, J., and Xu, K. Neonav: im-proving the generalization of visual navigation via gener-ating next expected observations. In Proceedings of the AAAI conference on artificial intelligence , volume 34, pp. 10001–10008, 2020. Xie, W., Jiang, H., Zhu, Y., Qian, J., and Xie, J. Navi-former: A spatio-temporal context-aware transformer for object navigation. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 39, pp. 14708–14716, 2025. Xing, Z., Zhang, X., Hu, Y., Jiang, B., He, T., Zhang, Q., Long, X., and Yin, W. Goalflow: Goal-driven flow match-ing for multimodal trajectories generation in end-to-end autonomous driving. In Proceedings of the Computer Vi-sion and Pattern Recognition Conference , pp. 1602–1611, 2025. Yang, L., Qi, J., Song, D., Xiao, J., Han, J., and Xia, Y. Survey of robot 3d path planning algorithms. Journal of Control Science and Engineering , 2016(1):7426913, 2016. Yang, L., Ding, S., Cai, Y., Yu, J., Wang, J., and Shi, Y. Guidance with spherical gaussian constraint for condi-tional diffusion. arXiv preprint arXiv:2402.03201 , 2024. Yasuda, Y. D., Martins, L. E. G., and Cappabianco, F. A. Au-tonomous visual navigation for mobile robots: A system-atic literature review. ACM Computing Surveys (CSUR) ,53(1):1–34, 2020. Zeng, Y., Ren, H., Wang, S., Huang, J., and Cheng, H. Navidiffusor: Cost-guided diffusion model for visual nav-igation. arXiv preprint , 2025. Zheng, K., Lu, C., Chen, J., and Zhu, J. Improved techniques for maximum likelihood estimation for diffusion odes. In International Conference on Machine Learning , pp. 42363–42389. PMLR, 2023. 11 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+Zheng, L., Mei, R., Wei, M., Ren, H., and Cheng, H. Get: Goal-directed exploration and targeting for large-scale un-known environments. arXiv preprint arXiv:2505.20828 ,2025. Zhou, G., Hong, Y., and Wu, Q. Navgpt: Explicit reasoning in vision-and-language navigation with large language models. In Proceedings of the AAAI Conference on Artifi-cial Intelligence , volume 38, pp. 7641–7649, 2024. Zhu, Y., Mottaghi, R., Kolve, E., Lim, J. J., Gupta, A., Fei-Fei, L., and Farhadi, A. Target-driven visual naviga-tion in indoor scenes using deep reinforcement learning. In 2017 IEEE international conference on robotics and automation (ICRA) , pp. 3357–3364. IEEE, 2017. 12 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+# A. Overview 
+
+This supplementary material provides comprehensive implementation details, additional experimental results, and rigorous theoretical proofs to support the main claims of our paper. The contents are organized as follows: • Appendix B. Notations: A summary of the key mathematical notations and symbols used throughout the paper and appendices. • Appendix C. Experimental Details: Detailed experimental settings including hyperparameters, baselines, and additional qualitative results for visual navigation tasks (including CARLA and GRScenes) and real-world robot deployment. • Appendix D. Additional Details for Toy Benchmarks: Specific model architectures, data generation protocols, guidance objectives, and evaluation metrics for the Maze2D and PushT benchmarks. • Appendix E. Fisher Denoising Sensitivity Details: Theoretical derivations for the Truncated Fisher Denoising Sensitivity (TFDS), including the error bound analysis for truncation and the connection to the Cram ´er-Rao lower bound. • Appendix F. Relation to Parameter Fisher Uncertainty: A discussion clarifying the distinction between our input-space Fisher sensitivity and the conventional parameter-space Fisher information. • Appendix G. Properties of Fisher-Preserving Guidance: Formal proofs regarding risk analysis, first-order loss invariance, and second-order Fisher consistency. This section also details the Outer-Product-Span (OPS) factorization and its efficiency in projecting updates. • Appendix H. Theoretical Analysis of Fisher-Preserving Dynamics: An analysis of the optimality of FPG under external guidance and the intrinsic safety properties of Fisher-orthogonal decomposition in the absence of guidance. • Appendix I. Pseudocode: A complete algorithmic description of the FPG-OPS inference loop and the Uncertainty-Guided Action Blending strategy. 
+
+# B. Notations 
+
+To facilitate reading and ensure consistency with the main text, we summarize the main notations used throughout the paper in Table 7. This appendix provides additional theoretical derivations, implementation details, and reproducibility notes to support our main results.  
+
+> Table 7. Comprehensive Nomenclature and Symbol Definitions
+
+Symbol Description 
+
+General Visual Navigation 
+
+O = {It}Tt=T −p Sequence of past observation images used as input history. 
+
+Ig Goal image indicating the target destination. 
+
+C Context representation encoded from observations and goal. 
+
+a, a 0 Predicted final control action, waypoint, or action trajectory in Rd.
+
+d Predicted temporal distance to the goal. 
+
+L(at, C, t ) Task guidance objective function, e.g., collision avoidance or path efficiency, evaluated during reverse diffusion. 
+
+∇at L Gradient of the task guidance loss with respect to the current noisy action state at.
+
+Diffusion Process 
+
+t Current denoising time step in the reverse process, t ∈ { T, . . . , 1}.
+
+T Total number of diffusion denoising steps. 
+
+at Noisy action state at denoising step t.
+
+ϵθ (C, a t, t ) Learned noise prediction network, i.e., the diffusion denoiser. 13 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+μt Mean reverse-diffusion update before applying Fisher-preserving guidance. 
+
+αt, β t Noise schedule parameters, with αt = 1 − βt.
+
+¯αt Cumulative noise schedule parameter, ¯αt = Qti=1 αi.
+
+ρt Per-step contraction factor, ρt = 1 − 12 βt.
+
+wt Cumulative weight for chain propagation, wt = QTs=t+1 ρ2
+
+> s
+
+.
+
+Fisher Denoising Sensitivity (FDS) 
+
+˜a0(C, a t, t ) Reconstructed clean action estimated from the noisy action state at.
+
+J(C, t ) Jacobian of the reconstructed action with respect to the condition, J(C, t ) = ∂˜a0 
+
+> ∂C
+
+.
+
+I(C, t ) Step-wise Fisher-style sensitivity proxy, I(C, t ) = ∥J(C, t )∥2 
+
+> F
+
+.
+
+It(at; C) Step-wise FDS viewed as a scalar field over the action state at under fixed condition C.
+
+UFDS (C, t ) Step Fisher Denoising Sensitivity, equivalent to I(C, t ).
+
+UCFDS (C) Chain Fisher Denoising Sensitivity accumulated over the reverse diffusion trajectory. 
+
+bU or ¯I(M )tail Truncated FDS (TFDS): accumulated sensitivity over the final M denoising steps. 
+
+M Truncation horizon, i.e., the tail length used for efficient sensitivity calculation. 
+
+ηM Relative truncation error bound. 
+
+Sκ,t (C) Fisher isosurface in the action-trajectory space for fixed condition C, defined by 
+
+It(at; C) = κ.
+
+gt Fisher normal vector in the action-trajectory space, gt = ∇at It(at; C).
+
+Outer Product Span (OPS) Guidance 
+
+hθ (C, a t, t ) Latent feature representation before the final denoising prediction head. 
+
+W Learned linear projection matrix, or residual head, mapping latent features to the action/noise prediction space. 
+
+ut Action-space task gradient, ut = ∇at L(at, C, t ).
+
+gh Latent OPS proxy for the Fisher normal direction. 
+
+uh Task gradient projected into the OPS latent space, uh = W ⊤ut.
+
+Mh or M Pullback metric induced by the projection head, Mh = W ⊤W .
+
+u∥ 
+
+> h
+
+Component of the latent task gradient parallel to the latent Fisher normal direction. 
+
+u⊥ 
+
+> h
+
+Component of the latent task gradient orthogonal to the latent Fisher normal direction. 
+
+∆t Fisher-preserving update direction mapped back to the action-trajectory space. 
+
+γ Step size coefficient for the guidance update. 
+
+Uncertainty-Guided Action Blending 
+
+K Number of parallel action candidates sampled. 
+
+{ak}Kk=1 Set of sampled action candidates. 
+
+CTyp (ak) Cluster typicality score measuring the representativeness of sample k.
+
+C(ak) Composite confidence score combining TFDS and cluster typicality. 
+
+η Temperature parameter for uncertainty weighting. 
+
+ablend Final blended action computed via weighted averaging of candidates. 
+
+# C. Experimental Details 
+
+C.1. Experimental Settings 
+
+The core parameter settings are introduced in the implementation details of Section Experiments. Following standard practice in the field and to balance efficiency and performance, all methods use 96 ×96 input images and 3-frame observation histories, with AdamW as the optimizer. Training is conducted for 30 epochs, including 4 warmup epochs. The random seed is set to 0. 14 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+C.2. Detailed Experimental Results 
+
+Figure 7 presents a qualitative comparison of navigation trajectories generated by our Fisher-preserving diffusion policy and the NoMaD (Sridhar et al., 2024) baseline. As illustrated in subfigures (a) and (d), our method produces trajectories that closely follow the optimal path, demonstrating strong adherence to scene geometry and effective anticipation of turns and obstacles. The planned routes not only navigate around obstacles with clear margin but also exhibit smooth transitions, reflecting the robustness of our uncertainty-guided action selection. In contrast, the trajectories generated by NoMaD, shown in subfigures (b), (c), and (e), often deviate from the optimal route, especially when facing sharp corners or dense obstacles. These paths sometimes cut too close to barriers or take unnecessarily long detours, indicating a lack of risk-aware adjustment. Overall, this comparison highlights that our approach consistently delivers more reliable and efficient navigation, with a clear advantage in challenging scenarios that require precise maneuvering. The visual results further validate the effectiveness of maintaining Fisher isosurface constraints in guiding the policy towards safer and more optimal decisions. Figure 8 presents a comparative visualization of trajectory sampling and selection between our Fisher-preserving diffusion policy and the NoMaD baseline in urban navigation scenarios. For each method, we display multiple candidate trajectories (in blue), as well as the final blended trajectory (in red) that the agent actually executes. The action selection strategy in NoMaD is implemented by choosing an arbitrary action from the entire batch without any evaluation. Our method consistently demonstrates superior multimodal exploration, producing a diverse set of feasible trajectories that account for scene geometry and potential obstacles. The final path chosen by our uncertainty-guided blending mechanism reliably steers the agent toward the goal while effectively avoiding collisions and suboptimal detours, even in ambiguous or complex street layouts. In contrast, NoMaD often exhibits less diversity among sampled paths and its selected trajectories tend to be more direct but also more susceptible to risk, frequently resulting in less robust navigation and, in some cases, increased likelihood of failure to reach the goal. These visual results underscore the practical benefits of Fisher-preserving guidance for safe and efficient decision making in visually complex real-world environments. In the real-robot evaluation, we test three indoor scenes with identical sensing, control, and trial protocol across methods. We report success rate (SR) as the number of successful episodes over the total number of trials, and we report collision counts (Coll.) as the average number of collisions per episode in each scene and averaged across all scenes. This setting is intentionally challenging due to actuation noise, perception errors, and scene-specific distribution shift, so improvements here are indicative of practical robustness rather than purely simulation gains. Table 6 shows that FPG provides a consistent improvement in safety while also increasing reliability. Compared to ViNT and NoMaD, FPG achieves higher success across all scenes and, more importantly, substantially lowers collision frequency in every scene. The gap is most pronounced in the more constrained scenes, where baseline methods tend to exhibit occasional unsafe interactions even when they reach the goal, while FPG maintains low-collision behavior without sacrificing completion. Overall, these results suggest that the Fisher-preserving update reduces harmful off-manifold drift during inference, leading to steadier action sequences that transfer better to real-world execution. Encoder 
+
+> Encoder
+> Sparse
+> Attention
+> Temporal
+> Shift Model
+> MLP
+
+# aaoo 
+
+> Observation s
+> Goal image
+> Figure 6. Pipeline of the FPG base model, adapted from (Ren et al., 2026).
+
+15 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+(a) Ours (b) NoMaD (c) NoMaD (d) Ours (e) NoMaD 
+
+Figure 7. Qualitative comparison of navigation trajectories. (a, d) Trajectories generated by our Fisher-preserving diffusion policy. (b, c, e) Trajectories generated by NoMaD. Our method consistently produces more accurate and efficient paths, especially when navigating around obstacles or sharp turns, while NoMaD trajectories are less optimal and sometimes exhibit significant deviation. Sample Trajectories Final Blended Trajectory Start End 
+
+(a) Ours Sample Trajectories Final Blended Trajectory Start End (b) NoMaD Sample Trajectories Final Blended Trajectory Start End (c) Ours Sample Trajectories Final Blended Trajectory Start End (d) NoMaD 
+
+Figure 8. Visualization of sampled and final blended trajectories in urban navigation scenarios. (a, c) Our method generates diverse candidate trajectories (blue) and reliably blends them into optimal paths (red) towards the goal, demonstrating robustness to uncertainty and environmental variability. (b, d) NoMaD trajectories are less adaptive, often leading to suboptimal or riskier paths. Green dots indicate the starting position; red crosses indicate the goal. (a) (b) (c) (d) (e) 
+
+> Obstacle  Map TSDF
+
+Figure 9. Visualization of the obstacle grid map and corresponding TSDF map. 
+
+16 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control  
+
+> Table 8. Hyperparameter settings for training and inference.
+
+Parameter Value 
+
+Training Optimization Model Architecture 
+
+Vision Backbone EfficientNet-B0 Image Size 96 × 96 
+
+Action Horizon 8
+
+Fisher Inference (FPG-OPS) 
+
+Diffusion Steps 10 Guidance Scale ( γ) 0.05 Candidate Samples ( K) 4FDS Tail Length ( M ) 4Blending Temp ( β) 5.0 Clustering Algorithm DBSCAN ( ϵ = 0 .5) 
+
+> Table 9. Comparison of Different Methods Across Scenarios
+
+Method Scenario 1 Scenario 2 Scenario 3 SR (%) Avg. Colli. Avg. SPL SR (%) Avg. Colli. Avg. SPL SR (%) Avg. Colli. Avg. SPL ViNT 66.67 0.533 0.649 33.33 0.833 0.309 60.00 0.467 0.554 NoMaD 60.00 0.533 0.594 53.33 0.733 0.462 40.00 1.067 0.377 NoMaD + FPG 66.67 0.500 0.616 60.00 0.700 0.529 53.33 0.733 0.523 NoMaD + Blending 66.67 0.467 0.603 60.00 0.667 0.498 46.67 0.867 0.463 Ours 73.33 0.467 0.644 73.33 0.667 0.625 80.00 0.200 0.689 
+
+# D. Additional Details for Toy Benchmarks 
+
+D.1. Model Architectures MAZE 2D policy. For M AZE 2D, we use a conditional DDPM-style policy that predicts noise for a fixed-horizon waypoint sequence. The model consists of (i) a spatial condition encoder that extracts both a global conditioning vector and a set of spatial tokens from the occupancy map using a ResNet-18 backbone, and (ii) a 1D U-Net noise predictor over the waypoint horizon. Conditioning is injected through FiLM-style modulation using the global vector, and cross-attention from the trajectory features to the map tokens to preserve spatial reasoning. The last hidden feature map before the final 1 × 1
+
+projection is cached as a latent representation for Fisher-related computations. 
+
+PUSH T policy. For P USH T, we follow the standard Diffusion Policy setup and use the official pretrained model weights. The policy predicts an action chunk of fixed horizon conditioned on a short observation history, and is executed in a receding-horizon manner by applying the first action and replanning at the next timestep. We do not retrain the model when evaluating inference-time guidance variants. 
+
+D.2. Datasets and Task Setup MAZE 2D data generation. We generate G × G obstacle fields with G = 64 and sample reachable start-goal pairs. Expert trajectories are computed by classical planning on inflated obstacles to enforce a safety margin, and then resampled to a fixed horizon H and normalized to the workspace Ω = [ −1, 1] 2. We adopt an inpainting formulation during diffusion sampling by fixing the start and goal waypoints at every reverse step using a binary mask and corresponding target values. 
+
+PUSH T evaluation protocol. We use the standard P USH T dataset and evaluation procedure from Diffusion Policy. In each episode, the policy receives a short history of observations and generates an action sequence; the environment executes the first action and the policy replans at the next timestep. We report the task score used by the benchmark and compute 17 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control       
+
+> (a) Scenario 1 (b) Scenario 2 (c) Scenario 3
+> Figure 10. Top-down views of the nine experimental tasks. Each scenario features distinct urban or suburban layouts, with predefined start and goal positions indicated by colored markers and corresponding trajectories. The red, blue, and yellow paths represent different agent routes designed to evaluate performance under varying environmental complexity.
+
+statistics over a fixed set of evaluation seeds. 
+
+D.3. Guidance Objectives and Implementation TSDF task guidance for M AZE 2D. When enabled, we apply an additional test-time guidance term (TG) based on a truncated signed distance field (TSDF) computed from the occupancy grid. Let s : Ω → R denote the TSDF where larger values indicate larger clearance. For a waypoint trajectory p1: H , the guidance cost penalizes low clearance along the trajectory, 
+
+LTG (p1: H ) = 
+
+> H
+
+X
+
+> i=1
+
+ϕ
+
+ μ − ˜s(pi)
+
+τ
+
+
+
+, (34) where ˜s(pi) denotes bilinear interpolation of the discrete TSDF grid at waypoint pi, μ is a clearance margin, and τ is a temperature. We use a smooth nondecreasing barrier ϕ and apply TG inside reverse diffusion after each denoising step. 
+
+Receding-horizon inference for P USH T. For P USH T, we evaluate guidance only at inference time using the same receding-horizon loop as the baseline. All methods share the same pretrained checkpoint and differ only in the sampling rule, enabling a direct comparison of inference-time modifications. 
+
+D.4. Metrics and Reporting MAZE 2D. We report collision rate, success rate (final waypoint within a tolerance of the goal), and a path-quality metric based on trajectory length in normalized coordinates. Collisions are detected by sampling the distance/TSDF field along the trajectory and checking whether clearance falls below a fixed threshold. 
+
+PUSH T. We report the benchmark task score for each episode and aggregate results across evaluation seeds. When comparing sampling variants, we keep the number of diffusion steps and the number of sampled candidates fixed. 
+
+# E. Fisher Denoising Sensitivity Details 
+
+E.1. Derivation of Truncated FDS Error Bound Definitions. We analyze the reverse diffusion process proceeding from t = T (noise) down to t = 1 (data). For each denoising step, let 
+
+J(C, t ) = ∂˜a0
+
+∂C
+
+18 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control DP FPG DP FPG 
+
+Figure 11. Visualization of the push T task case process. 
+
+denote the step-wise condition-side Jacobian used by FDS, and let 
+
+wt := ∥Pt←∥2 =
+
+> T
+
+Y
+
+> s=t+1
+
+ρ2
+
+> s
+
+be the cumulative propagation weight from step t to the final action. Consistent with the main text, we analyze the additive chain-FDS surrogate 
+
+¯I(C) := 
+
+> T
+
+X
+
+> t=1
+
+wt∥J(C, t )∥2 
+
+> F
+
+. (35) The retained Tail consists of the final M denoising steps, t ∈ { 1, . . . , M }, while the discarded Head consists of the earlier noisy steps, t ∈ { M + 1 , . . . , T }. We define 
+
+¯I(M )tail (C) := 
+
+> M
+
+X
+
+> t=1
+
+wt∥J(C, t )∥2 
+
+> F
+
+, (36) 
+
+¯I(M )head (C) := 
+
+> T
+
+X 
+
+> t=M+1
+
+wt∥J(C, t )∥2 
+
+> F
+
+. (37) Thus, ¯I(C) = ¯I(M )tail (C) + ¯I(M )head (C). (38) 
+
+Gradient norm bound. Let κ ≥ 1 bound the ratio between the largest step-wise Jacobian norm in the discarded head and the smallest one in the retained tail: 
+
+κ := max t>M ∥J(C, t )∥2
+
+> F
+
+min t≤M ∥J(C, t )∥2
+
+> F
+
+. (39) Equivalently, if we denote 
+
+gmin := min  
+
+> t≤M
+
+∥J(C, t )∥2 
+
+> F
+
+, (40) then for all t > M ,
+
+∥J(C, t )∥2 
+
+> F
+
+≤ κg min , (41) and for all t ≤ M ,
+
+∥J(C, t )∥2 
+
+> F
+
+≥ gmin . (42) 19 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+Error bound derivation. The relative truncation error of the additive chain-FDS surrogate is 
+
+ηM := ¯I(C) − ¯I(M )tail (C)¯I(C) = ¯I(M )head (C)¯I(M )head (C) + ¯I(M )tail (C) . (43) Since both terms are nonnegative, we have 
+
+ηM ≤ ¯I(M )head (C)¯I(M )tail (C) . (44) We now upper-bound the head and lower-bound the tail. For the discarded head, 
+
+¯I(M )head (C) = 
+
+> T
+
+X 
+
+> t=M+1
+
+wt∥J(C, t )∥2
+
+> F
+
+≤ κg min 
+
+> T
+
+X 
+
+> t=M+1
+
+wt.
+
+(45) For the retained tail, 
+
+¯I(M )tail (C) = 
+
+> M
+
+X
+
+> t=1
+
+wt∥J(C, t )∥2
+
+> F
+
+≥ gmin 
+
+> M
+
+X
+
+> t=1
+
+wt.
+
+(46) Combining the two inequalities gives 
+
+ηM ≤ κg min 
+
+PTt=M +1 wt
+
+gmin 
+
+PMt=1 wt
+
+= κ
+
+PTt=M +1 wt
+
+PMt=1 wt
+
+. (47) 
+
+E.2. Cram´ er–Rao Lower Bound and Fisher Denoising Sensitivity 
+
+The Cram ´er–Rao lower bound (CRLB) provides a classical connection between Fisher information and the variance of unbiased estimators. In our setting, however, Fisher Denoising Sensitivity (FDS) is not used as a certified statistical Fisher information matrix. Instead, it serves as a Fisher-style local sensitivity proxy for the mapping from the conditioning representation C to the generated action a0.Specifically, we define the FDS score as 
+
+UFDS (C) = ∂a 0
+
+∂C
+
+> 2
+> F
+
+. (48) This quantity measures how strongly the generated action changes under infinitesimal perturbations of the conditioning observation. A larger FDS value therefore indicates higher local sensitivity and lower action stability with respect to observation perturbations. 
+
+Connection to the CRLB. Under an implicit local noise model in which perturbations of C induce variability in the generated action, the FDS score can be viewed as a Fisher-style sensitivity measure related to estimator variance. This provides an intuitive connection to the Cram ´er–Rao framework: regions with high local sensitivity are more likely to produce unstable action estimates, while regions with low sensitivity correspond to more stable predictions. 
+
+Extension to Truncated/Chain FDS. TFDS and CFDS extend this local sensitivity view to the reverse diffusion process. CFDS accumulates sensitivity over the full denoising chain, while TFDS provides an efficient tail approximation using the final M denoising steps: 
+
+bU = ¯I(M )tail . (49) Thus, TFDS is used as a practical uncertainty proxy for sample selection, action blending, and risk estimation. We emphasize that this interpretation provides a useful Fisher-style motivation, rather than a certified lower bound on estimator variance. 20 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+# F. Relation to Parameter Fisher Uncertainty 
+
+Two Fisher Views. Most Bayesian– or variational–uncertainty works (e.g., Bayes by Backprop, KFAC ) quantify parameter uncertainty : they study how the predictive distribution pθ (y | C ) varies under infinitesimal parameter perturbations δθ . The resulting metric is the parameter-Fisher information 
+
+Iparam  
+
+> θ
+
+= Ey∼pθ
+
+ ∇θ log pθ (y | C ) ∇θ log pθ (y | C )⊤. (50) Because a larger Iparam  
+
+> θ
+
+implies a tighter Cram ´er–Rao bound, the classical literature interprets “ Fisher ↑ ⇔ uncertainty ↓”. 
+
+Input-Fisher for Decision Robustness. In contrast, our work focuses on input robustness : given a fixed, trained policy θ⋆,we ask how sensitive the generated action a0 is to infinitesimal observation perturbations δC:
+
+J(C, t ) = ∂˜a0
+
+∂C , UStep-FDS (C, t ) = ∥J(C, t )∥22. (51) This input-Fisher (FDS) can be interpreted as a Fisher-style local sensitivity proxy where the perturbed variable is C rather than the model parameter θ. Here, a larger value means higher local sensitivity of the action to nuisance changes in the perceptual input, hence “FDS ↑ ⇒ uncertainty ↑”.
+
+# G. Properties of Fisher-Preserving Guidance 
+
+G.1. Why Fisher-Preserving Guidance Reduces Risk 
+
+We summarize the main advantages of maintaining a constant Fisher sensitivity during guided reverse diffusion. Unlike unconstrained guidance, which may push the noisy action state at toward regions with unstable sensitivity, Fisher-preserving guidance constrains the update to the tangent space of a Fisher isosurface. This helps reduce off-manifold drift while still allowing task-oriented improvement. 
+
+Risk Cause if Fisher sensitivity is ig-nored Mitigation via Fisher-preserving guidance 
+
+Off-manifold drift Large guidance strength γ may push the action state at along the Fisher-normal direction, moving it into re-gions with abnormal sensitivity. Tangent-space updates preserve 
+
+It(at; C) up to first order, reducing harmful drift. Gradient explosion/collapse Excessive Fisher sensitivity can am-plify small perturbations, while van-ishing sensitivity may indicate de-generate or uninformative samples. Maintaining a stable Fisher radius keeps the sample within a more reli-able sensitivity regime. Loss–safety trade-off A stronger task gradient may reduce the guidance loss but also increase Fisher drift. Projection removes the Fisher-aligned component of the task gra-dient and keeps only the Fisher-orthogonal descent direction.  
+
+> Table 10. Risk analysis of unconstrained guidance and Fisher-preserving guidance.
+
+G.2. Fisher-Preserving Step as a Constrained Descent Direction 
+
+For a fixed condition C, we view the step-wise FDS as a scalar field over the current noisy action state: 
+
+It(at; C) = 1 − ¯αt
+
+¯αt
+
+∥∇ C ϵθ (C, a t, t )∥2 
+
+> F
+
+. (52) Here, the derivative inside the norm is taken with respect to the condition C, because FDS measures observation-conditioned sensitivity. During guided sampling, however, C is fixed and the updated variable is at.21 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+The Fisher normal direction in the action-trajectory space is 
+
+gt := ∇at It(at; C). (53) Let the task guidance gradient be 
+
+ut := ∇at L(at, C, t ). (54) The Fisher-preserving update removes the component of ut aligned with gt:
+
+u⊥ 
+
+> t
+
+= ut − u⊤ 
+
+> t
+
+gt
+
+∥gt∥2 gt. (55) The corresponding update is 
+
+∆t = −γu ⊥ 
+
+> t
+
+. (56) By construction, 
+
+g⊤ 
+
+> t
+
+∆t = 0 , (57) so ∆t lies in the tangent space of the Fisher isosurface. 
+
+First-order loss reduction. Using the first-order Taylor expansion of the task loss around at, we have 
+
+L(at + ∆ t, C, t ) = L(at, C, t ) + u⊤ 
+
+> t
+
+∆t + O(∥∆t∥2). (58) Substituting ∆t = −γu ⊥ 
+
+> t
+
+gives 
+
+L(at + ∆ t, C, t ) = L(at, C, t ) − γ∥u⊥ 
+
+> t
+
+∥2 + O(γ2). (59) Thus, Fisher-preserving guidance still provides a valid first-order descent direction whenever the task gradient has a nonzero component tangent to the Fisher isosurface. The removed component is precisely the part that would change the Fisher sensitivity to first order. 
+
+Fisher drift suppression. Expanding the FDS scalar field around at, we obtain 
+
+It(at + ∆ t; C) = It(at; C) + g⊤ 
+
+> t
+
+∆t + 12 ∆⊤ 
+
+> t
+
+HI ∆t + o(∥∆t∥2), (60) where HI is the Hessian of It with respect to at. Since g⊤ 
+
+> t
+
+∆t = 0 , the first-order Fisher drift vanishes: 
+
+It(at + ∆ t; C) − I t(at; C) = O(γ2). (61) In contrast, an unconstrained update ∆raw = −γu t generally yields 
+
+It(at + ∆ raw ; C) − I t(at; C) = −γg ⊤ 
+
+> t
+
+ut + O(γ2), (62) which can introduce first-order Fisher drift. 
+
+Composite risk interpretation. The above analysis shows that Fisher-preserving guidance trades the Fisher-aligned component of the task gradient for improved stability. While the raw gradient may decrease the task loss faster in the first order, it can also change the Fisher sensitivity at O(γ). In contrast, FPG decreases the task loss along the feasible tangent direction and suppresses Fisher drift to O(γ2). This makes the update preferable when the task objective must be optimized without moving the sample into regions of unstable or atypical sensitivity. 
+
+G.3. Fisher Isosurface Constraint: First-Order Invariance Lemma 1. Let It(at; C) be differentiable with respect to at, with fixed condition C. For a small update ∆t, we have 
+
+It(at + ∆ t; C) = It(at; C) + ∇at It(at; C)⊤∆t + o(∥∆t∥). (63) Therefore, It is preserved up to first order if 
+
+∇at It(at; C)⊤∆t = 0 . (64) 22 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+G.4. Orthogonal Projection and Loss Guarantee Theorem 1. Consider minimizing a differentiable guidance loss L(at, C, t ) under the first-order Fisher-preserving con-straint 
+
+g⊤ 
+
+> t
+
+∆t = 0 , gt = ∇at It(at; C). (65) The first-order constrained descent direction is obtained by projecting the action-space task gradient onto the tangent space of the Fisher isosurface: 
+
+∆∗ 
+
+> t
+
+= −γ
+
+
+
+ut − u⊤ 
+
+> t
+
+gt
+
+∥gt∥2 gt
+
+
+
+, ut = ∇at L(at, C, t ). (66) 
+
+Proof. Using the first-order expansion 
+
+L(at + ∆ t, C, t ) ≈ L(at, C, t ) + u⊤ 
+
+> t
+
+∆t, (67) we seek a descent direction satisfying g⊤ 
+
+> t
+
+∆t = 0 . This is equivalent to removing from ut its component parallel to gt. The projected gradient is 
+
+u⊥ 
+
+> t
+
+= ut − u⊤ 
+
+> t
+
+gt
+
+∥gt∥2 gt. (68) Taking a step along −u⊥ 
+
+> t
+
+gives 
+
+∆∗ 
+
+> t
+
+= −γu ⊥ 
+
+> t
+
+= −γ
+
+
+
+ut − u⊤ 
+
+> t
+
+gt
+
+∥gt∥2 gt
+
+
+
+. (69) Moreover, 
+
+g⊤ 
+
+> t
+
+∆∗ 
+
+> t
+
+= −γ
+
+
+
+g⊤ 
+
+> t
+
+ut − u⊤ 
+
+> t
+
+gt
+
+∥gt∥2 g⊤ 
+
+> t
+
+gt
+
+
+
+= 0 . (70) Thus, the update is tangent to the Fisher isosurface and is the steepest first-order descent direction within this tangent space. 
+
+Corollary. Let at−1 = at + ∆ ∗ 
+
+> t
+
+. Then 
+
+L(at−1, C, t ) = L(at, C, t ) − γ∥u⊥ 
+
+> t
+
+∥2 + O(γ2). (71) Therefore, FPG decreases the task loss along the feasible Fisher-preserving direction while removing the first-order Fisher-changing component. 
+
+G.5. Properties of Fisher-Preserving Update Lemma 2. Under the Fisher-preserving update ∆∗ 
+
+> t
+
+, the change in FDS satisfies 
+
+It(at + ∆ ∗ 
+
+> t
+
+; C) = It(at; C) + O(∥∆∗ 
+
+> t
+
+∥2). (72) 
+
+Proof. By second-order Taylor expansion with respect to at,
+
+It(at + ∆ ∗ 
+
+> t
+
+; C) = It(at; C) + g⊤ 
+
+> t
+
+∆∗ 
+
+> t
+
++ 12 (∆ ∗ 
+
+> t
+
+)⊤HI ∆∗ 
+
+> t
+
++ o(∥∆∗ 
+
+> t
+
+∥2). (73) Since g⊤ 
+
+> t
+
+∆∗ 
+
+> t
+
+= 0 , the first-order term vanishes, leaving only second-order and higher-order terms. 
+
+G.6. Outer-Product-Span (OPS) Factorization and Projection Lemma 3. Let hθ (C, a t, t ) ∈ RChH be the latent feature before the final denoising prediction head, and approximate the predicted residual noise as 
+
+ϵθ (C, a t, t ) ≈ W h θ (C, a t, t ), (74) where W ∈ RDa×ChH . Then the condition-side Jacobian used by FDS admits the factorized form 
+
+∇C ϵθ (C, a t, t ) ≈ W ∂h θ (C, a t, t )
+
+∂C . (75) This indicates that the dominant variations induced by the prediction head lie in a subspace whose rank is bounded by ChH,enabling an efficient OPS approximation. 23 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+OPS projection. Given the action-space task gradient 
+
+ut = ∇at L(at, C, t ), (76) we project it into OPS coordinates: 
+
+uh = W ⊤ut, Mh = W ⊤W. (77) Let gh denote the latent OPS proxy of the Fisher normal direction. We remove the component of uh aligned with gh under the pullback metric Mh:
+
+u∥ 
+
+> h
+
+= g⊤ 
+
+> h
+
+Mhuh
+
+g⊤ 
+
+> h
+
+Mhgh
+
+gh, u⊥ 
+
+> h
+
+= uh − u∥
+
+> h
+
+. (78) The projected update direction is mapped back to action space as 
+
+∆t = W u ⊥ 
+
+> h
+
+. (79) Since u⊥ 
+
+> h
+
+is Mh-orthogonal to gh, we have 
+
+g⊤ 
+
+> h
+
+Mhu⊥ 
+
+> h
+
+= 0 . (80) When the action-space Fisher normal gt is approximated by its OPS representation W g h, this gives the projected Fisher-orthogonality condition 
+
+g⊤ 
+
+> t
+
+∆t ≈ 0. (81) Thus, OPS provides an efficient approximation to the Fisher-preserving projection without explicitly computing the full second-order Fisher normal. 
+
+Complexity comparison. The OPS projection requires O(ChH) operations per denoising step, whereas explicit com-putation of the full Fisher normal can require substantially higher cost due to second-order differentiation in the full action-trajectory space. 
+
+Practical implication. By preserving the FDS value during guidance up to first order, FPG keeps the reverse diffusion trajectory within a stable sensitivity regime while still allowing task-oriented action refinement. This provides a principled inference-time mechanism for improving robustness without retraining the diffusion policy. 
+
+G.7. Additional Notes Cram ´er–Rao Bound and FDS. The classical Cram ´er–Rao lower bound connects Fisher information to estimator variance. In our setting, FDS should be interpreted as a Fisher-style local sensitivity proxy for the mapping from condition C to the generated action, rather than as a certified statistical lower bound. 
+
+TFDS and Multi-Modal Blending. TFDS enables efficient sample-level sensitivity estimation over the final denoising steps. Combining TFDS with cluster typicality allows the policy to favor samples that are both locally stable under observation perturbations and representative of the generated action distribution. 
+
+# H. Theoretical Analysis of Fisher-Preserving Dynamics 
+
+H.1. Preliminaries and Definitions 
+
+Let at ∈ Rd denote the latent action state at a given diffusion timestep t, and let C denote the fixed conditioning observation. Let ϵθ (C, a t, t ) be the denoising model. Consistent with the main text, we define the Step-wise Fisher Sensitivity as a scalar field over the action state under fixed condition C:
+
+It(at; C) = 1 − ¯αt
+
+¯αt
+
+∥∇ C ϵθ (C, a t, t )∥2 
+
+> F
+
+. (82) Here, the derivative inside the norm is taken with respect to C, because FDS measures sensitivity to observation perturbations. The gradient of this sensitivity field with respect to the action state, denoted as the Fisher Normal , is: 
+
+gt(at) := ∇at It(at; C) ∈ Rd. (83) 24 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+Algorithm 1 FPG-OPS with Uncertainty-Guided Action Blending 
+
+1: Input: Context C, Goal Ig , diffusion model ϵθ , task loss L, steps T , candidates K, tail length M , guidance scale γ
+
+2: Output: Final blended action ablend 
+
+3: Stage 1: Parallel Diffusion Sampling with FPG-OPS 
+
+4: for k = 1 to K do 
+
+5: Initialize a(k) 
+
+> T
+
+∼ N (0 , I ) // Initialize noisy action state 
+
+6: U (k)score ← 0 // Initialize TFDS score 
+
+7: for t = T down to 1 do 
+
+8: ϵ ← ϵθ (C, a (k) 
+
+> t
+
+, t ) // Noise prediction 
+
+9: Extract OPS basis W // Residual head ϵ ≈ W h θ (C, a (k) 
+
+> t
+
+, t )
+
+10: ut ← ∇ a(k)
+
+> t
+
+L(a(k) 
+
+> t
+
+, C, t ) // Task gradient w.r.t. action state 
+
+11: uh ← W ⊤ut // Map action-space gradient to OPS coordinates 
+
+12: Compute gh // Latent OPS proxy of Fisher normal direction 
+
+13: Mh ← W ⊤W // Pullback metric induced by W
+
+14: u∥ 
+
+> h
+
+← g⊤  
+
+> hMhuh
+> g⊤
+> hMhgh
+
+gh // Fisher-aligned component 
+
+15: u⊥ 
+
+> h
+
+← uh − u∥ 
+
+> h
+
+// Fisher-orthogonal component 
+
+16: ∆t ← W u ⊥ 
+
+> h
+
+// Map projected update back to action space 
+
+17: a(k) 
+
+> t−1
+
+← Solver (a(k) 
+
+> t
+
+, ϵ ) − γ∆t // Guided reverse update 
+
+18: if t ≤ M then 
+
+19: U (k)score ← U (k)score + ∥∇ C ϵθ (C, a (k) 
+
+> t
+
+, t )∥2 
+
+> F
+
+// TFDS accumulation 
+
+20: end if 
+
+21: end for 
+
+22: bUk ← U (k)score 
+
+23: end for 
+
+24: Stage 2: Uncertainty-Guided Action Blending 
+
+25: Cluster {a(k)0 }Kk=1 using DBSCAN // Obtain cluster labels {ck }
+
+26: for k = 1 to K do 
+
+27: wlocal ← exp( −η bUk) // FDS-based stability weight 
+
+28: wgroup ← |{ j:cj =ck }|  
+
+> K
+
+// Cluster typicality weight 
+
+29: wk ← wlocal · wgroup 
+
+30: end for 
+
+31: ablend ←   
+
+> PKk=1 wka(k)0PKk=1 wk
+
+32: return ablend 
+
+We define the Fisher Isosurface Sκ,t (C) as the level set of action states with constant sensitivity: 
+
+Sκ,t (C) = {at ∈ Rd | I t(at; C) = κ}. (84) For a small update vector ∆t applied to the state at, the local manifold constraint requires ∆t to be tangent to Sκ,t (C),satisfying the orthogonality condition: 
+
+gt(at)⊤∆t = 0 . (85) 
+
+H.2. Effectiveness with External Guidance (The Constrained Optimization View) 
+
+When an external task loss L(at, C, t ) (e.g., collision cost or path efficiency) is present, the naive update follows the negative gradient −∇ at L(at, C, t ). We show that Fisher-Preserving Guidance (FPG) gives the first-order constrained descent direction for minimizing this loss while adhering to the “Safe Manifold” defined by the Fisher isosurface. 
+
+Theorem H.1 (Optimality of FPG) . Consider the optimization problem of finding a direction ∆t that minimizes the task loss L(at + ∆ t, C, t ) locally, subject to the constraint that the Fisher Information remains invariant to the first order: 
+
+min 
+
+> ∆t
+
+∇at L(at, C, t )⊤∆t s.t. ∇at It(at; C)⊤∆t = 0 , ∥∆t∥ ≤ γ. (86) 25 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+Proof. We construct the Lagrangian L(∆ t, λ ) for the optimization direction, ignoring the norm constraint for the derivation of the direction vector first: 
+
+L(∆ t, λ ) = ∇at L(at, C, t )⊤∆t + λ gt(at)⊤∆t
+
+. (87) Taking the derivative with respect to ∆t and setting it to zero to find the stationary point: 
+
+∇∆t L = ∇at L(at, C, t ) + λg t(at) = 0 = ⇒ ∆∗ 
+
+> t
+
+∝ −  ∇at L(at, C, t ) + λg t(at). (88) Substituting ∆∗ 
+
+> t
+
+into the constraint equation gt(at)⊤∆∗ 
+
+> t
+
+= 0 :
+
+gt(at)⊤ [− (∇at L(at, C, t ) + λg t(at))] = 0 . (89) 
+
+gt(at)⊤∇at L(at, C, t ) + λ∥gt(at)∥2 = 0 . (90) Solving for the Lagrange multiplier λ:
+
+λ = − gt(at)⊤∇at L(at, C, t )
+
+∥gt(at)∥2 . (91) Substituting λ back into the expression for ∆∗ 
+
+> t
+
+:
+
+∆∗ 
+
+> t
+
+∝ − 
+
+
+
+∇at L(at, C, t ) − gt(at)⊤∇at L(at, C, t )
+
+∥gt(at)∥2 gt(at)
+
+
+
+. (92) Let ∆FPG be the final FPG update step with step size γ. This confirms that ∆FPG is the orthogonal projection of the action-space guidance gradient: 
+
+∆FPG = −γ · Proj ⊥gt
+
+ ∇at L(at, C, t ). (93) 
+
+Conclusion: This proves that FPG is the first-order optimal descent direction within the tangent space of the Fisher isosurface. It ensures that: 1. Task Efficiency: The loss L is reduced by −γ∥∇ at L⊥∥2, where ∇at L⊥ denotes the Fisher-orthogonal component of the action-space task gradient. 2. Safety Guarantee: The deviation from the manifold sensitivity is bounded by second-order terms, i.e., It(at +∆FPG ; C) − I t(at; C) = O(γ2), preventing first-order drift into high-uncertainty or atypical regions often caused by unconstrained guidance. 
+
+H.3. Intrinsic Safety of Fisher-Orthogonal Decomposition (The No-Guidance Case) 
+
+Even in the absence of an explicit task loss L, decomposing any inherent perturbation (e.g., approximation error, discretization noise) into Fisher-aligned and Fisher-orthogonal components reveals why the orthogonal direction is intrinsically “safe.” Let ∆t be an arbitrary perturbation vector applied to the state at during the denoising process. We decompose ∆t into two orthogonal components: 
+
+∆t = ∆ ∥ + ∆ ⊥, where ∆∥ ∥ gt(at), ∆⊥ ⊥ gt(at). (94) 
+
+Proposition H.2 (First-Order Sensitivity Stability) . A perturbation ∆∥ along the Fisher-normal direction tends to induce a larger first-order change in the local sensitivity field, whereas ∆⊥ preserves this sensitivity to first order. 
+
+Proof. Consider the predictive distribution pθ (a0|at, C) parameterized by the diffusion backbone. The local change in this distribution caused by a perturbation ∆t can be measured by the Kullback-Leibler (KL) divergence, approximated by the quadratic form of the Fisher Information Matrix (FIM) Fat :
+
+DKL 
+
+ pθ (·| at, C) ∥ pθ (·| at + ∆ t, C) ≈ 12 ∆⊤ 
+
+> t
+
+Fat ∆t. (95) In our context, the scalar FDS It(at; C) acts as a practical proxy for local sensitivity. The gradient gt(at) = ∇at It(at; C)
+
+points in the direction where the sensitivity changes most rapidly. 26 Fisher-Preserving Guidance: Training-Free Manifold Constraints for Safe Diffusion Control 
+
+The Danger of ∆∥ (Normal Component): Moving along gt(at) implies moving from a region of regular sensitivity to a region of different sensitivity, often higher and less stable: 
+
+It(at + ∆ ∥; C) ≈ I t(at; C) + ∥∇ at It(at; C)∥ · ∥ ∆∥∥. (96) A rapid increase in Fisher sensitivity implies a rapid increase in the local Lipschitz behavior of the score function. This can lead to numerical instability in the reverse diffusion solver, causing “Manifold Explosion.” 
+
+The Safety of ∆⊥ (Tangential Component): By definition, gt(at)⊤∆⊥ = 0 . The change in sensitivity is: 
+
+It(at + ∆ ⊥; C) ≈ I t(at; C) + gt(at)⊤∆⊥ + O(∥∆⊥∥2) = It(at; C) + O(∥∆⊥∥2). (97) Because the sensitivity remains locally constant to first order, the conditioning of the score function ϵθ (C, a t, t ) remains stable. The perturbation ∆⊥ represents a movement along the data manifold (changing semantic content, e.g., moving forward vs. turning) rather than off the manifold (changing generation quality or reliability). 
+
+Conclusion: In the absence of external guidance, if we must process a perturbation or weak prior, projecting it onto the Fisher-orthogonal subspace (∆ ⊥) acts as a Stabilizing Filter . It preserves the Typicality of the sample by keeping the trajectory within a local “Trust Region” of stable Fisher sensitivity, preventing transitions into high-sensitivity and unreliable states. 
+
+# I. Pseudocode for FPG-OPS with Action Blending 
+
+The pseudocode Algorithm 1 summarizes the Fisher-preserving guidance and uncertainty-aware action blending procedure for diffusion policy inference: 27
