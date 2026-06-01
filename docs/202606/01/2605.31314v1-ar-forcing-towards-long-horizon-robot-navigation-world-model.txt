@@ -1,0 +1,509 @@
+Title: AR Forcing: Towards Long-Horizon Robot Navigation World Model
+
+URL Source: https://arxiv.org/pdf/2605.31314v1
+
+Published Time: Mon, 01 Jun 2026 01:37:02 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+# AR Forcing: Towards Long-Horizon Robot Navigation World Model 
+
+Yifei Yang 1, Zehua Fan 2, Huan Li 1, Aoqi Wang 1, Lida Huang 3, Haibao Yu 4,Haiyan Liu 5, Xuanyao Mao 5, Jason Bao 5, Liang Xu 5, Bingchuan Sun 5†, and Yan Wang 1† 
+
+> 1
+
+Institute for AI Industry Research, Tsinghua University  
+
+> 2
+
+Shanghai Jiao Tong University  
+
+> 3
+
+School of Safety Science, Tsinghua University  
+
+> 4
+
+The University of Hong Kong  
+
+> 5
+
+Lenovo, Beijing, China 
+
+Fig. 1: Qualitative comparison of long-horizon video generation. We compare AR Forcing (ours) against the state-of-the-art NWM and the Ground Truth (GT) on the RECON dataset across a 16s rollout horizon. NWM drifts after 8s, while our method maintains high-fidelity structure and temporal consistency, closely matching GT after 16s. 
+
+Abstract. The diffusion based robot navigation world models are typ-ically trained using parallel supervision, while autoregressive inference is employed during path planning. This results in a distribution shift between training and inference, which destabilizes the performance over long-horizon prediction. We propose AR Forcing, an autoregressive train-ing strategy, which integrates the standard diffusion loss into the autore-gressive training loop. At each step, the model uses its own predictions to update the context and optimize the single step noise prediction ob-jective, thereby explicitly exposing the model to the inference state dis- 
+
+> †
+
+Corresponding authors.       
+
+> arXiv:2605.31314v1 [cs.RO] 29 May 2026 2Y. Yang Author et al. tribution during training. Our method does not require additional dis-criminators or distribution-matching losses, retains the original diffusion framework and sampler, and is easy to integrate. Experiments on multi-domain navigation datasets (RECON, SCAND, HuRoN, TartanDrive) show that compared with strong baselines, AR Forcing improved the consistency of generated images during long-horizon navigation and the accuracy of predicted trajectories, enhancing robustness of the model in complex known and unknown environments. We will release the code soon.
+> Keywords: Diffusion Models ·World Models ·Autoregressive Training
+
+## 1 Introduction 
+
+Predictive world models [14] are a foundational component of modern robotics and embodied AI. A model that can accurately imagine future observations conditioned on actions enables planning without costly real world execution, supports counterfactual reasoning, and allows systems to evaluate alternative strategies at test time [27,46,56]. As a result, world models have become central to tasks such as navigation, manipulation, and autonomous driving, where long-horizon prediction is crucial for downstream control [54]. Diffusion models have recently emerged as a powerful backbone for world modeling. Compared to earlier autoregressive or GAN based approaches, diffu-sion models offer strong generative fidelity, stable training dynamics, and the ability to represent multi-modal futures [26, 33, 41]. By operating in a latent space and iteratively denoising, diffusion world models can synthesize high qual-ity future frames and support rich visual prediction [5, 51, 52]. This has made them attractive for embodied tasks where perceptual realism is important and where downstream planners benefit from accurate simulated rollouts [1, 54]. Despite these advantages, diffusion world models still face a critical limi-tation: long-horizon rollouts are often unstable. Short-term predictions can be plausible and sharp, but as prediction length increases, errors accumulate, lead-ing to drift, temporal inconsistency, and eventually unrealistic or uninformative rollouts [1, 19]. This instability directly affects planning quality: If the model’s long-horizon predictions are unreliable, planning will select suboptimal or even unsafe actions. A core reason for this instability is the train and test mismatch inherent to current training practices. In most implementations, diffusion world models are trained using parallel supervision: the model is conditioned on a fixed, ground-truth context and supervised to predict multiple future frames in parallel. How-ever, inference is autoregressive, where the model feeds its own predictions back into the context step by step [7,19]. The model is therefore trained under a con-text distribution that it never encounters at test time. This discrepancy induces 
+
+exposure bias : the model is optimized under pdata (c), but must operate under 
+
+pθ (c), the distribution of contexts produced by its own rollouts. AR Forcing: Towards Long-Horizon Robot Navigation World Model 3
+
+This mismatch is a well-known issue in sequence modeling, and several so-lutions have been proposed in other domains, including explicit distribution-alignment objectives. For diffusion based sequence and video generation, recent work directly targets exposure bias by making training simulate inference time conditioning [7, 19]. For diffusion models more broadly, distillation, adversarial and consistency objectives are widely used to better match generation dynamics to desired behaviors or faster samplers [34, 37]. From a practical perspective, this motivates a simpler question: Can we re-duce the train and test gap by changing only the training schedule without chang-ing the diffusion loss, the model architecture, or the sampler? Such a method would be easy to deploy in existing systems and would preserve the empirical benefits of diffusion training while explicitly addressing rollout mismatch. In this work we answer this question affirmatively. We propose an autore-gressive training strategy, AR Forcing, which is for diffusion world models. The method retains the standard diffusion objective but modifies the training loop to simulate inference time rollouts. At each step, the model denoises a noisy latent for the next frame, uses its own prediction to update the context, and continues to the next step. The loss remains the conventional single step diffu-sion objective, but the conditioning distribution now reflects the model’s own rollout states. This design has several advantages. First, it is simple and compatible: it plugs directly into existing diffusion training code and can be initialized from pretrained checkpoints. Second, it is efficient: it avoids full sampling based inner loops by using a single diffusion loss per step. Third, it is principled: by align-ing the training context distribution with the inference distribution, it directly targets the source of exposure bias in long-horizon prediction. We evaluate the approach on four multi-domain navigation datasets (RE-CON [35], TartanDrive [42], SCAND [20], HuRoN [17]) and compare against the standard parallel supervised diffusion baseline, NWM [3]. We find that AR Forcing is more stable, particularly at long-horizon prediction, where error ac-cumulation is most severe. Importantly, the gains translate to improvements in closed-loop planning performance, as measured by trajectory and goal reaching metrics. Figure 1 compares the performance of our generated images with the baseline at different times. These results indicate that aligning training dynamics with inference dynamics is critical for long-horizon world modeling. We summarize our main contributions as follows: 
+
+– We identify the train–test mismatch inherent in diffusion world models as a key source of long-horizon instability. To address this, we propose a simple yet effective AR Forcing training schedule. 
+
+– We demonstrate that aligning the training and inference distributions can be achieved using the standard diffusion objective alone, eliminating the need for auxiliary components such as discriminators, specialized losses, or architectural modifications. 
+
+– We empirically validate the proposed method on navigation benchmarks, showing that it yields more stable rollouts and leads to improved downstream 4 Y. Yang Author et al. 
+
+planning performance, particularly under long-horizon evaluation settings for known and unknown environments. 
+
+## 2 Related Work 
+
+2.1 Diffusion World Models and Visual Prediction 
+
+Diffusion models have become a dominant paradigm for high-fidelity image generation and are increasingly applied to video prediction and world model-ing [5,52]. In embodied and navigation tasks, diffusion world models are trained to predict future observations conditioned on context frames and actions, in-cluding discrete diffusion world modeling for autonomous driving [54] and dif-fusion world models for interactive environment dreaming [1, 43, 47]. Compared to pixel-level autoregressive predictors, diffusion models tend to be more stable to train and provide stronger perceptual quality, which is attractive for long-horizon rollout and planning [1,18,23,48]. However, most diffusion world models are still trained using parallel supervision: given a fixed, ground-truth context, the model predicts future frames independently under the standard diffusion objective [6, 9, 45, 54]. This training protocol differs from inference, where the model must roll out autoregressively using its own predictions. 
+
+2.2 Train–Test Mismatch and Exposure Bias 
+
+The gap between training on ground truth contexts and inference on model generated contexts is a long standing issue in sequential prediction. In vision, language, and control, exposure bias leads to compounding errors and unstable long-horizon rollouts [30, 53]. Recent diffusion sequence work explicitly targets this mismatch by changing the training or sampling paradigm to better support long rollouts and decision making, for example per-token noise levels with causal generation and training strategies that bridge rollout conditioning [2,7,11,19,32]. Rolling Forcing [22] uses a rolling-window joint denoising scheme to reduce error accumulation and conditions training on self-generated histories to miti-gate exposure bias. In diffusion settings, several methods propose distribution-matching objectives [13, 49, 50, 57], such as distillation and adversarial terms to accelerate sampling [34] or align generated distributions with teacher diffu-sion priors [25,37]. Compared to Self Forcing approaches [11,19] that add explicit distribution-matching losses (e.g., DMD, SID, GAN or discriminator-based align-ment), we do not introduce any extra objectives or networks; instead, we expose the model to its own rollout contexts while keeping the standard diffusion loss unchanged. 
+
+2.3 World Models for Planning 
+
+World models are widely used for model based planning, where candidate action sequences are rolled out in the learned model and scored by a cost function [15, AR Forcing: Towards Long-Horizon Robot Navigation World Model 5 
+
+> Fig. 2: Architecture of AR Forcing. In AR Forcing (ours), the model predicts the next frame, feeds its own prediction back into the context, and applies the same diffusion loss at each step. This aligns training with inference rollouts without ex-tra losses or architectural changes, improving long-horizon stability and planning ro-bustness. NWM trains diffusion world models with parallel supervision: given a fixed ground-truth context, it predicts multiple future frames under the standard diffusion objective. This creates a train–test mismatch, since inference rolls out autoregressively using model-generated frames.
+
+46]. The quality of the planner depends not only on perceptual sharpness but also on long-horizon stability and trajectory consistency. Recent systems leverage diffusion generative modeling for planning and trajectory synthesis in offline RL and control, including multi-task diffusion planning [10], hierarchical diffusion planning [8], latent action diffusion planning [44], and model based diffusion for trajectory optimization [21]. In navigation, diffusion trajectory generation has also been used to produce temporally coherent trajectory sequences to guide decision making [3, 36, 38]. In this setting, even small rollout drift can lead to mis-ranking and poor decisions [28, 40]. Our work directly targets this issue by aligning the training distribution with the inference distribution, improving the reliability of rollouts and thereby improving downstream planning metrics. 
+
+## 3 Method 
+
+3.1 Preliminaries 
+
+We study a conditional diffusion world model that predicts future visual obser-vations conditioned on past context and action sequences. The model operates in the latent space of a fixed VAE [4] for efficiency. Let E(·) and D(·) denote the VAE encoder and decoder [4], respectively. Given an image frame I, its latent representation is x0 = E(I), where x0 ∈ RC×H×W . The decoder reconstructs pixels as ˆI = D(x0).
+
+Diffusion Process We adopt a standard DiT [31] with Tdiff timesteps. The forward process adds Gaussian noise to a clean latent x0 to obtain xt. The 6 Y. Yang Author et al. 
+
+denoiser Gθ predicts either the noise ϵ (epsilon-parameterization) or the clean latent x0 (x0-parameterization): 
+
+ˆϵ = Gθ (xt, t | c, y, r ). (1) Here c is the latent context sequence, y is the action conditioning, and r is a relative-time embedding encoding the temporal distance of the prediction target. The canonical diffusion loss is 
+
+Ldiff (θ) = Ec∼pdata Ex∗  
+
+> 0,y,r ∼pdata (·| c)
+
+Et,ϵ 
+
+h
+
+∥ϵ − Gθ (xt, t | c, y, r )∥2i
+
+, (2) where θ is the model parameters; x∗ 
+
+> 0
+
+is the clean target latent; t is the diffusion timestep; ϵ ∼ N (0 , I ) is Gaussian noise; xt = q(xt | x∗
+
+> 0
+
+, t ) is the noised latent; and Gθ is the denoiser. The loss is averaged over spatial dimensions and batch elements. When variance is predicted, the standard variational bound term is added, following common diffusion training practice [29]. 
+
+World Model Setting Each training example consists of a context of past frames {I1, . . . , I K }, a sequence of future actions {a1, . . . , a T } and correspond-ing future frames {I∗
+
+> K+1
+
+, . . . , I ∗ 
+
+> K+T
+
+}. We encode the context into latents c0 =[x0,1, . . . , x 0,K ] and the future frames into targets {x∗
+
+> 0,1
+
+, . . . , x ∗ 
+
+> 0,T
+
+}. The model must generate a future latent trajectory conditioned on the context and actions. At inference time, predictions are generated autoregressively: the model’s own predicted latents are appended to the context and used as input for the next step. This inference behavior motivates our training procedure in the next section. 
+
+3.2 AR Forcing 
+
+We now formalize the AR Forcing training objective and provide a detailed mathematical justification for why it better matches inference than parallel su-pervision. Let a trajectory include latents {x0,1, . . . , x 0,K +T } and actions {a1, . . . , a T }.The initial context is 
+
+c0 = [ x0,1, . . . , x 0,K ] ∈ RK×C×H×W . (3) At step i, the model conditions on context ci−1 and action yi (derived from ai)to predict the future latent x∗ 
+
+> 0,i
+
+(the ground truth at that step). We denote the data context distribution by pdata (ci−1), induced by ground truth rollouts, and the model induced context distribution by pθ (ci−1), induced by the model’s own autoregressive predictions. These two distributions generally differ, and this discrepancy is the source of exposure bias. 
+
+Context Update In AR Forcing, the context is updated with the model’s own predictions at each step. We adopt the predicted-x0 update because it is AR Forcing: Towards Long-Horizon Robot Navigation World Model 7
+
+efficient and consistent with the diffusion objective. When the model is epsilon-parameterized, we reconstruct the clean latent via the standard inversion: 
+
+ˆx0 = 1
+
+√¯αt
+
+ xt − √1 − ¯αt ˆϵ , (4) where ¯αt is the cumulative product of alphas. The predicted latent ˆx0 is then appended to the context: 
+
+ci = [ ci−1[1 : K], ˆx0,i ]. (5) If the model is x0-parameterized, the output directly yields ˆx0 and the same update applies. This design keeps the training loop lightweight: each step uses a single diffusion loss and a single context update, avoiding expensive inner denoising loops. We treat the updated context as a fixed input for the next step, which exposes the model to its own prediction distribution while maintaining stable optimization. In practice, to maintain training stability and memory efficiency, we apply a stop-gradient operator on ˆx0,i before it is appended to the context ci. This ensures that the gradient of the loss at step i+1 does not backpropagate through the entire diffusion sampling chain of the previous step, effectively treating the updated context as a “sampled” observation from the model’s current belief. This decoupling prevents vanishing or exploding gradients across long sequences and significantly reduces the GPU memory footprint during training. 
+
+AR Forcing Objective AR Forcing modifies only the conditioning distribu-tion, not the diffusion loss. We roll out the model during training and update the context with predictions. The AR Forcing objective is therefore: 
+
+LAR (θ) = Ec0∼pdata Eci−1∼pθ (·| c0) Ex∗ 
+
+> 0,i ,y i,r i
+
+Et,ϵ 
+
+h
+
+∥ϵ − Gθ (xt, t | ci−1, y i, r i)∥2i
+
+,
+
+(6) where c0 is the initial context sampled from data; ci−1 is the rollout context at step i sampled from pθ (· | c0); x∗ 
+
+> 0,i
+
+is the ground-truth clean latent at step i; yi
+
+is the action input at step i; ri is the relative-time embedding at step i.This figure 2 illustrates our implementation method: The model predicts the next frame, feeds the prediction result back into the context, and applies the same diffusion loss at each step. 
+
+Closed-Loop Planning In closed-loop planning, we select an action sequence by rolling the world model forward and minimizing a terminal cost. Formally, for a fixed initial context c0, the real planning objective is: 
+
+J∗(a1: T ) = Ex∗  
+
+> 1: T∼pdata (·| c0,a 1: T)
+
+ d(x∗ 
+
+> T
+
+, x goal ) , (7) where xgoal is the goal observation, x∗ 
+
+> 1: T
+
+denotes the ground-truth rollout se-quence, x∗ 
+
+> T
+
+is its final real observation at horizon T .8 Y. Yang Author et al. 
+
+The predicted planning objective is: 
+
+Jθ (a1: T ) = Eˆx1: T ∼pθ (·| c0,a 1: T )
+
+ d(ˆ xT , x goal ) , (8) where ˆx1: T denotes the model-predicted rollout sequence, and ˆxT is the final predicted observation at horizon T . The d(·, ·) is a LPIPS [55] loss, and the expectation is over the model’s rollout distribution pθ . Because pθ is induced by the model’s own predictions, any train–test mismatch directly affects Jθ .If d is L-Lipschitz and εi = E∥ˆxi − x∗ 
+
+> i
+
+∥ denotes the expected per-step rollout error (under the model’s distribution), then a standard Lipschitz propagation bound yields: 
+
+|Jθ (a1: T ) − J∗(a1: T )| ≤ L
+
+> T
+
+X
+
+> i=1
+
+εi, (9) This inequality demonstrates that the planning error is bounded by the cumu-lative rollout error. AR Forcing explicitly minimizes the diffusion loss under the model-induced distribution pθ , which directly reduces the per-step errors εi. Consequently, it tightens the bound in (9) and improves the reliability of closed-loop action se-lection. This provides a theoretical justification for the observed improvements in planning performance when using AR Forcing. 
+
+3.3 Why This Reduces Train–Test Mismatch 
+
+We define the single-step diffusion loss as a function of the context c:
+
+fθ (c) = Ex∗ 
+
+> 0,y,r,t,ϵ
+
+∥ϵ − Gθ (xt, t | c, y, r )∥22
+
+, (10) where c denotes the conditioning context, x∗ 
+
+> 0
+
+is the ground-truth future latent, y
+
+is the action input, r is additional conditioning, t is the diffusion timestep, and 
+
+Gθ is the denoiser. Standard training optimizes this loss under data contexts, while inference uses rollout-generated contexts: 
+
+Rdata (θ) = Ec∼pdata [fθ (c)] , Rroll (θ) = Ec∼pθ [fθ (c)] . (11) The difference arises from the context distribution shift, which can be bounded using the total variation distance TV( pθ , p data ):
+
+Rroll (θ) − R data (θ) ≤ sup 
+
+> c
+
+|fθ (c)| TV( pθ , p data ). (12) This bound is included to illustrate the source of train–test mismatch, rather than as a novel theoretical contribution. In practice, AR Forcing treats rollout contexts as stop-gradient inputs rather than backpropagating through the full temporal rollout. It therefore serves as a DAgger-style approximation, alternating between generating model rollouts and updating the denoiser on frozen rollout contexts. This is not exact end-to-end minimization of Rroll (θ), but it exposes the model to inference-time context regions and improves long-horizon robustness. AR Forcing: Towards Long-Horizon Robot Navigation World Model 9
+
+## 4 Experiments 
+
+4.1 Experimental Setting Datasets We evaluate on four navigation datasets with diverse visual and mo-tion characteristics: RECON [35], TartanDrive [42], SCAND [20], and HuRoN [17]. These datasets cover open-world navigation, off-road driving, urban navigation, and indoor sequences. We use the same train/test splits for all methods to avoid overlap between training and evaluation. Each dataset provides pose information, from which we compute relative actions between adjacent frames. To unify the action scale, we normalize trans-lation by the average step length of each dataset. Following prior navigation work [3], we filter out backward-motion segments to keep the action space con-sistent with forward-moving navigation. 
+
+Evaluation Metrics We report both trajectory-level and perceptual metrics. For navigation accuracy, we use Absolute Trajectory Error (ATE) [39] and Rela-tive Pose Error (RPE) [39] to measure global drift and local consistency. We also report Position Error (PosErr) and Yaw Error (YawErr) [3] at the final timestep: 
+
+PosErr = ∥pt − p∗ 
+
+> t
+
+∥2, (13) YawErr = wrap( ψt − ψ∗ 
+
+> t
+
+) , (14) where pt and p∗ 
+
+> t
+
+denote predicted and ground-truth 2D positions, and ψt and 
+
+ψ∗ 
+
+> t
+
+denote predicted and ground-truth yaw angles. The function wrap( ·) maps angular differences to (−π, π ]:
+
+wrap( ∆ψ ) = atan2   sin( ∆ψ ), cos( ∆ψ ). (15) For visual fidelity, we report LPIPS [55], DreamSim [12], and FID [16]. All metrics are computed using identical evaluation scripts and hyperparameters across methods. 
+
+Baselines GNM [36] is a general navigation model based on the setting of goal conditions. It is trained on RECON, TartanDrive, SCAND, and Go Stanford. GNM emphasizes unifying data from diverse robots and environments into a shared action space, and using goal-conditioned trajectory prediction to drive navigation, demonstrating cross-robot and cross-scene generalization. NoMaD [38] uses diffusion policies to generate navigation action sequences, supporting both goal-conditioned navigation and goal-free exploration. It is trained on a mixture of the GNM dataset and HuRoN. NoMaD unifies these two modes via a “goal mask” during training and uses a transformer-based dif-fusion policy to model multimodal action plans. NWM [3] is a diffusion-based navigation world model that uses CDiT to predict future visual observations and plans accordingly. It is trained on RECON, TartanDrive, SCAND, and HuRoN, enabling decision-making in both seen and unseen environments through future-frame generation and planning. 10 Y. Yang Author et al. 
+
+Table 1: Comparison with SOTA method on long-horizon prediction ability. 
+
+Reporting LPIPS, DreamSim, and FID results on RECON, TartanDrive, SCAND, and HuRoN. Lower values show better performance for LPIPS, DreamSim, and FID.                                                                                                                                           
+
+> Metric Model Horizon 1s 2s 4s 8s 16s RECON LPIPS NWM 0.330 0.367 0.423 0.468 0.533 AR Forcing(ours) 0.261 0.294 0.341 0.390 0.463 DreamSim NWM 0.127 0.141 0.181 0.238 0.319 AR Forcing(ours) 0.097 0.107 0.125 0.157 0.210 FID NWM 54.8 57.8 63.0 70.4 77.3 AR Forcing(ours) 45.8 49.3 52.9 58.0 66.0 TartanDrive LPIPS NWM 0.398 0.449 0.507 0.564 0.589 AR Forcing(ours) 0.334 0.393 0.454 0.520 0.558 DreamSim NWM 0.205 0.239 0.286 0.342 0.382 AR Forcing(ours) 0.152 0.191 0.237 0.300 0.357 FID NWM 50.1 49.7 53.4 63.5 71.1 AR Forcing(ours) 47.0 50.2 54.0 62.2 70.0 SCAND LPIPS NWM 0.461 0.497 0.529 0.565 0.591 AR Forcing(ours) 0.396 0.435 0.490 0.542 0.582 DreamSim NWM 0.277 0.303 0.325 0.368 0.403
+> AR Forcing(ours) 0.223 0.254 0.297 0.360 0.404
+> FID NWM 92.8 93.5 95.8 100.4 101.2
+> AR Forcing(ours) 80.7 87.4 92.5 97.4 104.8
+> HuRoN LPIPS NWM 0.346 0.385 0.435 0.460 0.514
+> AR Forcing(ours) 0.270 0.315 0.380 0.466 0.560
+> DreamSim NWM 0.186 0.208 0.249 0.289 0.330
+> AR Forcing(ours) 0.129 0.149 0.200 0.289 0.392
+> FID NWM 71.3 72.0 73.2 79.8 84.2
+> AR Forcing(ours) 55.7 60.4 69.4 77.8 99.6
+
+Implementation Details We use a CDiT backbone with a 4 frames context and the VAE tokenizer [4], matching the baseline NWM configuration. In the default experiment, we start from the checkpoint of the pretrained XL-sized NWM model, which is trained on RECON, TartanDrive, SCAND, and HuRoN. Next, we use the AR Forcing method to perform autoregressive prediction of the next 16 frames on the 4fps dataset. We use the AdamW [24] optimizer with a learning rate of  8 × 10 −5. Due to privacy concerns, we are unable to obtain the high-resolution HuRoN integrated dataset. Therefore, for a fair comparison, we use 6  × A100 80G GPUs separately to train the NWM and AR Forcing, with a total batch size of 96 and training for 50,000 steps to report the results. 
+
+4.2 Long-Horizon Prediction 
+
+We evaluated the long-horizon quality under different training paradigms on four datasets. All methods used the same data partition and hyperparameters to achieve fair comparisons. We let both methods predict the future trajectory for 16 seconds in an autoregressive manner. AR Forcing: Towards Long-Horizon Robot Navigation World Model 11 
+
+Table 2: Comparison with SOTA Methods on Goal-Conditioned Visual Nav-igation for 2 seconds. NWM + NoMaD ( ×N) indicates that NoMaD generates N candidate navigation trajectories firstly, and then NWM is used to simulate and eval-uate these trajectories, and the optimal one is selected for execution. 
+
+model ATE ↓ RTE ↓ PosErr ↓ YawErr ↓
+
+GNM 1.87 0.73 - -NoMaD 1.93 0.52 - -NWM + NoMaD ( ×16) 1.83 0.50 - -NWM + NoMaD ( ×32) 1.78 0.48 - -NWM 1.38 0.35 1.85 0.51 
+
+AR Forcing (ours) 1.22 0.34 1.66 0.53 0 2 4 6 8                
+
+> x (m)
+> −7
+> −6
+> −5
+> −4
+> −3
+> −2
+> −1
+> 0
+> y (m)
+> 1234567
+> x (m)
+> −5
+> −4
+> −3
+> −2
+> −1
+> 0
+> 1234567
+> x (m)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 246
+> x (m)
+> −4
+> −3
+> −2
+> −1
+> 0
+> 1
+> 2
+> GT NWM Ours
+
+Fig. 3: Qualitative comparison of predicted trajectories. Compared to the base-line NWM, AR Forcing (ours) produces paths that are significantly more aligned with the Ground Truth (GT), especially in complex maneuvering scenarios. 
+
+Table 1 reports the evaluation results for 1 second, 2 seconds, 4 seconds, 8 seconds, and 16 seconds under 4fps. It shows that AR Forcing can improve the stability of long-horizon prediction, while the baseline scheme shows a significant performance decline as the prediction range expands. 
+
+4.3 Trajectory Planning 
+
+Next, we will evaluate the performance of the closed-loop planning. In this eval-uation, the planner will select a set of candidate action sequences, then use the world model to simulate each candidate action, and select the action sequence 
+
+Table 3: Comparison on Goal-Conditioned Visual Navigation for 4s, 8s, and 16s horizons. Compared to NWM, AR Forcing achieves better results in nearly all cases, demonstrating better prediction accuracy. Dataset Model ATE ↓ RPE ↓ PosErr ↓ YawErr ↓
+
+4s 8s 16s 4s 8s 16s 4s 8s 16s 4s 8s 16s RECON NWM 3.25 8.83 27.27 0.50 0.75 1.29 6.45 19.32 61.42 0.82 0.70 2.97 AR Forcing 1.69 5.80 27.27 0.35 0.62 1.29 3.59 14.08 61.12 0.48 0.69 2.61 
+
+HuRoN NWM 9.57 31.39 58.26 1.03 1.72 1.70 15.97 51.32 78.13 0.18 1.34 1.91 
+
+AR Forcing 9.23 28.76 56.70 1.00 1.63 1.67 15.39 48.23 75.44 0.47 1.25 2.87 SCAND NWM 6.68 18.68 24.61 0.69 1.05 0.70 10.85 32.20 42.49 0.30 1.06 0.21 
+
+AR Forcing 4.81 11.33 18.38 0.51 0.63 0.54 7.74 18.40 31.59 0.09 0.70 0.54 TartanDrive NWM 15.95 34.85 72.75 1.78 1.94 2.05 27.69 60.26 124.09 1.05 0.86 0.30 
+
+AR Forcing 14.49 32.00 60.61 1.64 1.75 1.70 25.41 54.19 100.62 0.04 0.29 0.41 12 Y. Yang Author et al. 
+
+Table 4: Comparison between Self Forcing and AR Forcing at 16s. Com-pared with Self Forcing, AR Forcing achieves lower errors in most metrics, suggesting that preserving the standard conditional diffusion objective better supports action-conditioned long-horizon planning. Dataset Model ATE ↓ RPE ↓ PosErr ↓ YawErr ↓                                    
+
+> RECON Self Forcing 36.64 1.44 73.06 2.70 AR Forcing 27.27 1.29 61.12 2.61
+> HuRoN Self Forcing 62.65 1.79 85.68 0.67
+> AR Forcing 56.70 1.67 75.44 2.87 SCAND Self Forcing 30.13 0.84 52.09 1.62 AR Forcing 18.38 0.54 31.59 0.54
+> TartanDrive Self Forcing 82.05 2.28 139.89 1.15 AR Forcing 60.61 1.70 100.62 0.41
+
+Fig. 4: Visual Qualitative Comparisons on Unknown Environment Go Stan-ford at 16s. In the 16s zero-shot long-horizon generation, the drift of NWM is severe, while AR Forcing (ours) can maintain the stability of the generation. 
+
+with the lowest predicted cost. Specifically, using an A100 80G, with an evalua-tion batch size of 1, a total of 8 frames is rolled out, 120 candidate trajectories are generated for each evaluation sample, and 5 of them are selected for updat-ing the action distribution. Finally, the evaluation is repeated 3 times and the average is taken for the result report. Table 2 reports 2s short-horizon planning results, where AR Forcing con-sistently improves over the baseline. Table 3 extends the evaluation to 4s, 8s, and 16s, showing lower trajectory errors and more stable relative pose estimates under long rollouts. Figure 3 further visualizes that AR Forcing produces more accurate planned trajectories. Table 4 compares AR Forcing with Self Forcing at 16s. We analyze that since robot navigation depends on action-conditioned transitions  p(xt+1: t+H | c, a 1: H )
+
+and reliable action ranking, the standard conditional diffusion loss provides stronger action-to-outcome supervision than distribution-matching objectives mainly designed for visual fidelity. 
+
+4.4 Zero-Shot Generalization in the Unknown Environment 
+
+We evaluate zero-shot generalization on the unseen Go Stanford dataset with-out fine-tuning. Figures 5 and 4 show that AR Forcing produces more stable AR Forcing: Towards Long-Horizon Robot Navigation World Model 13 1s 2s 4s 8s 16s     
+
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> 0.75
+> Metric Score
+> LPIPS ↓ & DreamSim ↓
+> NWM (LPIPS)
+> NWM (DreamSIM)
+> Ours (LPIPS)
+> Ours (DreamSIM)
+> 1s 2s 4s 8s 16s
+> 110
+> 120
+> 130
+> 140
+> 150
+> 160
+> 170
+> 180
+> 190
+> FID Score
+> FID ↓
+> NWM (FID)
+> Ours (FID)
+> Comparison on Unknown Environment (Go-Stanford Dataset)
+
+Fig. 5: Long-horizon Prediction Stability on Unknown Environment Go Stanford. (Left) Our method achieves lower LPIPS and DreamSim scores, indicat-ing higher temporal consistency. (Right) The flatter FID curve of AR Forcing (ours) demonstrates its effectiveness in mitigating error accumulation compared to NWM. 
+
+Table 5: Eval-loss comparison between from-scratch and pretrained initial-ization. Similar convergence suggests that AR Forcing is not merely a finetuning effect. 
+
+Training Setting / Steps 10k 20k 30k 40k 
+
+From scratch 0.8344 0.7071 0.3606 0.2879 From pretrained 0.8321 0.6944 0.3316 0.2847 
+
+long-horizon predictions than the NWM baseline, with smaller accumulated de-viations and fewer failure cases. This improvement comes from training on model-generated contexts. Com-pared with the baseline, which may drift into out-of-distribution states in unseen environments, AR Forcing learns to recover from its own prediction errors and therefore reduces long-horizon drift. 
+
+4.5 Ablation Studies Effect of Pretraining Initialization We test whether AR Forcing depends on pretrained NWM initialization. Under the same training steps, from-scratch and pretrained models converge similarly as shown in Table 5, suggesting that AR Forcing is not merely a finetuning effect. 
+
+Training Cost Due to rollout-context generation, AR Forcing has a 7.67 ×
+
+training-only overhead, reducing throughput from 0.69 to 0.09 samples/sec with-out adding parameters or changing the architecture. 
+
+Autoregressive prediction trajectory length During training, we vary the number of autoregressive steps while keeping the evaluation duration fixed. 14 Y. Yang Author et al. 
+
+Table 6: Impact of 4, 8, and 16 frames of autoregressive prediction trajectory length on long-horizon prediction ability. It can be observed that the longer the length of the autoregressive prediction trajectory length, the stronger the model’s long-horizon prediction ability. 
+
+Metric len_traj_pred Horizon 1s 2s 4s 8s 16s RECON LPIPS 
+
+4 0.278 0.329 0.401 0.469 0.534 8 0.270 0.308 0.357 0.419 0.491 16 0.261 0.294 0.341 0.390 0.463 DreamSim 
+
+4 0.106 0.127 0.173 0.236 0.306 8 0.100 0.113 0.139 0.175 0.234 16 0.097 0.107 0.125 0.157 0.210 FID 
+
+4 50.1 55.8 62.4 74.7 78.0 8 47.2 51.2 54.7 62.3 69.5 16 45.8 49.3 52.9 58.0 66.0 TartanDrive LPIPS 
+
+4 0.344 0.412 0.492 0.573 0.621 8 0.331 0.391 0.461 0.530 0.570 16 0.334 0.393 0.454 0.520 0.558 DreamSim 
+
+4 0.169 0.217 0.283 0.375 0.468 8 0.153 0.196 0.246 0.324 0.389 16 0.152 0.191 0.237 0.300 0.357 FID 
+
+4 48.9 52.8 61.9 71.3 95.0 8 46.1 50.4 53.9 62.8 70.7 16 47.0 50.2 54.0 62.2 70.0 SCAND LPIPS 
+
+4 0.387 0.441 0.498 0.555 0.622 8 0.396 0.443 0.492 0.545 0.599 16 0.396 0.435 0.490 0.542 0.582 DreamSim 
+
+4 0.235 0.269 0.326 0.406 0.508 8 0.225 0.261 0.305 0.369 0.456 16 0.223 0.254 0.297 0.360 0.404 FID 
+
+4 86.6 94.5 103.7 113.0 134.7 8 84.0 89.6 95.2 102.6 111.6 16 80.7 87.4 92.5 97.4 104.8 HuRoN LPIPS 
+
+4 0.311 0.415 0.558 0.610 0.638 8 0.272 0.338 0.460 0.580 0.613 16 0.270 0.315 0.380 0.466 0.560 DreamSim 
+
+4 0.165 0.231 0.405 0.489 0.513 8 0.139 0.164 0.264 0.451 0.493 16 0.129 0.149 0.200 0.289 0.392 FID 
+
+4 67.8 86.3 124.5 154.1 145.0 8 59.5 68.0 85.4 128.0 136.3 16 55.7 60.4 69.4 77.8 99.6 
+
+Changing len_traj_pred allows the model to observe rollout-generated con-text chains of different lengths. As shown in Table 6, increasing len_traj_pred 
+
+from 4 to 8 and 16 consistently improves long-horizon stability and reduces tra-jectory deviations. This suggests that greater exposure to autoregressive contexts during training improves robustness during testing. 
+
+## 5 Conclusion 
+
+We propose AR Forcing, a simple training paradigm for reducing train–test mismatch in diffusion world models. By exposing the model to rollout-generated contexts during training, AR Forcing improves long-horizon stability, planning performance, and zero-shot generalization without architectural modifications. AR Forcing: Towards Long-Horizon Robot Navigation World Model 15 
+
+## References 
+
+1. Alonso, E., Jelley, A., Micheli, V., Kanervisto, A., Storkey, A.J., Pearce, T., Fleuret, F.: Diffusion for world modeling: Visual details matter in atari. Advances in Neural Information Processing Systems 37 , 58757–58791 (2024) 2. Asada, M., Miwa, M.: Addressing the training-inference discrepancy in discrete diffusion for text generation. In: Proceedings of the 31st International Conference on Computational Linguistics. pp. 7156–7164 (2025) 3. Bar, A., Zhou, G., Tran, D., Darrell, T., LeCun, Y.: Navigation world models. In: Proceedings of the Computer Vision and Pattern Recognition Conference. pp. 15791–15801 (2025) 4. Blattmann, A., Dockhorn, T., Kulal, S., Mendelevitch, D., Kilian, M., Lorenz, D., Levi, Y., English, Z., Voleti, V., Letts, A., et al.: Stable video diffusion: Scaling latent video diffusion models to large datasets. arXiv preprint arXiv:2311.15127 (2023) 5. Blattmann, A., Rombach, R., Ling, H., Dockhorn, T., Kim, S.W., Fidler, S., Kreis, K.: Align your latents: High-resolution video synthesis with latent diffusion mod-els. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. pp. 22563–22575 (2023) 6. Bruce, J., Dennis, M.D., Edwards, A., Parker-Holder, J., Shi, Y., Hughes, E., Lai, M., Mavalankar, A., Steigerwald, R., Apps, C., et al.: Genie: Generative interactive environments. In: Forty-first International Conference on Machine Learning (2024) 7. Chen, B., Martí Monsó, D., Du, Y., Simchowitz, M., Tedrake, R., Sitzmann, V.: Diffusion forcing: Next-token prediction meets full-sequence diffusion. Advances in Neural Information Processing Systems 37 , 24081–24125 (2024) 8. Chen, C., Deng, F., Kawaguchi, K., Gulcehre, C., Ahn, S.: Simple hierarchical planning with diffusion. arXiv preprint arXiv:2401.02644 (2024) 9. Chen, R., Shi, M., Huang, S., Tan, P., Komura, T., Chen, X.: Taming diffusion probabilistic models for character control. In: ACM SIGGRAPH 2024 Conference Papers. pp. 1–10 (2024) 10. Chi, C., Xu, Z., Feng, S., Cousineau, E., Du, Y., Burchfiel, B., Tedrake, R., Song, S.: Diffusion policy: Visuomotor policy learning via action diffusion. The International Journal of Robotics Research 44 (10-11), 1684–1704 (2025) 11. Cui, J., Wu, J., Li, M., Yang, T., Li, X., Wang, R., Bai, A., Ban, Y., Hsieh, C.J.: Self-forcing++: Towards minute-scale high-quality video generation. arXiv preprint arXiv:2510.02283 (2025) 12. Fu, S., Tamir, N., Sundaram, S., Chai, L., Zhang, R., Dekel, T., Isola, P.: Dreamsim: Learning new dimensions of human visual similarity using synthetic data. arXiv preprint arXiv:2306.09344 (2023) 13. Geng, Z., Pokle, A., Kolter, J.Z.: One-step diffusion distillation via deep equilib-rium models. Advances in Neural Information Processing Systems 36 , 41914–41931 (2023) 14. Ha, D., Schmidhuber, J.: World models. arXiv preprint arXiv:1803.10122 (2018) 15. Hafner, D., Pasukonis, J., Ba, J., Lillicrap, T.: Mastering diverse domains through world models. arXiv preprint arXiv:2301.04104 (2023) 16. Heusel, M., Ramsauer, H., Unterthiner, T., Nessler, B., Hochreiter, S.: Gans trained by a two time-scale update rule converge to a local nash equilibrium. Advances in neural information processing systems 30 (2017) 17. Hirose, N., Shah, D., Sridhar, A., Levine, S.: Sacson: Scalable autonomous control for social navigation. IEEE Robotics and Automation Letters 9(1), 49–56 (2023) 16 Y. Yang Author et al. 18. Hu, A., Russell, L., Yeo, H., Murez, Z., Fedoseev, G., Kendall, A., Shotton, J., Corrado, G.: Gaia-1: A generative world model for autonomous driving. arXiv preprint arXiv:2309.17080 (2023) 19. Huang, X., Li, Z., He, G., Zhou, M., Shechtman, E.: Self forcing: Bridging the train-test gap in autoregressive video diffusion. arXiv preprint arXiv:2506.08009 (2025) 20. Karnan, H., Nair, A., Xiao, X., Warnell, G., Pirk, S., Toshev, A., Hart, J., Biswas, J., Stone, P.: Socially compliant navigation dataset (scand): A large-scale dataset of demonstrations for social navigation. IEEE Robotics and Automation Letters 
+
+7(4), 11807–11814 (2022) 21. Lee, K., Choi, J.: Local manifold approximation and projection for manifold-aware diffusion planning. arXiv preprint arXiv:2506.00867 (2025) 22. Liu, K., Hu, W., Xu, J., Shan, Y., Lu, S.: Rolling forcing: Autoregressive long video diffusion in real time. arXiv preprint arXiv:2509.25161 (2025) 23. Liu, Y., Chen, W., Bai, Y., Liang, X., Li, G., Gao, W., Lin, L.: Aligning cyber space with physical world: A comprehensive survey on embodied ai. IEEE/ASME Transactions on Mechatronics (2025) 24. Loshchilov, I., Hutter, F.: Decoupled weight decay regularization. arXiv preprint arXiv:1711.05101 (2017) 25. Luo, W., Hu, T., Zhang, S., Sun, J., Li, Z., Zhang, Z.: Diff-instruct: A universal approach for transferring knowledge from pre-trained diffusion models. Advances in Neural Information Processing Systems 36 , 76525–76546 (2023) 26. Mazé, F., Ahmed, F.: Diffusion models beat gans on topology optimization. In: Proceedings of the Thirty-Seventh AAAI Conference on Artificial Intelligence and Thirty-Fifth Conference on Innovative Applications of Artificial Intelligence and Thirteenth Symposium on Educational Advances in Artificial Intelligence. pp. 9108–9116 (2023) 27. Micheli, V., Alonso, E., Fleuret, F.: Transformers are sample-efficient world models. arXiv preprint arXiv:2209.00588 (2022) 28. Ni, F., Hao, J., Mu, Y., Yuan, Y., Zheng, Y., Wang, B., Liang, Z.: Metadiffuser: Diffusion model as conditional planner for offline meta-rl. In: International Con-ference on Machine Learning. pp. 26087–26105. PMLR (2023) 29. Nichol, A.Q., Dhariwal, P.: Improved denoising diffusion probabilistic models. In: International conference on machine learning. pp. 8162–8171. PMLR (2021) 30. Ning, M., Li, M., Su, J., Salah, A.A., Ertugrul, I.O.: Elucidating the exposure bias in diffusion models. arXiv preprint arXiv:2308.15321 (2023) 31. Peebles, W., Xie, S.: Scalable diffusion models with transformers. In: Proceedings of the IEEE/CVF international conference on computer vision. pp. 4195–4205 (2023) 32. Ruhe, D., Heek, J., Salimans, T., Hoogeboom, E.: Rolling diffusion models. arXiv preprint arXiv:2402.09470 (2024) 33. Sahoo, S.S., Deschenaux, J., Gokaslan, A., Wang, G., Chiu, J., Kuleshov, V.: The diffusion duality. arXiv preprint arXiv:2506.10892 (2025) 34. Sauer, A., Lorenz, D., Blattmann, A., Rombach, R.: Adversarial diffusion distilla-tion. In: European Conference on Computer Vision. pp. 87–103. Springer (2024) 35. Shah, D., Eysenbach, B., Kahn, G., Rhinehart, N., Levine, S.: Rapid exploration for open-world navigation with latent goal models. arXiv preprint arXiv:2104.05859 (2021) 36. Shah, D., Sridhar, A., Bhorkar, A., Hirose, N., Levine, S.: Gnm: A general naviga-tion model to drive any robot. arXiv preprint arXiv:2210.03370 (2022) 37. Song, Y., Dhariwal, P., Chen, M., Sutskever, I.: Consistency models. In: Interna-tional Conference on Machine Learning. pp. 32211–32252. PMLR (2023) AR Forcing: Towards Long-Horizon Robot Navigation World Model 17 38. Sridhar, A., Shah, D., Glossop, C., Levine, S.: Nomad: Goal masked diffusion poli-cies for navigation and exploration. In: 2024 IEEE International Conference on Robotics and Automation (ICRA). pp. 63–70. IEEE (2024) 39. Sturm, J., Burgard, W., Cremers, D.: Evaluating egomotion and structure-from-motion approaches using the tum rgb-d benchmark. In: Proc. of the Workshop on Color-Depth Camera Fusion in Robotics at the IEEE/RJS International Confer-ence on Intelligent Robot Systems (IROS). vol. 13, p. 6 (2012) 40. Sun, J., Jiang, Y., Qiu, J., Nobel, P., Kochenderfer, M.J., Schwager, M.: Conformal prediction for uncertainty-aware planning with diffusion dynamics model. Advances in Neural Information Processing Systems 36 , 80324–80337 (2023) 41. Tian, K., Jiang, Y., Yuan, Z., Peng, B., Wang, L.: Visual autoregressive modeling: Scalable image generation via next-scale prediction. Advances in neural information processing systems 37 , 84839–84865 (2024) 42. Triest, S., Sivaprakasam, M., Wang, S.J., Wang, W., Johnson, A.M., Scherer, S.: Tartandrive: A large-scale dataset for learning off-road dynamics models. In: 2022 International Conference on Robotics and Automation (ICRA). pp. 2546–2552. IEEE (2022) 43. Valevski, D., Leviathan, Y., Arar, M., Fruchter, S.: Diffusion models are real-time game engines. arXiv preprint arXiv:2408.14837 (2024) 44. Venkatraman, S., Khaitan, S., Akella, R.T., Dolan, J., Schneider, J., Berseth, G.: Reasoning with latent diffusion in offline reinforcement learning. arXiv preprint arXiv:2309.06599 (2023) 45. Wang, Y., He, J., Fan, L., Li, H., Chen, Y., Zhang, Z.: Driving into the future: Mul-tiview visual forecasting and planning with world model for autonomous driving. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition. pp. 14749–14759 (2024) 46. Wu, P., Escontrela, A., Hafner, D., Abbeel, P., Goldberg, K.: Daydreamer: World models for physical robot learning. In: Conference on robot learning. pp. 2226– 2240. PMLR (2023) 47. Yang, M., Du, Y., Ghasemipour, K., Tompson, J., Schuurmans, D., Abbeel, P.: Learning interactive real-world simulators. arXiv preprint arXiv:2310.06114 1(2), 6 (2023) 48. Yang, Z., Chen, Y., Wang, J., Manivasagam, S., Ma, W.C., Yang, A.J., Urtasun, R.: Unisim: A neural closed-loop sensor simulator. In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition. pp. 1389–1399 (2023) 49. Yin, T., Gharbi, M., Park, T., Zhang, R., Shechtman, E., Durand, F., Freeman, B.: Improved distribution matching distillation for fast image synthesis. Advances in neural information processing systems 37 , 47455–47487 (2024) 50. Yin, T., Gharbi, M., Zhang, R., Shechtman, E., Durand, F., Freeman, W.T., Park, T.: One-step diffusion with distribution matching distillation. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. pp. 6613– 6623 (2024) 51. Yu, S., Nie, W., Huang, D.A., Li, B., Shin, J., Anandkumar, A.: Efficient video diffusion models via content-frame motion-latent decomposition. arXiv preprint arXiv:2403.14148 (2024) 52. Yu, S., Sohn, K., Kim, S., Shin, J.: Video probabilistic diffusion models in projected latent space. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. pp. 18456–18466 (2023) 53. Zhang, J., Liu, D., Park, E., Zhang, S., Xu, C.: Anti-exposure bias in diffusion mod-els. In: 13th International Conference on Learning Representations, ICLR 2025. pp. 59458–59478. International Conference on Learning Representations, ICLR (2025) 18 Y. Yang Author et al. 54. Zhang, L., Xiong, Y., Yang, Z., Casas, S., Hu, R., Urtasun, R.: Copilot4d: Learning unsupervised world models for autonomous driving via discrete diffusion. arXiv preprint arXiv:2311.01017 (2023) 55. Zhang, R., Isola, P., Efros, A.A., Shechtman, E., Wang, O.: The unreasonable effectiveness of deep features as a perceptual metric. In: Proceedings of the IEEE conference on computer vision and pattern recognition. pp. 586–595 (2018) 56. Zhang, W., Wang, G., Sun, J., Yuan, Y., Huang, G.: Storm: Efficient stochastic transformer based world models for reinforcement learning. Advances in Neural Information Processing Systems 36 , 27147–27166 (2023) 57. Zhou, M., Zheng, H., Wang, Z., Yin, M., Huang, H.: Score identity distillation: Ex-ponentially fast distillation of pretrained diffusion models for one-step generation. In: Forty-first International Conference on Machine Learning (2024) Supplementary Material 
+
+## 1 Implementation Details 
+
+1.1 Architecture Details 
+
+We encode all input frames with the Stable Diffusion VAE (sd-vae-ft-ema) and scale latents by 0.18215. Images are center-cropped and resized to 224 × 224 ,producing latent tensors of size 28 × 28 with 4 channels. All training and evalua-tion operate in latent space; decoding to pixel space is only used for visualization and perceptual metrics. We use a CDiT-XL/2 backbone as the denoiser. The model takes a context of latent frames and predicts a future latent at each step. Conditioning inputs include the context latents, action tokens, and a relative-time embedding r that encodes the temporal offset of the prediction target. The transformer follows the DiT design, with adaptive LayerNorm modulation and learned timestep em-beddings. We train the model with learned variance σ and apply EMA to all parameters for evaluation. 
+
+1.2 Training Hyperparameter 
+
+We train AR Forcing using the same optimizer and backbone settings as the baseline NWM, and only change the training schedule to enable autoregressive context updates. Table 1 shows the default hyperparameters used in our training process.                  
+
+> Training Hyperparameter Value Context frames K4Prediction length T16 Diffusion timesteps Tdiff 1000 Batch size 16 Total batch size 96 Optimizer AdamW Learning rate 8×10 −5
+> Grad clip 10.0 Learned σTrue
+> Table 1: Training hyperparameters for AR Forcing. 20
+
+## 2 Evaluation Details 
+
+2.1 Dataset Alignment via Step Normalization 
+
+To unify action spaces across robots with different physical scales, we normalize displacement by the dataset-specific average waypoint spacing (in meters). For each dataset d, let ∆d denote the mean per-step distance. We transform raw displacements as: 
+
+˜pt = pt
+
+∆d
+
+, (1) where pt denotes the raw displacement vector at step t (in meters), and ˜pt is the corresponding normalized displacement used by the model, so that a unit step corresponds to the same approximate physical motion across datasets. This normalization is applied consistently during training and evaluation, ensuring that the model sees actions in a shared normalized coordinate system. 
+
+2.2 Evaluation Modes 
+
+Each dataset split provides a list of trajectory names. For reproducibility, we also provide precomputed evaluation indices. Each dataset has a training split and test splits for visual evaluation and planning evaluation. Visual evaluation is conducted with a 64-step prediction horizon and a con-text of 4 frames. The distance range spans −64 to 64 , so evaluation covers both backward and forward temporal offsets rather than a narrow forward-only win-dow. We evaluate on the test splits of RECON, TartanDrive, SCAND, HuRoN, and Go Stanford. For each observation, we sample 4 goal conditions, which pro-vides diversity in target directions and improves the stability of averaged metrics. Planning is evaluated with a shorter horizon of 8 steps, still conditioned on 4 context frames, and uses a stride of 8 frames between decisions. The planning distance category is fixed to 8, which enforces a consistent step length in the planning loop and avoids mixing different step scales within a single evaluation run. 
+
+## 3 More Qualitative Results 
+
+We further provide long-horizon qualitative comparisons by visualizing 16 sec-onds rollouts across multiple datasets. For each sequence, we show three synchro-nized columns: our method, the ground-truth and NWM, to emphasize temporal coherence, scene consistency, and accumulation of drift over time. Fig 1 2 3 4 shows that qualitative results of 16-second rollouts on RECON, TartanDrive, SCAND and HuRoN respectively. Fig 5 shows zero-shot evaluation on the unknown environment Go Stanford. Supplementary Material 21 
+
+Fig. 1: Qualitative 16-second rollouts on RECON. AR Forcing and NWM predict the scene for the next 16 seconds at 4FPS. 22 
+
+Fig. 2: Qualitative 16-second rollouts on TartanDrive. AR Forcing and NWM predict the scene for the next 16 seconds at 4FPS. Supplementary Material 23 
+
+Fig. 3: Qualitative 16-second rollouts on SCAND. AR Forcing and NWM predict the scene for the next 16 seconds at 4FPS. 24 
+
+Fig. 4: Qualitative 16-second rollouts on HuRoN. AR Forcing and NWM predict the scene for the next 16 seconds at 4FPS. Supplementary Material 25 
+
+Fig. 5: Zero-shot qualitative results on the unknown environment Go Stan-ford. AR Forcing and NWM predict the scene for the next 16 seconds at 4FPS.
