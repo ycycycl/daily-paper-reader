@@ -1,0 +1,766 @@
+Title: PACE: Phase-Aware Chunk Execution for Robot Policies with Action Chunking
+
+URL Source: https://arxiv.org/pdf/2606.00537v1
+
+Published Time: Tue, 02 Jun 2026 00:44:23 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# PACE: P hase -A ware Chunk Execution for Robot Policies with Action Chunking 
+
+Junnan Nie 1, Jiayi Li 2, Jiachen Zhang 1, Junyi Lao 1,Chenghao Liu 1, Tianle Zhang 2, Songfang Huang 1,†
+
+> 1
+
+Peking University. 2JD Explore Academy. 
+
+## Abstract 
+
+Recent vision–language–action and di ff usion-based robot policies often use action chunking, where each policy query predicts a sequence of future actions and the robot executes an open-loop prefix before re-querying. While this interface improves local motion continuity, deployment still requires choosing the execution horizon : how much of each predicted chunk should be executed before acquiring a new observation. However, our experiments show that success is strongly task-dependent and non-monotonic with respect to the execution horizon, making a single constant horizon an unreliable deployment rule. We propose PACE (Phase-Aware Chunk Execution), a training-free test-time execution method that selects the execution horizon online from the predicted chunk itself. PACE exploits the phase-dependent kinematic structure of manipulation trajectories by identifying low-speed transition points in the predicted speed profile and using them as candidate replanning boundaries. Because PACE uses only the predicted action chunk, it is plug-and-play and requires no retraining or access to policy internals. We validate PACE through large-scale evaluations in both simulation and real-robot settings. On 50 RoboTwin2.0 tasks, PACE raises the average success rate from 57 .8% to 64 .2%. In real-robot experiments on bimanual ALOHA and single-arm Franka platforms, PACE improves the average task score from 60 .7 to 77 .7 and the average success rate from 50 .7% to 70 .4%. Ablations and rollout-level analyses show that PACE adapts execution horizons across manipulation phases, shortening near transitions while preserving longer execution during coherent motion. Initial state 1.Coarse approach 2.Pre-grasp alignment 5.Placement 4.Transfer to platform 3.Grasp stapler Task success 
+
+35  
+
+> Long horizon
+> for coarse motion
+
+24  
+
+> Moderate horizon
+> for grasp alignment
+
+10  
+
+> Short horizon
+> for adjustment
+
+16  
+
+> Moderate horizon
+> for placement
+
+19  
+
+> Moderate horizon
+> for transfer
+
+26  
+
+> Moderate horizon
+> for grasping
+
+35 10 19 24 26 16      
+
+> Execution
+> window (H)
+> Success Rate
+> Executed Horizon
+> 010 20 30 40 50
+> 0.0
+> 0.5
+> 1.0
+> Click bell
+> Open microwave
+> Place shoe
+
+Fixed-horizon limitation 
+
+> Predicted horizon L
+
+# ... 
+
+> Selected horizon h
+
+# ...  
+
+> Executed prefix Discarded suffix
+
+PACE     
+
+> Robotwin 2.0
+> 50-task average success rate(%)
+> Real-Robo t
+> average success rate(%)
+> 40
+> 65
+> 60
+> 55
+> 50
+> 45
+> 64.2
+> 53.4
+> 57.8
+> 48.8
+> H=5 H=25 H=50 Ours
+> 25
+> 75
+> 65
+> 55
+> 45
+> 35
+> 70.4
+> 50.7
+> H=50 PACE
+
+Simulation and real world tasks 
+
+Dynamic execution within one rollout 
+
+Figure 1: Overview of PACE. Fixed horizons can be unreliable because success varies with H across tasks. PACE selects the executed prefix online from each predicted chunk, improving performance in simulation and real-robot experiments while adapting the horizon in a rollout. 
+
+> †
+
+Corresponding author. 
+
+Emails: jnnie25@stu.pku.edu.cn, 23121254@bjtu.edu.cn, z89498323286@gmail.com, jylao25@stu.pku.edu.cn, chliu@stu.pku.edu.cn, tianlezhang14@jd.com, hsf@pku.edu.cn. 
+
+> arXiv:2606.00537v1 [cs.RO] 30 May 2026
+
+## 1 Introduction 
+
+Recent progress in vision-language-action models and di ff usion-based robot policies has largely come from training-side gains. Larger backbones, broader demonstration data, and stronger multi-modal pretraining have all improved predictive perfor-mance [3, 8, 4, 18, 22, 12, 21, 14, 1, 28, 7]. At deployment, however, performance depends not only on how accurately a policy predicts, but also on how those predictions are executed. To improve local motion continuity, these policies often adopt action chunking [29, 7], where each query predicts a short se-quence of future actions rather than a single-step command. Yet an action chunk only specifies what the policy predicts, not how much of that prediction the robot should execute. Its length fixes the prediction horizon, but a separate choice must still be made about how many actions to execute before acquiring a new observation and querying the policy again. We refer to this executed prefix length as the execution horizon . Unlike the prediction horizon, the execution horizon is neither learned nor prescribed by the policy [7, 29]. It is an inference-time choice that trades o ff feedback frequency against within-chunk motion continuity. As such, the execution horizon is not a mere implementation detail, but a central variable for reliable deployment of action-chunking robot policies. In practice, the execution horizon is typically fixed to a constant H throughout an episode [7, 29]. At each replanning step, the robot executes the first H actions of the predicted chunk before querying the policy again, tying all chunks to the same replanning interval regardless of the motion they predict. Asmaller H incorporates new observations more often but can interrupt a coherent local motion, while a larger H follows the predicted chunk longer but delays reactive correction. Without a principled selection criterion, H is usually chosen empirically. The left panel of Fig. 1 shows that such an empirical choice is unreliable. Sweeping H from 1 to 50 on three RoboTwin2.0 tasks, we observe that the success rate is strongly non-monotonic in H and that the preferred horizon is highly task-dependent. On 
+
+Click bell , for instance, the success rate peaks near H ≈ 6, drops by nearly 40 points around H ≈ 25, and rebounds to a second peak near H ≈ 35. On such a landscape, any fixed horizon risks falling into a region of sharply degraded performance on some task. An o ffl ine sweep does not resolve this problem either, since the best horizon identified on one task does not transfer to new tasks or to real-robot deployment. These findings indicate that the execution horizon must be decided at deployment time rather than fixed in advance. We propose PACE (Phase-Aware Chunk Execution), a test-time execution method that selects hi online by analyzing the speed profile of the predicted action chunk. The method is grounded in the phased kinematic structure of manipulation trajectories: rather than being kinematically uniform, a manipu-lation trajectory consists of locally coherent segments with dis-tinct motion characteristics, and transitions are typically marked by deceleration, e.g., during contact preparation or sub-stage hand-o ff . Such boundaries manifest as low-speed valleys in the speed profile, a structure preserved by policies trained via imita-tion learning. PACE treats these valleys as natural replanning points: it executes the chunk up to the earliest accepted valley, preserving one coherent motion segment, and re-queries the policy before the next begins. PACE introduces no learned com-ponent, requires no internal access to the policy, and requires no modification or retraining of the underlying model. On the RoboTwin2.0 benchmark [6] of 50 bimanual ma-nipulation tasks, PACE improves the average success rate from 57 .8% to 64 .2% over the best fixed-horizon baseline. In real-robot experiments, it improves the average task score from 60 .7to 77 .7 and the average success rate from 50 .7% to 70 .4%. We further provide ablations on phase-profile construction, sensi-tivity analyses on valley selection and the training prediction horizon, and fixed-horizon sweeps on representative tasks. A rollout-level analysis of successful and failure cases reveals the working mechanism of PACE and the failure modes it resolves or leaves unresolved. Our contributions are summarized as follows: 
+
+• We identify the execution horizon as a critical yet overlooked test-time variable, and show that its e ff ect on success is task-dependent and non-monotonic, indicating that no single fixed horizon provides a reliable default across tasks. 
+
+• We propose PACE , a plug-and-play test-time execution method that selects the executed prefix online from the phase-dependent kinematic structure of predicted action chunks. It requires no auxiliary input, no learned module, and no modification or retraining of the underlying policy. 
+
+• We validate PACE on 50 RoboTwin2.0 simulation tasks and in real-robot experiments, where it consistently surpasses representative fixed-horizon baselines. Ablations, sensitiv-ity analyses, and rollout-level diagnostics further isolate its design choices and expose the mechanism behind the gains. 
+
+## 2 Related Work 
+
+Robot policies with action chunking. Action chunking, where a policy predicts a sequence of future actions rather than a single next action, has become a common interface for robot policy learning. It was popularized by ACT for fine-grained bimanual imitation learning and by Di ff usion Policy for action-sequence generation in a receding-horizon loop [29, 7]. Since then, chunked action prediction has been adopted in mobile and bimanual manipulation, 3D di ff usion policies, generalist robot policies, vision–language–action models, action-tokenized models, and world-action models [9, 27, 17, 21, 1, 19, 13, 20, 10, 5, 26]. These works mainly study how to generate better action chunks through architecture design, representation learn-ing, tokenization, data scaling, or pretraining. PACE studies a complementary question at deployment time: once a chunk has already been predicted, how much of it should be executed before the policy is queried again? 
+
+Test-time execution of action chunks. The execution of an action chunk is usually determined by a separate test-time rule. Many systems use a fixed rule: ACT combines overlapping pre-dictions through temporal ensembling, while Di ff usion Policy executes a fixed action horizon before replanning [29, 7]. Re-cent inference-time methods further address practical execution issues such as latency-induced discontinuities or stability during 2PACE Block     
+
+> Compute speed profile Smooth profile Detect valleys
+> offline-derived criterion
+> Velocity
+> Timesteps
+> Re-observe &  Replan
+> Predicted horizon L
+> ...
+> Executed horizon h
+> ...
+> State Instruction Images
+
+Figure 2: PACE framework. PACE selects an execution hori-zon from low-speed valleys in the predicted chunk’s smoothed speed profile. The robot executes the selected prefix, discards the su ffi x, and then queries the policy again. chunk execution [2, 23]. Another line modifies training objec-tives or model design so that policies can reason over multiple horizons [11]. Closest to our setting, AutoHorizon selects execu-tion horizons online, but it relies on action self-attention inside flow-based VLAs [24]. In contrast, PACE treats horizon selec-tion as a policy-agnostic execution problem. It uses only the predicted action chunk, identifies candidate replanning bound-aries from low-speed valleys in the chunk’s kinematic profile, and requires no attention maps, confidence scores, denoising states, auxiliary heads, retraining, or inference-engine changes. 
+
+## 3 Method 
+
+3.1 Problem Formulation 
+
+We consider a manipulation policy with action chunking. At the 
+
+i-th policy query, the policy receives the observation oτi and the language instruction ℓ, and outputs 
+
+Ai = πθ(oτi , ℓ ) ∈ RL×da , Ai = (ai,1, . . . , ai,L), (1) where L is the prediction horizon and da is the action dimension. Let hi ∈ { 1, . . . , L} denote the execution horizon, i.e., the number of predicted actions executed before the next policy query. After executing the prefix ( ai,1, . . . , ai,hi ), the next query occurs at 
+
+τi+1 = τi + hi.A fixed-horizon rule sets hfixed  
+
+> i
+
+= H for all i, independent of the predicted chunk Ai. Such a rule is agnostic to chunk content: it commits to the same execution length whether Ai
+
+describes a smooth transit or straddles a contact event. As discussed in Sec. 1, this content blindness is the source of the task dependent horizon sensitivity that motivates our work. We therefore introduce PACE , which replaces this constant rule with a chunk-conditioned selection rule, 
+
+hi = g(Ai), g : RL×da → { 1, . . . , L}. (2) The function g is a deterministic, training-free procedure with a small set of fixed selection parameters, described at a high level in Sec. 3.2 and Sec. 3.3. It introduces no learnable parameters and is applied at test time without modifying the trained policy 
+
+πθ; in particular, L is kept as the policy’s training prediction horizon (examined in Sec. 4.3). 
+
+3.2 Kinematic Profile Extraction 
+
+Manipulation trajectories are not kinematically uniform. Prior work has modeled manipulation tasks as sequences of phases or motion primitives [16, 15]. Such trajectories typically consist of locally coherent motion segments separated by slower transi-tion regions, such as contact preparation, grasping, release, or stabilization. Because these policies are trained to imitate expert action sequences, their predicted chunks can retain this phase structure, making the predicted motion profile a useful signal for deciding where to replan. For each policy query i, let Ai = (ai,1, . . . , ai,L) denote the predicted action chunk. For each executed arm group b ∈ B ,PACE maps the corresponding arm-motion component of Ai to a one-dimensional speed profile, 
+
+vbi = ψb(Ai) = (vbi,1, . . . , vbi,L−1),
+
+where ψb(·) denotes the arm-specific kinematic profiling opera-tor. The profile is then smoothed by an operator S,˜vbi = S(vbi ),
+
+to suppress short-range fluctuations that would otherwise create spurious local minima. The resulting low-speed regions in ˜vbi
+
+serve as candidate phase boundaries for selecting the execution horizon. 
+
+3.3 Phase-Aware Execution Horizon Selection 
+
+Given the smoothed kinematic profile ˜vbi for each executed arm group b ∈ B , PACE selects an execution horizon hi ∈{1, . . . , Hmax } for the current predicted chunk. The selection is based on the observation that manipulation phase transitions are often expressed as localized deceleration events in the predicted motion profile. Examples include contact preparation, align-ment, grasping, release, and stabilization. Such events appear as low-speed valleys separating adjacent motion segments. For each arm group, PACE first extracts a set of candidate phase boundaries 
+
+Vbi ⊆ { 1, . . . , Hmax }
+
+from the low-speed valleys of ˜vbi , subject to a minimum tempo-ral separation constraint. Each candidate r ∈ V bi is assigned a prominence score Φbi (r), which measures whether the valley cor-responds to a pronounced deceleration relative to its surrounding motion. This criterion prevents small fluctuations on already slow segments from triggering unnecessary replanning. The accepted replanning candidates are pooled across all executed arms: 
+
+Ri =
+
+[
+
+> b∈B
+
+nr ∈ V bi : Φbi (r) ≥ δT
+
+o ,
+
+where δT is a task-level acceptance threshold calibrated from training demonstrations. PACE then chooses the earliest ac-cepted boundary, or falls back to a longer execution horizon when no valid boundary is found: 
+
+hi =
+
+(min Ri, Ri , ∅,
+
+Hmax , Ri = ∅.
+
+Here Hmax ≤ L denotes the maximum allowed execution horizon. 3Table 1: Comparison with fixed-horizon execution. Success rates (%) on six representative RoboTwin2.0 tasks and the 50-task average. Fixed baselines use a constant execution horizon H; PACE selects horizons online from each predicted chunk. Values after the slash are absolute gains over the best fixed baseline in the same column. Each task-method pair is evaluated with 3 seeds and 3 independent 100-episode batches per seed, giving 900 episodes per task and 45,000 episodes per method for the 50-task average.                                                    
+
+> Model Horizon Short-Horizon Medium-Horizon Long-Horizon Succ. Pick Bottles Grab Roller Place A2B Dump Bin Put Bottles Stack Bowls
+> π0.5
+> H=513.3 89.9 20.0 58.7 0.3 88.7 48.8
+> H=25 45.3 96.2 47.8 85.1 79.3 88.4 57.8
+> H=50 38.7 96.2 36.8 84.3 70.8 85.1 53.4 PACE 48.2 / + 2.9 98.6 / + 2.3 54.6 / + 6.8 93.0 / + 7.9 88.9 / + 9.6 95.6 / + 6.9 64.2 / + 6.4
+
+The threshold δT is calibrated once per task using training demonstrations only. This calibration does not use evaluation rollouts, success labels, or fixed-horizon sweeps. In single-arm settings, B contains only the executed arm. In multi-arm settings, the earliest accepted boundary across arms is used so that replanning occurs before any arm crosses a predicted phase boundary under stale observations. 
+
+## 4 Simulation Experiments 
+
+Simulation setting. We evaluate PACE on RoboTwin2.0 [6], a benchmark of 50 bimanual manipulation tasks with diverse tem-poral demands. For each task, we train one π0.5 checkpoint [10] under the standard RoboTwin2.0 protocol, using a prediction horizon of L = 50. All compared methods use the same task checkpoint and receive the same observations and language in-structions. They di ff er only in how much of each predicted action chunk is executed before replanning. This design isolates the e ff ect of the execution scheme from di ff erences in policy training, model capacity, or demonstration data. 
+
+Execution schemes. We compare PACE with fixed-horizon execution, where the robot executes the first H actions of each predicted chunk before querying the policy again. The fixed baselines use H ∈ { 5, 25 , 50 }, corresponding to short, interme-diate, and full-chunk execution under the prediction horizon 
+
+L = 50. These baselines are deployed as global constants and are not tuned separately for each task. PACE uses the same predicted chunks, but selects the executed prefix online from the predicted motion structure. Its threshold is calibrated from training demonstrations only; evaluation rollouts, success labels, and fixed-horizon sweeps are not used for calibration. 
+
+Evaluation protocol. Unless otherwise noted, we adopt a full evaluation protocol. For each task and method, we eval-uate three seeds, and for each seed we run three independent batches of 100 episodes. Thus, each task-method pair is eval-uated over 3 × 3 × 100 = 900 episodes. Success is measured by the RoboTwin2.0 task success predicate. We report task-level success rates averaged over the nine evaluation batches, and compute the 50-task average as the equal-weight mean over tasks. The 50-task average is the primary metric, while task-level tables highlight six representative tasks balanced across short-, medium-, and long-duration groups. Full task-level results and evaluation details are provided in Appendix B. 
+
+Overview of experiments. We organize the simulation eval-uation around four questions. Sec. 4.1 asks whether PACE improves over fixed-horizon execution as a deployable default, without task-specific horizon tuning. Sec. 4.2 examines how PACE adapts its execution horizons within a rollout. Sec. 4.3 studies the design choices behind PACE, including the phase profile, the training prediction horizon, and the sensitivity to selection hyperparameters. Finally, Sec. 4.4 uses fixed-horizon sweeps as a diagnostic tool to separate task-specific horizon preference from the benefit of adaptive replanning timing. 
+
+4.1 Simulation Results 
+
+We first compare PACE with fixed-horizon execution as deploy-able test-time rules. The fixed baselines use H ∈ { 5, 25 , 50 },representing short, intermediate, and full-chunk execution under the prediction horizon L = 50. These baselines are global sched-ules: the same H is used throughout all rollouts of a task and is not tuned separately for each task. PACE uses the same pol-icy checkpoint and predicted chunks, but chooses the executed prefix online at each policy query. Table 1 shows that PACE achieves the best 50-task average success rate. Among the fixed-horizon baselines, H = 25 is the strongest global choice, reaching 57 .8%. PACE improves this average to 64 .2%, a gain of 6 .4 points, without task-specific horizon sweeps or changes to the underlying policy. Because all methods share the same trained checkpoint within each task, the improvement is attributable to the test-time execution rule. PACE also outperforms the strongest fixed-horizon baseline on all six displayed tasks, covering short-, medium-, and long-duration task groups. This supports the central motivation of PACE: rather than committing to one fixed feedback interval, the execution horizon should be selected according to the motion structure predicted at test time. Per-task results for all 50 tasks are provided in Appendix B. 
+
+4.2 Visualizing Adaptive Execution Horizons 
+
+We conduct a rollout-level visualization analysis on a represen-tative place_shoe episode, as shown in Fig. 3. This analysis exposes two execution-level behaviors of PACE: the selected horizon changes across manipulation phases, and the unexecuted su ffi x of each predicted chunk is discarded before replanning from a new observation. Figure 3 shows that PACE does not follow a fixed replanning cadence. The selected horizons vary 4Color: Plan1 (t=0) Plan2 (t=32) Plan3 (t=46) Plan4 (t=83) Plan5 (t=108) Plan6 (t=127)                   
+
+> Timesteps 032 46 83 108 127
+> Executed prefix (32) Discarded suffix (18)
+> Executed prefix (14) Discarded suffix (36)
+> Executed prefix (37) Discarded suffix (13)
+> Executed prefix (25) Discarded suffix (25)
+> Executed prefix (19) Discarded suffix
+> Executed prefix
+> Velocity
+> Dynamic horizon 25 37 19
+> Timesteps
+> 032 46 83 108 127
+> 0.0
+> 1.0
+> 14 32
+> Head Front
+> Executed prefix
+> Replanning boundary
+> Discarded suffix
+> Execution Start Point
+
+Figure 3: Rollout-level behavior of PACE. The rollout is from place_shoe . Top: head and front camera observations at the six replanning timesteps. Middle: selected execution horizons between consecutive queries. Bottom: predicted action chunks along the rollout timeline, where solid segments are executed prefixes and dashed segments are discarded su ffi xes. Vertical dashed lines mark replanning boundaries. substantially within the same rollout (e.g., 32, 14, 37, 25, and 19 steps), and the variation is structured: longer horizons are used when the predicted chunk describes a coherent motion segment, while shorter horizons appear near low-speed transi-tions. A single fixed horizon cannot express this within-episode variation. The discarded su ffi xes further show how PACE limits open-loop commitment to a single prediction. At each query, the policy predicts a full chunk, but PACE executes only the prefix up to the selected boundary and discards the remaining su ffi x. When the next observation is acquired, the newly predicted chunk can di ff er from the discarded su ffi x over the overlapping interval, as visible around t=83. Thus, PACE avoids carrying stale predictions too far forward while still allowing long, con-tinuous execution when the motion remains coherent. This behavior helps explain the performance gains over fixed-horizon execution in Sec. 4.1. 
+
+4.3 Ablation Analysis 
+
+We structure the ablation study around two design choices and one robustness question. First, we ablate the phase-profile con-struction by comparing joint-space and Cartesian speed profiles, with and without smoothing. This tests whether PACE depends on a particular motion representation or on noisy raw velocity signals. Second, we study the training prediction horizon Htrain ,which sets the supervised chunk length during policy training. This asks whether predicting farther into the future improves the quality of the prefix executed at test time, while Heval is held fixed. Finally, we evaluate sensitivity to the selection hyperpa-rameters that control candidate-boundary acceptance, testing whether PACE relies on a narrowly tuned setting. The phase-profile and hyperparameter-sensitivity analyses use all 50 RoboTwin2.0 tasks under the full evaluation proto-col. The training-horizon ablation requires retraining policies for di ff erent Htrain , so it is reported on the six representative tasks. Additional protocol details and expanded training-horizon results are provided in Appendix C. 
+
+Phase-profile construction. We compare joint-space and Cartesian speed profiles, with and without smoothing, to test which signal is most suitable for identifying phase boundaries from predicted chunks. This ablation examines two aspects of the phase profile: the motion representation used to measure 5Table 2: Ablation studies. Left: fixed-horizon reference and phase-profile ablation on all 50 RoboTwin2.0 tasks. The Baseline row uses fixed-horizon execution with H = 25. ∆ Succ. denotes the absolute success-rate gain over this baseline. Avg. Horizon is the fixed execution horizon for the baseline and, for PACE variants, the mean executed horizon hi selected by PACE over all policy queries in the evaluation rollouts. Right: training-horizon ablation on six representative tasks; each row fixes Heval and varies Htrain .Gain@50 is the gain of Htrain =50 over the shortest feasible setting. Success rates are in %, and gains are in percentage points. †
+
+marks the default. The phase-profile ablation uses the full 50-task protocol with 900 episodes per task and configuration. The training-horizon ablation is evaluated on six representative tasks with seed 0 and three 100-episode batches per task-setting pair.                                                          
+
+> Configuration Succ. ∆Succ. Avg. Horizon Baseline ( H=25) 57.8 –25.0 Cartesian, raw 62.2 +4.4 11.3 Cartesian, smoothed 64.5 +6.7 19.5 Joint, raw 60.4 +2.6 16.7 Joint, smoothed †64.2 +6.4 24.3
+> Heval \Htrain 10 20 30 40 50 Gain@50 10 57.2 68.7 69.9 74.6 77.9 +20.7
+> 20 –68.7 72.6 73.8 75.3 +6.6
+> 30 ––70.2 71.4 73.8 +3.6
+> 40 –––70.1 73.4 +3.3
+> 50 ––––71.4 +0.0
+
+speed, and whether local fluctuations should be smoothed before valley detection. Raw profiles can contain short-range oscil-lations that create spurious local valleys, while smoothing is expected to preserve the dominant phase structure and suppress noisy replanning triggers. Table 2 left shows that smoothing improves success in both spaces and increases the selected execution horizon. This sug-gests that smoothing removes noisy valleys that would otherwise cause overly frequent replanning. After smoothing, Cartesian and joint-space profiles perform comparably, indicating that PACE captures a phase structure shared across kinematic repre-sentations rather than relying on a specific motion space. We adopt the smoothed joint-space profile by default because it is within 0 .3 points of the best variant, matches the policy action space, and avoids running forward kinematics at every replan-ning query. 
+
+Training prediction horizon. We next ask whether the predic-tion horizon used during training a ff ects the quality of the prefix that is executed at test time. This ablation is not a comparison of di ff erent execution horizons. Instead, each row of Table 2 right fixes Heval , so all entries in the row execute the same number of actions before replanning. Only Htrain changes, which isolates the e ff ect of supervising the policy with shorter or longer ac-tion chunks. Pairs with Htrain < Heval are infeasible because the policy predicts too few actions to execute the requested prefix. Success increases monotonically with Htrain , and the gain of Htrain =50 over the shortest feasible target shrinks from +20 .7at Heval =10 to +3.3 at Heval =40. This trend suggests that longer training targets provide useful sequence-level supervision: they constrain not only the immediate action after the observation, but also how the motion should evolve across a longer expert segment. Because the executed prefix is predicted jointly with the rest of the chunk, it can inherit this temporal structure even when the su ffi x is later discarded. We therefore adopt Htrain =50 as the default prediction horizon. 
+
+Hyperparameter sensitivity. We further examine whether PACE depends on a narrowly tuned set of selection hyperparam-eters. The two parameters in Table 3 a ff ect how easily candidate replanning boundaries are accepted: dmin controls the minimum spacing between candidate boundaries, while the calibration per-centile ρ determines the strictness of the acceptance threshold. Table 3: Hyperparameter sensitivity. All results use the smoothed joint-space phase profile and are averaged over all 50 RoboTwin2.0 tasks. Each ( dmin , ρ ) configuration is evalu-ated under the full simulation protocol: 3 seeds, 3 independent 100-episode batches per seed, and 900 episodes per task. Thus, each configuration is evaluated over 45,000 episodes in total. Avg. Horizon denotes the mean executed horizon hi selected by PACE, averaged over all policy queries in the evaluation rollouts. Success rates are in %. † marks the default.                         
+
+> dmin Metric Percentile ρ
+> 0510 25 5Succ. 64.3 63.5 63.3 62.5 Avg. Horizon 18.1 23.4 24.6 31.9 10 Succ. 64.0 64.2 †63.0 62.0 Avg. Horizon 19.8 24.3 †25.5 32.9
+
+We report both success and average execution horizon, since a stricter selection rule may improve stability by rejecting noisy boundaries but may also delay feedback by accepting too few boundaries. As shown in Table 3, PACE remains stable across nearby settings. The best setting, dmin =5, ρ =0, achieves 64 .3% success, while the default setting, dmin =10 , ρ =5, achieves a comparable 64 .2% success rate with a moderate average execution hori-zon of 24 .3 steps. Increasing ρ makes the acceptance criterion stricter, so fewer candidate boundaries are accepted and the av-erage execution horizon becomes longer. Very strict settings, such as ρ=25, reduce success while pushing the average horizon above 30 steps, suggesting that rejecting too many phase bound-aries delays feedback in contact-sensitive stages. We therefore use dmin =10 , ρ =5 as the default because it provides high suc-cess without relying on overly short or overly long execution windows. 
+
+4.4 PACE versus Fixed-Horizon Sweeps 
+
+We use fixed-horizon sweeps as a diagnostic tool to answer two questions. First, if each task were allowed to choose its best fixed horizon in hindsight, would PACE still reach the high-success region without such task-specific tuning? Second, when PACE and a fixed-horizon schedule query the policy at 6Figure 4: PACE compared with fixed-horizon sweeps. Green curves show the seed-0 diagnostic sweep of fixed-horizon execution as H is varied from 1 to 50 on each task. The red star marks PACE under the full three-seed evaluation: its horizontal coordinate is the mean executed horizon averaged over policy queries, and its vertical coordinate is the PACE success rate. PACE is shown as a point only for visualization and does not execute a fixed horizon at the star’s x-coordinate. a similar average rate, does adaptive replanning timing still provide an advantage? To study these questions, we sweep 
+
+H = 1, . . . , 50 on six representative tasks. Such sweeps are not available during real deployment, so they should be viewed as diagnostic references rather than deployable baselines. Figure 4 addresses the first question. The fixed-horizon curves di ff er substantially across tasks: some tasks favor short horizons, others favor longer horizons, and several exhibit strongly non-monotonic success landscapes. Thus, the hindsight-best fixed horizon is highly task-dependent, and no single con-stant H provides a reliable cross-task deployment rule. The red stars show that PACE reaches the high-success region of these tasks without running a task-specific horizon sweep. Impor-tantly, the star’s horizontal coordinate is only the mean executed horizon selected by PACE over rollouts; PACE does not execute a constant horizon at that value. To address the second question, we compare PACE with a fixed-horizon schedule matched to its average execution length. For each task, we compute PACE’s mean selected horizon from the full evaluation protocol with seeds 0 , 1, 2, and round it to the nearest integer to obtain the matched fixed horizon H. The matched fixed-horizon baseline then executes this constant H at every policy query, and its success rate is read from the seed-0 fixed-horizon sweep. This comparison is diagnostic rather than a same-budget primary benchmark: PACE and the matched fixed schedule have similar average replanning frequency, but di ff er in where replanning occurs within the rollout. Table 4 shows that, under this diagnostic comparison, PACE outperforms the matched fixed-horizon schedule on all Table 4: Comparison at matched average execution horizon. 
+
+For each task, Matched H is obtained by rounding PACE’s mean selected horizon under the full three-seed evaluation. The Fixed column is read from the seed-0 fixed-horizon sweep at this matched horizon. The PACE column reports the full three-seed PACE success rate / absolute gain over the matched fixed baseline. All success values are in %.                              
+
+> Task Matched HFixed PACE / ∆
+> Pick Dual Bottles 26 46.7 48.2 / + 1.6 Grab Roller 29 96.0 98.6 / + 2.6 Place A2B Right 24 44.0 54.6 / + 10.6 Dump Bin Bigbin 23 88.7 93.0 / + 4.3 Put Bottles Dustbin 22 87.0 88.9 / + 1.9 Stack Bowls Two 20 88.3 95.6 / + 7.2
+
+six tasks. Since the matched fixed baseline executes a constant horizon chosen to match PACE’s average executed horizon, this comparison controls for average replanning frequency. The re-maining di ff erence is the placement of replanning boundaries. These gains therefore indicate that PACE does not merely bene-fit from using a shorter or longer average horizon; it improves performance by choosing more appropriate replanning points within the rollout, using the predicted chunk’s phase structure. Finally, the hindsight-best fixed horizon H⋆ remains a use-ful upper reference but is non-deployable, because it is selected only after sweeping all H = 1, . . . , 50 on the test task. PACE instead chooses horizons online from the predicted chunks and requires no task-specific evaluation sweep. 7Timesteps 6 33 63 94 101 144   
+
+> Dynamic horizon 731 43 30 27
+
+Figure 5: Successful real-robot rollout on stack_bowls . Blue markers indicate policy-query timesteps, and green labels indicate the execution horizon selected between consecutive queries. PACE selects long horizons during approach and transport, shortens the horizon near contact-sensitive stacking alignment, and expands it again once a coherent motion segment becomes available. Table 5: Real-robot results. We report baseline and PACE performance under the same metric; ∆ is the absolute gain of PACE over the baseline. Succ. denotes full-completion rate in percent. RoboChallenge tasks use 30 trials per method; the Franka task uses 5 × 20 trials per method.                                  
+
+> Benchmark Robot Task Score Succ. Baseline PACE ∆Baseline PACE ∆
+> RoboChallenge ALOHA stack_bowls 73.0 93.5 +20.5 70.0 90.0 +20.0 RoboChallenge ALOHA put_pen_into_pencil_case 37.2 51.7 +14.5 10.0 33.3 +23.3 In-lab Franka place_object_on_plate 72.0 88.0 +16.0 72.0 88.0 +16.0
+
+## 5 Real -R obot Experiments 
+
+We evaluate PACE in real-robot experiments that combine a public benchmark with an in-lab task family. For the bench-mark component, we use RoboChallenge, a public real-robot evaluation benchmark for embodied policies with standardized task prompts, reset procedures, and grading rules [25]. Us-ing RoboChallenge grounds the ALOHA evaluation in a pub-lic and standardized protocol, strengthening the reproducibil-ity of the real-robot results. We evaluate two RoboChallenge tasks, stack_bowls and put_pen_into_pencil_case , on a bimanual ALOHA robot. To test whether PACE also applies beyond this bimanual benchmark setting, we evaluate an in-lab 
+
+place_object_on_plate task family on a single-arm Franka robot, where the robot places one of five objects onto a target plate. Within each task, the baseline and PACE use the same fine-tuned π0.5 checkpoint and di ff er only in the test-time execution rule. For each RoboChallenge task, we run 30 trials per method. For the Franka task family, we run 5 × 20 trials per method across five object variants. We report task Score , which gives task-specific partial credit, and full-completion rate Succ. ; for 
+
+place_object_on_plate , Score is identical to success rate. Detailed task definitions, scoring rules, fine-tuning settings, and per-object Franka results are provided in Appendix E. 
+
+5.1 Real-Robot Results 
+
+Table 5 compares PACE with the corresponding baseline under the same real-robot setup and metric. PACE improves all three evaluated settings. On the two RoboChallenge tasks, it increases both the partial-credit Score and the full-completion rate. On the Franka place_object_on_plate task family, where Score and Succ. are identical, PACE improves performance from 72 .0% to 88 .0%. Averaged over the three real-robot evaluations, PACE raises the Score from 60 .7 to 77 .7 and Succ. from 50 .7% to 70 .4%. Because the baseline and PACE share the same fine-tuned checkpoint within each task, these gains isolate the e ff ect of the test-time execution rule. The results show that the proposed execution strategy improves real-robot deployment under both a public benchmark protocol and an additional in-lab single-arm setting. We next inspect one successful rollout and one failure case to illustrate how PACE changes execution behavior and where test-time execution control remains limited. 
+
+5.2 PACE Horizon Selection in a Successful Rollout 
+
+Figure 5 visualizes a successful stack_bowls rollout on the real ALOHA robot. This example illustrates how PACE adapts the execution horizon to di ff erent manipulation phases rather than following a fixed replanning cadence. During approach and transport, PACE selects long horizons (27, 30, and 31 ac-tions), allowing the robot to preserve continuous motion while open-loop execution remains reliable. Near the contact-sensitive stacking phase, where small pose errors can determine whether the bowls align correctly, the horizon contracts to 7 actions so that the next query can incorporate an updated observation. Af-ter this alignment phase, the horizon expands again to 43 actions, showing that PACE does not remain in a high-frequency replan-ning mode once a coherent motion segment becomes available. This behavior mirrors the simulation analysis in Sec. 4.2 and helps explain the real-robot gains in Table 5. PACE intro-duces feedback where stale observations are most costly, while avoiding unnecessary queries during smooth, coherent motion. Additional rollout visualizations for representative RoboTwin2.0 and RoboChallenge tasks are provided in Appendix F. 8Timesteps 110 145 152 174 187 193   
+
+> Head Left
+> Dynamic horizon 13 22 6735
+
+Figure 6: Failure case on put_pen_into_pencil_case . The rollout is from the ALOHA robot. Blue markers indicate policy-query timesteps, and green labels indicate selected horizon lengths. The pencil case remains only partially opened while the right arm moves the pen toward it, showing a failure of the base policy rather than feedback timing. 
+
+5.3 Failure Case and Scope of Test-Time Execution Control 
+
+Figure 6 shows a failed put_pen_into_pencil_case rollout. This task is strictly sequential: the left gripper must first open the pencil case su ffi ciently before the right arm can insert the pen. In this rollout, PACE selects short horizons around the insertion phase (7 and 6 actions), causing the policy to refresh its action chunk multiple times from updated observations. Nevertheless, the pencil case remains only partially opened while the right arm moves the pen toward it, and the task fails. This case illustrates the scope of test-time execution control. PACE can decide when to query the policy and can shorten the execution horizon near contact-sensitive stages, but the refreshed chunks are still generated by the same base policy. When the policy distribution does not contain actions that complete the required subtask—here, fully opening the pencil case before insertion— better replanning timing alone cannot recover the rollout. Thus, PACE improves how predicted chunks are ex-ecuted, but it cannot compensate for missing task-completing behavior in the underlying policy. 
+
+## 6 Conclusion 
+
+This work revisits test-time execution for robot policies with action chunking. Although action chunks improve local mo-tion continuity, how much of each predicted chunk should be executed before replanning is often treated as a fixed implemen-tation choice. We show that this execution horizon has a large, task-dependent, and non-monotonic e ff ect on success, making a single fixed horizon unreliable. We proposed PACE, a training-free method that selects the execution horizon online from the predicted chunk itself. PACE uses low-speed valleys in the predicted speed profile as candidate replanning boundaries, preserving coherent motion segments while refreshing observations near phase transitions. Using only the predicted chunk, PACE requires no retraining, auxiliary heads, policy-internal signals, or inference-engine changes. Across 50 RoboTwin2.0 tasks, PACE improves over the strongest fixed-horizon baseline without task-specific horizon sweeps. Real-robot experiments further show gains on both bimanual ALOHA tasks and a single-arm Franka task family. Ablations, rollout analyses, and matched-horizon comparisons indicate that the gains come from better replanning timing rather than simply querying the policy more often. Overall, our results suggest that execution-horizon selection is a central component of reliable action-chunking policy deployment, and a useful com-plement to training-side improvements in robot policy learning. 
+
+## 7 Limitations 
+
+PACE improves how predicted action chunks are executed, but it does not change the action distribution of the under-lying policy. If the base policy fails to generate actions that complete a required subtask, better replanning timing alone cannot recover the rollout. This appears in the failed 
+
+put_pen_into_pencil_case rollout: PACE shortens the hori-zon near insertion, but the refreshed chunks still do not fully open the pencil case before the pen moves toward it. Thus, PACE should be viewed as an execution layer rather than a mechanism for repairing missing policy capabilities. PACE assumes that useful replanning boundaries are re-flected in the kinematic structure of the predicted chunk, as is common in manipulation phases involving contact, grasping, release, or alignment. However, tasks whose key decision points are not expressed as low-speed valleys, or policies with noisy motion profiles, may provide weaker signals. Finally, our experiments cover a broad set of simulation tasks and real-robot settings, but use a single VLA policy fam-ily, π0.5. Future work should evaluate PACE on other chunk-generating policies, including other VLA architectures, action-tokenized policies, and world-action models, to characterize its generality across di ff erent chunk-generation mechanisms. 9References 
+
+[1] Kevin Black et al. π0: A Vision-Language-Action Flow Model for General Robot Control . 2024. doi : 10.48550/ arXiv.2410.24164 .[2] Kevin Black et al. Real-Time Execution of Action Chunk-ing Flow Policies . 2025. doi : 10.48550/arXiv.2506. 07339 .[3] Anthony Brohan et al. RT-1: Robotics Transformer for Real-World Control at Scale . 2022. doi : 10 . 48550 / arXiv.2212.06817 .[4] Anthony Brohan et al. RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control .2023. doi : 10.48550/arXiv.2307.15818 .[5] Jun Cen et al. WorldVLA: Towards Autoregressive Ac-tion World Model . 2025. doi : 10.48550/arXiv.2506. 21539 .[6] Tianxing Chen et al. RoboTwin 2.0: A Scalable Data Generator and Benchmark with Strong Domain Random-ization for Robust Bimanual Robotic Manipulation . 2025. 
+
+doi : 10.48550/arXiv.2506.18088 .[7] Cheng Chi et al. Di ff usion Policy: Visuomotor Policy Learning via Action Di ff usion . 2023. doi : 10 . 48550 / arXiv.2303.04137 .[8] Danny Driess et al. PaLM-E: An Embodied Multimodal Language Model . 2023. doi : 10.48550/arXiv.2303. 03378 .[9] Zipeng Fu et al. Mobile ALOHA: Learning Bimanual Mobile Manipulation with Low-Cost Whole-Body Teleop-eration . 2024. doi : 10.48550/arXiv.2401.02117 .[10] Physical Intelligence et al. π0.5: A Vision-Language-Action Model with Open-World Generalization . 2025. doi :
+
+10.48550/arXiv.2504.16054 .[11] Dong Jing et al. Mixture of Horizons in Action Chunking .2025. doi : 10.48550/arXiv.2511.19433 .[12] Alexander Khazatsky et al. DROID: A Large-Scale In-The-Wild Robot Manipulation Dataset . 2024. doi : 10 . 48550/arXiv.2403.12945 .[13] Moo Jin Kim et al. Fine-Tuning Vision-Language-Action Models: Optimizing Speed and Success . 2025. doi : 10. 48550/arXiv.2502.19645 .[14] Moo Jin Kim et al. OpenVLA: An Open-Source Vision-Language-Action Model . 2024. doi : 10.48550/arXiv. 2406.09246 .[15] Oliver Kroemer et al. “Towards Learning Hierarchical Skills for Multi-Phase Manipulation Tasks”. In: 2015 IEEE International Conference on Robotics and Automa-tion (ICRA) . 2015. doi : 10.1109/ICRA.2015.7139389 .[16] Sang Hyoung Lee, Il Hong Suh, et al. “Autonomous Framework for Segmenting Robot Trajectories of Ma-nipulation Task”. In: (2015). doi : 10 . 1007 / s10514 -014-9397-9 .[17] Songming Liu et al. RDT-1B: A Di ff usion Foundation Model for Bimanual Manipulation . 2024. doi : 10.48550/ arXiv.2410.07864 .[18] Open X-Embodiment Collaboration et al. Open X-Embodiment: Robotic Learning Datasets and RT-X Mod-els . 2023. doi : 10.48550/arXiv.2310.08864 .[19] Karl Pertsch et al. FAST: E ffi cient Action Tokenization for Vision-Language-Action Models . 2025. doi : 10.48550/ arXiv.2501.09747 .[20] Mustafa Shukor et al. SmolVLA: A Vision-Language-Action Model for A ff ordable and E ffi cient Robotics . 2025. 
+
+doi : 10.48550/arXiv.2506.01844 .[21] Octo Model Team et al. Octo: An Open-Source Gener-alist Robot Policy . 2024. doi : 10.48550/arXiv.2405. 12213 .[22] Homer Walke et al. BridgeData V2: A Dataset for Robot Learning at Scale . 2023. doi : 10.48550/arXiv.2308. 12952 .[23] Haoxuan Wang et al. Real-Time Robot Execution with Masked Action Chunking . 2026. doi : 10.48550/arXiv. 2601.20130 .[24] Haoxuan Wang et al. VLA Knows Its Limits . 2026. doi :
+
+10.48550/arXiv.2602.21445 .[25] Adina Yakefu et al. RoboChallenge: Large-scale Real-robot Evaluation of Embodied Policies . 2025. doi : 10. 48550/arXiv.2510.17950 .[26] Seonghyeon Ye et al. World Action Models are Zero-shot Policies . 2026. doi : 10.48550/arXiv.2602.15922 .[27] Yanjie Ze et al. 3D Di ff usion Policy: Generalizable Vi-suomotor Policy Learning via Simple 3D Representations .2024. doi : 10.48550/arXiv.2403.03954 .[28] Tianle Zhang et al. JoyAI-RA 0.1: A Foundation Model for Robotic Autonomy . 2026. doi : 10 . 48550 / arXiv . 2604.20100 .[29] Tony Z. Zhao et al. Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware . 2023. doi : 10. 48550/arXiv.2304.13705 .10 A PACE I mplementation Notes 
+
+PACE is applied only at test time and does not modify or retrain the base policy. After each policy query, it analyzes the predicted action chunk and selects how many actions to execute before the next query. The selection is based on the kinematic structure of the predicted arm motion: PACE constructs a speed profile, suppresses short-range fluctuations, and identifies prominent low-speed regions as candidate phase boundaries. In multi-arm settings, candidate boundaries from all executed arms are considered jointly, and the earliest accepted boundary is used as the replanning point. This allows the policy to refresh its observation before an arm crosses a predicted phase boundary under stale context. If no valid boundary is found, PACE executes a longer prefix up to a maximum horizon. The acceptance rule for candidate boundaries is calibrated once from training demonstrations and is kept fixed during evaluation. This calibration does not use evaluation rollouts, success labels, or fixed-horizon sweeps. The same procedure applies to single-arm and multi-arm settings; the only di ff erence is the set of executed arms used to construct the kinematic profiles. 
+
+## B Simulation Evaluation Details 
+
+This appendix provides the simulation evaluation protocol and the complete task-level results for the main comparison in Sec. 4.1. The ablation studies and fixed-horizon sweeps use separate evaluation budgets and are described in Appendix C and Appendix D, respectively. 
+
+B.1 Benchmark and Execution Schemes 
+
+We evaluate the main simulation results on the 50-task RoboTwin2.0 benchmark under the demo_clean setting. Each task uses one trained π0.5 checkpoint with prediction horizon L = 50. Within a task, all execution schemes share the same checkpoint and receive the same observation and language-instruction inputs. They di ff er only in the test-time execution rule, which determines how much of each predicted action chunk is executed before the next policy query. We compare PACE with fixed-horizon execution using H ∈ { 5, 25 , 50 }. Under fixed-horizon execution, the robot executes the first H actions of each predicted chunk before re-querying the policy. The H = 50 baseline corresponds to full-chunk execution under the training prediction horizon L = 50. The fixed baselines are used as global execution rules and are not tuned separately for individual tasks. PACE uses the same predicted chunks, but selects the executed prefix online from the predicted motion structure. 
+
+B.2 Evaluation Metric and Aggregation 
+
+Success is measured by the RoboTwin2.0 task success predicate at the episode level. For each task T and method m, we evaluate three seeds. For each seed, we run three independent batches of 100 episodes, giving 3 × 3 × 100 = 900 episodes per task-method pair. Let S T ,m,s,b denote the success rate of method m on task T , seed s, and evaluation batch b, computed over 100 episodes. The task-level success rate is 
+
+S T ,m = 19
+
+> 3
+
+X
+
+> s=13
+
+X
+
+> b=1
+
+S T ,m,s,b.
+
+The reported 50-task average is the equal-weight mean over all tasks: 
+
+S m = 150 
+
+X
+
+> T ∈D
+
+S T ,m, |D| = 50 .
+
+Thus, each task contributes equally to the aggregate success rate, regardless of task duration or the number of policy queries used during a rollout. 
+
+B.3 Full 50-Task Results 
+
+Table 6 reports the complete task-level results for the main simulation comparison. Values are success rates in percent, averaged over 900 episodes per task-method pair. The strongest global fixed-horizon baseline is H = 25, with a 50-task average success rate of 57 .8%. PACE improves the average success rate to 64 .2%, while using the same task checkpoints as the fixed-horizon baselines. 11 Table 6: Full main simulation results on 50 RoboTwin2.0 tasks. All values are success rates (%). Each task-method value is averaged over 900 episodes: seeds 0 , 1, 2, with three 100-episode batches per seed. 
+
+Task H = 5 H = 25 H = 50 PACE 
+
+adjust_bottle 99.0 98.8 96.1 99.6 
+
+beat_block_hammer 81.1 67.7 66.6 80.7 
+
+blocks_ranking_rgb 7.3 50.0 36.1 61.4 
+
+blocks_ranking_size 23.9 18.6 9.2 32.9 
+
+click_alarmclock 92.4 65.3 65.9 87.6 
+
+click_bell 97.8 49.2 41.4 91.4 
+
+dump_bin_bigbin 58.7 85.1 84.3 93.0 
+
+grab_roller 89.9 96.2 96.2 98.6 
+
+handover_block 3.6 33.2 52.6 53.1 
+
+handover_mic 77.2 97.7 96.8 99.4 
+
+hanging_mug 16.2 15.8 16.7 21.8 
+
+lift_pot 50.9 61.2 62.0 65.4 
+
+move_can_pot 55.4 74.3 58.2 72.3 
+
+move_pillbottle_pad 34.8 49.9 29.1 45.0 
+
+move_playingcard_away 79.2 79.7 69.6 79.3 
+
+move_stapler_pad 12.6 11.4 7.1 18.6 
+
+open_laptop 84.9 84.8 88.8 88.0 
+
+open_microwave 33.3 26.0 60.3 45.0 
+
+pick_diverse_bottles 13.4 23.9 24.1 35.7 
+
+pick_dual_bottles 13.3 45.3 38.7 48.2 
+
+place_a2b_left 54.6 52.7 43.2 55.9 
+
+place_a2b_right 20.0 47.8 36.8 54.6 
+
+place_bread_basket 55.3 53.9 30.3 49.1 
+
+place_bread_skillet 38.4 39.8 29.0 37.0 
+
+place_burger_fries 88.9 89.3 85.8 91.3 
+
+place_can_basket 18.1 56.8 38.2 53.6 
+
+place_cans_plasticbox 85.1 83.0 81.8 90.6 
+
+place_container_plate 88.3 81.7 91.6 96.1 
+
+place_dual_shoes 19.9 40.6 33.7 37.3 
+
+place_empty_cup 59.4 48.1 45.8 58.8 
+
+place_fan 35.3 34.0 25.8 39.1 
+
+place_mouse_pad 4.3 14.1 12.8 17.8 
+
+place_object_basket 35.9 59.4 58.0 70.2 
+
+place_object_scale 23.8 29.4 18.9 40.7 
+
+place_object_stand 64.2 57.3 53.4 59.2 
+
+place_phone_stand 52.9 59.9 54.7 58.7 
+
+place_shoe 43.9 64.4 56.1 62.8 
+
+press_stapler 68.2 60.6 56.0 61.8 
+
+put_bottles_dustbin 0.3 79.3 70.8 88.9 
+
+put_object_cabinet 7.6 51.9 50.6 57.4 
+
+rotate_qrcode 48.9 69.9 66.1 71.7 
+
+scan_object 20.9 43.1 28.9 40.3 
+
+shake_bottle 95.2 95.7 96.7 98.4 
+
+shake_bottle_horizontally 97.3 96.8 96.9 98.8 
+
+stack_blocks_three 39.7 43.2 28.7 55.2 
+
+stack_blocks_two 12.4 80.1 63.9 82.3 
+
+stack_bowls_three 45.0 61.0 67.6 79.8 
+
+stack_bowls_two 88.7 88.4 85.1 95.6 
+
+stamp_seal 67.4 34.2 24.3 47.8 
+
+turn_switch 34.4 39.4 37.1 42.6 
+
+Average 48.8 57.8 53.4 64.2 
+
+12 C Additional Ablation Details 
+
+This appendix provides protocol details and expanded results for the ablation studies in Sec. 4.3. The main text reports summary results for phase-profile construction, training prediction horizon, and selection-parameter sensitivity. Here, we specify the evaluation budgets used by these ablations and provide the expanded training-horizon sweep. 
+
+C.1 Ablation Protocol 
+
+The phase-profile construction ablation and the selection-parameter sensitivity study are evaluated on all 50 RoboTwin2.0 tasks under the same full evaluation protocol as the main simulation comparison: seeds 0 , 1, 2, three independent 100-episode batches per seed, and 900 episodes per task-method pair. For PACE variants, the reported average horizon is computed as the mean selected execution horizon over all policy queries in the corresponding evaluation rollouts. The training-prediction-horizon ablation requires retraining policies with di ff erent supervised prediction horizons Htrain . We therefore evaluate this ablation on the six representative tasks used in the main text. For each setting, we use seed 0 and run three independent 100-episode evaluation batches. This gives 300 evaluation episodes per setting. Each row in the training-horizon analysis fixes the evaluation horizon Heval and varies Htrain , so entries within a row execute the same number of actions before replanning and di ff er only in the prediction horizon used during training. Settings with Htrain < Heval are infeasible because the policy does not predict enough actions to execute the requested prefix. 
+
+C.2 Expanded Training-Horizon Results 
+
+The main text reports a coarse grid of the training-prediction-horizon ablation. Here we provide the expanded sweep over 
+
+Htrain , Heval ∈ { 5, 10 , . . . , 50 }, evaluated on six representative tasks. The goal is to isolate how the supervised prediction horizon used during training a ff ects fixed-horizon execution at test time. For each evaluation horizon Heval , we use the shortest feasible training horizon Htrain = Heval as the row-wise reference. Each cell in Fig. 7 reports the success-rate gain of a larger Htrain relative to this reference. The diagonal is therefore zero by construction, and cells below the diagonal are left blank because Htrain < Heval is infeasible. Figure 7 shows three main patterns. First, for non-trivial execution horizons, increasing Htrain generally improves fixed-horizon execution. For example, the gain reaches +20 .7 at Heval = 10, +13 .0 at Heval = 15, and +6.6 at Heval = 20. This supports the interpretation that longer supervised chunks provide useful sequence-level supervision, and the executed prefix benefits from being predicted jointly with a longer future segment. Second, Heval = 5 is an exception: most entries in this row are near zero or negative. When the policy is queried after only a very short prefix, performance is dominated by high-frequency feedback, and the advantage of training with longer prediction targets is less pronounced. Third, the benefit of increasing Htrain becomes smaller as Heval grows. When the executed prefix is already long, the additional supervision on the later part of the chunk contributes less to the actions that are actually executed before the next replanning step. This trend is consistent with the summary table in Sec. 4.3: longer training horizons are most beneficial when the executed prefix is short but non-trivial, which matches the operating regime of PACE. 
+
+## D Fixed -H orizon Sweep Details 
+
+This appendix provides additional details for the fixed-horizon sweep analysis in Sec. 4.4. The purpose of this analysis is diagnostic: it characterizes how sensitive each task is to the choice of a constant execution horizon, and it compares PACE with fixed schedules that have a similar average replanning frequency. It is not used as the primary simulation comparison, which is reported in Sec. 4.1 and Appendix B. 
+
+D.1 Sweep Protocol 
+
+For each of the six representative tasks in Sec. 4.4, we evaluate fixed-horizon execution for every integer 
+
+H ∈ { 1, . . . , 50 }.
+
+For a fixed value of H, the robot executes the first H actions of each predicted chunk before querying the policy again. All fixed-horizon evaluations in this sweep use seed 0 and three independent batches of 100 episodes, giving 300 episodes per horizon. Sweeping all 50 horizons over six tasks already requires 6 × 50 × 3 × 100 = 90 ,000 13 5 10 15 20 25 30 35 40 45 50 
+
+Training prediction horizon H train                                              
+
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> 40
+> 45
+> 50
+> Evaluation horizon H eval
+> 0-2.6 -4.7 +0.3 -2.2 -1.2 -3.6 -4.7 -1.8 -3.9
+> 0+0.6 +11.5 +12.4 +12.8 +14.9 +17.4 +17.0 +20.7
+> 0+4.6 +10.6 +9.4 +11.6 +12.5 +12.0 +13.0
+> 0+2.7 +3.9 +2.2 +5.1 +5.8 +6.6
+> 0+0.4 -0.1 +1.9 -0.8 +3.2
+> 0-1.3 +1.2 +0.5 +3.6
+> 0+1.7 -0.6 +1.8
+> 0+1.7 +3.3
+> 0+2.6
+> 0
+
+Gain over the shortest feasible H train 
+
+> −20
+> −15
+> −10
+> −5
+> 0
+> 5
+> 10
+> 15
+> 20
+> Success gain
+
+Figure 7: Expanded training prediction horizon ablation. Each cell shows the success-rate gain of training horizon Htrain 
+
+(columns) relative to the shortest feasible training horizon for a given evaluation horizon Heval (rows), i.e., Htrain = Heval . Blue indicates a gain, orange a loss; the diagonal is zero by construction. Cells below the diagonal are infeasible and left blank. episodes. Repeating the full sweep for three seeds would triple this diagnostic budget. We therefore use the seed-0 sweep to characterize the shape of the fixed-horizon success curve. The PACE quantities reported in this appendix follow the main evaluation protocol: they are computed using seeds 0 , 1, 2, with three 100-episode batches per seed. Thus, PACE success rates and mean selected horizons are based on 900 episodes per task. We use this full PACE evaluation because it is the same estimate used in the main simulation results. The fixed-horizon sweep and the PACE point therefore have di ff erent evaluation budgets; this asymmetry is intentional and should be interpreted in light of the diagnostic role of the sweep. Let S (0)  
+
+> T
+
+(H) denote the seed-0 success rate of fixed-horizon execution with horizon H on task T . Let S PACE  
+
+> T
+
+denote the PACE success rate under the full three-seed evaluation. We also compute the mean selected PACE horizon ¯hPACE  
+
+> T
+
+= 1
+
+|Q T |
+
+X
+
+> q∈Q T
+
+hq,
+
+where QT is the set of all policy-query events in the PACE evaluation rollouts for task T , and hq is the execution horizon selected at query q.
+
+D.2 Diagnostic Reference Points 
+
+The sweep provides two fixed-horizon reference points. First, we report the hindsight-best fixed horizon on the seed-0 sweep: 
+
+H⋆ 
+
+> T
+
+∈ arg max  
+
+> H∈{ 1,..., 50 }
+
+S (0)  
+
+> T
+
+(H).
+
+When multiple horizons attain the same best success rate, all tied horizons are listed. This value is an oracle reference within the class of fixed-horizon schedules, because it can only be selected after evaluating all horizons on the test task. It is therefore not a deployable baseline. 14 Second, we compare PACE with a fixed-horizon schedule matched to its average execution length. We define 
+
+Hmatch  
+
+> T
+
+= round ¯hPACE 
+
+> T
+
+ .
+
+The corresponding fixed baseline executes this constant horizon at every policy query, and its success rate is read from the seed-0 fixed-horizon sweep as S (0)  
+
+> T
+
+(Hmatch  
+
+> T
+
+). This comparison controls for average replanning frequency: PACE and the matched fixed schedule query the policy at a similar average rate, but di ff er in where replanning occurs within the rollout. Table 7: Diagnostic fixed-horizon sweep summary. Fixed-horizon columns are computed from the seed-0 sweep with 300 episodes per horizon. PACE columns use the full three-seed evaluation with 900 episodes per task. H⋆ is the hindsight-best fixed horizon on the seed-0 sweep. Matched H is the integer horizon nearest to PACE’s mean selected horizon. All success values are percentages. ∆ is the absolute gain of PACE over the fixed-horizon schedule at Matched H.                                                     
+
+> Task H⋆Fixed at H⋆PACE Mean HMatched HFixed at Matched HPACE ∆
+> Pick Dual Bottles 14 56.7 25.5 26 46.7 48.2 +1.6 Grab Roller 7, 9, 32 97.7 28.9 29 96.0 98.6 +2.6 Place A2B Right 11 53.3 23.8 24 44.0 54.6 +10.6 Dump Bin Bigbin 37 90.3 22.7 23 88.7 93.0 +4.3 Put Bottles Dustbin 18 88.7 22.3 22 87.0 88.9 +1.9 Stack Bowls Two 895.3 19.7 20 88.3 95.6 +7.2
+
+D.3 Interpretation 
+
+The hindsight-best fixed horizon H⋆ varies substantially across tasks. Some tasks prefer short horizons, such as H = 7 or H = 8, while others prefer much longer horizons, such as H = 37. One task, Grab Roller , has multiple tied best horizons. This spread confirms that the best constant execution horizon is strongly task-dependent. Since H⋆ is selected after sweeping the test task, it is useful only as a diagnostic oracle and cannot be used as a practical deployment rule. The matched-horizon comparison asks a di ff erent question: whether PACE helps only because it changes the average number of policy queries, or because it places those queries at better moments. Table 7 shows that, under this diagnostic comparison, PACE outperforms the matched fixed-horizon schedule on all six representative tasks. Since the matched fixed baseline uses a constant horizon nearest to PACE’s mean selected horizon, this comparison controls for average replanning frequency. The remaining di ff erence is the timing of replanning: the fixed baseline replans at uniform intervals, whereas PACE replans according to the predicted motion structure of each chunk. The sweep should therefore be read as diagnostic evidence rather than as a separate main benchmark. The fixed-horizon curves reveal the non-monotonic and task-dependent nature of horizon selection, while the matched-horizon comparison suggests that adaptive replanning timing contributes beyond the average query budget. The primary deployable comparison remains the global fixed-horizon baselines in Sec. 4.1, where no method is allowed to select a task-specific horizon by sweeping the test task. 
+
+## E Real -R obot Evaluation Details 
+
+This appendix provides additional details for the real-robot experiments in Sec. 5. We describe the task setups, metrics, scoring rules, fine-tuning configurations, evaluation protocol, and per-object results for the Franka task family. Across all real-robot experiments, the baseline and PACE use the same fine-tuned checkpoint within each task; they di ff er only in the test-time execution rule. 
+
+E.1 Task Setups 
+
+We evaluate three real-robot settings. Two tasks are from RoboChallenge: stack_bowls and put_pen_into_pencil_case ,both evaluated on a bimanual ALOHA robot. RoboChallenge provides standardized task prompts, reset procedures, and grading rules, which makes the ALOHA results directly comparable under a public benchmark protocol. We additionally evaluate an in-lab 
+
+place_object_on_plate task family on a single-arm Franka robot to test whether the same execution strategy transfers beyond the bimanual RoboChallenge setting. Figure 8 shows the initial observation frames for the two RoboChallenge tasks. In put_pen_into_pencil_case , the robot must coordinate both arms: one gripper opens the pencil case while the other manipulates the pen. In stack_bowls , the robot must grasp and nest the bowls in the correct order. These tasks stress di ff erent temporal structures: the pencil-case task is strongly sequential and contact-sensitive, while the bowl-stacking task contains repeated pick-and-place motions with precise alignment during stacking. 15 Table 8: Real-robot task and data summary. Demos denotes the number of demonstration episodes used for fine-tuning. Trials /
+
+method denotes the number of real-robot evaluation trials for each compared execution rule.                  
+
+> Task Robot Demos Trials /method
+> stack_bowls ALOHA 1,047 30
+> put_pen_into_pencil_case ALOHA 1,220 30
+> place_object_on_plate Franka 301 5×20
+> put_pen_into_pencil_case stack_bowls
+
+Figure 8: Initial frames of the RoboChallenge tasks. Left: put_pen_into_pencil_case . Right: stack_bowls . Both tasks are evaluated on an ALOHA robot using the same fine-tuned checkpoint within each task; only the test-time execution rule di ff ers between the baseline and PACE. For place_object_on_plate , the Franka robot must pick up a specified object and place it fully inside a target plate. We use five object variants: corn, cabbage, green pepper, red pepper, and garlic. A single fine-tuned checkpoint is shared across all five object variants. Each object is evaluated over 20 trials per method, giving 100 trials per method in total. 
+
+E.2 Metrics and Scoring Rules 
+
+We report two metrics: Score and Succ. . For RoboChallenge tasks, Score is the o ffi cial partial-credit task score, reported on a 0–100 scale. Let pn denote the number of points achieved in trial n, and let Pmax = 10 denote the maximum possible points for a trial. For N trials, we compute Score = 100 · 1
+
+NP max 
+
+> N
+
+X
+
+> n=1
+
+pn.
+
+The full-completion rate is Succ . = 100 · 1
+
+N
+
+> N
+
+X
+
+> n=1
+
+I[pn = Pmax ].
+
+Thus, Score reflects partial progress, while Succ. counts only trials that complete the entire task. For the Franka place_object_on_plate task, each trial is binary: the object is either successfully placed fully inside the plate or not. Hence Score and Succ. are identical for this task family. 
+
+stack_bowls . The task is to nest the bowls from largest to smallest. The scoring rule is: 
+
+• 2.0 × 2 points: pick up a bowl with the gripper. 
+
+• 2.5 × 2 points: successfully stack the bowls. 
+
+• 1.0 point: retract the gripper to its original position. 16 Object and plate layout Franka tabletop setup 
+
+Figure 9: In-lab place_object_on_plate setup. The task uses five objects—corn, cabbage, green pepper, red pepper, and garlic—and a fixed target plate. A single fine-tuned π0.5 checkpoint is used across all object variants, and each method is evaluated over 5 × 20 real-robot trials. 
+
+put_pen_into_pencil_case . The task is to place the pen into the pencil case. In our evaluation setup and rollout videos, the left gripper opens the pencil case while the right arm manipulates the pen. We therefore describe the scoring steps using this observed arm assignment: 
+
+• 2.0 points: left gripper reaches and opens the pencil case. 
+
+• 2.0 points: the pencil case is su ffi ciently open for insertion. 
+
+• 2.0 points: right arm picks up the pen. 
+
+• 3.0 points: right arm places the pen into the pencil case. 
+
+• 1.0 point: reset both arms. 
+
+place_object_on_plate . A trial is successful only if the target object is fully inside the plate at the end of the trial. If any part of the object remains outside the plate, the object falls out of the plate, or the robot fails to release the object into the plate, the trial is counted as a failure. Each successful trial receives 1 point and each failed trial receives 0 points. 
+
+E.3 Fine-Tuning Details 
+
+For each RoboChallenge task, we fine-tune a task-specific π0.5 policy initialized from the π0.5 base checkpoint. Training is performed on four H200 GPUs with FSDP and bfloat16 precision. We use AdamW with a global batch size of 256, global gradient clipping at norm 1.0, EMA decay 0.99, and eight data-loader workers. The learning rate follows a cosine decay schedule with 1000 warmup steps, peak learning rate 2 .5 × 10 −5, decay horizon 30,000 steps, and final learning rate 2 .5 × 10 −6. For all reported RoboChallenge trials, we deploy the 30,000-step checkpoint. For place_object_on_plate , we fine-tune a single π0.5 checkpoint over all five object variants using 301 demonstrations. The training recipe follows the RoboChallenge setting except that we use a batch size of 32 and train on one RTX A6000 Pro GPU. We also deploy the 30,000-step checkpoint for all in-lab trials. 17 E.4 Evaluation Protocol 
+
+Within each task, the baseline and PACE use the same fine-tuned checkpoint and receive the same observation and language-instruction inputs. The comparison therefore isolates the e ff ect of the test-time execution rule rather than di ff erences in model architecture, data scale, training procedure, or checkpoint selection. The baseline executes the full predicted action chunk at test time, corresponding to H = 50. PACE uses the same predicted action chunks, but selects the executed prefix online according to the execution rule described in Appendix A. No task-specific horizon tuning is performed during evaluation. For each RoboChallenge task and each method, we run 30 real-robot trials. For the Franka task family, we run 20 trials per object and evaluate five objects, giving 5 × 20 = 100 trials per method. All reported real-robot results in Sec. 5.1 use these trial counts. 
+
+E.5 Per-Object Franka Results 
+
+Table 9 reports per-object results for place_object_on_plate . PACE improves performance on all five object variants, indicating that the aggregate gain is not caused by a single object category. Table 9: Per-object results for place_object_on_plate . Each object variant is evaluated over 20 trials per method.                                              
+
+> Object Baseline PACE ∆
+> Corn 16 /20 (80.0%) 18 /20 (90.0%) +10.0 Cabbage 15 /20 (75.0%) 17 /20 (85.0%) +10.0 Green pepper 13 /20 (65.0%) 18 /20 (90.0%) +25.0 Red pepper 14 /20 (70.0%) 17 /20 (85.0%) +15.0 Garlic 14 /20 (70.0%) 18 /20 (90.0%) +20.0
+> Total 72 /100 (72.0%) 88 /100 (88.0%) +16.0
+
+18 F Additional PACE R ollout Visualizations 
+
+This appendix provides additional qualitative rollout visualizations for representative RoboTwin2.0 and RoboChallenge tasks. As in the main paper, the figures highlight the policy-query timesteps and the execution horizons chosen online by PACE from the predicted motion profile. These examples complement the quantitative results by showing how the same phase-aware execution rule adapts across di ff erent task families and robot platforms. 
+
+F.1 RoboTwin2.0 Rollouts 
+
+place_can_basket . This rollout illustrates a contact-sensitive placement task in which PACE shortens the execution horizon near the transition into the basket and uses longer prefixes during smoother transport phases. Timesteps 0 38 56 62 112        
+
+> Head Left
+> Dynamic horizon 50 618 38
+> Timesteps 133 157 189 205 255
+> Head Left
+> Dynamic horizon 50 16 32 24
+
+Figure 10: PACE rollout visualization on place_can_basket . The selected execution horizon adapts to the local phase structure of the rollout, with shorter prefixes near the placement transition and longer prefixes during smooth motion segments. 19 hanging_mug . This rollout shows a task with a pronounced interaction phase, where PACE reduces the execution horizon near the hanging transition and expands it again when the motion becomes smoother. Timesteps 0 29 48 83 98 118           
+
+> Head Left
+> Dynamic horizon 15 35 20 19 29
+> 133
+> 15
+> Timesteps 143 174 195 241 271 281
+> Head Left
+> Dynamic horizon 30 46 10 21 31
+> 290
+> 9
+
+Figure 11: PACE rollout visualization on hanging_mug . The execution horizon is shortened around the task transition that requires precise alignment and interaction, and lengthened during more stable motion segments. 
+
+scan_object . This rollout highlights a task with a more gradual motion structure. PACE continues to adapt the execution horizon online, using longer prefixes during steady motion and shorter prefixes when the predicted chunk enters a low-speed transition. Timesteps 0 33 53 92 127 157   
+
+> Head Left
+> Dynamic horizon 35 39 30 20 33
+
+Figure 12: PACE rollout visualization on scan_object . PACE selects execution horizons from the predicted kinematic profile, allowing the rollout to keep longer open-loop segments when motion is smooth and to replan earlier around phase transitions. 20 F.2 RoboChallenge Rollout 
+
+stack_bowls . This rollout on RoboChallenge shows the same phase-aware behavior on a bimanual stacking task. PACE keeps longer horizons during approach and transport and shortens the horizon near the stacking contact, where fresh observations are most valuable. Timesteps 0 6 33 63 94 101           
+
+> Head
+> Dynamic horizon 31 30 727 6
+> Timesteps 144 151 156 174 191 241
+> Head
+> Dynamic horizon 17 19 50 57
+
+Figure 13: PACE rollout visualization on RoboChallenge stack_bowls . The selected execution horizon is longer during smooth approach and transport, and shorter near the stacking phase, reflecting the same phase-aware replanning rule used throughout the paper. 21

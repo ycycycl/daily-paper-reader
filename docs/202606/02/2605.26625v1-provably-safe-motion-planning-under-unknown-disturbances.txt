@@ -1,0 +1,2256 @@
+Title: Provably Safe Motion Planning Under Unknown Disturbances
+
+URL Source: https://arxiv.org/pdf/2605.26625v1
+
+Published Time: Wed, 27 May 2026 00:58:18 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+> 1
+
+# Provably Safe Motion Planning Under Unknown Disturbances* 
+
+Ibon Gracia 1∗∗ , Qi Heng Ho 2, Luca Laurenti 3, Morteza Lahijanian 1
+
+Abstract—We present a provably safe sampling-based mo-tion planning algorithm for robotic systems affected by random disturbances of unknown distribution. We consider systems with linear or linearizable dynamics evolving in workspace with arbitrary-shaped obstacles subject to state and control constraints. Safety requirements are formulated as chance-constraints. Our approach leverages data from trajectories of the system to learn a Wasserstein ambiguity tube, i.e., a sequence of ambiguity sets, which contains the trajectory of the system’s state distribution with high confidence. This ambiguity tube is then used in a probabilistically complete algorithm to grow a sampling-based motion planning tree that respects the constraints of the problem. We show that learning several lower-dimensional ambiguity tubes instead of a single high-dimensional one effectively reduces the conservatism and boosts scalability. Additionally, we design an efficient bandit-based validity checker that remarkably increases the empirical performance of our approach without sacrificing probabilistic completeness. Case studies show our algorithm finds valid plans in cluttered environments under strict safety thresholds, outperforming state-of-the-art methods. Index Terms—Kinodynamic Motion Planning, Data-Driven Planning, Wasserstein Ambiguity Sets 
+
+I. Introduction 
+
+# MOTION planning is a central problem in robotics, with applications spanning autonomous explo-ration, manufacturing, and surgical systems. Sampling-based methods have been particularly successful [1]–[4]: by drawing random samples, they rapidly construct a search tree and return a collision-free trajectory from start to goal. Traditionally, these algorithms assume a known, deterministic model of the underlying system. In reality, however, robotic systems are subject to distur-bances arising from unmodeled dynamics, actuator noise, environmental variability, or model mismatch. Prior work, spanning both sampling-based and trajectory optimization frameworks, has typically attempted to capture such uncertainties using bounded disturbance models [5]–[8] or Gaussian noise assumptions [9]–[13], and to design motion plans that are robust under these models. Yet, these strategies are often conservative and rely on strong distributional assumptions that rarely hold in practice. In realistic settings, disturbances are stochastic with unknown or partially known distributions, making reli-able planning significantly more challenging. This work           
+
+> *This work was not supported by any organization **Corresponding Author
+> 1The authors are with the Department of Aerospace Engineer-ing Sciences at the University of Colorado Boulder, CO ,USA
+
+{firstname.lastname}@colorado.edu  
+
+> 2Qi Heng Ho is with the Department of Aerospace and Ocean Engineering, Virginia Tech, VA, USA
+
+qihengho@vt.ed           
+
+> 3The author is with the Delft University of Technology, the Netherlands
+
+luca.laurenti@tudelft.nl 
+
+aims to address this challenge by developing an efficient, data-driven motion planning framework that quantifies and propagates uncertainty directly from system data to produce provably safe trajectories. Recent work has increasingly focused on motion plan-ning under uncertainty [5], [9], [10], [14]. Approaches based on bounded non-deterministic disturbances often yield overly conservative plans, as they ignore the low likelihood of extreme disturbance realizations. To incor-porate probabilistic information, methods such as [9], [10], [14] model disturbances as Gaussian and enforce chance constraints. In practice, however, the disturbance distribution is rarely known and must be learned from trajectory data. Distributionally robust methods address this by constructing ambiguity sets over (sets that contain) plausible distributions and planning against all distribu-tions in these sets [15], [16]. While theoretically appealing, these approaches remain highly conservative (even when obstacles are convex), and the conservatism grows with environmental complexity, rendering them impractical for cluttered planning scenarios. In this work, we introduce an efficient planning algo-rithm for systems under unknown disturbance distribu-tions. We use trajectory data to construct a Wasserstein ambiguity tube, a high-confidence sequence of ambiguity sets capturing stochastic evolution, and incorporate it into a sampling-based planner. We show that, for linear (or feedback-linearizable) systems, ambiguity propagation decouples from planning, allowing a single offline-learned tube with tight uncertainty characterization. Then, we en-force safety via chance constraints using the optimization-free worst-case collision checker of [17], enabling plan-ning in cluttered environments and handling nonconvex constraints. The tube has infinite temporal length with finite confidence, removing the need to specify a plan-ning horizon. We further develop complementary validity-checking procedures with distinct efficiency–conservatism trade-offs, and unify them through a multi-armed bandit framework that adaptively selects the appropriate checker. We prove soundness of both the tube construction and validity checking, as well as probabilistic completeness of the algorithm with respect to the tube, and show that leveraging multiple low-dimensional tubes signifi-cantly reduces data and computation. Benchmark results confirm the efficacy of the proposed algorithm in complex environments and its consistent outperformance of state-of-the-art methods. The main contributions of this paper are five-fold:  
+
+> •
+
+A sampling-based motion planning algorithm for linear systems with unknown additive disturbances that uses trajectory observation data.  
+
+> arXiv:2605.26625v1 [cs.RO] 26 May 2026 2
+> •
+
+Proofs of soundness and probabilistic completeness for the planner under relaxed assumptions.  
+
+> •
+
+New theoretical results on the propagation of distri-butional ambiguity.  
+
+> •
+
+A tighter characterization of the size of data-driven ambiguity sets defined by the 1-Wasserstein distance than those used in the existing literature.  
+
+> •
+
+Three validity-checking methods trading off efficiency and conservativeness, each less conservative than existing work, as well as a multi-armed bandit scheme that adaptively selects among them.  
+
+> •
+
+Comprehensive evaluation and benchmark studies demonstrating the efficacy of the approach and its advantages over the state-of-the-art approaches. A. Related Work Classical chance-constrained motion planning assumes linear dynamics with additive Gaussian noise. [5] presents a tree-based algorithm for uncertain linear systems with set-bounded disturbances around uncertain obstacles, while [9], [10], [14] reduce conservatism by assuming a known Gaussian disturbance law and checking node validity via chance constraints. To generalize beyond Gaussian disturbances, [15] pro-poses a distributionally robust approach using moment ambiguity sets built from the (assumed known) mean and covariance of the noise and initial state. For convex polytopic obstacles, the chance constraint reduces to a deterministic inequality, but at the cost of substantial conservatism. Moreover, admissible risk is allocated uni-formly across obstacles regardless of proximity, which hinders planning in cluttered environments with high safety thresholds. [16] mitigates this by allocating per-obstacle risk equal to its individual collision-probability upper bound, but the solution remains fairly conservative. Other works use Wasserstein ambiguity sets, defined as balls centered on a nominal (often empirical) distribution. Unlike moment sets, Wasserstein sets shrink to a single distribution as samples grow [18], avoiding the irreducible conservatism of moment-based approaches [17]. Early work focused on static sets [17]–[19]; more recent work studies propagation through dynamical systems [20]–[22]. [21] characterizes when optimal-transport ambiguity sets are closed under linear and nonlinear mappings, and [21], [22] bound ambiguity propagation through linear stochas-tic systems. However, these bounds grow unboundedly in time, ruling out long horizons. [20] gives conditions for time-bounded ambiguity under process and measurement noise, though the bound remains too loose for cluttered environments. In this work, we provide a tighter charac-terization: unlike [21]–[23], we learn an ambiguity tube of infinite length but finite radius that contains the state distribution over time with user-defined confidence. Wasserstein sets have been used in sampling-based planning [23], [24] and in model predictive control (MPC) [22], [25], [26], typically with the conditional value at risk (CVaR) measure for its coherence [27] and tractability. [24] robustifies linearized GP obstacle predictions via Wasserstein sets but provides no safety guarantee. [25] applies nonlinear MPC with obstacles characterized by data-driven Wasserstein sets, and [26] gives a convex tube-MPC reformulation for stochastic LTI systems under convex safety constraints. A key drawback of CVaR in these settings is that program complexity scales linearly with the sample count [22], [25], which becomes prohibitive at the sample sizes needed for tight guarantees [18]. We instead define collision risk as a chance constraint and use the optimization-free algorithm of [17] to compute the exact worst-case collision probability. Unlike [15], [16], [22], [23], this handles obstacles of arbitrary shape with cost independent of their number. Combined with our tighter ambiguity characterization, this enables planning in cluttered environments, control-effort limits (unlike [15], [16], [23]), and general non-convex constraints, with tube size and conservatism shrinking in the sample count. Unlike [24], [23] handles uncertainty in both robot and obstacles, using the Wasserstein distance between them as the risk measure, but assumes Gaussian disturbances. Its probabilistic completeness also requires a motion plan whose robot and obstacle supports never overlap, dis-carding probabilistic information. We prove probabilistic completeness under weaker assumptions by exploiting that information. We note that [22]–[26] and, to our knowledge, all sampling-based planners using Wasserstein sets treat the set size as a tuning parameter rather than computing a size that guarantees containment, likely due to the sample and compute burden of formal guarantees. We address this by learning several lower-dimensional ambiguity tubes rather than one high-dimensional tube, often reducing sample and computational complexity by orders of magnitude [28]. II. Preliminaries We first introduce notation and review the fundamentals of sampling-based planners before formalizing the prob-lem. A. Basic Notation Consider the space Rn equipped with the Euclidean distance. Given a set X ⊆ Rn and a point x ∈ Rn,we denote by dist (x, X ) the minimum Euclidean distance between x and X, and by diam (X) = sup x,x ′∈X ‖x − x′‖
+
+the diameter of X. We also denote by X +x the Minkowski sum of the sets X and {x}, and by 1X (x) the indicator function of X, which returns 1 if x ∈ X and 0 otherwise. We use bold symbols to denote random variables, e.g., x.We define D(X) to be the set of Borel probability measures over the metric space X such that ∫ 
+
+> X
+
+‖x‖ dP (x) < ∞.Let x be distributed according to P ∈ D (X), and X′ ⊆
+
+X be Borel-measurable. We write P (X′) ≡ P [x ∈ X′] to denote the measure of set X′ with respect to P . Given a probability distribution P ∈ D (X) and a measurable map 
+
+f : X −→ Y , we denote by f#P ∈ D (Y ) the pushforward 3
+
+measure of P by f , i.e., the measure defined as f#P (B) := 
+
+P (f −1(B)) for all Borel sets B ⊆ Y , with f −1(B) denoting the pre-image of set B. When Y ⊆ Rm and f is alinear transformation with matrix M ∈ Rm×n, we also use the notation M#P ∈ D (Rn). The 1-Wasserstein distance between distributions P, P ′ ∈ D (X) is then defined as 
+
+W(P, P ′) = inf  
+
+> π∈Π( P,P ′)
+
+∫
+
+> X×X
+
+‖x − x′‖ dπ (x, x ′),
+
+where Π( P, P ′) is the set of probability distributions on 
+
+D(X×X) with marginals P and P ′. We denote by supp (P )
+
+the support of P and by Mq (P ) := (EP [‖x‖q ])1/q the q-th moment of P . Finally, we let δx ∈ D (X) be the Dirac measure located at x ∈ X and we denote by B(̂ P , ε ) := 
+
+{P ∈ D (X) : W(P, ̂ P ) ≤ ε} the Wasserstein Ball with center (nominal distribution) ̂ P ∈ D (X) and radius ε > 
+
+0. Given a set of N i.i.d. samples {ˆx(i)}Ni=1 from some distribution P , the corresponding empirical distribution is ̂
+
+P := 1
+
+N
+
+> N
+
+∑
+
+> i=1
+
+δˆx(i) .
+
+B. Kinodynamic Sampling-based Planners Single-query sampling-based tree search algorithms con-struct a tree in the search space, which is the state space for kinodynamic systems without uncertainty. We aim to transform such planners into ones that handle unknown stochastic disturbances and uncertain initial distributions. Alg. 1 shows a generic form of a tree-based planner for kinodynamical systems. It takes state space X, input space 
+
+U , goal region Xgoal ⊂ X, obstacle regions Xobs ⊂ X, an initial state xinit ∈ X, and a maximum planning time or iteration count (N) as input and returns a near-optimal solution if one is found. Search is performed by growing a motion tree in which states and the connections between them are stored as nodes in V and edges in E, respectively. The six main subroutines for the planner are: sample, select, extend, validity check and goal check. In sample, a state is randomly sampled from the state space. Then, select chooses an existing node on the tree based on this sample. The node is extended by sampling a control and propagating the system’s dynamics in extend. A validity check on this new state is conducted, at which point the new node is added to the tree. Then, goal check assesses whether or not the new node has reached the goal, in which case the algorithm returns the resulting path. If X
+
+is an asymptotically optimal planner, then the algorithm will terminate in finite time with probability 1.III. Problem Formulation We focus on robotic systems whose motion can be described by the stochastic linear dynamics 
+
+xt+1 = Axt + Bu t + Gwt, (1) where xt ∈ X ⊆ Rn is the state at time t ∈ N0,
+
+ut ∈ U ⊆ Rm is the control input, A, B, and G are real Algorithm 1: Generic Tree-based Planner X
+
+Input : X, U, X goal , X obs , x init , N Output: Valid Trajectory x1: T if one is found  
+
+> 1
+
+G = ( V ← { xinit }, E ← ∅ ) 
+
+> 2
+
+while True do  
+
+> 3
+
+xrand , u rand ← Sample()  
+
+> 4
+
+nselect ← Select( xrand ) 
+
+> 5
+
+nnew ← Extend( nselect , u rand ) 
+
+> 6
+
+if ValidityCheck( nselect , n new ) then  
+
+> 7
+
+V ← V ∪ { nnew } 
+
+> 8
+
+E ← E ∪ { edge (nselect , n new )} 
+
+> 9
+
+if GoalCheck( nnew ) then  
+
+> 10
+
+return ExtractPath( G, n new );  
+
+> 11
+
+return Failure matrices of appropriate dimensions, and wt ∈ W ⊂ Rd
+
+is an i.i.d. random disturbance (noise) with distribution 
+
+wt ∼ Pw ∈ D (W ). The initial state x0 ∈ X0 ⊂ X is distributed according to P0 ∈ D (X0), i.e., x0 ∼ P0.In this work, we consider the settings in which dis-tributions of the noise Pw and the initial state P0 are unknown, but their supports W and X0 are known. This assumption is realistic and in fact commonly encountered in robotic systems operating under uncertainty. First, the linear time-invariant modeling assumption is justified by the fact that many robotic platforms are control‐affine and hence feedback‐linearizable. Second, our assumptions on P0 and Pw relax those in existing work, which often require not only the knowledge of these distributions but also that they be Gaussian. In lieu of not knowing Pw and 
+
+P0, we assume that we have access to N i.i.d. trajectories 
+
+{(ˆ x(i)0 , ˆx(i)1 , . . . , ˆx(i) 
+
+> H
+
+)}Ni=1 of the system for some horizon 
+
+H ∈ N0.The robot operates in workspace WS ⊂ Rws , where 
+
+nws ∈ { 2, 3}, surrounded by workspace obstacles which it must avoid to reach a goal region. In addition to these obstacles, the state of the robot might be subject to constraints, such as velocity or rate limits. We represent all these workspace obstacles and state limits by the state-space obstacle set Xobs ⊂ X. Similarly, the goal region that the robot has to reach in the state space is denoted by Xgoal ⊂ X. We allow Xgoal and Xobs to have arbitrary shapes. Our goal is to motion plan for this robot with safety guarantees. To enable stable robot motion, similar to [14], we consider feedback controllers of the form: 
+
+ut := −K(xt − ¯xt) + ¯ ut, (2) where K ∈ Rm×n is the feedback control gain, ¯ut ∈ Rm is feedforward control, and ¯xt ∈ X is the reference state. The latter is described by the reference open-loop dynamics 
+
+¯xt+1 = A¯xt + B ¯ut, (3) with arbitrary ¯x0. Defining Acl := A−BK , the closed-loop dynamics of the system become 
+
+xt+1 = Acl xt + B(K ¯xt + ¯ ut) + Gwt. (4) 4
+
+Intuitively, given a sequence of feedforward controls, a reference trajectory is induced by (3), and the controller in (2) enables the robot to follow the nominal trajectory. We define a motion plan for this system to be a sequence of pairs ((¯ ut, ¯xt)) Tt=0 for some T ∈ N0.Note that, given a motion plan ((¯ ut, ¯xt)) Tt=0 , the evolu-tion of system’s state xt is a stochastic process induced by distributions Pw and P0 and dynamics in (4). We denote the distribution of xt by Pt, i.e., xt ∼ Pt. Similarly, since 
+
+ut depends on xt through the feedback term in (2), it is also a random variable. Leveraging this dependence on 
+
+xt, the control constraint ut ∈ U is easily embedded into the collision-avoidance constraint xt /∈ Xobs by letting 
+
+{x ∈ Rn : −K(x − ¯xt) + ¯ ut /∈ U } ⊂ Xobs . (5) We assume that this is the case unless stated otherwise. In turn, Expression (5) implies that Xobs depends, in the general case, on ¯xt and ¯ut. However, to simplify notation, we denote Xobs ≡ Xobs (¯ xt, ¯ut).The probabilities of collision and of reaching the goal at time t are given by 
+
+Pt
+
+[xt ∈ Xi
+
+] =
+
+∫
+
+> Rn
+
+1Xi [y]Pt(dy ), i ∈ {obs , goal }.
+
+(6) Our objective is to generate a motion plan that guar-antees that the robot avoids the obstacles, respects the control constraints, and reaches the goal with high proba-bility. However, since Pw and P0 are unknown, we need to rely on the sample trajectories {(ˆ x(i)0 , ˆx(i)1 , . . . , ˆx(i) 
+
+> H
+
+)}Ni=1 to reason about the probabilities in (6). Such reasoning can be done with some confidence related to the distribution of the sample trajectories. We formulate this data driven, confidence-based motion planning problem as follows. Problem 1 (Safe Motion Planning). Consider System (1) under the controller in (2) with the state space obstacle set Xobs and goal set Xgoal where Xobs satisfies (5). Given the initial state and noise supports X0 and W , N
+
+i.i.d. sample trajectories {(ˆ x(i)0 , ˆx(i)1 , . . . , ˆx(i) 
+
+> H
+
+)}Ni=1 of (1), a safety probability threshold psafe ∈ (0 , 1) , and a confidence 
+
+β ∈ (0 , 1) , generate a motion plan ((¯ ut, ¯xt)) Tt=0 such that 
+
+Pt
+
+[xt /∈ Xobs 
+
+] > p safe ∀t ∈ { 0, . . . , T }, (7a) 
+
+Pt
+
+[xT ∈ Xgoal 
+
+] > p safe (7b) with confidence 1 − β.Note that, unlike the chance constraints in (7) that need to only hold stepwise, the confidence must hold over the entire trajectory of System (1). Overview of the Approach: Problem 1 is challeng-ing due to the unknown distributions P0 and Pw and the non-convexity of Xobs and Xgoal . We propose asampling-based algorithm that grows a probabilistically collision-free tree from start to goal. In Section IV, we use trajectory samples to learn, at each time step, an ambiguity set containing the unknown state distribution with high confidence; we call the resulting time sequence an ambiguity tube and prove its soundness. To grow the tree, we check constraints (7) at each node against the worst-case distribution in the corresponding ambiguity set (Section V). To reduce sample complexity and improve scalability, Section VI shows that leveraging several lower-dimensional ambiguity tubes, which reduce conservatism; the corresponding algorithms (Section VII) and analysis (Section VII-A) retain probabilistic completeness and solution guarantees while substantially lowering computa-tional cost. Section VII presents the full motion planning algorithms, and Section VII-A proves their completeness and that every returned plan solves Problem 1. Finally, Section VIII evaluates our approach in simulation on two systems from the literature and compares it against [15], [16]. All proofs are in Appendix A. Remark 1 (Arbitrary Obstacles). Unlike other works in which the obstacles are assumed polytopic and convex [15], [29], our framework is able to handle obstacles of an arbitrary shape. This allows us to effectively find safe paths in cluttered environments and enforce control con-straints without the need to employ conservative polytopic approximations. Furthermore, the collision probability that our method yields does not depend on the number of obstacles, unlike [15], [29]. IV. Construction and Dynamics of Ambiguity Sets This section describes how to learn an ambiguity tube for trajectories of System (1). Using error dynamics, we first obtain a single tube independent of the feedforward control and reference state, showing that their effect reduces to a translation of the learned tube. We then construct ambiguity sets from samples of xt and bound the growth of ambiguity over time, yielding an infinite-length tube. A. Error Dynamics We define the state error at time t as et := xt − ¯xt,which yields the error dynamics 
+
+et+1 = Acl et + Gwt. (8) Doing this allows us to express xt as the superposition of the reference state, whose dynamics are deterministic, and the error, which evolves randomly and is independent of the feedforward control and reference dynamics. The distribution P et of et is therefore 
+
+P et := At
+
+> cl #
+
+P e 
+
+> 0
+
+∗ (At−1 
+
+> cl
+
+G)#Pw ∗ (At−2 
+
+> cl
+
+G)#Pw ∗ · · · ∗ G#Pw
+
+= At
+
+> cl #
+
+P e 
+
+> 0
+
+∗ t−1
+
+# ∗i=0 
+
+(At−1−i 
+
+> cl
+
+G)#Pw, (9) where ‘ ∗’ is the convolution operator, and with P e 
+
+> 0
+
+:= 
+
+P0 ∗ δ−¯x0 by the definition of the error. Note that if P et
+
+is known, we can obtain Pt by translation: Pt = P et ∗ δ¯xt .The following proposition derives an ambiguity set for the state xt from one for the error et and the reference state 
+
+¯xt.Proposition 1. Let Pet := B(̂ P et , ε t) be the error ambiguity set at time step t for some ̂ P et ∈ D (Rn) and εt > 0, such 5
+
+that P et ∈ P et . Furthermore, let ¯xt be the reference state at time t and define the state ambiguity set Pt := B(̂ Pt, ε t),with ̂ Pt := ̂ P et ∗ δ¯xt . Then, xt ∼ Pt ∈ P t.Proposition 1 implies that, to obtain an ambiguity tube for the system trajectory, we only need to learn an ambiguity tube for the error e independent of the feedforward control. The tube then can be translated from e to x using the reference state sequence. This decomposition is key for efficient planning since collision-checking a node corresponding to xt requires only its time 
+
+t (and thus Pet ) and the reference ¯xt.B. Data-Driven Ambiguity Sets We now describe how to construct a data-driven ambi-guity set Pt for Pt from samples {ˆx(i) 
+
+> t
+
+}Ni=1 of xt such that 
+
+Pt ∈ P t with high confidence. For readability, we drop the subscript t. Existing results [20], [30] ensure containment with user-defined confidence given a sufficiently large radius; in Lemma 2, we tighten this bound for the 1-Wasserstein distance. We first state a technical lemma. Lemma 1. ( [31, Thm. 1]) Let {ˆx(i)}Ni=1 be a set of 
+
+N i.i.d. samples from a distribution P over Rd with 
+
+ϕ := diam (supp (P )) and ̂ P be their empirical distribu-tion. Then, there exists a function (d, q, Mq (P ), N ) 7 →
+
+g(d, q, Mq (P ), N ) ∈ R>0, such that E[W(P, ̂ P )] ≤
+
+g(d, q, Mq (P ), N ) and lim N →∞ g(d, q, Mq (P ), N ) = 0 .Lemma 2 (Data-Driven Ambiguity Set). Let {ˆx(i)}Ni=1 be a set of N i.i.d. samples from a distribution P over Rd
+
+with ϕ := diam (supp (P )) ,̂ P be their empirical distribu-tion, and β1, β 2 ∈ (0 , 1) . Let g(d, q, Mq (P ), N ) be as in Lemma 1 with q ∈ N . Define ε := g(d, q, ̂ Mq (P ), N ) + 
+
+ϕ
+
+√ log(1 /β 2)2N and ̂
+
+Mq (P ) := 
+
+(
+
+1
+
+N
+
+> N
+
+∑
+
+> i=1
+
+‖ˆx(i)‖q +
+
+( ϕ
+
+2
+
+)q √ log(1 /β 1)2N
+
+)1/q 
+
+. (10) Then, P ∈ B(̂ P , ε ) with confidence 1 − (β1 + β2).This bound is tighter than the ones on [20], [32], as it relies on a one-sided McDiarmid inequality and leverages the q-th moment of the distribution instead of just its support. C. Ambiguity Dynamics and Error Ambiguity Tube We now learn an ambiguity tube for the trajectories of et governed by (8). Even when the ambiguity set for 
+
+Pw is small, directly propagating it via (9) can cause it to grow by orders of magnitude [20]. A naive alternative is to build a data-driven ambiguity set at each time step from samples of et, but this has three issues: (i) it requires an a priori upper bound on the planning horizon, which is unknown in practice; (ii) storing samples at every time step is infeasible for realistic horizons, especially given the data needed for tight guarantees; and (iii) Lemma 2 provides only pointwise confidences, so combining them via a union bound yields a trajectory-wide confidence that shrinks as the horizon grows. Our approach is an intermediate one that combines the best of both approaches: we obtain data-driven ambiguity sets at only some time steps and infer the rest from them via the system dynamics, yielding an ambiguity tube. We call such an inferred set a derived ambiguity set. To construct one at time t, we reuse the center of a data-driven set at some τ 6 = t and quantify how the error distribution shifts between τ and t; Lemma 3 gives this quantification. Lemma 3 (Ambiguity Dynamics). Let the closed-loop dynamics (4) be stable, τ ∈ N0, and P eτ ∈ B(̂ P eτ , ε τ ) for some ̂ P eτ ∈ D 1(Rn) and ετ > 0. Then, (i) W(̂ P eτ , P et ) ≤ fτ (t) for all t ∈ N0, with 
+
+fτ (t) = 
+
+
+
+ετ + ‖Aτ 
+
+> cl
+
+− At
+
+> cl
+
+‖M p(P0)+ 
+
+Mp(Pw) ∑τ −1 
+
+> i=t
+
+‖Ai
+
+> cl
+
+G‖ if t < τ ετ + ‖At 
+
+> cl
+
+− Aτ
+
+> cl
+
+‖M p(P0)+ 
+
+Mp(Pw) ∑t−1 
+
+> i=τ
+
+‖Ai
+
+> cl
+
+G‖ otherwise (11) (ii) W(̂ P eτ , P et ) is uniformly bounded for all t ∈ N0.Note that the p-th moments of P0 and Pw can be bounded empirically as we describe in Proposition 2. Proposition 2 (Estimation of the p-th moment). Let 
+
+{ˆx(i)}Ni=1 be N i.i.d. samples from a distribution P , whose support has diameter ϕ, and β ∈ (0 , 1) . We obtain via Hoeffding’s inequality that 
+
+Mp(P ) ≤ 1
+
+N
+
+> N
+
+∑
+
+> i=1
+
+‖ˆx(i)‖p +
+
+( ϕ
+
+2
+
+)p√ log(1 /β )2N
+
+holds with confidence 1 − β.1
+
+From (11), fτ (t) has a minimum at t = τ and in-creases monotonically with |t − τ |: the larger the time gap, the greater the discrepancy between ̂ P eτ and P et .In Section VI, we significantly reduce these quantities using lower-dimensional ambiguity tubes, i.e., tubes for projections of the state onto a lower-dimensional subspace. Remark 2. By Lemma 3, if Acl is stable, W(̂ P eτ , P et ) for 
+
+t ≥ τ can be made arbitrarily small by choosing τ large enough. Hence, given an ambiguity set Peτ = B(̂ P eτ , ε τ ) for sufficiently large τ , the subsequent variation of P et around ̂
+
+P eτ stays close to ετ , and we can reuse ̂ P eτ as the center of Pt = B(̂ P eτ , ε t) for all t ≥ τ without inflating εt. We thus need only finitely many data-driven sets, deriving the rest, which makes the approach suitable when the planning horizon is unknown a priori. This is also key, as shown later, to obtaining an ambiguity tube of arbitrary length with confidence independent of the horizon.          
+
+> 1Note that it does not matter that this is a statistical bound, i.e., it holds with some confidence, since Peτ∈B(̂Peτ, ε τ)also holds with some confidence according to Lemma 2. Therefore, we can use a union bound argument merge both confidences into a single one, and thus Lemma 3 holds with the combined confidence. 6
+
+In Alg. 2 we formalize the construction of the ambiguity tube (Pet )t∈N0 . Let τ1, τ 2, . . . , τ J ≤ H be a set of J < ∞
+
+time steps that Alg. 2 takes as inputs. For each τj , Lines 2-4 construct a data-driven ambiguity set Peτj := B(̂ P eτj , ε τj )
+
+from the samples of eτj , each with confidence 1 − β/J , as described in Section IV-B. Note that to this end we need to know diam (supp (P eτj )) , which we obtain by propagating the support of P0 and Pw through the dynamics 2. Then, for each t ∈ N0 \ { τj }Jj=1 , Lines 6-9 derive the ambiguity set Pet from the already computed data-driven ambiguity set at some τ ∈ { τj }Jj=1 : we define Pet := B(̂ P et , ε t) with ̂
+
+P et := ̂ P eτ and εt := fτ (t) as in (11). As a result, εt is defined as the pointwise minimum of J functions where the minimum is attained at each τj , leading to the “sawtooth” shape shown in Fig. 1. Algorithm 2: Construct Ambiguity Tube Input: Mp(Pw), Mp(P0), β, {τj }Jj=1 , A cl , G, X 0, W, 
+
+{ˆe(i) 
+
+> τ1
+
+, ˆe(i) 
+
+> τ2
+
+, . . . , ˆe(i) 
+
+> τJ
+
+}Ni=1 
+
+Output: Ambiguity tube (Pet )t∈N0 
+
+> 1
+
+for j ∈ { 1, . . . , J } do  
+
+> 2
+
+Construct B(̂ P eτj , ε τj ) from {ˆe(i) 
+
+> τj
+
+}Ni=1 with ετj as per Lemma 2, with confidence 1 − β/J ; 
+
+> 3
+
+Peτj ← B(̂ P eτj , ε τj ); 
+
+> 4
+
+for t ∈ N0 \ { τj }Jj=1 do  
+
+> 5
+
+τ ← arg min {fτj (t) : j ∈ { 1, . . . , J }};
+
+> 6
+
+̂ P et ←̂ P eτ ; 
+
+> 7
+
+εt ← fτ (t); 
+
+> 8
+
+Pet ← B(̂ P et , ε t);In practice, we fix J and choose {τj }Jj=1 so that the upper bound on (εt)t∈N0 is as small as possible. The following theorem ensures that the constructed ambiguity tube contains the trajectories of the error’s distribution. Theorem 1 (Soundness of the Ambiguity Tube). The ambiguity tube (Pet )t∈N0 obtained from Alg. 2 contains the trajectory of the distribution of the error with confidence 
+
+1 − β, i.e., P et ∈ P et for all t ∈ N0 with confidence 1 − β.We illustrate Theorem 1 in Fig. 2. Remark 3. Theorem 1 guarantees that the confidence on the tube containing the entire trajectories of the distribution of the error does not depend on the planning horizon, but only on J. This makes it possible to obtain a tube of infinite length while keeping the confidence finite. It is easy to observe that as the number of samples goes to infinity, each ambiguity set Pet shrinks to the singleton {P et } with confidence 1 − β, thus eliminating the conservativeness of our approach. This is an advantage of using Wasserstein ambiguity sets over, for example, moment ambiguity sets [18].    
+
+> 2This is a well-understood problem for linear systems [33] 20 25 30
+> t
+> 0.5 11.5 2
+> 10 -3
+
+Fig. 1: Visual depiction of εt as the pointwise minimum of the functions {fτj (·) : j ∈ { 1, . . . , J }} . In this case, the data-driven ambiguity sets are computed for t ∈{19 , 20 , 21 , 25 , 39 }, leading to the five solid lines, whereas the ambiguity sets for all other time steps t ≥ 19 are derived from the former. It is observed that for τj big enough, fτj (·) grows slowly with t, thus the other values 
+
+τi for i 6 = j need not be close to τj to guarantee that εt
+
+remains small. In fact, only two values of τJ−1 = 25 and 
+
+τJ = 39 are used to obtain εt for all t ≥ 22 .
+
+Fig. 2: Visual interpretation of Theorem 1. It can be observed that the ambiguity tube is sound, i.e., the ambiguity set Pet contains the true distribution P et at every time step t.Remark 4 (Clustering Empirical Distributions). By Lemma 2, the number of samples N needed for Pet =
+
+B(̂ P et , ε t) to contain P et is inversely proportional to εt,so tight ambiguity sets require many samples, which are costly to store and compute with. To alleviate this, we apply scenario reduction [34] to cluster the samples into a weighted set {(ˆ x(i), ai)}Nc 
+
+> i=1
+
+and redefine the center of the ambiguity set as the discrete distribution ̂ P e,c t := ∑Nc 
+
+> i=1
+
+aiδˆx(i) . Quantifying the discrepancy W(̂ P et ,̂ P e,c t )
+
+between the empirical and clustered distributions and adding it to the radius, the triangle inequality yields 
+
+P et ∈ P e,c t := B(̂ P e,c t , ε t + W(̂ P et ,̂ P e,c t )) .
+
+We use k-means clustering [35], which minimizes the 2-Wasserstein distance between ̂ P et and ̂ P e,c t [34]. For notational simplicity, we henceforth assume that all data-driven ambiguity sets are already clustered. 7
+
+V. Validity Check As discussed in Section II-B, sampling-based motion planning has three main steps: select, extend, and validity check (see Alg. 1). Having obtained an ambiguity tube in Section IV, we now use it to decide whether xt satisfies the chance constraints (7a). We first formulate the basic validity checker in Alg. 3; Subsection V-A presents amore conservative but significantly faster variant, and Subsection V-B combines the two for strong empirical performance. The basic validity checker proceeds as follows. Given Pet
+
+and the reference state ¯xt, we form the state ambiguity set 
+
+Pt via Proposition 1 and check collision chance constraint by checking the distributionally robust inequality 
+
+min   
+
+> P∈B(̂Pt,ε t)
+
+P [xt /∈ Xobs 
+
+] > p safe . (12) Since P et ∈ P et by Theorem 1, (12) implies the robot is collision-free. Goal condition is checked analogously via 
+
+min   
+
+> P∈B(̂Pt,ε t)
+
+P [xt ∈ Xgoal 
+
+] > p safe . (13) Due to the similarities in (12) and (13), we only describe the algorithm to check Condition (12). Adapting it for the goal check is straightforward. When the center of the ambiguity set is an empirical distribution, [17, Example 7] provides a fast, optimization-free method based on the distances between the support points and the set. After clustering to reduce the support size (see Remark 4), ̂ Pt
+
+is no longer empirical but a discrete distribution with rational weights ai ∈ [0 , 1] . Interpreting it as an empirical distribution with repeated points lets us apply the same method. The uncertainty quantification method relies on the fact that there exists a finitely-supported worst-case distribu-tion P ∗ 
+
+> t
+
+that attains the minimum in (12), i.e., 
+
+P ∗
+
+> t
+
+[xt /∈ Xobs 
+
+] = min   
+
+> P∈B(̂Pt,ε t)
+
+P [xt /∈ Xobs 
+
+],
+
+and which is easily constructed by transporting mass from ̂
+
+Pt to Xobs in a greedy fashion, i.e., transporting first the mass from the atoms of ̂ Pt that are closer to Xobs .The method starts by computing {dist (ˆ x(i), X obs )}Nc
+
+> i=1
+
+and sorting {ˆx(i)}Nc 
+
+> i=1
+
+according to dist (ˆ x(i), X obs ), in an increasing fashion. Let i0 − 1 be the maximum number of atoms that can be transported to Xobs while sat-isfying the transport cost constraint W(̂ Pt, P ∗ 
+
+> t
+
+) ≤ εt,and m0 be the maximum mass from ˆx(i0) 
+
+> t
+
+that we can transport to Xobs without violating this constraint, i.e., 
+
+i0 := arg max 
+
+{
+
+j ≤ Nc : ∑j−1 
+
+> i=1
+
+aidist (ˆ x(i), X obs ) ≤ εt
+
+}
+
+,
+
+m0 := εt − ∑i0−1 
+
+> i=1
+
+aidist (ˆ x(i), X obs )
+
+dist (ˆ x(i0) 
+
+> t
+
+, X obs ) . (14) Algorithm 3: Validity Checking Via Probability Mass Transport Input: Xobs , (Pet )t∈N0 , p safe , t, ¯xt
+
+Output: isvalid  
+
+> 1
+
+Obtain Pt = B(̂ Pt, ε t) via Proposition 1;  
+
+> 2
+
+Obtain {(ˆ x(i), ai)}Nc 
+
+> i=1
+
+from ̂ Pt; 
+
+> 3
+
+Compute {dist (ˆ x(i), X obs )}Nc
+
+> i=1
+
+; 
+
+> 4
+
+Sort {ˆx(i)}Nc 
+
+> i=1
+
+according to dist (ˆ x(i), X obs ) in increasing order;  
+
+> 5
+
+Obtain P ∗ 
+
+> t
+
+[xt /∈ Xobs ] via (14) and (15);  
+
+> 6
+
+if P ∗ 
+
+> t
+
+[xt /∈ Xobs ] > p safe then  
+
+> 7
+
+isvalid ← true;  
+
+> 8
+
+else  
+
+> 9
+
+isvalid ← false; 
+
+(a) (b) 
+
+Fig. 3: Graphical explanation of Alg. 3. On the left, the the nominal distribution ̂ Pt and the atoms {ˆx(1) , . . . , ˆx(5) }
+
+in its support. On the right, the worst-case distribution 
+
+P ∗, supported on {ˆx(1) , ˆx(2 ∗), ˆx(3 ∗), ˆx(4) , ˆx(4 ∗), ˆx(5) }, and which minimizes the probability of xt belonging to Xobs .In this example ˆx(1) ∈ Xobs , so it is not perturbed, and 
+
+εt is such that it allows to fully transport ˆx(2) and ˆx(3) to the boundary of Xobs , but only the fraction m0 of mass from ˆx(4) , and no mass from ˆx(5) . Note that the set Xobs 
+
+has arbitrary shape. The worst-case distribution P ∗ 
+
+> t
+
+is obtained as the one supported on the atoms after the perturbation, which yields 
+
+min   
+
+> P∈B(̂Pt,ε t)
+
+P [xt /∈ Xobs 
+
+] = P ∗
+
+> t
+
+[xt /∈ Xobs 
+
+] =
+
+> Nc
+
+∑
+
+> i=i0
+
+ai − m0.
+
+(15) If this probability is higher than psafe , we conclude that 
+
+xt is not in collision. Otherwise, the state is denoted valid. The pseudocode for the validity checking algorithm is given in Alg. 3 and depicted in Fig. 3. Note that Alg. 3 computes the exact worst-case proba-bility of safety w.r.t. all distributions in the ambiguity set, instead of obtaining a lower bound. Furthermore, it is optimization-free, and only requires computing Nc
+
+distances, making it relatively fast. Additionally, since it scales with Nc, namely, the number of atoms in ̂ Pt,clustering these samples can greatly improve the efficiency of the algorithm. 8
+
+A. Lazy Validity Check We propose an upper bound on the worst-case collision probability in (12) that is faster to compute than the exact solution of Alg. 3. If the bound is below psafe , we conclude the robot is collision-free; otherwise, we fall back on Alg. 3. The algorithm is as follows. We rely on having com-puted, in an offline fashion, a sequence of sets (Set )t∈N0
+
+such that 
+
+min  
+
+> P∈P t
+
+P [xt ∈ Set
+
+] > p safe , for all t ∈ N0. (16) For simplicity, we restrict ourselves to balls centered at the origin. In fact, we approximately compute the smallest balls that satisfy (16) by optimizing their radius via the bisection algorithm. Then, at time-step t of the planning phase, if the ball Set + ¯ xt does not intersect with any obstacle, we conclude that xt is not in collision. We denote the tube (Set )t∈N0 as confidence tube, since it contains more than psafe probability mass from the trajectories of 
+
+P et with high confidence, as we state in Lemma 4. The pseudocode for obtaining the confidence tube is described in Alg. 4. Algorithm 4: Obtain Confidence Tube Input: Mp(Pw), Mp(P0), β, {τj }Jj=1 ,
+
+(Pet = B(̂ P et , ε t)) t∈N0 from Alg 2, Acl , G 
+
+Output: Confidence tube (Set )t∈N0 
+
+> 1
+
+for j ∈ { 1, . . . , J } do  
+
+> 2
+
+Ij ← {t ∈ N0 : ∄k ∈ { 1, . . . , J } s.t. fτk (t) <fτj (t)}; 
+
+> 3
+
+¯ετj ← max {fτj (t) : t ∈ Ij }; 
+
+> 4
+
+Obtain Seτj such that 
+
+min {P [et ∈ Seτj
+
+] : P ∈ B(̂ P eτj , ¯ετj )} > p safe ; 
+
+> 5
+
+Set ← Seτj for all t ∈ Ij ;Algorithm 5: Lazy Validity Checking Input: Xobs , (Set )t∈N0 , t, ¯xt
+
+Output: isvalid  
+
+> 1
+
+if Xobs ∩ (Set + ¯ xt) = ∅ then  
+
+> 2
+
+isvalid ← true;  
+
+> 3
+
+else  
+
+> 4
+
+isvalid ← false; Lemma 4 (Soundness of the Confidence Tube). Let 
+
+(Set )t∈N0 be the confidence tube obtained from Alg. 4. Then, P et [et ∈ Set ] > p safe for all t ∈ N0 with confidence 
+
+1 − β.Lemma 4 is illustrated in Fig. 4a. Note that although the sequence (Set )t∈N0 has infinite length, we avoid having to compute an infinite number of confidence regions by leveraging Lemma 3. The pseudocode for the lazy check is given in Alg. 5. Additionally, in Fig. 4b we show an example of a trajectory that is valid at every time step and that reaches the goal at t = T , all according to Alg. 5.       
+
+> (a) Depiction of Lemma 4.
+> (b) Planning using the confidence tube.
+
+Fig. 4: Planning with lazy validity checker. (a) Confidence region at time t per Lemma 4. (b) Illustration of atrajectory that is safe at every time step and reaches the goal at t = T since the confidence tube does not intersect 
+
+Xobs and the ball for time step T is completely contained in Xgoal 
+
+B. Hybrid Validity Checkers Validity checking via probability mass transport (Alg. 3) and the lazy check (Alg. 5) trade off efficiency and accuracy: the lazy procedure is faster but more conser-vative. Relying solely on Alg. 5 can speed up “simpler” problems but underperform when less conservatism is needed, e.g., narrow passages. We therefore propose two hybrid algorithms that combine both methods, improving efficiency while preserving accuracy. 1) Naive Hybrid: The naive method of improving effi-ciency is to first use the lazy validity checker, followed by Alg. 3 if Alg. 5 returns invalid. This allows the validity checker to quickly find solutions for “simpler” problems but also allowing it to find solutions for more “complex” problems. Since this Naive Hybrid validity checker first uses the more conservative Alg. 5 before Alg. 3, it is also sound. Its conservativeness follows that of Alg. 3. 2) Bandit-based Validity Checker: The Naive Hybrid method improves on either Alg. 3 or Alg. 5 alone, but is inefficient on nodes where both return invalid. We therefore propose Alg. 6, a bandit-based checker that decides whether to invoke Alg. 3 after Alg. 5 returns invalid. The idea is to cast this decision as a Bernoulli bandit that estimates the relative conservatism of the two checkers over partitions of the workspace. We first partition the interval [0 , 1] . Then, for a state ¯xt
+
+determined invalid by Alg. 5, we estimate the volume of the confidence ball centered at ¯xt that intersects with obstacles. Then, we use a Bernoulli bandit to decide on whether to pull the other arm (use Alg. 3). In this way, each partition has a bandit arm with number of successes (and failures), namely, the frequency of deciding to use Alg. 3 after Alg. 5 returns invalid, and (not) being successful. At each iteration, if Alg. 3 returns invalid, we first calculate the volume ratio and determine into which partition of [0 , 1] this percentage falls. Then, we sample from a beta distribution p ∼ Beta (1+ α, 1+ β), where α is the number of successes and β is the number of failures for that partition. Then, p is compared to a random sample 9
+
+Algorithm 6: Bandit-based Validity Checking Input: Xobs , (Set )t∈N0 , (Pt)t∈N0 , p safe , t, ¯xt
+
+Output: isvalid  
+
+> 1
+
+for i ∈ 1 : n partitions do  
+
+> 2
+
+N succ (i) ← 1; N fail (i) ← 1; 
+
+> 3
+
+isvalid ←
+
+LazyValidityChecker( Xobs , (Set )t∈N0 , t, ¯xt);  
+
+> 4
+
+if ¬isvalid then  
+
+> 5
+
+V% ← Vol (( Set + ¯ xt) ∩ Xobs )/Vol (Set ); 
+
+> 6
+
+i ← b n · V%c; 
+
+> 7
+
+r ∼ Unif (0 , 1) , p ∼ Beta (N succ (i), N fail (i)) ; 
+
+> 8
+
+if r < p then  
+
+> 9
+
+isvalid ← validity checking with Alg. 3;  
+
+> 10
+
+if isvalid then  
+
+> 11
+
+N succ (i) ← N succ (i) + 1 ; 
+
+> 12
+
+else  
+
+> 13
+
+N fail (i) ← N fail (i) + 1 ;from a uniform distribution in [0 , 1] in order to decide on whether to call Alg. 3. Finally, if Alg. 3 is called, we update the arm’s (partition) success or failure count based on the result of the validity checker. The Bandit-based Validity Checker stochastically chooses between Alg. 3 and Alg. 5. Since both of these methods are sound, the Bandit-based checker is also sound. In the worst case, it is as conservative as Alg. 3. VI. Lower-Dimensional Ambiguity sets The sample complexity of learning an n-dimensional dis-tribution scales as ε ∝ N −n [30], making tight guarantees impractical in high dimensions [28]. Employing scenario reduction is similarly inefficient on large high-dimensional datasets, and mitigating methods such as clustering are not effective since the inflation factor needed to account for clustering error grows with dimension. Fortunately, in many cases it suffices to learn the projection of the state distribution onto a lower-dimensional subspace. For exam-ple, in a high-dimensional problem with a 2-D workspace where Xobs and Xgoal are defined by workspace obstacles and a goal region, only the robot’s 2-D position matters for the chance constraints in (7); the resulting ambiguity sets then scale as N −2 rather than N −n. More generally, when Xobs and Xgoal involve multiple constraints (e.g., on control or velocity), one can use several lower-dimensional ambiguity sets (one per constraint space) to improve sample and computational complexity while preserving safety. This section formalizes this idea, starting with the following generalization of Lemma 3. Lemma 5 (Lower-Dimensional Ambiguity Dynamics). Let 
+
+τ, t ∈ N0, M ∈ Rl×n and M#P eτ ∈ B(̂ P eM,τ , ε τ ) for some ̂
+
+P eM,τ ∈ D 1(Rl), ετ > 0. Then W(M#P et ,̂ P eM,τ ) ≤ f Mτ (t),with f Mτ (t) given by 
+
+
+
+ετ + ‖M (Aτ − At)‖M p(P0) + Mp(Pw) ∑τ −1 
+
+> i=t
+
+‖M A iG‖
+
+if t ≤ τετ + ‖M (At − Aτ )‖M p(P0) + Mp(Pw) ∑t−1 
+
+> i=τ
+
+‖M A iG‖
+
+otherwise (17) Proof. Proof follows the same reasoning as that of Lemma 3. To provide intuition on Lemma 5, let M be the projection matrix which maps each state x ∈ Rn into its workspace components. This lemma shows that we do not need to learn the n-dimensional distribution of the error 
+
+et to reason about how its projection M#P et evolves over time, which is way more sample efficient when l < n .We now make the following assumption on the obstacle and goal sets, which allows us to use the lower-dimensional ambiguity tubes: Assumption 1. The obstacle and goal sets can be expressed as Xobs := ⋃Ll=1 Xl 
+
+> obs
+
+and Xgoal := ⋂Ll=1 Xl
+
+> goal
+
+, where 
+
+Xl 
+
+> obs
+
+:= {x ∈ Rn : Mlx ∈ Y l
+
+> obs
+
+} and Xl 
+
+> goal
+
+:= {x ∈
+
+Rn : Mlx ∈ Y l
+
+> goal
+
+} for some matrix Ml ∈ Rnl×n, nl ≤ n,and (possibly time-dependent) Y l
+
+> obs
+
+, Y l 
+
+> goal
+
+⊆ Rnl for all 
+
+l ∈ { 1, . . . , L }.Assumption 1 states that the obstacle (and goal) set decomposes into L sets, each related to a set Y l 
+
+> obs
+
+in some space Rnl , typically of smaller dimension than Xl
+
+> obs
+
+. This assumption does not reduce generality, as obstacle and goal sets of any shape can be expressed in this form. Example 1. As an illustrative example, consider arobotic system surrounded by workspace obstacles 
+
+O1, . . . , O nobs ⊂ Rws , and where the control is constrained to U ⊂ Rnu . Therefore, 
+
+Xobs = {x ∈ Rn : M1x ∈ ∪ nobs  
+
+> j=1
+
+Oj } ∪ {x ∈ Rn : −K(x − ¯xt) + ¯ ut /∈ U },
+
+with M1 being the projection matrix that maps the system’s state into its workspace components. Here, we let the goal region represent a physical location Goal ⊂ Rws in the workspace. It is therefore possible to express Xobs and 
+
+Xgoal as required in Assumption 1 with L = 2 , M2 = −K,
+
+Y 1 
+
+> obs
+
+= ⋃nobs  
+
+> j=1
+
+Oj , Y 2 
+
+> obs
+
+= Rnu \(U − ¯ut −K ¯xt), Y 1 
+
+> goal
+
+= Goal and Y 2 
+
+> goal
+
+= Rnu . Fig. 5 illustrates how to leverage the first lower-dimensional ambiguity tube for this example. Next, we formally define the lower-dimensional ambigu-ity tubes that we leverage in this section: Definition 1 (Lower-Dimensional Ambiguity Tubes). Let 
+
+L ∈ N and Ml ∈ Rnl×n for all l ∈ { 1, . . . , L }. We refer by lower-dimensional ambiguity tubes to L sets (Pl,t )t∈N0 ,
+
+l ∈ { 1, . . . , L }, of the form Pl,t := B(̂ Pl,t , ε l,t ) ⊂ D 1(Rnl ),with ̂ Pl,t ∈ D 1(Rnl ) and εl,t , for all t ∈ N0, l ∈ { 1, . . . , L }.We formalize the construction of the tubes (Pel,t )t∈N0 ,
+
+l ∈ { 1, . . . , L } in such a way that the l-th tube contains 10 𝑥 𝑡  
+
+> 𝑥 𝑡 −1
+> 𝑥 𝑡 +1
+> 𝑀 1𝑥 𝑡
+> ℝ𝑛
+> ℝ𝑤𝑠 𝑂 1
+> 𝑂 2𝐺𝑜𝑎𝑙 𝑀 1𝑥 𝑡 −1
+> 𝑀 1𝑥 𝑡 +1
+
+(a) Projection of X into WS 𝑃 𝑡  
+
+> 𝑒
+> 𝑃 𝑡 −1
+> 𝑒
+> 𝑃 𝑡 +1
+> 𝑒
+> 𝑀 𝑙 #𝑃 𝑡 −1
+> e
+> 𝑀 𝑙 #𝑃 𝑡
+> 𝑒
+> 𝑀 𝑙 #𝑃 𝑡 +1
+> 𝑒
+> 𝒫 𝑡
+> 𝑒
+> 𝒫 𝑡 −1
+> 𝑒
+> 𝒫 𝑡 +1
+> e
+> 𝒫 𝑙 ,𝑡
+> 𝑒
+> 𝒫 𝑙 ,𝑡 −1
+> 𝑒
+> 𝒫 𝑙 ,𝑡 +1
+> 𝑒
+> 𝒟 (ℝ𝑛 )
+> 𝒟 (ℝ𝑤𝑠 )
+> ෠𝑃 𝑡 +1
+> 𝑒
+> ෠𝑃 𝑡
+> 𝑒
+> ෠𝑃 𝑡 −1
+> 𝑒
+
+(b) Lower-dim ambiguity tube 
+
+Fig. 5: Exploiting lower-dimensional ambiguity tubes in Example 1. In (b), l = 1 and the spheres constitute the ambiguity tube for P et , while the light-blue balls are the ambiguity tube for M1# P et . Since the workspace obstacles only constrain the workspace position of the system, we learn an ambiguity tube directly for the position. Note that lower-dimensional ambiguity sets are not the projections of the higher-dimensional ones. In fact, they are way smaller. 
+
+(Ml, #P et )t∈N0 , namely, the pushforward (through Ml)of the trajectory of the error’s distribution, with high confidence. Let τ1, τ 1, . . . , τ J ≤ H be a set of J < ∞
+
+time steps at which we construct the ambiguity sets 
+
+Pel,τ j := B(̂ P el,τ j , ε l,τ j ), with ̂ P el,τ j := Ml#̂ P eτj , for all 
+
+l ∈ { 1, . . . , L } from the samples of eτj and each of them with confidence 1 − β/ (JL ) as described in Section IV-B. Then, for each t ∈ N0 \ { τj }Jj=1 , we pick some τ ∈ { τj }Jj=1 
+
+and define Pel,t := B(̂ P el,t , ε l,t ) with ̂ P el,t := ̂ P el,τ and 
+
+εl,t := f Ml 
+
+> τ
+
+(t) as in (17), thus ensuring that Ml, #P et ∈ P el,t 
+
+with the same confidence 1 − β/J . The pseudocode for obtaining the ambiguity tube is in Alg. 7. Algorithm 7: Obtain Lower Dimensional Ambiguity Tubes Input: Mp(Pw), Mp(P0), β, {τj }Jj=1 , A cl , {Ml}Ll=1 , G, 
+
+{ˆe(i) 
+
+> τ1
+
+, ˆe(i) 
+
+> τ2
+
+, . . . , ˆe(i) 
+
+> τJ
+
+}Ni=1 
+
+Output: Lower-Dimensional Ambiguity Tubes 
+
+(Pel, 0, Pel, 1, . . . )Ll=1  
+
+> 1
+
+for j ∈ { 1, . . . , J }, l ∈ { 1, . . . , L } do  
+
+> 2
+
+Construct B(Ml, #̂ P eτj , ε lτj ) from {ˆe(i) 
+
+> τj
+
+}Ni=1  
+
+> 3
+
+where εlτj is from Lemma 2, with confidence 
+
+1 − β/ (JL ); 
+
+> 4
+
+Pel,τ j ← B(Ml, #̂ P eτj , ε lτj ); 
+
+> 5
+
+for t ∈ N0 \ { τj }Jj=1 do  
+
+> 6
+
+for l ∈ { 1, 2, . . . , L } do  
+
+> 7
+
+τl ← arg min {f Ml 
+
+> τj
+
+(t) : j ∈ { 1, . . . , J }};
+
+> 8
+
+̂ P el,t ←̂ P eτl ; 
+
+> 9
+
+εlt ← f Ml 
+
+> τl
+
+(t); 
+
+> 10
+
+Pel,t ← B(̂ P el,t , ε lt);In Theorem 2, we formalize an important property of these ambiguity tubes. Theorem 2 (Soundness of the Lower-Dimensional Am-biguity Tubes). Let L ∈ N and Ml ∈ Rnl×n for all 
+
+l ∈ { 1, . . . , L }. Let (Pel,t )t∈N0 , l ∈ { 1, . . . , L }, be the lower-dimensional ambiguity tubes obtained from Alg. 7. Then, each l-th tube contains the trajectory of the distribution of Mlet, and this holds with overall confidence 1 − β, i.e., 
+
+Ml#P et ∈ P el,t , ∀ t ∈ N0, l ∈ { 1, . . . , L }, with confidence 
+
+1 − β.A. Validity Checking using Lower-Dim. Ambiguity Tubes We now use Assumption 1 and the lower-dimensional ambiguity tubes from Alg. 7 to check node validity (the goal check is analogous). For a node at time step t with reference state ¯xt, we form the state ambiguity sets Pl,t := 
+
+B(̂ Pl,t , ε l,t ), where ̂ Pl,t =̂ P el,t ∗ δMl ¯xt for l ∈ { 1, . . . , L }.We then compute the worst-case non-collision probabilities 
+
+min P ∈P l,t P (Rnl \ Y l
+
+> obs
+
+) via the method of Section V; the node is collision-free if their sum exceeds psafe − 1 + L,and invalid otherwise. The goal is declared reached when ∑ 
+
+> l
+
+min P ∈P l,t P (Rnl \ Y l
+
+> goal
+
+) > p safe − 1 + L. Alg. 8 gives the pseudocode. Algorithm 8: Validity Checking via Probability Mass Transport and Lower-Dimensional Ambiguity Tubes Input: Ml, Y l
+
+> obs
+
+, (Pl,t )t∈N0, l ∈{ 1,...,L }, p safe , t, ¯xt
+
+Output: isvalid  
+
+> 1
+
+for l ∈ { 1, . . . , L } do  
+
+> 2
+
+Obtain Pl,t = B(̂ Pl,t , ε l,t ), where ̂
+
+Pl,t =̂ P el,t ∗ δMl ¯xt ; 
+
+> 3
+
+Obtain {(ˆ x(i), ai)}Nc 
+
+> i=1
+
+from ̂ Pl,t ; 
+
+> 4
+
+Compute {dist (ˆ x(i), Y l
+
+> obs
+
+)}Nc
+
+> i=1
+
+; 
+
+> 5
+
+Sort {ˆx(i)}Nc 
+
+> i=1
+
+by increasing dist (ˆ x(i), Y l
+
+> obs
+
+); 
+
+> 6
+
+Compute αl := min P ∈P l,t P (Rnl \ Y l
+
+> obs
+
+) using (14) and (15);  
+
+> 7
+
+if 1 − L + ∑Ll=1 αl > p safe then  
+
+> 8
+
+isvalid ← true;  
+
+> 9
+
+else  
+
+> 10
+
+isvalid ← false; 1) Lazy Check using Lower-dim Ambiguity Tubes: We adapt the lazy check in Section V-A to the lower-dimensional ambiguity tubes as described in Alg. 7. We compute L lower-dimensional confidence tubes, where the 
+
+l-th tube contains more than psafe probability mass of Mlet
+
+for all t ∈ N0, with overall confidence 1 − β. These tubes yield an efficient upper bound on the collision probability: if the bound falls below 1 − psafe , the node is collision-free; otherwise, we fall back on Alg. 8. The pseudocode is in Alg. 9. As in Alg. 5, we precompute sequences (Sel,t )t∈N0 for l ∈ { 1, . . . , L } such that 
+
+min  
+
+> P∈P el,t
+
+P (Sel,t ) > p safe /L, ∀ t ∈ N0, l ∈ { 1, . . . , L }, (18) restricting to balls centered at the origin and finding the (approximately) smallest valid radius by bisection. At time 
+
+t, if no ball Sel,t +Ml ¯xt intersects Y l
+
+> obs
+
+, the node is collision-free. 11 
+
+Algorithm 9: Construct Lower-Dim. Confidence Tubes Input: Mp(Pw), Mp(P0), β, {τj }Jj=1 ,
+
+(Pel,t = B(̂ P el,t , ε l,t )) t∈N0, l ∈{ 1,...,L } from Alg. 7, Acl , G, M l for l ∈ { 1, . . . , L }
+
+Output: Lower-dimensional confidence tubes 
+
+(Sel,t )t∈N0 for l ∈ { 1, . . . , L } 
+
+> 1
+
+for l ∈ { 1, . . . , L } do  
+
+> 2
+
+for j ∈ { 1, . . . , J } do  
+
+> 3
+
+Ij ← {t ∈ N0 : ∄k ∈ { 1, . . . , J } s.t. f Ml 
+
+> τk
+
+(t) <f Ml 
+
+> τj
+
+(t)}; 
+
+> 4
+
+¯εl,τ j ← max {f Ml 
+
+> τj
+
+(t) : t ∈ Ij
+
+}; 
+
+> 5
+
+Obtain Sel,τ j such that 
+
+min {P (Sel,τ j ) : P ∈ B(̂ P el,τ j , ¯εl,τ j )} > psafe 
+
+L ; 
+
+> 6
+
+Sel,t ← Sel,τ j for all t ∈ Ij ;Lemma 6 (Lower-Dimensional Confidence Tubes). Let 
+
+(Sel,t )t∈N0 , l ∈ { 1, . . . , L }, be the confidence tubes obtained from Alg. 9 . Then, Ml#P et (Sel,t ) > p safe /L for all t ∈ N0,
+
+l ∈ { 1, . . . , L }, with confidence 1 − β.VII. WDR-X Algorithm In this section, we present our general motion plan-ning framework, Wasserstein Distributionally Robust-X
+
+(WDR-X ), to solve Problem 1. Here, X is any tree-based kinodynamic sampling-based algorithm from Section II-B. Pseudocode is given in Alg. 10. 3
+
+The framework operates in two phases: ambiguity set construction and planning. In the first phase (Lines 1–2), we learn ambiguity and confidence tubes from data via Algs. 2 and 4 (Section IV-B). Note that this phase needs to be done only once per system; the resulting tubes can be reused across planning queries and environments. In the second phase (Lines 4–10), we grow a motion tree as in Alg. 1. Each node is a nominal state evolving per (3), and Sample (Line 5), Select (Line 6), and Extend (Line 7) act on the nominal state via a randomly sampled feedforward control. A new node is added if it satisfies Constraint (7a), checked using the validity checkers of Section V on (Pet )t∈N0 and (Set )t∈N0 (Line 8). A solution is returned once a valid node satisfies Constraint (7b) (Line 12). The planner performs the same subroutines as Alg. 1 for a deterministic linear system except in the validity check: all other subroutines act on the nominal state and feedforward dynamics, so we propagate only the nominal dynamics during tree search rather than the uncertainty. This enables much faster planning and replanning across environments for the same system, since the ambiguity tube is reused. Planning with lower-dimensional ambiguity tubes fol-lows the same logic as Alg. 10, with a few differences: in 
+
+> 3If lower-dimensional ambiguity sets are used, the corresponding algorithms from Section VI apply instead.
+
+Algorithm 10: WDR-X
+
+Input: State space X , input space U, Xobs , Xgoal ,
+
+Mp(Pw), Mp(P0), β, {τj }Jj=1 , Acl , G, X 0, W, 
+
+{ˆe(i) 
+
+> τ1
+
+, ˆe(i) 
+
+> τ2
+
+, . . . , ˆe(i) 
+
+> τJ
+
+}Ni=1 , psaf e , iterations N
+
+Output: Tree G = ( V, E)
+
+Phase 1: Offline Tube Construction  
+
+> 1
+
+Ambiguity Tubes (Pet )t∈N0 using Alg. 2;  
+
+> 2
+
+Confidence Tubes (Set )t∈N0 usingAlg. 4;Phase 2: Online Planning  
+
+> 3
+
+Initialize G = ( V ← { xinit }, E ← ∅ ); 
+
+> 4
+
+while True do  
+
+> 5
+
+¯xrand , ¯urand ← Sample();  
+
+> 6
+
+nselect ← Select( xrand );  
+
+> 7
+
+nnew ← Extend( nselect , ¯urand );  
+
+> 8
+
+if ValidityCheck( nnew , (Pet )t∈N0 , (Set )t∈N0 ) then  
+
+> 9
+
+V ← V ∪ { nnew }; 
+
+> 10
+
+E ← E ∪ { edge (nselect , n new )}; 
+
+> 11
+
+if nnew satifies Eq. (7b) then  
+
+> 12
+
+return ExtractPath( G, n new );  
+
+> 13
+
+return Failure Line 1, the lower-dimensional ambiguity tubes (Pel,t )t∈N0
+
+for l ∈ { 1, . . . , L } are obtained via Alg. 7; in Line 2, the confidence tubes (Sel,t )t∈N0 are obtained via Alg. 9; and in Line 9, validity is checked using Alg. 8, lazy check, or a hybrid of them as in Section V-B. A. Theoretical Analysis In this section, we analyze the theoretical properties of our algorithmic framework. All proofs can be found in the Appendix. We first show that Alg. 10 is sound. Theorem 3 (Soundness). Let Alg. 10 be equipped with Algs. 3, 5 or any of the hybrid validity checkers in Sec-tion V-B. Then, every motion plan ((¯ ut, ¯xt)) Tt=0 returned by Alg. 10 solves Problem 1, i.e., (7) is satisfied. Alg. 10 is also probabilistically complete with respect to the conservativeness of the validity checker. 4 As the number of samples in the first phase goes to infinity, the conservative collision checker converges to exact collision detection probabilities. This means that as the number of iterations of the algorithm approaches infinity, the probability of finding a solution, if one exists (and is deemed valid with the conservative validity checkers), approaches 1.Theorem 4 (Probabilistic Completeness). Let Alg. 10 be equipped with Alg. 3. Let Pe := B(̂ P e, ε ) be an ambiguity ball of radius ε > 0 and centered on a discrete distribution 
+
+> 4All the validity checking methods are conservative with respect to the true probability of safety and goal-reachability, which is desirable for soundness of the computed solutions. 12
+
+̂
+
+P e, such that ⋃ 
+
+> t∈N0
+
+Pet ⊆ P e. Assume also that there exists a valid motion plan {(¯ ut, ¯xt)}Tt=0 such that 
+
+min   
+
+> P∈P e
+
+P [xt /∈ Xobs 
+
+] > p safe ∀t ∈ { 0, . . . , T },
+
+min   
+
+> P∈P e
+
+P [xT ∈ Xgoal 
+
+] > p safe .
+
+Then, as the number of iterations goes to infinity, the probability that Alg. 10 finds a solution approaches 1.For simplicity, in Theorem 4, we assume that there exists a valid motion plan that is robust with respect to a rigid, i.e., time-invariant, ambiguity tube for the distribution of the error. Note the time-varying ambiguity tube obtained via Alg. 2 is tighter than the rigid one, i.e., it contains less trajectories of distributions while having the same guarantees of containing the true trajectory. However, the rigid tube assumption greatly simplifies the planning algorithm and the proof of probabilistic completeness. To relax this assumption, ones needs to plan in a different space, e.g., the belief space [10]. Remark 5. Theorem 4 also applies to the hybrid validity checkers of Section V-B: the Naive Hybrid either deems a node valid or defers to Alg. 3, while Alg. 6 always invokes Alg. 3 with probability bounded below by a fixed constant. Both therefore inherit probabilistic completeness. In the following two theorems, we conclude that Alg. 10, leveraging the lower-dimensional ambiguity tubes for va-lidity checking, is also sound and probabilistically com-plete with respect to the conservatism of the collision checkers. Theorem 5. Let Alg. 10 be equipped with low-dimensional ambiguity tubes and Alg. 8, lazy checker, or any of the hybrid validity checkers in Section V-B. Every motion plan 
+
+((¯ ut, ¯xt)) Tt=0 returned by the algorithm solves Problem 1. Theorem 6. Let Alg. 10 be equipped with Alg. 8. Also, let 
+
+{P el := B(̂ P el , ε l)}Ll=1 be lower-dimensional ambiguity balls of radii εl > 0 and centered on the discrete distributions ̂
+
+P el for l ∈ { 1, . . . , L }, such that ⋃Tt=0 Pel,t ⊆ P el . Assume also that there exists a valid motion plan {(¯ ut, ¯xt)}Tt=0 
+
+such that 
+
+> L
+
+∑
+
+> l=1
+
+max  
+
+> P∈P el
+
+P [Mlxt ∈ Y l
+
+> obs
+
+] < 1 − psafe ∀t ∈ { 0, . . . , T },
+
+> L
+
+∑
+
+> l=1
+
+max  
+
+> P∈P el
+
+P [MlxT /∈ Y l
+
+> goal
+
+] < 1 − psafe .
+
+Then, as the number of iterations goes to infinity, the probability that Alg. 10 finds a solution approaches 1.VIII. Evaluation We evaluate the performance of our proposed method in several case studies and benchmarks. To put our results in perspective, we compare the following uncertainty propagation and collision-checking approaches: 1. TS: moment-based distributionally robust-RRT from [15]. 2. Risk-Assigned: moment-based distributionally robust-RRT with risk allocation from [16]. 3. Particle-WDR-RRT: Alg. 10 with particle-based va-lidity checker. 4. Confidence-WDR-RRT: Alg. 10 with confidence-region validty checker. 5. Hybrid-WDR-RRT: Alg. 10 with Naive Hybrid valid-ity checker. 6. Bandit-WDR-RRT: Alg. 10 with Bandit-based valid-ity Checker. All algorithms were implemented in C++ with the Open Motion Planning Library (OMPL) [36]. We utilize kino-dynamic RRT [37] as the underlying planner for WDR-X
+
+for all experiments. The simulations were conducted single threaded on a machine with 3.7GHz CPU and 32GB of RAM. A. 4-D Linear System We first consider a 4-D linear system from [15], sub-ject to process noise and initial state uncertainty. We benchmark over four environment types spanning a diverse range of planning scenarios: (i) Scattered, with relatively sparse obstacles and ample free space; (ii) Cluttered, with dense obstacles and little free space; (iii) Narr(‘width’), a narrow-passage environment whose width we vary to assess the conservatism of the validity checkers; and (iv) Random, containing 10 obstacles of random width, height, and position. The Scattered, Cluttered, and Narr(1.5) environments are shown in Fig. 6. We use N = 10 8 samples, a safety probability threshold 
+
+psafe = 0 .01 , and a confidence parameter β = 10 −3. The time steps are selected as {τj }Jj=1 = {0–11 , 13 –18 , 20 , 39 }.The distributions (which are unknown to the planner) for the initial state P0 and process noise Pw are zero-mean Gaussians with covariances: 
+
+10 −3
+
+
+
+1 0 0 00 1 0 00 0 0 00 0 0 0
+
+ , 10 −3
+
+
+
+0 0 0 00 0 0 00 0 2 10 0 1 2
+
+
+
+Both P0 and Pw are truncated at 4 standard devia-tions. Since the obstacles in [15] are defined only in the workspace, it suffices to learn a single ambiguity tube for the 2-D projection of the state distribution. We achieve this using the formulation in Section VI with L = 1 .We also consider the same system with non-Gaussian noise, obtained by pushing a bi-variate uniform distribu-tion through the map 
+
+(ω1, ω 2) 7 → 4ω1/41
+
+(
+
+10 −3
+
+[2 11 2
+
+] ) 1/2 [cos(2 πω 2)sin(2 πω 2)
+
+]
+
+.
+
+Table I summarizes the results across all environments. a) Comparison with baselines.: The moment-based approaches [15], [16] exhibit two fundamental limitations that our method overcomes. First, their validity checkers inflate obstacles using analytic bounds derived from the 13 
+
+(a) Scattered Obstacles. (b) Cluttered Obstacles. 
+
+(c) Narrow Passage Narr(1.0) 
+
+(d) Narrow Passage Narr(0.3) 
+
+Fig. 6: Benchmark environments for 4-D Linear System. Obstacles are shown in black and the goal region is shown in green. Representative plots of Monte carlo simulation of solution trajectories are shown in blue for Gaussian noise. TABLE I: Benchmark results for 4-D linear system over 100 runs. ‘Succ’ is the fraction of trials in which a valid path was found within 300 s; ‘Time’ is the mean planning time over successful trials; ‘–’ indicates no successful trial. Best success rate in each row is bold; among methods with equal success, the fastest is also bold.                                                                                                                                                                                                      
+
+> Env. TS [15] Risk Assigned [16] Particle-WDR-RRT Confidence-WDR-RRT Hybrid-WDR-RRT Bandit-WDR-RRT Succ Time (s) Succ Time (s) Succ Time (s) Succ Time (s) Succ Time (s) Succ Time (s) 4D Linear System with Gaussian Noise Random 0.13 0.88 0.25 0.98 0.34 111.16 0.75 3.82 0.73 24.54 0.81 15.29 Scattered 1.00 0.01 1.00 1.40 0.52 154.04 1.00 0.01 1.00 6.87 1.00 4.52 Cluttered 1.00 0.01 0.97 7.14 0.45 173.79 1.00 0.01 1.00 11.18 1.00 6.81 Narr(1.5) 1.00 0.02 1.00 0.02 0.85 124.54 1.00 0.01 1.00 4.92 1.00 2.96 Narr(1.0) 1.00 0.05 1.00 0.04 0.89 142.31 1.00 0.03 1.00 7.87 1.00 5.05 Narr(0.5) 1.00 0.42 1.00 0.36 0.86 135.88 1.00 0.10 1.00 20.18 1.00 12.99 Narr(0.3) 0.00 –0.00 –0.82 155.21 1.00 0.28 1.00 43.58 1.00 24.25 Narr(0.18) 0.00 –0.00 –0.81 135.71 0.00 –0.86 108.14 0.97 83.80 4D Linear System with Non-Gaussian Noise Random 0.03 0.18 0.09 1.79 0.27 115.95 0.60 2.22 0.66 39.29 0.76 14.47 Scattered 1.00 0.02 1.00 1.31 0.41 190.00 1.00 0.01 1.00 14.46 1.00 8.28 Cluttered 1.00 0.01 0.95 8.94 0.34 178.80 1.00 0.01 1.00 14.00 1.00 11.24 Narr(1.5) 1.00 0.04 1.00 0.03 0.80 127.04 1.00 0.01 1.00 7.40 1.00 4.92 Narr(1.0) 1.00 0.35 1.00 0.14 0.87 113.27 1.00 0.03 1.00 14.70 1.00 8.60 Narr(0.5) 0.00 –0.00 –0.73 122.36 1.00 0.23 0.99 52.50 1.00 28.39 Narr(0.3) 0.00 –0.00 –0.71 124.89 0.00 –0.33 116.57 0.33 90.91
+
+first two moments of the state distribution. This over-approximation renders them overly conservative in con-strained geometries: both baselines fail at Narr(0.3) and Narr(0.18) under Gaussian noise, whereas Bandit-WDR-RRT achieves 1.00 and 0.97 success, respectively. Further, under non-Gaussian noise, the moment bounds used by both baselines become overly conservative, where TS [15] achieves only 3% success and Risk Allocation [16] only 9% on the Random environment, compared to 76% for Bandit-WDR-RRT. More strikingly, both baselines fail at Narr(0.5) because the looser moment bounds over-approximate the state distribution’s support, making the passage appear infeasible. In contrast, our Wasserstein ambiguity tube learns a distribution-free confidence set directly from samples, capturing the actual shape of the noise distribution rather than relying on moment surro-gates, thus avoiding unnecessary conservatism regardless of the true distribution. It is important to note that our approach is inherently distributionally robust, meaning the true underlying noise distribution remains completely unknown to the planner. Because the ambiguity-tube constraints must guarantee safety for the worst-case distribution within the confidence set, our method naturally exhibits more conservative planning behaviors than would be observed if the exact distribution were known a priori. However, unlike the moment-based baselines that suffer from geometric over-approximation, our conservatism is tight with respect to the ambiguity set while providing sound safety guarantees under unknown distributions. In the easier environments (Scattered, Cluttered, wide narrow passages), where there is more free space and solu-tions are easier to find, the baselines achieve comparable success rates to our method and are faster due to their closed-form validity checks. This is expected: the analytic bounds are tight when the geometry is forgiving. However, our methods remain competitive even here: Confidence-WDR-RRT matches the baselines’ speed at 0.01 s in these cases. b) Comparison among WDR-RRT variants.: Among our proposed validity checkers, the Particle-based variant is the most general but incurs high per-node evalua-14   
+
+> (a) Moment-based Checker.
+> (b) Ours: Confidence Checker.
+> (c) Ours: Bandit Checker.
+
+Fig. 7: Plot of search trees after 60 seconds. The number of nodes are 361240, 579358, and 30063, for Moment-based, Confidence, and Bandit Checkers, respectively. The Bandit Checker finds a solution with nominal trajectory in red. tion cost (110–190 s mean planning time), making it impractical as a standalone checker. The Confidence-Region checker is fast (comparable to the baselines in easy environments) but inherits some conservatism from its geometric over-approximation, failing at Narr(0.18) under Gaussian noise and Narr(0.3) under non-Gaussian noise. The Hybrid checker alleviates this by falling back to particle evaluation near obstacles, but remains slower than necessary. Bandit-WDR-RRT offers the best balance: it adaptively allocates computational effort, matching or exceeding the success rate of all other variants while being 1.5–3 × faster than Hybrid-WDR-RRT across en-vironments. For each of the runs, the planned trajectories are vali-dated via Monte Carlo simulation, with the found solution paths achieving between 99-100% success rate across trials, confirming that the ambiguity-tube constraints provide sound safety guarantees. Example trajectories for the Gaussian noise case are shown in Fig. 6. Fig. 7 visualizes the search trees grown after 60 s in Narr(0.18) under Gaussian noise. The moment-based checker produces trajectories that stays far from all obsta-cles and never enters the narrow passage. The Confidence-Region checker allows nodes closer to the walls but cannot go through the gap to reach the goal within the time limit. The Bandit checker successfully explores the passage and reaches the goal region, consistent with its 0.97 success rate in Table I. B. 8-D Drone System. Finally, we show the scalability of our approach during planning with a 8-D drone system navigating on a 2D plane, i.e., n = 8 and nws = 2 , and with nu = 2 . In this example, we use the Stable Sparse RRT (SST) algorithm [3]. The model is taken from [25]. The noise distribution is Gaussian with zero mean and covariance via G, a 4 × 2
+
+matrix mapping the 2D disturbance w into the 4D state: 
+
+G =
+
+[0 0 a b
+
+0 0 b a
+
+]⊤
+
+, a =
+
+√3 + 1 2√1000 , b =
+
+√3 − 12√1000 ,
+
+so that only the velocity states ( ˙ x, ˙y) are directly per-turbed; the position states (x, y ) are unaffected. The state-space covariance is then given by W = GG ⊤, a 4 × 4
+
+matrix. We set the probability of safety to psafe = 0 .02 . In this case study, we consider both collision avoidance constraints with respect to the workspace obstacles and also control constraints, where we let U = {u ∈ Rm :
+
+‖u‖ ≤ 0.025 }. We also let the goal region be a physical location in the 2D workspace. Note that, although the system is high-dimensional, the goal and obstacles are related to the lower-dimensional spaces Rws and Rnu . Because of this, we make use of the approach described in Section VI and learn two lower-dimensional ambiguity tubes: one for M1# P et , related to the position of the drone and another for −K#P et , related to the control effort. To this end and, as described in Example 1, we first express Xobs and Xgoal as required in Assumption 1. We learn the tubes with N = 10 8,
+
+{τj }Jj=1 = {0-11 , 13 -18 , 20 , 39 } and β = 10 −3.TABLE II: 8-D quadcopter system with Gaussian noise. Each scenario is run with the SST planner using the Bandit validity checker, stopping at first solution (60 s timeout). Success rate and mean planning time over successful trials are reported.               
+
+> Env. Bandit-WDR-SST Success Rate Time (s) Fig. 8a 1.00 9.89 ±7.54
+> Fig. 8b 1.00 4.29 ±3.00
+> Fig. 8c 1.00 4.84 ±2.25
+
+Table II and Fig. 8 show that Bandit-WDR-SST finds valid paths in all three environments, including the narrow passage, with planning times well under 60 s. The Monte Carlo simulations of the trajectories show a 100% success rate. The ability to handle an 8-D system with two separate lower-dimensional ambiguity tubes shows that the decomposition in Section VI directly enables tractable planning in higher-dimensional systems. IX. Conclusion In this work, we presented a probabilistically complete tree-based framework for motion planning of linear and feedback-linearizable systems with additive random dis-turbances of unknown distribution. Our approach uses ob-servations from previous trajectories to learn an ambiguity 15    
+
+> (a) Narrow Passage Narr(1.5).
+> (b) Scattered Rectangle Ob-stacles.
+> (c) Circle and Rectangle Obstacles.
+
+Fig. 8: Environments for the 8-D drone system case study with Monte Carlo simulations of example solution trajectories. tube containing the state distribution at all times, then leverages this tube to find safe paths. We also presented a variant that learns several lower-dimensional tubes to re-duce sample and computational complexity, and a bandit-based validity checker that adaptively chooses between a precise but slow checker and a conservative but fast one. Empirical evaluation demonstrates the effectiveness of our approach in finding safe paths and its superiority over state-of-the-art methods. Appendix For the proofs in this appendix we rely on the following two properties of the Wasserstein distance: Proposition 3. Let P, P ′, P ′′ ∈ D (X) and A ∈ Rn×n. Then 
+
+W(P ∗ P ′′ , P ′ ∗ P ′′ ) ≤ W (P, P ′),
+
+W(P, P ′ ∗ P ′′ ) ≤ W (P, P ′) + 
+
+∫
+
+> X
+
+‖x‖dP ′′ (x),
+
+W(A#P, A #P ′) ≤ ‖ A‖W (P, P ′),
+
+W(P, P ′) ≤ W (P, P ′′ ) + W(P ′′ , P ′).
+
+Proof. The first statement is proved in [21, Proposition 10]. The second and third statements are proved in [20, Lemma 16] and [38], respectively, and the last statement is the triangle inequality of the Wasserstein distance [38]. Proof of Proposition 1. Note that W(Pt,̂ Pt) = W(P et ∗
+
+δ¯xt ,̂ P et ∗ δ¯xt ) ≤ W (P et ,̂ P et ) ≤ εt. Thus Pt ∈ P t, which concludes the proof. Proof of Lemma 2. Let β1, β 2 ∈ (0 , 1) . First, a direct application of Hoeffding’s inequality yields the following bound on the q-th moment of P :
+
+P N [Mq (P ) ≤̂ Mq (P )] ≥ 1 − β1, (19) Next, we make use of McDiarmid’s inequality. Let 
+
+x1, x 2, . . . , x i, x ′
+
+> i
+
+, x i+1 , . . . , x N ∈ Rd, ˜P be the empiri-cal distribution of {xj }Nj=1 , and ˜P ′ differ from ˜P only on the atom x′
+
+> i
+
+. By the symmetry and triangle in-equality of the Wasserstein distance, we obtain that 
+
+|W (P, ˜P ) − W (P, ˜P ′)| ≤ W( ˜P , ˜P ′). Furthermore, it is straightforward to observe, by geometric inspection, that 
+
+W( ˜P , ˜P ′) is maximized when all {xj }Nj=1 and x′ 
+
+> i
+
+are located diametrically opposite, which by the definition of the 1-Wasserstein distance yields W( ˜P , ˜P ′) = ϕ/N , for all x1, x 2, . . . , x i, x ′
+
+> i
+
+, x i+1 , . . . , x N ∈ Rd, i ∈ { 1, . . . , N }.Therefore, a one-sided McDiarmid inequality yields 
+
+P N [
+
+W(P, ̂ P ) − E[W(P, ̂ P )] ≥ t
+
+]
+
+≤ exp 
+
+(
+
+− 2N t 2
+
+ϕ2
+
+)
+
+,
+
+(20) holds with confidence 1 − β2. Letting β2 equal the right-hand side of (20) we obtain that, with probability no less than 1 − β2 over the choice of the N samples, 
+
+W(P, ̂ P ) ≤ g(d, q, Mq (P ), N ) + ϕ
+
+√ log(1 /β 2)2N . (21) By combining (19) and (21) via the union bound, and knowing that g(d, q, Mq (P ), N ) is monotonically increas-ing with Mq (P ), we obtain the desired result. Proof of Lemma 3. We begin with the first statement. Let 16 
+
+t < τ :
+
+W(̂ P eτ , P et ) ≤ W (̂ P eτ , P eτ ) + W(P eτ , P et )
+
+≤ ετ + W(Aτ
+
+> cl ,#
+
+P0, τ −1
+
+# ∗i=0 
+
+(Aτ −1−i 
+
+> cl
+
+G)#Pw,At
+
+> cl ,#
+
+P0
+
+> t−1
+
+# ∗i=0 
+
+(At−1−i 
+
+> cl
+
+G)#Pw)
+
+≤ ετ + W(Aτ
+
+> cl ,#
+
+P0 
+
+> τ−1
+
+# ∗i=0 
+
+(Aτ −1−i 
+
+> cl
+
+G)#Pw,At
+
+> cl ,#
+
+P0 
+
+> τ−1
+
+# ∗i=0 
+
+(Aτ −1−i 
+
+> cl
+
+G)#Pw)+ W(At
+
+> cl ,#
+
+P0 
+
+> τ−1
+
+# ∗i=0 
+
+(Aτ −1−i 
+
+> cl
+
+G)#Pw,At
+
+> cl ,#
+
+P0
+
+> t−1
+
+# ∗i=0 
+
+(At−1−i 
+
+> cl
+
+G)#Pw)
+
+≤ ετ + W(Aτ
+
+> cl ,#
+
+P0, A t
+
+> cl ,#
+
+P0)+ + W(τ −1
+
+# ∗i=0 
+
+(Aτ −1−i 
+
+> cl
+
+G)#Pw, t−1
+
+# ∗i=0 
+
+(At−1−i 
+
+> cl
+
+G)#Pw)
+
+≤ ετ +
+
+∫
+
+> Rn×Rn
+
+‖x − y‖d(Aτ 
+
+> cl
+
+× At
+
+> cl
+
+)#P0(x, y )+ W(τ −1
+
+# ∗i=t
+
+(Ai
+
+> cl
+
+G)#Pw, δ 0)
+
+≤ ετ +
+
+∫
+
+> Rn
+
+‖Aτ
+
+> cl
+
+x − At
+
+> cl
+
+x‖dP 0(x) + W(τ −1
+
+# ∗i=t
+
+(Ai
+
+> cl
+
+G)#Pw, δ 0)
+
+≤ ετ + ‖Aτ 
+
+> cl
+
+− At
+
+> cl
+
+‖M 1(P0) + M1(Pw) 
+
+> τ−1
+
+∑
+
+> i=t
+
+‖Ai
+
+> cl
+
+G‖,
+
+where in the fifth inequality we relied on the fact that 
+
+(Aτ 
+
+> cl
+
+× At
+
+> cl
+
+)P0 is a feasible coupling between Aτ
+
+> cl ,#
+
+P0 and 
+
+At
+
+> cl ,#
+
+P0. Similarly, when t ≥ τ we obtain W(̂ P eτ , P et ) ≤
+
+ετ + ‖At 
+
+> cl
+
+− Aτ
+
+> cl
+
+‖M 1(P0) + M1(Pw) ∑t−1 
+
+> i=τ
+
+‖Ai
+
+> cl
+
+G‖. Next we prove the second statement by bounding fτ (t). Let τ ∈ N0
+
+and t ≥ τ . Note that 
+
+‖At 
+
+> cl
+
+− Aτ
+
+> cl
+
+‖ ≤ max  
+
+> t′≥0
+
+‖At′ 
+
+> cl
+
+− I‖‖ Aτ
+
+> cl
+
+‖, ∀t ≥ τ. 
+
+We now focus on the third term on the right-hand side of (11). We leverage the Jordan-Chevalley decomposition of Acl , by which there exists an invertible matrix V ∈
+
+Rn×n such that Acl = V (Λ + N )V −1, with Λ diagonal and sharing eigenvalues with Acl , N nilpotent and Acl N =
+
+N A cl . With some algebra and through Newton’s binom we obtain that, for all i ∈ N0,
+
+‖Ai
+
+> cl
+
+G‖ ≤ ‖ G‖V (Λ + N )iV −1‖ ≤ ‖ G‖‖ V ‖‖ V −1‖‖ (Λ + N )i‖≤ ‖ G‖‖ V ‖‖ V −1‖‖ 
+
+> n
+
+∑
+
+> k=0
+
+( ik
+
+)
+
+Λi−kN k‖≤ ‖ G‖‖ V ‖‖ V −1‖
+
+[ n∑
+
+> k=0
+
+( ek
+
+)k
+
+‖Λ−kN k‖
+
+]
+
+‖Λi‖in.
+
+(22) Therefore, 
+
+fτ (t) ≤ ετ + max  
+
+> t′≥0
+
+‖At′ 
+
+> cl
+
+− I‖‖ Aτ
+
+> cl
+
+‖M p(P0)+ +Mp(Pw)‖G‖‖ V ‖‖ V −1‖
+
+[ n∑
+
+> k=0
+
+( ek
+
+)k
+
+‖Λ−kN k‖
+
+] ∞∑
+
+> i=τ
+
+‖Λi‖in,
+
+(23) where ‖Λi‖ = |λ|i for some eigenvalue λ of Λ. Since Acl 
+
+is stable, |λ| < 1, and thus the infinite series in (23) converges. Furthermore, it is straightforward to observe that the right-hand side can be made as small as desired for all t ≥ τ by picking τ big enough, thus concluding the proof. Proof of Thm. 1. Let j ∈ { 1, . . . , J } and Ij denote the set of time steps for which the ambiguity set B(̂ P et , ε t)
+
+has been derived from the data-driven one B(̂ P eτj , ε τj ).By Lemma 3, if P eτj ∈ B(̂ P eτj , ε τj ), then P et ∈ B(̂ P et , ε t)
+
+for all t ∈ Ij . Furthermore, since, by construction, P eτj ∈
+
+B(̂ P eτj , ε τj ) with confidence 1 − β/J , then P et ∈ B(̂ P et , ε t)
+
+for all t ∈ Ij with confidence 1−β/J . Since this result holds for every j ∈ { 1, . . . , J }, by the union bound, the overall confidence on the tube containing the entire trajectory of the distribution of the error is no less than 1 − Jβ/J =1 − β, which concludes the proof. Proof of Lemma 4. Let j ∈ { 1, . . . , J }. It is straightfor-ward to observe that if P eτj ∈ P τj , then, by Lemma 3, 
+
+P et ∈ B(̂ P eτj , f τj (t)) ⊆ B(̂ P eτj , ¯εt) for all t ∈ Ij . Since this is the case for all j ∈ { 1, . . . , J }, it follows that 
+
+P et ∈ B(̂ P eτj , ¯εt), and therefore P et (Set ) > psafe for all 
+
+t ∈ N0. Since P eτj ∈ P τj for all j ∈ { 1, . . . , J } holds with confidence of 1 − β, the previous result holds with the same confidence, which concludes the proof. Proof of Thm. 2. Let l ∈ {1, . . . , L }. By construction of the l-th tube, following the same reasoning used in Thm. (1), but relying on Lemma 5 instead of Lemma 3, we obtain that Ml#P et ∈ P el,t , ∀ t ∈ N0 with confidence 
+
+1 − β/L . Therefore, by the union bound we obtain the desired result. Proof of Lemma 6. Let l ∈ { 1, . . . , L } and assume that 
+
+Ml#P et ∈ Pel,t for all t ∈ N0. Then, by the same reasoning followed in the proof of Lemma 4, we obtain that Ml#P et (Sel,t ) > p safe /L for all t ∈ N0. Since the the previous assumption holds with confidence 1 − β/L for each l ∈ { 1, . . . , L }, applying the union bound yields the desired result. Proof of Thm. 3. We first assume without loss of gener-ality that the control constraints in (7) are embedded into the collision-avoidance constraints. Let (Pet )Tt=0 and 
+
+(Set )Tt=0 be respectively the error ambiguity tube obtained from Alg. 2 and the error confidence tube obtained from Alg. 4. Assume that P et ∈ P et and P et [et ∈ Set ] > p safe for all t ∈ N0 and let t ∈ { 0, . . . , T } and a. Since every node corresponding to the motion plan is valid, we have that one of the following conditions holds: 
+
+min  
+
+> P∈P t
+
+P [xt /∈ Xobs 
+
+] > p safe or Xobs 
+
+⋂ ( Set + ¯ xt
+
+) = ∅.
+
+(24) If the first condition holds and noting that P et ∈ B(̂ P et , ε t)
+
+is equivalent to Pt ∈ P t = B(̂ P et ∗ δ¯xt , ε t) by Proposition 1, then Pt
+
+[xt /∈ Xobs 
+
+] > p safe . On the other hand, let the second condition in (24) hold. Since P et [et ∈ Set ] > p safe is 17 
+
+equivalent to Pt[xt ∈ Set + ¯ xt] > p safe , it is easy to verify that Pt
+
+[xt /∈ Xobs 
+
+] > p safe . Since t was chosen arbitrarily, we obtain that whenever, for all t ∈ { 0, . . . , T }, one of the conditions in (24) holds, then Pt
+
+[xt /∈ Xobs 
+
+] > p safe 
+
+for all t ∈ { 0, . . . , T }. Following the previous reasoning we also obtain that, if our assumptions hold, then PT
+
+[xt ∈
+
+Xgoal 
+
+] > p safe . Finally, taking into account Thm. 1 and Lemma 4, we have that P et ∈ P et and P et [et ∈ Set ] > p safe 
+
+for all t ∈ N0 with confidence 1 − β. Therefore we obtain that Pt
+
+[xt /∈ Xobs 
+
+] > p safe for all t and PT
+
+[xt ∈ Xgoal 
+
+] >psafe hold with the same confidence, which concludes the proof. Proof of Thm. 4. The proof follows the same reasoning as the proof of Thm. 2 in [39], which we extend here to account for the stochasticity and ambiguity inherent to our approach. Following the reasoning of [39] is possible because we grow a tree of (deterministic) reference motion plans by planning in the state space and uniformly sampling reference states ¯xrand , feedforward controls ¯urand 
+
+and propagation durations ¯trand . First of all, we highlight that, although our bandit-based validity checker (Alg. 6) sometimes employs the more conservative Alg. 5, this has no impact on probabilistic completeness. The reason is that there is always positive probability of employing Alg. 3, which is less conservative. Furthermore, when an attempt to propagate a node is not allowed by the more conservative algorithm, the probability of using Alg. 3 in the next iteration increases. Therefore, in this proof it suffices to consider that validity checking is performed via Alg. 3. Note that Expression (5) implies that Xobs depends, in the general case, on ¯xt and ¯ut. In this proof, we make this dependence explicit and denote Xobs ≡ Xobs (¯ xt, ¯ut). Let 
+
+Fsafe := {(x, u ) : min   
+
+> P∈P e
+
+P [e + x / ∈ Xobs (x, u )] > p safe }
+
+denote the free state-control space with respect to the ambiguity, i.e., the set of pairs of reference states and feedforward controls that guarantee safety at time t with respect to all distributions in Pe. Similarly, let Fgoal := 
+
+{x ∈ Rn : min P ∈P e P [e + x ∈ Xgoal 
+
+] > p safe }. Note that validity of the motion plan implies that (¯ xt, ¯ut) ∈ Fsafe for all t ∈ { 0, 1, . . . , T } and that ¯xT ∈ Fgoal .Next, define the sequence of Cartesian products of balls 
+
+B(¯ xt, ϵ ) × B(¯ ut, ϵ ) ⊂ Rn+m, with ϵ > 0. We prove that if ϵ
+
+is small enough, then the sets B(¯ xt, ϵ ) × B(¯ ut, ϵ ) ⊂ Rn+m
+
+are completely contained in Fsafe for all t ∈ { 0, 1, . . . , T }
+
+and B(¯ xT , ϵ ) ⊂ Fgoal . For the sake of conciseness we only prove the former for a single t ∈ { 0, 1, . . . , T }. Recall from Section V that, since ̂ P e is discrete, the worst-case probability min P ∈P e P [e + ¯ xt /∈ Xobs (¯ xt, ¯ut)] is a function of the distances dist (ˆei + ¯ xt, Rn \Xobs (¯ xt, ¯ut)) between the atoms ˆei + ¯ xt of ̂ P e ∗ δ¯xt and the outside of Xobs (¯ xt, ¯ut).By continuity of these distances with respect to (¯ xt, ¯ut)
+
+and taking into account Expressions (14) and (15), one can easily check that the function (x, u ) 7 → min P ∈P e P [e+x / ∈
+
+Xobs (x, u )] is continuous, which means that, by picking 
+
+ϵ > 0 small enough, every (x, u ) ∈ B(¯ xt, ϵ )×B(¯ ut, ϵ ) yields a value min P ∈P e P [e + x ∈ Xobs (x, u )] that is arbitrarily close to min P ∈P e P [e + ¯ xt /∈ Xobs (¯ xt, ¯ut)]. Applying the same logic to all time steps and to Fgoal we obtain an ϵ
+
+such that B(¯ xt, ϵ ) × B(¯ ut, ϵ ) ⊂ Fsafe for all t ∈ { 0, . . . , T }
+
+and that B(¯ xt, ϵ ) ⊂ Fgoal .Next, let us define, at every t, a ball B(¯ xt, r t) ⊂ Rn
+
+such that rt+1 := 4 ‖A‖rt and rT = ϵ. By definition, 
+
+B(¯ xt, r t) × B(¯ ut, ϵ ) ⊂ Ffree , and B(¯ xT , ϵ ) ⊂ Fgoal . We now prove that, given that some node ¯x of the tree lies inside B(¯ xt, 2rt/5) , the probability of sampling ¯xrand 
+
+such that ¯xnear lies in B(¯ xt, r t) and it is propagated to ¯xnew ∈ B(¯ xt+1 , 2rt+1 /5) is lower bounded by some constant ρ > 0 uniformly over t. Let t ∈ { 0, 1, . . . , T },
+
+(x, u ) ∈ B(¯ xt, r t) × B(¯ ut, ϵ ) and x′ := Ax + Bu . Taking a look at the reference dynamics in Eq. (3), we obtain that ‖¯xt+1 − x′‖ ≤ ‖ A‖‖ ¯xt − x‖ + ‖B‖‖ ¯ut − u‖. Next, we look for the set of feedforward controls that guarantee 
+
+x′ ∈ B(¯ xt+1 , 2rt+1 /5) , being ‖¯ut − u‖ ≤ 3‖A‖rt/(8 ‖B‖)
+
+a sufficient condition. Note that sampling a feedforward control ¯urand from the ball B(¯ ut, min {3‖A‖r0/(8 ‖B‖), ϵ })
+
+guarantees that (x, ¯urand ) ∈ Fsafe , i.e., that the safety constraint is satisfied at time t, and that any node 
+
+¯x ∈ B(¯ xt, r t) is one-step-ahead propagated to the inside of B(¯ xt+1 , 2rt+1 /5) . Furthermore, the probability of uni-formly sampling such a ¯urand is always bigger than some constant ϱ1,t > 0. Additionally, since System (1) evolves in discrete time, the time duration trand during which ¯urand 
+
+is applied is sampled from a finite set, which means that the probability of sampling trand = 1 is some constant 
+
+ϱ2 > 0. Next, we take into account [39, Lemma 4], which guarantees that if there exists a node ¯x ∈ B(¯ xt, 2rt/5) ,then the probability of uniformly sampling ¯xrand such that ¯xnear ∈ B(¯ xt, r t) is always bigger than some constant 
+
+ϱ3,t > 0. Taking into account that ¯urand , trand and ¯xrand 
+
+are sampled independently, we obtain our desired proba-bility by letting ρ := min {ϱ1,t ϱ2ϱ3,t : t ∈ { 0, 1, . . . , T }} .Assuming without loss of generality that ρ ∈ (0 , 1/2) ,by the reasoning found in the proof of [39, Thm. 1], the probability that after k  T iterations the algo-rithm has not found a valid path is upper bounded by 
+
+T / (T − 1)! kT exp( −ρk ), and therefore approaches 1 as 
+
+k → ∞ , which concludes the proof. Proof of Thm. 5. We first assume without loss of gener-ality that the control constraints in (7) are embedded into the collision-avoidance constraints. Let (Pel,t )Tt=0 and 
+
+(Sel,t )Tt=0 , with l ∈ { 1, . . . , L }, be respectively the lower-dimensional error ambiguity tube obtained from Alg. 7 and the lower-dimensional error confidence tube obtained from Alg. 9. Assume Ml#P et ∈ P el,t and Ml#P et (Sel,t ) >psafe /L for all t ∈ N0, l ∈ { 1, . . . , L }. First, we prove that the safety constraints in (7a) are satisfied. Let 
+
+t ∈ { 0, . . . , T }. Since every node corresponding to the motion plan is valid, we have that one of the following 18 
+
+conditions holds: 
+
+(
+
+1 − L +
+
+> L
+
+∑
+
+> l=1
+
+min  
+
+> P∈P l,t
+
+P (Rnl \ Y l
+
+> obs
+
+) > p safe 
+
+)
+
+or 
+
+(
+
+Y l
+
+> obs
+
+⋂ ( Sel,t + Ml ¯xt
+
+) = ∅, ∀l ∈ { 1, . . . , L }
+
+)
+
+.
+
+(25) If the first condition holds and noting that Ml#P et ∈ P el,t =
+
+B(Ml#̂ P et , ε l,t ) is equivalent to Ml#P et ∗ δMl ¯xt ∈ P l,t =
+
+B(Ml#̂ P et ∗ δMl ¯xt , ε l,t ) by Proposition 1, then 
+
+Pt
+
+[xt /∈ Xobs 
+
+] =1 − P et ∗ δ¯xt (Xobs ) ≥ 1 −
+
+> L
+
+∑
+
+> l=1
+
+P et ∗ δ¯xt (Xl
+
+> obs
+
+)= 1 −
+
+> L
+
+∑
+
+> l=1
+
+Ml#P et ∗ δMl ¯xt (Y l
+
+> obs
+
+)
+
+≥ 1 −
+
+> L
+
+∑
+
+> l=1
+
+max  
+
+> P∈P l,t
+
+P (Y l
+
+> obs
+
+) = 1 − L +
+
+> L
+
+∑
+
+> l=1
+
+min  
+
+> P∈P l,t
+
+P (Rnl \ Y l
+
+> obs
+
+)
+
+> p safe .
+
+(26) On the other hand, let the second condition in (25) hold. Since Ml#P et (Sel,t ) > p safe /L is equivalent to Ml#Pt(Sel,t +
+
+Ml ¯xt) > p safe /L , we obtain, following the same reasoning as in (26), that 
+
+Pt
+
+[xt /∈ Xobs 
+
+] ≥ 1 −
+
+> L
+
+∑
+
+> l=1
+
+Ml#Pt(Y l
+
+> obs
+
+)
+
+≥
+
+> L
+
+∑
+
+> l=1
+
+Ml#Pt(Sel,t + Ml ¯xt) > 1 −
+
+> L
+
+∑
+
+> l=1
+
+psafe 
+
+L > p safe .
+
+(27) Since t was chosen arbitrarily, we obtain that whenever, for all t ∈ { 0, . . . , T }, one of the conditions in (25) holds, then Pt
+
+[xt /∈ Xobs 
+
+] > p safe for all t ∈ { 0, . . . , T }.Next, we prove that the goal-reachability constraint (7b) holds at time T . Since the motion plan is valid, we have that one of the following conditions holds: 
+
+(
+
+1 − L +
+
+> L
+
+∑
+
+> l=1
+
+min  
+
+> P∈P l,t
+
+P (Rnl \ Y l
+
+> goal
+
+) > p safe 
+
+)
+
+or 
+
+((Sel,t + Ml ¯xt
+
+) ⊆ Y l
+
+> goal
+
+, ∀l ∈ { 1, . . . , L }
+
+)
+
+.
+
+(28) Noting that 
+
+PT (Xgoal ) = PT
+
+( L⋂
+
+> l=1
+
+Xl
+
+> goal
+
+)
+
+= 1 − PT
+
+( L⋃
+
+> l=1
+
+Rn \ Xl
+
+> goal
+
+)
+
+,
+
+and following the reasoning of (26) and (27), we also ob-tain that, if our assumptions hold, then PT
+
+[xt ∈ Xgoal 
+
+] >psafe . Finally, taking into account Thm. 2 and Lemma 6, we have that Ml#P et ∈ P el,t and Ml#P et (Sel,t ) > p safe /L for all t ∈ N0, l ∈ { 1, . . . , L }, with confidence 1 − β. Therefore we obtain that Pt
+
+[xt /∈ Xobs 
+
+] > p safe for all t ∈ N0 and 
+
+PT
+
+[xt ∈ Xgoal 
+
+] > p safe hold with the same confidence, which concludes the proof. Proof of Thm. 6. The proof is analogous to that of Thm. 4, with the only difference of defining 
+
+Fsafe := {(x, u ) ∈ Rn+m :1 −
+
+> L
+
+∑
+
+> l=1
+
+max  
+
+> P∈P el
+
+P [Ml(e + x) /∈ Y l
+
+> obs
+
+(x, u )] > p safe },
+
+and Fgoal in a similar way. References 
+
+[1] S. LaValle, “Rapidly-exploring random trees : a new tool for path planning,” The annual research report, 1998. [2] S. Karaman and E. Frazzoli, “Sampling-based algorithms for optimal motion planning,” vol. 30, no. 7, pp. 846–894, 2011. [3] Y. Li, Z. Littlefield, and K. E. Bekris, “Asymptotically optimal sampling-based kinodynamic planning,” vol. 35, no. 5, pp. 528– 564, 2016. [4] J. Cortés and T. Siméon, Sampling-Based Tree Planners (RRT, EST, and Variations), 2020, pp. 1–9. [5] B. D. Luders and J. P. How, “An optimizing sampling-based motion planner with guaranteed robustness to bounded uncer-tainty,” in 2014 American Control Conference. IEEE, 2014, pp. 771–777. [6] A. Wu, T. Lew, K. Solovey, E. Schmerling, and M. Pavone, “Robust-rrt: Probabilistically-complete motion planning for un-certain nonlinear systems,” in The International Symposium of Robotics Research. Springer, 2022, pp. 538–554. [7] A. Majumdar and R. Tedrake, “Funnel libraries for real-time robust feedback motion planning,” The International Journal of Robotics Research, vol. 36, no. 8, pp. 947–982, 2017. [8] B. T. Lopez, J.-J. E. Slotine, and J. P. How, “Dynamic tube mpc for nonlinear systems,” in 2019 American Control Conference (ACC), 2019, pp. 1655–1662. [9] B. Luders, M. Kothari, and J. How, “Chance constrained RRT for probabilistic robustness to environmental uncertainty,” AIAA guidance, navigation, and control conference, 2010. [10] Q. H. Ho, Z. N. Sunberg, and M. Lahijanian, “Gaussian belief trees for chance constrained asymptotically optimal motion planning,” 2022, pp. 11 029–11 035. [11] L. Lindemann, M. Cleaveland, Y. Kantaros, and G. J. Pappas, “Robust motion planning in the presence of estimation uncer-tainty,” in 2021 60th IEEE Conference on Decision and Control (CDC), 2021, pp. 5205–5212. [12] Y. Kantaros, S. Kalluraya, Q. Jin, and G. J. Pappas, “Perception-based temporal logic planning in uncertain seman-tic maps,” IEEE Transactions on Robotics, vol. 38, no. 4, pp. 2536–2556, 2022. [13] S. Prentice and N. Roy, “The belief roadmap: Efficient planning in belief space by factoring the covariance,” The International Journal of Robotics Research, vol. 28, no. 11-12, pp. 1448–1465, 2009. [14] A. Bry and N. Roy, “Rapidly-exploring random belief trees for motion planning under uncertainty,” in IEEE Int’l Conf. on Robotics and Automation, May 2011, pp. 723–730. [15] T. Summers, “Distributionally robust sampling-based motion planning under uncertainty,” in 2018 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS). IEEE, 2018, pp. 6518–6523. [16] K. Ekenberg, V. Renganathan, and B. Olofsson, “Distribution-ally robust rrt with risk allocation,” in 2023 IEEE International Conference on Robotics and Automation (ICRA). IEEE, 2023, pp. 12 693–12 699. [17] R. Gao and A. Kleywegt, “Distributionally robust stochastic optimization with wasserstein distance,” Mathematics of Oper-ations Research, vol. 48, no. 2, pp. 603–655, 2023. [18] P. Mohajerin Esfahani and D. Kuhn, “Data-driven distribution-ally robust optimization using the wasserstein metric: Perfor-mance guarantees and tractable reformulations,” Mathematical Programming, vol. 171, no. 1, pp. 115–166, 2018. 19 
+
+[19] J. Blanchet and K. Murthy, “Quantifying distributional model risk via optimal transport,” Mathematics of Operations Re-search, vol. 44, no. 2, pp. 565–600, 2019. [20] D. Boskos, J. Cortés, and S. Martínez, “High-confidence data-driven ambiguity sets for time-varying linear systems,” IEEE Transactions on Automatic Control, 2023. [21] L. Aolaritei, N. Lanzetti, H. Chen, and F. Dörfler, “Uncertainty propagation via optimal transport ambiguity sets,” arXiv e-prints, pp. arXiv–2205, 2022. [22] L. Aolaritei, N. Lanzetti, and F. Dörfler, “Capture, propagate, and control distributional uncertainty,” in 2023 62nd IEEE Conference on Decision and Control (CDC). IEEE, 2023, pp. 3081–3086. [23] P. Lathrop, B. Boardman, and S. Martínez, “Distributionally safe path planning: wasserstein safe rrt,” IEEE Robotics and Automation Letters, vol. 7, no. 1, pp. 430–437, 2021. [24] A. Hakobyan and I. Yang, “Distributionally robust risk map for learning-based motion planning and control: A semidefinite pro-gramming approach,” IEEE Transactions on Robotics, vol. 39, no. 1, pp. 718–737, 2022. [25] ——, “Wasserstein distributionally robust motion planning and control with safety constraints using conditional value-at-risk,” in 2020 IEEE International Conference on Robotics and Automation (ICRA). IEEE, 2020, pp. 490–496. [26] L. Aolaritei, M. Fochesato, J. Lygeros, and F. Dörfler, “Wasser-stein tube mpc with exact uncertainty propagation,” in 2023 62nd IEEE Conference on Decision and Control (CDC). IEEE, 2023, pp. 2036–2041. [27] P. Artzner, F. Delbaen, J.-M. Eber, and D. Heath, “Coherent measures of risk,” Mathematical finance, vol. 9, no. 3, pp. 203– 228, 1999. [28] L. M. Chaouach, T. Oomen, and D. Boskos, “Structured ambiguity sets for distributionally robust optimization,” arXiv preprint arXiv:2310.20657, 2023. [29] B. Luders, M. Kothari, and J. How, “Chance constrained rrt for probabilistic robustness to environmental uncertainty,” in AIAA guidance, navigation, and control conference, 2010, p. 8160. [30] N. Fournier and A. Guillin, “On the rate of convergence in wasserstein distance of the empirical measure,” Probability theory and related fields, vol. 162, no. 3, pp. 707–738, 2015. [31] N. Fournier, “Convergence of the empirical measure in expected wasserstein distance: non asymptotic explicit bounds in Rd,” arXiv preprint arXiv:2209.00923, 2022. [32] I. Gracia, D. Boskos, L. Laurenti, and M. Lahijanian, “Data-driven strategy synthesis for stochastic systems with unknown nonlinear disturbances,” arXiv preprint arXiv:2406.09704, 2024. [33] M. Althoff, “An introduction to cora 2015,” in Proc. of the workshop on applied verification for continuous and hybrid systems, 2015, pp. 120–151. [34] N. Rujeerapaiboon, K. Schindler, D. Kuhn, and W. Wiesemann, “Scenario reduction revisited: Fundamental limits and guaran-tees,” Mathematical Programming, vol. 191, no. 1, pp. 207–242, 2022. [35] S. Lloyd, “Least squares quantization in pcm,” IEEE transac-tions on information theory, vol. 28, no. 2, pp. 129–137, 1982. [36] I. A. Şucan, M. Moll, and L. E. Kavraki, “The Open Mo-tion Planning Library,” IEEE Robotics & Automation Mag-azine, vol. 19, no. 4, pp. 72–82, December 2012, https://ompl. kavrakilab.org. [37] M. Kleinbort, K. Solovey, Z. Littlefield, K. E. Bekris, and D. Halperin, “Probabilistic completeness of rrt for geometric and kinodynamic planning with forward propagation,” IEEE Robotics and Automation Letters, vol. 4, no. 2, pp. i–vii, 2019. [38] C. Villani, Topics in optimal transportation. American Math-ematical Soc., 2021, vol. 58. [39] M. Kleinbort, K. Solovey, Z. Littlefield, K. E. Bekris, and D. Halperin, “Probabilistic completeness of rrt for geometric and kinodynamic planning with forward propagation,” arXiv preprint arXiv:1809.07051, 2018.

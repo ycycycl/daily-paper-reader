@@ -1,0 +1,335 @@
+Title: Make Your VLA More Robust Without More Data By Interleaving Motion Planning
+
+URL Source: https://arxiv.org/pdf/2606.00985v1
+
+Published Time: Tue, 02 Jun 2026 01:10:35 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# Make Your VLA More Robust Without More Data By Interleaving Motion Planning 
+
+Dan B.W. Choe ∗
+
+, Sundhar Vinodh Sangeetha ∗
+
+, Samuel Coogan, Shreyas Kousik 
+
+Georgia Institute of Technology 
+
+Abstract: Vision-Language-Action (VLA) models have shown remarkable progress for mobile manipulation, but their performance on long-horizon tasks remains poor. These tasks are especially challenging because (1) progress toward high-level goals must be maintained across extended sequences of spatially dis-tributed subtasks, and (2) early execution errors compound rapidly over the task horizon. These challenges persist despite finetuning on large human teleoperated mobile manipulation data, indicating that more data alone may not resolve the problem. To address these challenges, we propose MPVI: Motion Planner / VLA Interleaving, a framework that integrates model-based motion planning with VLAs to improve robustness without further training. The proposed integration enables localization and navigation to distant or occluded target objects through cluttered scenes using open-vocabulary object detection, frontier exploration and motion planning. However, such integration is non-trivial, requiring reliable switching between modules; we show one way forward via VLM-based completion check-ing with proprioceptive triggers. We evaluate our approach on the BEHAVIOR-1K benchmark and demonstrate 113% improvement in task progress over a top end-to-end VLA baseline. Additional details are available at the project page: https://mpvi.netlify.app/. 
+
+Keywords: Combination of learning and planning in robotics, Vision-Language-Action Models, Mobile Manipulation 
+
+## 1 Introduction 
+
+Long-horizon mobile manipulation, especially in the context of household robotics tasks, remains a significant challenge for several reasons: household scenes are cluttered, contain diverse objects and long-horizon tasks require robots to execute extended sequences of spatially distributed subtasks while maintaining progress towards a high level goal. A current paradigm for addressing these challenges is to train large Vision-Language-Action (VLA) models that output low-level robot actions using natural language task descriptions and camera images. These models rely on internet-scale pretraining and large robotics datasets [ 1, 2, 3, 4] to learn policies that can generalize across tasks and environments. As a canonical example, the BEHAVIOR-1K benchmark [ 5 ] provides 1,000 household tasks that involve long-horizon mobile manipulation. The 2025 BEHAVIOR Challenge at NeurIPS [ 6] selects a 50-task subset for evaluation and releases 1,200 hours of human teleoperated training data across 10,000 demonstrations of these tasks. Despite this large dataset and a variety of training methods developed by participants in the 2025 BEHAVIOR Challenge [ 7, 8], VLAs achieve poor performance in the benchmark, with the best competition solution achieving only 12.4% average success rate across all tasks. A recent systematic failure analysis of the top BEHAVIOR-1K solutions uncovers failure modes such as navigation failures, collisions, poor spatial grounding, and execution-order confusion [ 9]. 
+
+> ∗
+
+Equal contribution. Corresponding authors: {bchoe7 , ssangeetha3 }@gatech.edu .All authors are with the Georgia Institute of Technology, Atlanta, GA, USA     
+
+> arXiv:2606.00985v1 [cs.RO] 31 May 2026 DC
+> MPVI (Ours)
+> End-to-End VLA [8] Start
+> End
+> End
+> (B) Success of our hybrid approach
+> End-to-End VLA [8] Evaluation Rollout
+> (A) Policy failure under dense training data
+> Place Soda Can in Trash Can
+> Pick up Trash Can
+> Demo Data
+> 00.5 1
+> Time in Episode
+
+Figure 1: (A) An evaluation trajectory rollout of the baseline end-to-end VLA model (red) is overlaid against the extensive set of expert demonstration training data (color-coded by episodic time). Although the evaluation task lies entirely within the high-density support of the training distribution, the end-to-end VLA exhibits task failure. This highlights a fundamental structural bottleneck that cannot be mitigated simply by scaling training data. (B) MPVI integrates classical motion planning for navigation with a VLA for manipulation, improving task success in long-horizon mobile manipulation. On a task requiring the robot to locate and grasp a trash can with one hand (C), then collect soda cans from multiple locations and place them into the held trash can (D), an end-to-end VLA baseline (red) is unable to successfully complete the task due to navigation failure and execution order confusion. Our method (blue) applies classical planning for navigation, avoiding such failure modes and enabling reliable task completion. These failures point to architectural challenges in long-horizon memory, task progress tracking, and spatial reasoning that are difficult to resolve within a purely end-to-end VLA framework. Many of these failure modes correspond to problems that classical planning methods are explicitly designed to address, such as navigating to distant objects and computing collision-free paths through obstacle-dense scenes. In this work, we ask how classical motion planning should be integrated with Vision-Language Action models to improve success rates over end-to-end VLAs on long-horizon mobile manipulation tasks, and present a recipe for doing so. While previous works have integrated classical motion planners with VLAs, such methods have primarily used motion planning for short, pre-grasp motions with fixed-base VLAs on short-horizon pick-and-place tasks [ 10 , 11 , 12 ]. These works also motivate the use of classical motion planning by citing a lack of large-scale mobile manipulation datasets. However, we consider long-horizon, complex mobile manipulation tasks where state-of-the-art whole-body VLA models achieve low performance despite finetuning on the large teleoperated training datasets provided in the BEHAVIOR-1K benchmark. Together, these results encourage our investigation into hybrid approaches that leverage the complementary strengths of learned policies and classical planners. In summary, we make the following contributions: 1. We develop a framework, MPVI: Motion Planner / VLA Interleaving, that carefully integrates a motion planner with a VLA. We demonstrate that a motion planner can serve as a steering mechanism for VLAs, mitigating failures in long-horizon mobile manipulation tasks. 2. We introduce a subtask transition mechanism that grounds semantic visual completion checking in physical proprioception. We identify that relying solely on vision-language reasoning for task transitions leads to cascading failures driven by VLM hallucinations. 3. We show through a thorough experimental evaluation on the BEHAVIOR-1K benchmark, comprising realistic long-horizon household robotics tasks in a high-fidelity simulator, that MPVI improves task success by addressing failure modes of a SoTA end-to-end VLA baseline. 22 Related Work 
+
+We now discuss works on long-horizon mobile manipulation tasks specified in natural language, focusing on state-of-the-art end-to-end VLA approaches and methods to integrate classical motion planning methods with VLAs. 
+
+2.1 VLAs for Long-Horizon Mobile Manipulation 
+
+VLAs struggle to maintain coherent behavior over extended task sequences due to errors that propagate and compound across subtasks [ 13 , 14 ]. Task decomposition and large-scale data aggregation are the main strategies used to address this issue [15, 16, 17]. 
+
+Task Decomposition Recent works decompose complex tasks into shorter subtasks using the semantic knowledge of LLMs and VLMs [ 18 , 19 , 20 , 21 ]. For example, π0.7, a state-of-the-art VLA, first predicts high-level semantic subtasks using a separate learned policy then generates low-level actions conditioned on this prediction with the VLA model [ 22 ]. Since open-source code for π0.7 has not been published at the time of writing, we adopt the π0.5 VLA [ 17 ] as the manipulation policy in our method. Leading BEHAVIOR-1K solutions [ 7, 8] use π0.5 in an end-to-end manner. Considering navigation and manipulation separately in task decomposition of mobile manipulation tasks has been shown to yield improvements. For example, Long-VLA [ 15 ] segments subtasks into moving and interaction phases and masks input to the VLA dependent on the current phase, allowing it to focus on phase relevant inputs and improving performance. 
+
+Scaling Data VLA performance on long-horizon tasks also depends strongly on the scale and diversity of training data. Recent efforts expand robot learning data through multi-robot collection [ 1, 3], cross-embodiment transfer [ 2 ], and internet-scale non-robot data [ 17 ]. BEHAVIOR-1K competition solutions follow a similar direction, expanding the training dataset by introducing random pose perturbations and retaining successful rollouts from the pre-trained policy, and generating approximately 3,600 additional manipulation trajectories using a motion planner [8]. 
+
+2.2 Integrating Motion Planners with VLAs 
+
+Several recent works have explored integrating classical motion planning with VLAs to tackle mobile manipulation tasks. In general, these works consider integration with fixed-base VLAs that control only the robot upper body, as opposed to whole-body VLAs, motivating their approach by citing a lack of sufficient training data for whole-body mobile manipulation [ 23 , 10 , 11 , 12 ]. In contrast, we show that the integration of classical motion planning provides superior performance on mobile manipulation tasks even with VLAs designed for whole-body control and trained on large-scale whole-body mobile manipulation datasets. One line of work uses trajectory optimization to coordinate base and arm motion for pre-grasp navigation [ 23 , 10 ]. These methods extract a target end-effector pose, either from the VLA’s action output or by using a Vision-Language Model (VLM) to identify contact points on the robot and target object, and plan a trajectory to reach it. However, this integration is inherently limited to short-range motion while the robot is already positioned near the target object. These approaches cannot perform navigation across or even within rooms, restricting their applicability to a narrow segment of mobile manipulation tasks. Closest to our work, AnywhereVLA [ 12 ] combines frontier exploration and motion planning with a fixed-base VLA manipulation policy, navigating to a pose relative to the target object before executing manipulation. However, this method lacks detection of manipulation subtask completion and does not perform task decomposition, limiting it to short horizon tasks. Its evaluation consists solely of instructions of the form “pick up the [object] and place it in the [area]” and “bring the [object] to [location].” In contrast, we couple task decomposition with proprioception-triggered completion checking, enabling reliable handoffs between navigation and manipulation across arbitrarily many subtasks and thus scaling to the long-horizon, multi-stage household tasks in BEHAVIOR-1K. 33 Problem Formulation 
+
+We consider long-horizon mobile manipulation tasks. Each task is specified by a natural language instruction ℓ (e.g., “put the soda cans in the living room in the trash can in the kitchen”). At each timestep t, the robot observes its proprioceptive state qt and RGBD images from head- and wrist-mounted cameras. We assume access to a map of the environment a priori ; a reasonable assumption in household settings, where robust semantic mapping and localization methods are well established [24, 25] but do not assume knowledge of task object locations. Task completion is defined using the Behavior Domain Definition Language (BDDL) [ 5, 26 ], which specifies goal conditions as logical predicates over object states; these BDDL goal conditions are not made available to the robot, and are only used for evaluation. A task is successful if the robot achieves a environment configuration satisfying the predicates within a fixed time horizon. 
+
+## 4 Method Navigation   
+
+> Policy
+> Environment
+> Completion Checker
+> Orchestrator manip subtask
+> nav subtask
+> object
+> info
+> subtask
+> completion criteria observation
+> actions
+> go to
+> next
+> subtask
+> subtask
+> plan
+> Subtask
+> Planner
+> y
+> n
+> knowledge
+> base
+> task description
+> “Put the three cans of soda
+> from the living room inside
+> the trash can in the kitchen”
+> “soda can is placed
+> in the trash can”
+> switch
+> Proprio.
+> Trigger
+> subtask
+> done?
+> Object
+> Detector
+> Manipulation
+> Policy
+
+Figure 2: Overview of the proposed method. We design an Orchestrator to switch between a Manipulation Policy (VLA) and a Navigation Policy (classical motion planner) depending on the subtask plan generated by a Subtask Planner (LLM). The Navigation Policy also returns environment object information to the Orchestrator to keep track of subtask progress for its switching logic. For the system to know when to query the Orchestrator, we design a Completion Checker that uses a proprioceptive trigger to decide when to check if a subtask is complete (by querying a VLM). Fig. 2 shows the overall MPVI framework and its control flow. It comprises five modules: (1) a 
+
+Subtask Planner (LLM), (2) an Orchestrator , (3) a Navigation module (motion planner), (4) a 
+
+Manipulation module (VLA), and (5) a Completion Checker (VLM). MPVI is deliberately modular, treating each component as a black box and remaining agnostic to the specific LLM, VLM, VLA, or motion planner used. Our contribution is therefore at the integration level, addressing how a motion planner and a VLA should be composed to solve long-horizon mobile manipulation. The framework benefits from improvements to any of its constituent modules. The remainder of this section describes the role of each of the five modules, with implementation details deferred to Appx. C. 
+
+Subtask Planning End-to-end VLAs compound errors over long horizons [ 13 , 14 ]. We prompt the LLM to decompose the task instruction ℓ into short subtasks, each tagged as navigation or manipulation. Each subtask also carries a state-based completion criterion, a predicate over the world state (e.g., “the can is in the trash”) rather than an action predicate (e.g., “the robot placed the can”), because the former is verifiable from a single image, whereas the latter requires temporal reasoning over a sequence of frames. Full prompt, fine-tuning, and post-processing details are in Appx. C.1. 
+
+Orchestrator The orchestrator serves two functions: (i) routing subtasks to the motion planner or the VLA, and (ii) tracking subtask completion. It processes the plan P sequentially, dispatching each navigation subtask individually and grouping consecutive manipulation subtasks into a single execution unit passed to the VLA together with the completion criterion of the final manipulation subtask in the group. Throughout execution it maintains a knowledge base of rooms, areas, large fixtures, and objects discovered during navigation, enabling subsequent navigation segments targeting the same object to plan directly rather than repeating the visual search. If a module fails to complete 4its subtask within a fixed time budget, the orchestrator marks the subtask failed and advances to the next segment (Appx. C.2). 
+
+Navigation Recent failure analyses of end-to-end VLAs on long-horizon tasks identify navigation errors, collisions, and execution-order confusion as recurring failure modes [ 9], precisely the modes that classical motion planning addresses by construction. We therefore use A* motion planning 2
+
+for all base motion, using the VLA only inside the manipulation handoff radius around the target. Classical motion planning generally assumes access to an obstacle/traversability map with labeled rooms and accurate robot localization; this is a reasonable assumption in household settings, where robust semantic mapping and localization methods are by now well established [ 24 , 25 ]. Finding the target object itself (e.g., a fridge) is handled at runtime: the orchestrator’s knowledge base is queried first; if the object location is unknown, then open-vocabulary detection with GroundingDINO [ 29 ]and frontier-based exploration [30] are applied to search for the object (Appx. C.3). 
+
+Manipulation Manipulation subtasks are executed by a VLA, which receives the subtask descrip-tion δi and RGB images from the robot’s head and wrist cameras as input, and outputs robot actions. In our experiments we use openpi-comet [ 8 ] as the manipulation policy without further training. Openpi-comet is built on π0.5 [17 ] and fine-tuned on the teleoperation dataset released for the 2025 BEHAVIOR Challenge at NeurIPS [ 6], with additional motion-planner-synthesized trajectories and successful rollouts retained during RL training. The orchestrator transfers control to the VLA once the robot is within the handoff distance dh of the target object, and execution continues until the completion checker signals subtask termination. 
+
+Completion Checker Reliable detection of manipulation subtask completion is essential for triggering handoff back to the motion planner. Periodic VLM polling is unsuitable, as queries are computationally expensive and each query introduces an independent risk of hallucination, whereby a single false positive prematurely terminates manipulation and induces cascading failures in subsequent subtasks. We therefore condition VLM queries on proprioceptive signals, triggering a completion check only when gripper or arm state indicates that a manipulation primitive such as a pick or place has just terminated. Our implementation uses Gemini 2.5 Flash [ 31 ] as the completion checker. Fig. 3b illustrates the contrast between periodic polling and our proprioception-triggered query. Further design considerations are deferred to Appx. C.4. 
+
+## 5 Experiments 
+
+In Sec. 5.2 we study how MPVI compare to end-to-end VLA approaches on long-horizon mobile manipulation tasks from BEHAVIOR-1K. Our hybrid approach increases task progress by 113% over the end-to-end baseline. We then consider how each component with the framework contributes to this improvement with an ablation study Sec. 5.3. 
+
+5.1 Experiment Design Dataset and Baselines We evaluate on the complete 50 task set of BEHAVIOR-1K [ 5] from the 2025 BEHAVIOR Challenge at NeurIPS [ 6 ] in the OmniGibson simulator [ 32 ], with 10 instances per task where the object positions and the initial robot pose are varied. We compare against openpi-comet [ 8 ], the second-place solution at the challenge, which uses a whole-body VLA ( π0.5) and achieves an 11.40% success rate; we adopt this baseline rather than the first-place solution [ 7] (12.40% success rate) as the latter relies on human-engineered, task-specific heuristics that limit generalization beyond the evaluation tasks. As comparing VLA performance requires carefully aligned testing conditions [ 9 ] and openpi-comet reports best-of-N results under specific evaluation settings, we rerun their released code within our own standardized framework to establish our baseline. Furthermore,  
+
+> 2Consistent with our modular design, the specific choice of A* is incidental. Our contribution is the interleaving with the VLA rather than the planner itself, and we expect the gains reported in Sec. 5 to compound with more sophisticated classical planners [27, 28].
+
+5Simulation Frames (30 FPS)    
+
+> Trash Can
+> Occluded
+> B
+> A
+> MPVI (Ours)
+> End-to-End VLA [7]
+> Gripper Action
+> (a) Long-horizon navigation (b) Comparison of VLM completion-checking strategies
+> Fixed Period VLM Query
+> HEAD
+> L_WRIST R_WRIST
+> HEAD
+> No grasp
+> Proprioception Triggered VLM Query
+> HEAD HEAD
+> L_WRIST R_WRIST
+> Grasped
+> 0
+> 1
+
+Figure 3: (a) Rollouts of the baseline VLA (red) and MPVI (blue) navigating toward a trash can initially occluded from the start pose (A). The baseline VLA fails to progress; MPVI combines open-vocabulary detection with frontier exploration (B) to locate and reach the target. (b) (Left, red) A fixed-period query at frame 900 passes all three camera views to the VLM. The trash can is visible in the head view, so the VLM returns a false positive judgment despite the gripper not having closed; this false positive cascades into subsequent subtasks. (Right, blue) Our proprioceptive trigger fires at frame 1020, once the right gripper closes and holds at a nonzero width, and directs the VLM to the corresponding wrist view (R WRIST), yielding reliable completion detection (gain quantified in Sec. 5.3). since our architecture incorporates their VLA as a module, our primary focus remains on the relative improvement achieved through our integration. All experiments are run with a 24-core Intel Xeon Gold 6226 CPU, 128 GB RAM, and two NVIDIA Quadro RTX6000 GPUs (48 GB VRAM). 
+
+5.2 MPVI vs. End-to-end VLA 5.2.1 Metrics 
+
+We adopt the four metrics introduced by BEHAVIOR-100 [ 26 ] and used for evaluation in the BEHAVIOR-1K challenge: Q-score (fraction of goal BDDL predicates satisfied at episode end), normalized simulation time (relative to human demonstration on the same task), base distance, and end-effector distance. Since raw distance and time are confounded by task progress, we additionally report these on episode pairs with matching Q-scores. 
+
+5.2.2 Results and Discussion 
+
+Complete results are presented in Appx. A and summarized in Fig. 4. Gains concentrate on long-horizon tasks with many sub-goals across distinct locations, a regime in which Rasouli et al. [ 9]identify navigation failure, execution-order confusion, and abrupt termination as recurring failures modes. Our method correspondingly does not improve performance on tasks where dexterous manipulation, like chopping vegetables, is the key bottleneck. We attribute regression in task success to excessive motion planner intervention in scenarios where the VLA exhibits superior performance, such as maneuvering through narrow doorways while carrying objects. Future work will address this limitation by developing adaptive intervention strategies triggered by deviations from the demonstration manifold and failure detection rather than relying on static subtask boundaries between navigation and manipulation. Appx. B details several failure modes we observed in the end-to-end VLA baseline that MPVI is able to address, adding a qualitative explanation to the quantitative results below. 621 
+
+> 17
+> 18
+> 9
+> 45
+> 11
+> 1
+> 39
+> 12
+> 38
+> 40
+> 44
+> 26
+> 19
+> 20
+> 29
+> 7
+> 42
+> 6
+> 15
+> 43
+> 47
+> 5
+> 25
+> 8
+> 27
+> 2
+> 30
+> 28
+> 23
+> 3
+> 4
+> 48
+> 35
+> 46
+> 36
+> 37
+> 31
+> 14
+> 41
+> 34
+> 49
+> 32
+> 0
+> 24
+> 22
+> 33
+> 10
+> 16
+> 13
+> Task ID
+> 0.3
+> 0.2
+> 0.1
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> Q-Score (  better)
+
+Figure 4: Task progress improvement over baseline end-to-end VLA [ 8]. MPVI increases the mean Q-Score across all 50 tasks by 113% with progress gains on 31 tasks (blue), matching the baseline on 16 tasks, and regressions on 3 tasks (red). Hatched bars indicate tasks in which the baseline did not complete any subtasks successfully (Q-score = 0). To isolate efficiency differences from the confounding effect of task progress, we compare episodes in which both methods achieved match-ing Q-scores ( N = 20 episodes). Un-der this controlled comparison, our method exhibits 4.5% lower base dis-tance traveled and 9.8% lower normal-ized simulation time. These modest differences suggest that, when task progress is equivalent, the efficiency of navigation learned from human demonstrations is broadly comparable to that of motion-planner-based navi-gation. Accordingly, the primary ben-efit of MPVI is not more efficient nav-igation in tasks where an end-to-end VLA would succeed, but improved ro-bustness to failures that would other-wise degrade task performance. While our method uses the VLA for manip-ulation, it achieves 13% lower end-effector displacement, as it keeps the arm fixed during navigation, whereas the end-to-end VLA baseline produces unnecessary arm motion during navigation. 
+
+5.3 Ablation Study 
+
+We conduct an ablation study to evaluate the contribution of three key components: classical motion planning for navigation beyond granular task decomposition alone (Sec. 4), our object detection and exploration procedure (Sec. 4), and our proprioception-triggered completion checking (Sec. 4). Fig. 5 reports their quantitative impact through resulting Q-scores for each variant. We evaluate ablations on a subset of 12 tasks for which the baseline, openpi-comet [ 8 ], provides a separate checkpoint finetuned only on demonstrations of these tasks rather than the complete task set. 
+
+Subtask Prediction To isolate the contribution of classical motion planning from that of granu-lar task decomposition, we replace the motion planner with the VLA for all navigation subtasks, sequentially prompting it with subtask descriptions from our task planner and transitioning via our completion checker. This mirrors the “subtask prediction” approach in models like π0.5 [17 ]. Decomposition alone improves over the baseline but does not match our full method. Even with granular subtask descriptions, the VLA still fails at exploration and long-distance traversal through clutter which classical motion planning addresses. 
+
+Object Detection and Exploration We replace our GroundingDINO-based object localization and search module with ground-truth object positions from the simulator. In most tasks, we observe minimal improvement in task success using ground truth object positions, suggesting that perception and exploration is not a significant bottleneck. However, we observe a large improvement in Q-score with ground-truth positions in tasks taking place in a large, open, outdoor setting (e.g., 
+
+hiding Easter eggs ). 
+
+Completion Checking We replace proprioceptive-triggered VLM completion checking with peri-odic polling every 300 simulation steps (10 s). Removing the trigger produces two failure modes. False positives signal subtask completion prematurely, causing the robot to navigate to the next sub-task location and leading to cascading failures. False negatives prevent the framework from switching 71 6 17 18 22 30 40 45       
+
+> Task ID
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Q-score
+> 00000
+> Baseline: End-to-End VLA Ours: MPVI
+> Ablation: Subtask Prediction Ablation: Proprioceptive Completion Ablation: Oracle Object Localization
+
+Figure 5: Ablation Study Results. Q-scores across a 12-task subset comparing our full method (MPVI) and the openpi-comet baseline to three system ablations. Tasks involving dexterous manipu-lation in which all methods achieve zero Q-score are omitted from the figure ( turning on radio, wash a baseball cap, hanging pictures, attach a camera to a tripod ). Relying only on Subtask Prediction drops performance by 31% relative to MPVI, though it remains 41% better than the baseline. Removing Proprioceptive Completion triggers decreases MPVI performance by 47%. Isolating perception with Oracle Object Localization improves Q-scores by 17% over MPVI and 138% over the baseline. from the VLA back to the motion planner, effectively reducing our method to the end-to-end VLA since base motion is allowed during manipulation. 
+
+## 6 Conclusion 
+
+End-to-end Vision-Language-Action models underperform on long-horizon mobile manipulation despite training on large teleoperated expert demonstration datasets. We introduce MPVI, which interleaves a VLA with classical motion planning through LLM-based subtask decomposition, subtask orchestration, navigation grounded by open-vocabulary detection and frontier exploration, and proprioception-triggered VLM completion checking. Without additional data or training, MPVI improves mean Q-score by 113% over a top-performing VLA baseline from the 2025 BEHAVIOR Challenge. As Vision-Language-Action models continue to scale, we believe a key focus should be to develop principled criteria for when a learned policy should defer to a classical component, such as triggers based on failure detection or departure from the training distribution. Our results indicate that thoughtful integration of motion planning with a learned manipulation policy can address several recurring failure modes of end-to-end VLAs on long-horizon mobile manipulation. We hope this work opens new pathways for hybrid architectures, lowers the data and capacity demands placed on VLAs and brings long-horizon mobile manipulation closer to real-world deployment. 
+
+## 7 Limitations 
+
+MPVI has two main limitations. First, our framework assumes access to a traversability map with labeled room boundaries, which restricts deployment to environments mapped in advance. Online semantic mapping [ 25 ] or vision-language navigation [ 33 ] could lift this assumption. Second, our integration of classical planning is limited to navigation, with manipulation delegated entirely to the VLA. Performance therefore does not improve on tasks where the dominant bottleneck is dexterous manipulation. For example, neither the baseline nor MPVI achieves a nonzero Q-score on 
+
+attach a camera to a tripod where the failure originates in the manipulation policy itself [ 9]. Extending the interleaving approach to manipulation, for example by routing pre-grasp motion to model-based motion planners, is a natural next step. 8References 
+
+[1] H. R. Walke, K. Black, T. Z. Zhao, Q. Vuong, C. Zheng, P. Hansen-Estruch, A. W. He, V. Myers, M. J. Kim, M. Du, A. Lee, K. Fang, C. Finn, and S. Levine. Bridgedata v2: A dataset for robot learning at scale. In J. Tan, M. Toussaint, and K. Darvish, editors, Proceedings of The 7th Conference on Robot Learning , volume 229 of Proceedings of Machine Learning Research , pages 1723–1736. PMLR, 06–09 Nov 2023. URL https://proceedings.mlr. press/v229/walke23a.html .[2] A. O’Neill, A. Rehman, A. Maddukuri, A. Gupta, A. Padalkar, A. Lee, A. Pooley, A. Gupta, A. Mandlekar, A. Jain, A. Tung, A. Bewley, A. Herzog, A. Irpan, A. Khazatsky, A. Rai, A. Gupta, A. Wang, A. Singh, A. Garg, A. Kembhavi, A. Xie, A. Brohan, A. Raffin, A. Sharma, A. Yavary, A. Jain, A. Balakrishna, A. Wahid, B. Burgess-Limerick, B. Kim, B. Sch ¨olkopf, B. Wulfe, B. Ichter, C. Lu, C. Xu, C. Le, C. Finn, C. Wang, C. Xu, C. Chi, C. Huang, C. Chan, C. Agia, C. Pan, C. Fu, C. Devin, D. Xu, D. Morton, D. Driess, D. Chen, D. Pathak, D. Shah, D. B ¨uchler, D. Jayaraman, D. Kalashnikov, D. Sadigh, E. Johns, E. Foster, F. Liu, F. Ceola, F. Xia, F. Zhao, F. Stulp, G. Zhou, G. S. Sukhatme, G. Salhotra, G. Yan, G. Feng, G. Schiavi, G. Berseth, G. Kahn, G. Wang, H. Su, H.-S. Fang, H. Shi, H. Bao, H. Ben Amor, H. I. Christensen, H. Furuta, H. Walke, H. Fang, H. Ha, I. Mordatch, I. Radosavovic, I. Leal, J. Liang, J. Abou-Chakra, J. Kim, J. Drake, J. Peters, J. Schneider, J. Hsu, J. Bohg, J. Bingham, J. Wu, J. Gao, J. Hu, J. Wu, J. Wu, J. Sun, J. Luo, J. Gu, J. Tan, J. Oh, J. Wu, J. Lu, J. Yang, J. Malik, J. Silv ´erio, J. Hejna, J. Booher, J. Tompson, J. Yang, J. Salvador, J. J. Lim, J. Han, K. Wang, K. Rao, K. Pertsch, K. Hausman, K. Go, K. Gopalakrishnan, K. Goldberg, K. Byrne, K. Oslund, K. Kawaharazuka, K. Black, K. Lin, K. Zhang, K. Ehsani, K. Lekkala, K. Ellis, K. Rana, K. Srinivasan, K. Fang, K. P. Singh, K.-H. Zeng, K. Hatch, K. Hsu, L. Itti, L. Y. Chen, L. Pinto, L. Fei-Fei, L. Tan, L. J. Fan, L. Ott, L. Lee, L. Weihs, M. Chen, M. Lepert, M. Memmel, M. Tomizuka, M. Itkina, M. G. Castro, M. Spero, M. Du, M. Ahn, M. C. Yip, M. Zhang, M. Ding, M. Heo, M. K. Srirama, M. Sharma, M. J. Kim, N. Kanazawa, N. Hansen, N. Heess, N. J. Joshi, N. Suenderhauf, N. Liu, N. Di Palo, N. M. M. Shafiullah, O. Mees, O. Kroemer, O. Bastani, P. R. Sanketi, P. T. Miller, P. Yin, P. Wohlhart, P. Xu, P. D. Fagan, P. Mitrano, P. Sermanet, P. Abbeel, P. Sundaresan, Q. Chen, Q. Vuong, R. Rafailov, R. Tian, R. Doshi, R. Mart ´ın-Mart ´ın, R. Baijal, R. Scalise, R. Hendrix, R. Lin, R. Qian, R. Zhang, R. Mendonca, R. Shah, R. Hoque, R. Julian, S. Bustamante, S. Kirmani, S. Levine, S. Lin, S. Moore, S. Bahl, S. Dass, S. Sonawani, S. Song, S. Xu, S. Haldar, S. Karamcheti, S. Adebola, S. Guist, S. Nasiriany, S. Schaal, S. Welker, S. Tian, S. Ramamoorthy, S. Dasari, S. Belkhale, S. Park, S. Nair, S. Mirchandani, T. Osa, T. Gupta, T. Harada, T. Matsushima, T. Xiao, T. Kollar, T. Yu, T. Ding, T. Davchev, T. Z. Zhao, T. Armstrong, T. Darrell, T. Chung, V. Jain, V. Vanhoucke, W. Zhan, W. Zhou, W. Burgard, X. Chen, X. Wang, X. Zhu, X. Geng, X. Liu, X. Liangwei, X. Li, Y. Lu, Y. J. Ma, Y. Kim, Y. Chebotar, Y. Zhou, Y. Zhu, Y. Wu, Y. Xu, Y. Wang, Y. Bisk, Y. Cho, Y. Lee, Y. Cui, Y. Cao, Y.-H. Wu, Y. Tang, Y. Zhu, Y. Zhang, Y. Jiang, Y. Li, Y. Li, Y. Iwasawa, Y. Matsuo, Z. Ma, Z. Xu, Z. J. Cui, Z. Zhang, and Z. Lin. Open x-embodiment: Robotic learning datasets and rt-x models : Open x-embodiment collaboration0. In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pages 6892–6903, 2024. doi:10.1109/ICRA57147.2024.10611477. [3] A. Khazatsky, K. Pertsch, S. Nair, A. Balakrishna, S. Dasari, S. Karamcheti, S. Nasiriany, M. K. Srirama, L. Y. Chen, K. Ellis, P. D. Fagan, J. Hejna, M. Itkina, M. Lepert, Y. J. Ma, P. T. Miller, J. Wu, S. Belkhale, S. Dass, H. Ha, A. Jain, A. Lee, Y. Lee, M. Memmel, S. Park, I. Radosavovic, K. Wang, A. Zhan, K. Black, C. Chi, K. B. Hatch, S. Lin, J. Lu, J. Mercat, A. Rehman, P. R. Sanketi, A. Sharma, C. Simpson, Q. Vuong, H. R. Walke, B. Wulfe, T. Xiao, J. H. Yang, A. Yavary, T. Z. Zhao, C. Agia, R. Baijal, M. G. Castro, D. Chen, Q. Chen, T. Chung, J. Drake, E. P. Foster, J. Gao, V. Guizilini, D. A. Herrera, M. Heo, K. Hsu, J. Hu, M. Z. Irshad, D. Jackson, C. Le, Y. Li, K. Lin, R. Lin, Z. Ma, A. Maddukuri, S. Mirchandani, D. Morton, T. Nguyen, A. O’Neill, R. Scalise, D. Seale, V. Son, S. Tian, E. Tran, A. E. Wang, Y. Wu, A. Xie, J. Yang, P. Yin, Y. Zhang, O. Bastani, G. Berseth, J. Bohg, K. Goldberg, A. Gupta, A. Gupta, 9D. Jayaraman, J. J. Lim, J. Malik, R. Mart ´ın-Mart ´ın, S. Ramamoorthy, D. Sadigh, S. Song, J. Wu, M. C. Yip, Y. Zhu, T. Kollar, S. Levine, and C. Finn. Droid: A large-scale in-the-wild robot manipulation dataset, 2025. URL https://arxiv.org/abs/2403.12945 .[4] O. Mees, L. Hermann, E. Rosete-Beas, and W. Burgard. Calvin: A benchmark for language-conditioned policy learning for long-horizon robot manipulation tasks. IEEE Robotics and Automation Letters , 7(3):7327–7334, 2022. [5] C. Li, R. Zhang, J. Wong, C. Gokmen, S. Srivastava, R. Mart ´ın-Mart ´ın, C. Wang, G. Levine, M. Lingelbach, J. Sun, M. Anvari, M. Hwang, M. Sharma, A. Aydin, D. Bansal, S. Hunter, K.-Y. Kim, A. Lou, C. R. Matthews, I. Villa-Renteria, J. H. Tang, C. Tang, F. Xia, S. Savarese, H. Gweon, K. Liu, J. Wu, and L. Fei-Fei. Behavior-1k: A benchmark for embodied ai with 1,000 everyday activities and realistic simulation. In K. Liu, D. Kulic, and J. Ichnowski, editors, 
+
+Proceedings of The 6th Conference on Robot Learning , volume 205 of Proceedings of Machine Learning Research , pages 80–93. PMLR, 14–18 Dec 2023. URL https://proceedings. mlr.press/v205/li23a.html .[6] Stanford Vision and Learning Lab. The 2025 BEHAVIOR challenge. NeurIPS 2025 Competition Track, 2025. URL https://behavior.stanford.edu/challenge/index.html .[7] I. Larchenko, G. Zarin, and A. Karnatak. Task adaptation of vision-language-action model: 1st place solution for the 2025 behavior challenge, 2025. URL https://arxiv.org/abs/2512. 06951 .[8] J. Bai, Y.-W. Chao, Q. Chen, J. Gu, M. J. Kim, Z. Li, X. Li, T.-Y. Lin, M.-Y. Liu, N. Ma, et al. Openpi comet: Competition solution for 2025 behavior challenge. arXiv preprint arXiv:2512.10071 , 2025. [9] A. Rasouli, Y. Wu, Z. Li, R. H. Yang, X. Zhao, C. Eret, and S. Pakdamansavoji. How vlas (really) work in open-world environments. arXiv preprint arXiv:2604.21192 , 2026. [10] Z. Wu, A. Ma, X. Xu, H. Yin, Y. Liang, Z. Wang, J. Lu, and H. Yan. Moto: A zero-shot plug-in interaction-aware navigation for general mobile manipulation. In 9th Annual Conference on Robot Learning , 2025. URL https://openreview.net/forum?id=Th1kFSnjUW .[11] C. He, G. Sun, Y. Bai, J. Lu, J. Zhao, and G. Sartoretti. Falcon: Actively decoupled visuomotor policies for loco-manipulation with foundation-model-based coordination, 2025. URL https: //arxiv.org/abs/2512.04381 .[12] K. Gubernatorov, A. Voronov, R. Voronov, S. Pasynkov, S. Perminov, Z. Guo, and D. Tset-serukou. Anywherevla: Language-conditioned exploration and mobile manipulation, 2025. URL https://arxiv.org/abs/2509.21006 .[13] G. Konidaris and A. Barto. Skill discovery in continuous reinforcement learning domains using skill chaining. In Y. Bengio, D. Schuurmans, J. Lafferty, C. Williams, and A. Culotta, editors, Advances in Neural Information Processing Systems , volume 22. Curran Associates, Inc., 2009. URL https://proceedings.neurips.cc/paper_files/paper/2009/file/ e0cf1f47118daebc5b16269099ad7347-Paper.pdf .[14] Z. Chen, Z. Ji, J. Huo, and Y. Gao. Scar: Refining skill chaining for long-horizon robotic manipulation via dual regularization. Advances in Neural Information Processing Systems , 37: 111679–111714, 2024. [15] Y. Fan, P. Ding, S. Bai, X. Tong, Y. Zhu, H. Lu, F. Dai, W. Zhao, Y. Liu, S. Huang, Z. Fan, B. Chen, and D. Wang. Long-vla: Unleashing long-horizon capability of vision language action model for robot manipulation, 2025. URL https://arxiv.org/abs/2508.19958 .[16] J. Wen, Y. Zhu, J. Li, Z. Tang, C. Shen, and F. Feng. Dexvla: Vision-language model with plug-in diffusion expert for general robot control. arXiv preprint arXiv:2502.05855 , 2025. 10 [17] K. Black, N. Brown, J. Darpinian, K. Dhabalia, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, et al. π0.5: a vision-language-action model with open-world generalization. arXiv preprint arXiv:2504.16054 , 2025. [18] M. Ahn, A. Brohan, N. Brown, Y. Chebotar, O. Cortes, B. David, C. Finn, C. Fu, K. Gopalakr-ishnan, K. Hausman, et al. Do as i can, not as i say: Grounding language in robotic affordances. 
+
+arXiv preprint arXiv:2204.01691 , 2022. [19] Y. Hu, F. Lin, T. Zhang, L. Yi, and Y. Gao. Look before you leap: Unveiling the power of gpt-4v in robotic vision-language planning. arXiv preprint arXiv:2311.17842 , 2023. [20] B. Li, P. Wu, P. Abbeel, and J. Malik. Interactive task planning with language models. arXiv preprint arXiv:2310.10645 , 2023. [21] P. Liu, Y. Orru, J. Vakil, C. Paxton, N. M. M. Shafiullah, and L. Pinto. Ok-robot: What really matters in integrating open-knowledge models for robotics. arXiv preprint arXiv:2401.12202 ,2024. [22] P. Intelligence, B. Ai, A. Amin, R. Aniceto, A. Balakrishna, G. Balke, K. Black, G. Bokinsky, S. Cao, T. Charbonnier, et al. π0.7: a steerable generalist robotic foundation model with emergent capabilities. arXiv preprint arXiv:2604.15483 , 2026. [23] Z. Wu, Y. Zhou, X. Xu, Z. Wang, and H. Yan. MoManipVLA: Transferring Vision-language-action Models for General Mobile Manipulation . In 2025 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 1714–1723, Los Alamitos, CA, USA, June 2025. IEEE Computer Society. doi:10.1109/CVPR52734.2025.00167. URL https://doi. ieeecomputersociety.org/10.1109/CVPR52734.2025.00167 .[24] S. Raychaudhuri and A. X. Chang. Semantic mapping in indoor embodied ai–a comprehensive survey and future directions. arXiv preprint arXiv:2501.05750 , 3, 2025. [25] X. Song, X. Liang, and Z. Huaidong. Semantic mapping techniques for indoor mobile robots: Review and prospect. Measurement and Control , 58(3):377–393, 2025. doi: 10.1177/00202940241259903. URL https://doi.org/10.1177/00202940241259903 .[26] S. Srivastava, C. Li, M. Lingelbach, R. Mart ´ın-Mart ´ın, F. Xia, K. E. Vainio, Z. Lian, C. Gokmen, S. Buch, K. Liu, S. Savarese, H. Gweon, J. Wu, and L. Fei-Fei. BEHAVIOR: Benchmark for everyday household activities in virtual, interactive, and ecological environments. In 
+
+Proceedings of the 5th Conference on Robot Learning , Proceedings of Machine Learning Research. PMLR, 2022. URL https://proceedings.mlr.press/v164/srivastava22a. html . Originally presented at CoRL 2021. [27] S. Karaman and E. Frazzoli. Sampling-based algorithms for optimal motion planning. The International Journal of Robotics Research , 30(7):846–894, 2011. [28] D. Dolgov, S. Thrun, M. Montemerlo, and J. Diebel. Path planning for autonomous vehicles in unknown semi-structured environments. The International Journal of Robotics Research , 29(5): 485–501, 2010. [29] S. Liu, Z. Zeng, T. Ren, F. Li, H. Zhang, J. Yang, Q. Jiang, C. Li, J. Yang, H. Su, et al. Grounding dino: Marrying dino with grounded pre-training for open-set object detection. In European conference on computer vision , pages 38–55. Springer, 2024. [30] B. Yamauchi. A frontier-based approach for autonomous exploration. In Proceedings 1997 IEEE International Symposium on Computational Intelligence in Robotics and Automation (CIRA’97) , pages 146–151. IEEE, 1997. [31] Gemini Team, Google. Gemini 2.5: Pushing the frontier with advanced reasoning, multimodality, long context, and next generation agentic capabilities. arXiv preprint arXiv:2507.06261 , 2025. 11 [32] C. Li, F. Xia, R. Mart ´ın-Mart ´ın, M. Lingelbach, S. Srivastava, B. Shen, K. E. Vainio, C. Gokmen, G. Dharan, T. Jain, A. Kurenkov, K. Liu, H. Gweon, J. Wu, L. Fei-Fei, and S. Savarese. igibson 2.0: Object-centric simulation for robot learning of everyday household tasks. In A. Faust, D. Hsu, and G. Neumann, editors, Proceedings of the 5th Conference on Robot Learning ,volume 164 of Proceedings of Machine Learning Research , pages 455–465. PMLR, 08–11 Nov 2022. URL https://proceedings.mlr.press/v164/li22b.html .[33] J. Gu, E. Stefani, Q. Wu, J. Thomason, and X. Wang. Vision-and-language navigation: A survey of tasks, methods, and future directions. In S. Muresan, P. Nakov, and A. Villav-icencio, editors, Proceedings of the 60th Annual Meeting of the Association for Compu-tational Linguistics (Volume 1: Long Papers) , pages 7606–7623, Dublin, Ireland, May 2022. Association for Computational Linguistics. doi:10.18653/v1/2022.acl-long.524. URL 
+
+https://aclanthology.org/2022.acl-long.524/ .[34] I. Singh, V. Blukis, A. Mousavian, A. Goyal, D. Xu, J. Tremblay, D. Fox, J. Thomason, and A. Garg. ProgPrompt: Generating Situated Robot Task Plans using Large Language Models, Sept. 2022. URL http://arxiv.org/abs/2209.11302 . arXiv:2209.11302. 12 A Appendix: Full Results 
+
+Table 1: Q-Score Per Task 
+
+Task ID Task End-to-End VLA Ours ∆ Q21 collecting childrens toys 0.00 0.56 0.56 17 bringing water 0.23 0.70 0.47 18 tidying bedroom 0.00 0.40 0.40 9 putting up Christmas decorations inside 0.00 0.31 0.31 45 cook hot dogs 0.00 0.30 0.30 11 putting dishes away after cleaning 0.11 0.39 0.28 1 picking up trash 0.63 0.90 0.27 39 spraying fruit trees 0.00 0.25 0.25 12 preparing lunch box 0.00 0.24 0.24 38 spraying for bugs 0.00 0.21 0.21 40 make microwave popcorn 0.00 0.20 0.20 44 chopping wood 0.00 0.19 0.19 26 assembling gift baskets 0.00 0.17 0.17 19 outfit a basic toolbox 0.00 0.16 0.16 20 sorting vegetables 0.00 0.15 0.15 29 clean up your desk 0.00 0.10 0.10 7 picking up toys 0.00 0.10 0.10 42 chop an onion 0.00 0.09 0.09 6 hiding Easter eggs 0.20 0.29 0.09 15 bringing in wood 0.03 0.11 0.08 43 slicing vegetables 0.00 0.07 0.07 47 freeze pies 0.00 0.06 0.06 5 setting mousetraps 0.38 0.44 0.06 25 clearing food from table into fridge 0.00 0.06 0.06 8 rearranging kitchen furniture 0.10 0.16 0.06 27 sorting household items 0.00 0.06 0.06 2 putting away Halloween decorations 0.32 0.37 0.05 30 setting the fire 0.15 0.20 0.05 28 getting organized for work 0.00 0.04 0.04 23 boxing books up for storage 0.00 0.02 0.02 3 cleaning up plates and food 0.00 0.02 0.02 48 canning food 0.00 0.00 0.00 4 can meat 0.00 0.00 0.00 32 wash a baseball cap 0.00 0.00 0.00 37 clean a trumpet 0.00 0.00 0.00 31 clean boxing gloves 0.00 0.00 0.00 36 clean a patio 0.00 0.00 0.00 35 attach a camera to a tripod 0.00 0.00 0.00 41 cook cabbage 0.00 0.00 0.00 46 cook bacon 0.00 0.00 0.00 49 make pizza 0.00 0.00 0.00 33 wash dog toys 0.00 0.00 0.00 0 turning on radio 0.00 0.00 0.00 34 hanging pictures 0.00 0.00 0.00 22 putting shoes on rack 0.49 0.49 0.00 24 storing food 0.00 0.00 0.00 14 carrying in groceries 0.00 0.00 0.00 10 set up a coffee station in your kitchen 0.20 0.15 -0.06 16 moving boxes to storage 0.80 0.56 -0.24 13 loading the car 0.30 0.00 -0.30 
+
+13 Table 2: Ablation Study Task ID Task Q-Score E2E VLA Ours Oracle Loc. Subtask Pred. No Prop. Trigger 0 turning on radio 0.00 0.00 0.00 0.00 0.00 1 picking up trash 0.63 0.90 0.90 0.70 0.37 6 hiding Easter eggs 0.20 0.29 0.42 0.25 0.11 17 bringing water 0.23 0.70 0.80 0.37 0.30 18 tidying bedroom 0.00 0.40 0.40 0.27 0.37 22 putting shoes on rack 0.49 0.49 0.55 0.40 0.33 30 setting the fire 0.15 0.20 0.14 0.20 0.10 32 wash a baseball cap 0.00 0.00 0.00 0.00 0.00 34 hanging pictures 0.00 0.00 0.00 0.00 0.00 35 attach a camera to a tripod 0.00 0.00 0.00 0.00 0.00 40 make microwave popcorn 0.00 0.20 0.20 0.00 0.00 45 cook hot dogs 0.00 0.30 0.65 0.22 0.28 
+
+## B Appendix: Qualitative Failure Analysis Occlusion Execution Order Confusion Premature Termination  
+
+> Trash can is occluded from robot’s view
+> Robot halts indefinitely after setting the first set of mousetraps
+> Robot picks up the two objects
+> before opening the drawer
+
+Figure 6: Three qualitative failure modes of the end-to-end VLA baseline that MPVI addresses: occlusion (left), premature termination (center), and execution-order confusion (right). MPVI resolves these via frontier exploration, navigation to the next manipulation subtask, and ordered subtask routing, respectively. Rasouli et al. [ 9 ] identify navigation failures, abrupt termination, and execution-order confusion as recurring failure modes of end-to-end VLAs on long-horizon mobile manipulation. Fig. 6 shows one openpi-comet rollout per failure mode. 
+
+Occlusion. The left panel shows a rollout of picking up trash . The trash can, the first manipu-lation target, is occluded from the robot’s initial viewpoint. The end-to-end VLA does eventually locate the trash can, but only after extended wandering that consumes the episode budget before any subsequent subtask can be attempted. MPVI replaces this with open-vocabulary object detection, falling back to frontier exploration if detection fails. The trash can is localized in time to complete the downstream collect-and-place subtasks. 14 Premature termination. The center panel shows setting the mousetrap . The task requires placing one set of traps under the toilet, then retrieving two more from a cabinet and placing them under the sink. After placing the first traps under the toilet, the end-to-end VLA abruptly terminates and makes no further progress toward task success for the remainder of the episode, despite being far from the time limit. MPVI avoids this outcome by returning control to the motion planner once a manipulation segment completes, which then steers the robot to the cabinet where the VLA then can be invoked again to continue the progress. 
+
+Execution-order confusion. The right panel shows putting away Halloween decoration .The correct order is (i) open the cabinet, (ii) pick up two candles, and (iii) place the candles in the cabinet. The end-to-end VLA picks up both candles before opening the cabinet. With both grippers occupied, the robot has no free hand to operate the cabinet door, and no further task progress occurs within the episode. MPVI prevents this through its subtask planner, which decomposes the instruction 
+
+ℓ into an ordered sequence of short subtasks, and its orchestrator, which dispatches each subtask in order and verifies completion before advancing 
+
+## C Appendix: Method Implementation Details 
+
+This appendix supplements the details of how each of the fours modules were implemented from Sec. 4. 
+
+C.1 Subtask Planning 
+
+We prompt an LLM with the natural-language task description ℓ to segment a long-horizon task into short-horizon subtasks; the full prompt is in Appx. D. To improve plan quality, we fine-tune the LLM on human-annotated task plans from the BEHAVIOR-1K training dataset. The LLM outputs a plan P = {s1, . . . , s n} where each segment si = ( ci, δ i, t i, ϕ i) consists of a category 
+
+ci ∈ { NAVIGATION , MANIPULATION }, a natural-language subtask description δi, a target ti for navigation segments specifying where to navigate, and a completion criterion ϕi. The completion criterion describes the desired world state (e.g., “there are two soda cans in the trash can”) rather than a desired action (e.g., “the robot put the soda can in the trash can”). A post-processing step extracts additional metadata used for subtask completion detection. First, we check whether each manipulation subtask can be mapped to a manipulation primitive (e.g., pick or place) with a pre-defined completion heuristic. Second, we label manipulation subtasks that immediately precede navigation subtasks, since detecting completion of these subtasks is necessary to trigger the transition to the motion planner. This information is consumed by the completion checker (Appx. C.4). 
+
+Relation to prior work. End-to-end VLA methods, including π0.5, incorporate built-in subtask prediction capabilities and provide these predictions as natural-language inputs to the policy [ 17 ]. Symbolic planning methods instead generate sequences of predefined affordances or skills [ 18 ,34 ]. In contrast, we leverage the task plan to coordinate execution between the VLA and the motion planner. Utilizing π0.5’s built-in subtask prediction could potentially replace our LLM-based planning; however, this capability was not included in the open-source code release, so we leave this investigation to future work. 
+
+C.2 Orchestrator Details 
+
+Given the plan P, the orchestrator groups segments into execution units: navigation segments are executed individually, while consecutive manipulation segments are grouped into a single execution unit. For each navigation segment si the orchestrator invokes the navigation module with target ti.For each manipulation group, the orchestrator invokes the manipulation module with the concatenated subtask descriptions {δj , . . . , δ k} and the completion criterion ϕk of the final segment in the group, where j and k are the indices of the first and last manipulation segments in the group, respectively. 15 The orchestrator maintains a knowledge base that stores the locations of rooms, areas, and large fixtures, as well as object locations discovered during execution. When the navigation module successfully localizes a target object, its position is added to the knowledge base, enabling subsequent navigation subtasks targeting the same object to plan paths directly without repeating the search procedure. The orchestrator additionally tracks subtask completion status; if a module fails to complete its subtask, the orchestrator marks the subtask as failed and proceeds to the next segment in the plan. 
+
+C.3 Navigation 
+
+Navigation subtasks are executed using classical motion planning rather than the VLA. Specifically, the navigation module consists of an A* path planner and a pure-pursuit controller which control base movement. The robot’s arms are maintained in a fixed configuration during navigation. A fundamental challenge in employing classical motion planning is the requirement for information not available to end-to-end VLA approaches: a traversability map and target object locations. We assume access to a traversability map with labeled rooms, and accurate robot localization. These assumptions are reasonable for household environments, where robust semantic mapping and local-ization methods are well-established [24, 25]. 
+
+Target localization. Target object localization presents a greater challenge as object positions are not known a priori. We first determine whether the robot is already within the handoff distance dh of the target object t; if so, navigation is complete. Otherwise, we query a knowledge base maintained by the system using t as a key. The knowledge base stores the locations of rooms and large fixtures such as refrigerators and countertops. If the location of t is known, a path is planned directly to it. When the location of t is unknown, the robot navigates to the room or area specified in δ and attempts to localize the object visually. We employ GroundingDINO [ 29 ] with t as the text query to detect the target object in the robot’s head camera image. Upon successful detection, the bounding-box center is transformed from the camera frame to the world frame using the camera pose and intrinsics. The depth of the object is obtained by computing the median depth within the bounding box from the corresponding depth image. If the object is not detected, the robot performs frontier-based exploration. The planner maintains a visibility map of observed and unobserved free space by projecting the robot’s field of view onto the occupancy map using ray-based visibility updates, and selects actions that increase coverage of previously unseen regions. At each iteration, the robot first reorients toward unexplored space visible from its current position, then plans a path using A* to the nearest reachable frontier between observed and unobserved space. Visual detection of all task-relevant objects is performed continuously throughout exploration, and newly detected objects are opportunistically localized and cached for future subtasks. Navigation terminates when the robot is within the handoff distance dh of t, at which point control transitions to the VLA for manipulation. Robot base repositioning within the handoff distance, which is not a task or object specific parameter, is handled by the VLA. 
+
+C.4 Completion Checker 
+
+A VLM-based completion checker receives the head-camera image and the completion criterion ϕ
+
+and returns a binary completion judgment; the completion-checking prompt is in Appx. D. VLM hal-lucinations present a significant risk: false positives terminate manipulation prematurely, potentially causing cascading failures in subsequent subtasks. Three design choices mitigate this risk. 
+
+State-based completion criteria. Completion criteria are formulated as state-based rather than action-based predicates. For example, verifying whether “there is one soda can in the trash can” from a single image is more reliable than verifying whether “the robot placed the soda can in the trash can,” which requires temporal reasoning about actions that may not be observable in a static frame or sequence of frames. 16 Subtask sequencing. While the planner generates granular manipulation subtasks, completion is verified only for the terminal state preceding a navigation subtask. For instance, a plan may contain sequential subtasks “pick up the soda can” followed by “place the soda can in the trash can,” but the VLM is queried only to verify that “there is one soda can in the trash can” prior to transitioning to navigation. This reduces the frequency of VLM queries and avoids verification of intermediate states that may be difficult to assess visually. 
+
+Proprioceptive trigger. Proprioceptive signals, rather than periodic polling, trigger VLM com-pletion checks. A set of general proprioceptive heuristics monitor gripper and arm state for all manipulation subtasks, with additional heuristics applied when a manipulation primitive has been identified during post-processing. For example, a pick primitive initiates a completion check when gripper and arm state indicate a successful grasp, while a place primitive initiates a check upon object release. This ensures that VLM queries occur at semantically meaningful moments and reduces unnecessary calls. If the VLM does not confirm completion, the VLA continues execution until a timeout is reached. 
+
+## D Appendix: VLM Prompts 
+
+Task Planning Prompt. 
+
+You are creating a task plan for a robot based on a task description. Task description: {task_description} The robot is a bimanual mobile robot that can: - Navigate to different areas/rooms in a house - Navigate to specific objects - Manipulate objects using two arms with grippers Create a plan consisting of navigation and manipulation segments. For each segment, determine: 1. Type: "navigation" (move to a location) or "manipulation" (interact with objects) 2. Description: Brief description of the action 3. Completion criteria: Observable condition indicating segment is complete (describe the END STATE) 4. Target: For navigation segments, the destination IMPORTANT for completion criteria: - Describe the terminal state, NOT the action - Good: "The object is in the container" - Bad: "The robot puts the object in the container" Output as JSON: ‘‘‘json {"task_name": "short task name", "segments": [ {"type": "navigation", "description": "Navigate to the kitchen", "completion_criteria": "The robot is in the kitchen area", "target": "kitchen" }, 
+
+17 {"type": "manipulation", "description": "Pick up the object", "completion_criteria": "The object is held in the robot’s gripper", "target": null }]}‘‘‘ 
+
+VLM Completion Checking Prompt. 
+
+You are checking if a robot manipulation task is complete. Task: {description} Completion criteria: {completion_criteria} Look at the image and determine if the completion criteria has been met. Answer with: - "YES, the task is complete" if the criteria is clearly satisfied - "NO, the task is not complete" if the criteria is not yet satisfied Be strict: only say YES if you are confident the criteria is met. Your answer: 
+
+18

@@ -1,0 +1,416 @@
+Title: Multimodal Action Diffusion for Robust End-to-End Autonomous Driving
+
+URL Source: https://arxiv.org/pdf/2606.02105v1
+
+Published Time: Tue, 02 Jun 2026 02:35:08 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+> arXiv:2606.02105v1 [cs.CV] 1 Jun 2026
+
+RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 1
+
+# Multimodal Action Diffusion for Robust End-to-End Autonomous Driving 
+
+Jorge Daniel Rodríguez-Vidal 1
+
+jdrodriguez@cvc.uab.cat 
+
+Diego Porres 1
+
+dporres@cvc.uab.cat 
+
+Gabriel Villalonga Pineda 1,2 
+
+gvillalonga@cvc.uab.cat 
+
+Antonio M. López Peña 1,2 
+
+antonio@cvc.uab.es  
+
+> 1
+
+Computer Vision Center (CVC) Barcelona, Spain  
+
+> 2
+
+Universitat Autònoma de Barcelona (UAB) Barcelona, Spain 
+
+Abstract 
+
+End-to-End Autonomous Driving (E2E-AD) systems have largely converged on pre-dicting intermediate trajectory waypoints, delegating final control to hand-crafted con-trollers with GPS access. Direct control-signal prediction (outputting throttle, steer and brake in an end-to-end fashion) remains underexplored, and critically, the role of action multimodality in such systems is not well understood. We argue that moving beyond deterministic, single-action outputs is not merely a modelling choice, but a key driver of driving performance, representational quality, and training stability. To validate this, we introduce the Action Diffusion Transformer (ADT), an anchor-free diffusion trans-former trained with a MSE objective that natively models the multimodal distribution of plausible driving actions. Rather than committing to a single deterministic command, ADT generates K action candidates and selects the most suitable one at inference via Nearest Neighbour Matching (NNM). Beyond strong benchmark numbers, we show that action multimodality yields measurable benefits in learned representations and behav-ioral consistency — effects that deterministic architectures cannot replicate. ADT sur-passes previous state-of-the-art on the challenging closed-loop Bench2Drive benchmark while achieving 10 × lower latency, demonstrating that expressive, multimodal action modelling is both practically efficient and conceptually essential for robust end-to-end driving. 
+
+# 1 Introduction 
+
+End-to-End Autonomous Driving (E2E-AD) [2] has benefited from recent advances in gen-erative modelling [3, 18, 24] and simulation [8, 9, 12]. In particular, diffusion models offer a natural way to represent the inherently multi-modal nature by enabling the generation of diverse plausible predictions. However, despite this probabilistic capacity, most E2E-AD models remain deterministic as they collapse the learned distribution into a single waypoint trajectory or control output. 
+
+© 2026. The copyright of this document resides with its authors. It may be distributed unchanged freely in print or electronic forms. Preprint. June 1st, 2026. Corresponding author: Jorge Daniel Rodríguez-Vidal. 2 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 
+
+Figure 1: Ambiguity in driving. (a) Deterministic control: for a given scene, we can pre-dict the control to apply to the vehicle [6, 41], plan its future trajectory [4, 15, 35], or fuse both branches before execution [40]. (b) Multimodal intermediates: multiple future tra-jectories can be generated or refined before being converted into control, but multimodality is expressed through intermediate trajectory representations [28, 29]. (c) Action multi-modality (ours): multiple control candidates are sampled directly in action space, and one candidate is selected for execution, enabling deployable multimodality without trajectory anchors or waypoint intermediates. Crucially, the candidate distribution reflects the inher-ent ambiguity of the command: a Turn Left instruction admits many valid steering profiles, producing a diverse candidate set, whereas Continue Straight is geometrically constrained, yielding tighter agreement among candidates. A key challenge in autonomous driving is that the future is fundamentally uncertain and multi-modal. At any decision point, multiple behaviours may be valid; for instance, a vehicle may continue straight, change lanes, or brake depending on the behaviour of sur-rounding agents, and committing prematurely to a single prediction risks catastrophic failure in safety-critical scenarios. This ambiguity is structural: it arises from partial observability and occlusion, from interactions with other agents, and from the inherent unpredictability of human behaviour. Representing a single deterministic future is therefore insufficient for robust decision-making. In robotics, Diffusion Policy [3] models multimodality directly in action space by learn-ing a conditional denoising process over action sequences, which are sampled and executed in a receding-horizon manner. Importantly, however, Diffusion Policy represents multi-modality implicitly through the learned action distribution: it does not explicitly expose a set of candidate actions at each decision step, nor does it rank or select among such candi-dates before execution. In autonomous driving, multimodality has instead been exploited primarily in trajec-tory space. Representative methods include DiffusionDrive [31], which samples trajectory hypotheses around learned anchors, and Hydra-based approaches, which generate diverse trajectory candidates via distillation [28] or control-derived trajectory proposals [29]. As illustrated in Figure 1, previous paradigms either suppress multimodality at the control in-terface (a), or express it only through trajectory intermediates before collapsing to a single RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 3
+
+output (b). Our approach (c) is the first to maintain and exploit multimodality directly in action space, deferring commitment to a single control only at execution time. Overall, existing E2E-AD systems rely on trajectory-centric formulations, while direct modelling of multimodal actions remains less explored. Direct-control policies align natu-rally with the closed-loop execution of real vehicles, where actions are recomputed at every control cycle from fresh observations, enabling rapid adaptation to dynamic environments. Crucially, they are localisation-free : operating without GPS or HD maps and relying solely on onboard cameras and a high-level command. Unlike recent robotics policies that often use action chunking to predict and execute short sequences of future actions [34] to account for a large model latency, we adopt a single-step horizon to maximise reactivity in closed-loop driving, replanning the executed control at every timestep. In this work, we focus on 
+
+direct, control-based E2E-AD with explicit multimodal action prediction. Inspired by Diffusion Policy [3], we introduce Action Diffusion Transformer (ADT) ,an anchor-free diffusion transformer that makes action-space multimodality explicit by gen-erating multiple candidate actions and selecting the most suitable one at inference through Nearest Neighbour Matching (NNM). In summary, our main contributions are: • Action multimodality. We demonstrate the value of action-space multimodality for direct control. Across offline and closed-loop evaluation, this strategy improves over deterministic control policies and naive stochastic baselines, demonstrating the value of multimodal action prediction for robust control-based E2E-AD. • First diffusion model for pure control-based E2E-AD. ADT operates purely in ac-tion space, avoiding any reliance on trajectory representations or GPS-dependent con-trollers. Diffusion enables ADT to generate diverse action candidates rather than a single deterministic output, and NNM provides a lightweight, parallelisable selection mechanism that preserves low latency. 
+
+# 2 Related Work 
+
+Reinforcement learning and imitation learning frameworks. E2E-AD is commonly framed under two learning paradigms: Reinforcement Learning (RL) and Imitation Learning (IL). RL learns through trial-and-error interaction with the environment, making it appealing for optimising long-horizon driving behaviour. However, in real-world driving, unsafe explo-ration is infeasible, reward design is difficult, and privileged ground-truth state is not avail-able to the deployed agent. In simulation, by contrast, such privileged information can be accessed and unsafe actions can be executed without physical risk, making RL particularly useful for training strong teacher policies and expert planners [27, 44]. IL instead learns directly from expert demonstrations with a supervised objective, avoiding online exploration and hand-crafted reward design. For these reasons, we adopt the IL framework and focus on direct action prediction from expert driving data. 
+
+Closed-loop and open-loop paradigms. Two complementary evaluation protocols shape the progress of E2E-AD. In open-loop evaluation, the model output is scored against recorded expert futures, without feeding its predictions back to the environment [8]. This setting is scalable and efficient, which makes it attractive for large-scale development and benchmark-ing. However, its main limitation is that it ignores the feedback loop between the ego vehicle 4 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 
+
+and its surroundings, and therefore does not fully reflect the interactive nature of real driv-ing [5, 30, 43]. In closed-loop evaluation, by contrast, the policy is rolled out online so that each prediction affects future observations and the behavior of surrounding agents [9]. This makes the setting more faithful to the interactive nature of driving. 
+
+Conditional imitation and action-based models. Early deep E2E systems lacked route-level intent, learning how to drive locally but not which manoeuvre to take at intersections. Conditional Imitation Learning (CIL) addressed this by conditioning control prediction on high-level commands such as turning left or going straight [6]. Hawke et al. extended CIL to real-world urban driving, training from human demonstrations to jointly control steering and speed over unseen routes [16]. CILRS [7] further studied large-scale behaviour cloning in CARLA [9], exposing dataset bias, generalisation gaps, and closed-loop instability in action-based policies. More recent control-based models include CIL++, which improves vision-only control with high-resolution multi-view inputs and attention [41], MILE, which learns a camera-only world model jointly with a control policy [19], and D 3Nav, which cou-ples compact latent prediction to driving in unstructured traffic [14]. These methods differ from recent work that focuses on richer intermediate representations, such as tracking-aware driving LMMs [20], probabilistic BEV mapping [10], and BEV distillation for camera-only perception [25]. Since CIL++ and MILE predict low-level controls directly from cameras without privileged maps or LiDAR, they are natural vision-only baselines for closed-loop comparison. 
+
+Generative modelling and multimodality. Recent generative approaches in autonomous driving mostly express multimodality through intermediate planning representations. Be-yond DiffusionDrive [31], recent work has further explored generative modelling for tra-jectory refinement and multi-candidate planning. BridgeDrive and DiffRefiner extend this direction by refining coarse or proposed trajectories through diffusion-based planning mod-ules [32, 42]. Beyond diffusion, Hydra-MDP learns diverse trajectory candidates through multi-target Hydra-distillation [28]. Hydra-NeXt produces multiple diffusion-based control proposals, but these are rolled out with a Kinematic Bicycle Model (KBM) and matched in trajectory space [29]. Generative modelling has also been used for driving data and sensor realism, including LiDAR object generation with point diffusion [26] and labelled LiDAR synthesis with neural radiance fields [38]. In contrast, ADT makes multimodality explicit in continuous action space by generating throttle, steer, and brake candidates and selecting among them directly with Nearest Neighbour Matching (NNM). To the best of our knowl-edge, we are the first to introduce an anchor-free diffusion model that operates purely in action space, avoiding any reliance on trajectory representations. 
+
+# 3 Method 
+
+## 3.1 Preliminaries 
+
+Problem formulation. We consider end-to-end conditional control from multi-view vi-sual observations and driving measurements. At control timestep t, the policy receives the observation 
+
+ot =
+
+
+
+{Ic}Cc=1 , gt , vt
+
+
+
+, (1) where Ic denotes the RGB observation from camera c, gt ∈ { 0, 1}Ncmd is a one-hot high-level navigation command, and vt ∈ R is the current ego-vehicle speed. RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 5
+
+Given a dataset of expert demonstrations D = {(on, un)}Nn=1, where un denotes the ex-pert controls corresponding to the observations on, the goal is to learn a conditional action distribution πθ (ut | ot ), rather than a deterministic regressor. This distinction is important in driving because a given observation may admit several plausible expert actions, for example, when different steering or speed-control decisions remain compatible with the same scene and command. Our model, therefore, represents the action distribution through conditional diffusion in control space. 
+
+Diffusion formulation. Let x0 
+
+> t
+
+:= ut denote a clean expert control and let xrt denote its noisy version at diffusion stage r ∈ { 1, . . . , R}. A forward diffusion process progressively perturbs the clean action according to 
+
+q xrt | xr−1
+
+> t
+
+ = N  xrt ; √αr xr−1 
+
+> t
+
+, βrI3
+
+ , αr := 1 − βr, (2) where {βr}Rr=1 is a prescribed variance schedule. The learned reverse process is conditioned on the observation: 
+
+pθ
+
+ x0: Rt | ot
+
+ = p xRt
+
+ R
+
+# ∏
+
+> r=1
+
+pθ
+
+ xr−1 
+
+> t
+
+| xrt , ot
+
+ , p xRt
+
+ = N (0, I3) . (3) Following denoising diffusion probabilistic models [3, 18, 36], we parametrise the re-verse process through a neural network that predicts the Gaussian perturbation present in a noisy action. 
+
+## 3.2 Architecture 
+
+Observation-conditioned denoiser. Our Action Diffusion Transformer (ADT) first maps the observation ot to a compact sequence of observation-conditioning tokens. Visual fea-tures are extracted from all camera views and all input timesteps, then flattened into a token sequence: 
+
+Ft = Evis 
+
+
+
+{Ic}Cc=1
+
+
+
+∈ RL×d , L = CH ′W ′, (4) where H′ ×W ′ is the spatial resolution of the visual feature map and d is the token dimension. The command and speed are embedded into the same latent dimension and added to every visual token: 
+
+Xt = Ft + 1Lecmd (gt )⊤ + 1Lespd (vt )⊤ + Pobs , (5) where ecmd (·), espd (·) ∈ Rd are learned embeddings and Pobs ∈ RL×d is a positional embed-ding over the token sequence. A Transformer Encoder [39] then contextualises the full set of visual and measurement-conditioned tokens: 
+
+Mt = TxEnc θ (Xt ) ∈ RL×d . (6) Rather than passing all L encoder tokens to the diffusion decoder, ADT extracts a short observation-token sequence using learned queries. Let Qo ∈ RTo×d denote the learned ob-servation queries, where To is the number of observation tokens exposed to the diffusion denoiser. The compressed observation representation is 
+
+Zt = MHA θ (Qo, Mt , Mt ) ∈ RTo×d . (7) 6 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 
+
+The diffusion denoiser receives a noisy action xrt , the diffusion-stage embedding γ(r),and the observation tokens Zt . Since our policy predicts the immediate low-level control, the action horizon is one and xrt ∈ R3. The decoder memory is formed by concatenating the diffusion-stage token with the To observation tokens: 
+
+Crt =
+
+γ(r)
+
+Zt
+
+
+
++ Pcond ∈ R(1+To)×d , (8) where Pcond is a learned positional embedding. The noisy action is projected into the decoder feature space and decoded against this conditional memory: 
+
+hrt = TxDec θ (eact (xrt ) + pact , Crt ) , (9) where eact (·) is a learned action embedding and pact is its positional embedding. We adapt the standard noise-prediction setting in diffusion models. Hence, the predicted noise is 
+
+bεθ (xrt , r, ot ) = Wε LN (hrt ) ∈ R3. (10) 
+
+Action diffusion objective. During training, a clean demonstrated control ut is perturbed at a randomly sampled diffusion stage r, and the network is trained to recover the injected noise. Specifically, 
+
+r ∼ Unif {1, . . . , R}, ε ∼ N (0, I3) , xrt = √ ¯αr ut + p1 − ¯αr ε. (11) The denoising objective is the mean squared error between the sampled noise and the pre-dicted noise: 
+
+Ldiff (θ ) = E(ut ,ot )∼D, r, ε
+
+ 13 ∥ε − bεθ (xrt , r, ot )∥22
+
+
+
+. (12) Thus, the model learns a conditional distribution over the next continuous vehicle control rather than regressing to a single conditional mean. The one-step formulation is consistent with closed-loop driving: after executing the selected control, the policy observes the next scene and samples a new control conditioned on the updated observation. Our model samples actions at inference via DDIM. Further details on DDIM action sampling can be found in the supplementary material. 
+
+Nearest Neighbour Matching. Although conditional diffusion can represent multiple plau-sible controls, sampling a single reverse trajectory exposes only one random realisation of that distribution. We make the multimodality explicit at inference time by drawing K > 1initial Gaussian states under the same observation condition: 
+
+ξ (k) ∼ N (0, I3) , bu(k) 
+
+> t
+
+= DDIM θ
+
+
+
+ξ (k); Zt
+
+
+
+, k = 1, . . . , K. (13) All candidates are generated by the same trained denoiser and share the same observation-token sequence Zt ; they differ only through their diffusion initialisations. Nearest Neighbor Matching (NNM) selects one of these sampled controls by measuring candidate agreement in an execution-compatible action space. Let 
+
+eu(k) 
+
+> t
+
+= ϕ
+
+bu(k)
+
+> t
+
+
+
+(14) RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 7
+
+denote the deterministic mapping from a raw diffusion output to its sanitised control repre-sentation, where ϕ(·) is also applied before actuation. The distance between two candidates is defined as the mean component-wise L1 distance 
+
+dkℓ = 13 eu(k) 
+
+> t
+
+− eu(ℓ)  
+
+> t1
+
+, k, ℓ ∈ { 1, . . . , K}. (15) Each candidate receives a consensus score equal to its mean distance to the remaining sam-ples: 
+
+sk = 1
+
+K − 1
+
+> K
+
+# ∑
+
+> ℓ=1
+> ℓ̸=k
+
+dkℓ. (16) The selected control is the candidate medoid, 
+
+k⋆ = arg min 
+
+> k∈{ 1,..., K}
+
+sk, uNNM  
+
+> t
+
+= eu(k⋆) 
+
+> t
+
+. (17) 
+
+# 4 Experiments 
+
+## 4.1 Dataset and Benchmark 
+
+We evaluate Action Diffusion Transformer (ADT) on the challenging Bench2Drive bench-mark [22]. We follow the standard Bench2Drive protocol and train on the official base split, which contains 1 ,000 clips (comparable in scale to nuScenes [1]). At evaluation time, we use the official Bench2Drive220 and report the standard metrics: Driving Score (DS), Success Rate (SR), Efficiency (E), Comfortness (C), and the five multi-ability scores (Merg-ing, Overtaking, Emergency Brake, Give Way, Traffic Sign), as in [22]. In addition, we use the Dev10 validation set [23] as a first-stage development benchmark: we select can-didate architectures based on their Dev10 performance and only evaluate the best ones on 
+
+Bench2Drive220 . Further details can be found in the supplementary material. 
+
+## 4.2 Implementation Details 
+
+ADT is implemented in PyTorch [33] with PyTorch Lightning [11]. The visual backbone is a ResNet-34 encoder [17], following CIL++ [41]. ADT uses a sensor setup of two RGB cameras, facing the front and rear of the vehicle, together with the ego speed and high-level navigation command. We adopt such camera setup following Hydra-NeXt [29]. We set the observational token To = 1 and horizon H = 1. Further details can be found in the supplementary material. 
+
+## 4.3 Roadmap 
+
+Our roadmap mirrors the progression from the MLP-based direct control regression of CIL++ towards ADT, and is summarised in Tab. 1. Further details on the roadmap can be found in the supplementary material. 8 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING                                                          
+
+> Configuration Architectural properties Bench2Drive220 (Closed-loop)
+> ID Variant Action Head Action Selection Multimodal DS ↑E↑C↑MA (%)↑
+> ACIL++ [41] MLP →ˆuDeterministic ✗59 .53 204 .23 18 .38 30 .95 Bw/ Transf. Decoder Trf. Dec. →MLP →ˆuDeterministic ✗67 .45 192 .43 22 .83 45 .83 Cw/ Diffusion Trf. Dec. →ˆεCandidate 0 ✓70 .14 188 .98 24 .76 49 .13 Dw/ NNM Trf. Dec. →ˆεNNM ✓77 .90 192 .15 25 .63 55 .47
+
+Table 1: Progressive architectural improvements towards ADT. All variants use the same two-camera setting. The architectural-property columns highlight changes not fully captured by the variant names: the original CIL++ head predicts controls from mean-pooled encoder tokens; variants A and B use an MLP action regressor; and NNM adds a parameter-free inference-time selector over sampled diffusion candidates. DS denotes Driving Score, E Efficiency, C Comfortness and MA the mean of the five ability scores. ˆ u denotes predicted actions and ˆ ε predicted noise. 
+
+Config A: CIL++ baseline. We use CIL++ [41] as the starting point. Multi-view image features are encoded into scene tokens, enriched with command and speed embeddings, and processed by a Transformer encoder. The resulting token sequence is globally averaged over the token dimension and passed to an MLP that directly regresses the low-level control ˆu = ( ˆuthr , ˆusteer , ˆubrk ). This produces a deterministic action for each observation. 
+
+Config B: Transformer decoder. We build on Config A by replacing the global-average-pooled action readout with a Transformer decoder [39]. Following the query-based decoding principle used in driving architectures such as InterFuser [35], a learned action query cross-attends to the encoded scene tokens and the decoded feature is then mapped by an MLP to the predicted control ˆ u. This keeps the policy deterministic, but gives the action head a structured mechanism for attending to the relevant parts of the encoded observation. 
+
+Config C: Diffusion. We build on Config B by replacing direct action regression with conditional action diffusion, inspired by Diffusion Policy [3]. The Transformer decoder is repurposed as a denoising action head: it receives a noisy continuous control token, the dif-fusion timestep, and the observation-conditioning token, and predicts the injected noise ˆ ε
+
+rather than directly predicting ˆ u. At inference, a single Gaussian initialisation is denoised with DDIM to obtain one executable control sample; in the notation of Tab. 1, this corre-sponds to selecting Candidate 0. 
+
+Config D: Nearest Neighbour Matching. We build on Config C with an inference-only selection rule. For each observation, the diffusion pipeline samples K candidate controls instead of one, and NNM executes the candidate with the smallest average distance to the others. Thus, NNM turns diffusion multimodality into an explicit best-of-K decision, without adding trainable parameters, auxiliary supervision, retraining or fine-tuning. 
+
+## 4.4 Results on Bench2Drive220 
+
+As illustrated in Tab. 2, ADT achieves the best closed-loop performance on Bench2Drive220, reaching 77 .90 DS and 55 .00% SR while running at 19 .2 ms. Compared with direct-control baselines, ADT substantially improves over TCP-ctrl (30 .47 DS, 7 .27% SR), MILE (39 .80 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 9
+
+Figure 2: Illustration of Bench2Drive220 and Dev10 roadmap results Driving Score improves consistently from Config A to D on both sets, with ADT surpassing Hydra-NeXt in Bench2Drive220 .                                                             
+
+> Method Sensors Latency (ms) ↓Bench2Drive220
+> DS ↑SR (%)↑E↑C↑
+> TCP-ctrl* [40] Front Camera 83 30 .47 7.27 55 .97 51 .51
+> MILE †[19] Front Camera 44 39 .80 5.45 67 .59 25 .23 CIL++ [41] Front/Back Cameras 5.459 .53 25 .57 204 .23 18 .38 DriveTransformer-Large [23] 6 Cameras 211 .763 .46 35 .01 100 .64 20 .78 DriveAdapter [21] 6 Cameras 931 64 .22 33 .08 70 .22 16 .01 ETA [15] Front Camera 50 69 .53 38 .64 184 .51 28 .43 Hydra-NeXt [29] Front/Back Cameras 528 .373 .86 50 .00 197 .76 20 .68
+> ADT Front/Back Cameras 19 .277 .90 55 .00 192 .15 25 .63
+
+Table 2: Closed-loop results of E2E-AD methods on Bench2Drive-220 evaluation set. 
+
+Latency is reported in milliseconds. * denotes expert feature distillation. † denotes regression-only implementation. All reported models in this table were previously trained with the official base dataset. DS denotes Driving Score, SR denotes Success Rate, E denotes Efficiency, and C denotes Comfortness. DS, 5 .45% SR) and CIL++ (59 .53 DS, 25 .57% SR), while also raising the mean ability score from CIL++’s 30 .95% to 55 .47%. ADT also outperforms waypoint-based methods, including DriveTransformer-Large (63 .46 DS), DriveAdapter (64 .22 DS), ETA (69 .53 DS) and Hydra-NeXt (73 .86 DS), despite using only front/back cameras and being much faster than the strongest trajectory baseline, Hydra-NeXt (19 .2 ms vs. 528 .3 ms). In the ability benchmark (Tab. 3), ADT obtains the highest mean score (55 .47%), with the best results in Merging and Traffic Sign, tied best performance in Emergency Brake, and competitive scores in Overtaking and Give Way. The only metrics where ADT is not best are Efficiency, led by CIL++, and Comfortness, led by TCP-ctrl. 
+
+Note on comfortness. ADT obtains substantially lower comfortness than TCP-ctrl. This is partly due to how Bench2Drive defines its comfort metric, which marks a fixed 20-step seg-ment as comfortable only if all samples satisfy strict bounds on acceleration, jerk, and yaw motion. Agents that move very slowly, get stuck, or remain nearly stationary can therefore 10 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING                                                          
+
+> Method Ability (%) ↑
+> Merging Overtaking Emergency Brake Give Way Traffic Sign Mean
+> TCP-ctrl* [40] 10.29 4.44 10.00 10.00 6.45 8.23 MILE †[19] 5.00 0.00 3.33 10.00 25.79 8.82 CIL++ [41] 28 .75 35 .56 20 .00 30 .00 40 .43 30 .95 DriveTransformer-Large [23] 17 .57 35 .00 48 .36 40 .00 52 .10 38 .60 DriveAdapter [21] 14 .55 22 .61 54 .04 50 .00 50 .45 38 .33 ETA [15] 26 .66 50 .42 60 .13 80 .00 43 .64 52 .17 Hydra-NeXt [29] 40 .00 64 .44 61 .67 50 .00 50 .00 53 .22
+> ADT 50 .00 57 .78 61 .67 50 .00 57 .89 55 .47
+
+Table 3: Multi-ability results of E2E-AD methods on the closed-loop Bench2Drive-220 evaluation set. All reported models in this table were previously trained with the official base dataset. * denotes expert feature distillation. † denotes regression-only implementation. accumulate comfortable segments while making little progress, explaining the high comfort-ness of TCP-ctrl despite its low success rate. For ADT, the lower comfortness is more likely caused by the opposite behaviour: the policy completes more routes, which can introduce sharper throttle, brake, or steering changes. More details can be found in the supplementary material. 
+
+4.4.1 Multimodality results 
+
+We evaluate multimodality in three stages. First, we isolate the candidate-selection problem offline, asking whether the sampled action set contains useful alternatives and whether a deployable selection rule can recover them. Second, we analyse whether diffusion produces a richer action-space candidate set than a deterministic policy with stochastic dropout. Third, we evaluate all deployable variants closed-loop using the Dev10 set. 
+
+Selecting the best action candidate. We first study how to select one control command from a set of K candidates. Besides the non-parametric nearest-neighbour matching (NNM) rule, we implement a trainable candidate selector in ADT. This selector scores candidate actions and selects one candidate from the diffusion-generated set. The implementation details of the learned selector, as well as additional information about our multimodality study, are provided in the supplementary material. Figure 3 analyses candidate selection from two complementary views. On the left, NNM has the lowest total sanitised L1 and stays closest to the GT-selected reference distribution, while the learned selector leaves more mass at larger errors. On the right, we see that using the median or mean of the K candidates leads us to coasting actions, where there is no lateral or longitudinal motion. This happens because the sampled actions can split into throttle and brake modes, and averaging or taking the median falls between them. NNM avoids this by selecting an actual sampled action supported by nearby candidates. Table 4 (a) reports the corresponding aggregate errors under raw, clamped, and sanitised action spaces. Both candidate sets contain useful alternatives, but NNM recovers them more reliably, reaching a sanitised selected L1 of 0 .145 compared with 0 .159 for the learned se-lector. The oracle-best values quantify the remaining candidate-set potential, showing that multimodality must be paired with a robust deployable selection rule. RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 11 
+
+Figure 3: Offline candidate-selection. Left: We show the kernel density estimate of the total sanitised L1 error for each selection rule, measured against the GT-selected reference distribution. The legend reports the mean error and the Jensen–Shannon divergence (JSD) from the reference; lower values indicate better agreement. Right: We place 10 random action samples, each with K = 10 candidates, in a lateral-longitudinal control grid. For each sample, we also plot their Candidate 0, median, and mean of the K candidates. 
+
+Diffusion multimodality. We next test whether diffusion provides a stronger mechanism for action-space multimodality than adding stochasticity to a deterministic policy. We start from the deterministic CIL++ w/ TD policy (see configuration B in Tab. 1). This policy has no explicit multimodal mechanism: for a fixed input, repeated forward passes produce the same action. As a simple stochastic baseline, we add dropout to the policy MLP and keep dropout active at inference. Dropout was originally introduced as a regularisation method [37], and Monte Carlo dropout interprets repeated stochastic forward passes as approximate Bayesian inference over model parameters [13]. For a fixed condition c, this produces ˆu(k) = fθ
+
+
+
+c; m(k)
+
+, k = 1, . . . , K, (18) where m(k) is the dropout mask for sample k. This gives a stochastic candidate generator, but it does not define a learned conditional distribution over valid driving modes. In contrast, ADT samples K action latents from a conditional diffusion model and denoises them into K
+
+candidate controls. Table 4 (b) compares the resulting candidate spread for K = 10. The deterministic CIL++ w/ TD model has zero diversity, as expected. MC-dropout introduces some variation: af-ter sanitisation, its mean ranges are 0 .175 for throttle, 0 .014 for steer, and only 0 .008 for brake. ADT produces a broader and more balanced candidate set, with sanitised ranges of 0.244, 0 .123, and 0 .142 for throttle, steer, and brake, respectively. The same trend appears in the sanitised pairwise L1 diversity, where ADT reaches 0 .060 compared with 0 .024 for MC-dropout and zero for the deterministic policy. This supports diffusion as a principled action-space multimodality mechanism rather than merely injecting local stochasticity into a deterministic action head. 12 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 
+
+(a) Offline candidate-selection comparison Selection rule Action space Selected L1 ↓ Oracle-best L1 ↓            
+
+> NNM Raw 0.163 0.154
+> Clamped 0.159 0.151
+> Sanitised 0.145 0.145
+> Learned selector Raw 0.174 0.167 Clamped 0.170 0.163 Sanitised 0.159 0.159
+
+(b) Action-space diversity across K = 10 candidates Model Throttle range ↑ Steer range ↑ Brake range ↑ Sanitised pairwise L1 ↑                           
+
+> Raw Sanitised Raw Sanitised Raw Sanitised Sanitised ADT 0.251 0.244 0.123 0.123 0.209 0.142 0.060
+> CIL++ w/ TD 0.000 0.000 0.000 0.000 0.000 0.000 0.000 CIL++ w/ TD w/ dropout 0.193 0.175 0.014 0.014 0.045 0.008 0.024
+
+Table 4: Offline multimodality results. Panel (a) compares deployable candidate-selection rules. Selected denotes the candidate chosen by the corresponding rule, and Oracle-best denotes the candidate closest to the expert action offline. Panel (b) measures action-space diversity across K = 10 candidates. ADT produces substantially larger and more balanced diversity than deterministic CIL++ w/ TD and CIL++ w/ TD with MC-dropout, while NNM obtains the lowest selected L1 among the evaluated selection rules. 
+
+Closed-loop multimodality. Finally, we evaluate whether offline multimodality translates into closed-loop driving performance. We compare several deployable ways of using the candidate set. For ADT, the vanilla variant uses a single sampled action, the mean variant averages the K diffusion candidates, and NNM selects a candidate using nearest-neighbour matching in action space. For CIL++ w/ TD, we compare the deterministic policy, MC-dropout candidate 0, MC-dropout mean aggregation, and MC-dropout with NNM. The mean variants test whether simply generating multiple candidates is enough, or whether selecting one candidate is necessary. NNM selects an action already sampled from the diffusion policy; it does not average potentially incompatible controls. More precisely, it favours a sampled control supported by nearby samples of the learned conditional action distribution, while isolated samples obtain larger consensus scores. This is important in closed loop: averaging can collapse distinct throttle, brake, or steering alternatives into a control that is not itself a likely candidate, while candidate selection preserves a valid sampled action. Table 5 shows that selection is critical. ADT with NNM achieves the best closed-loop performance, with a driving score of 82 .88 ± 1.83 and route completion of 93 .12 ± 1.91. ADT mean aggregation improves over candidate 0, but remains below NNM, indicating that averaging candidates does not exploit the full candidate-set structure. The dropout baselines show a different trend. MC-dropout candidate 0 and mean ag-gregation substantially degrade CIL++ w/ TD, and dropout NNM recovers part of the lost performance but still remains below the deterministic policy. Thus, adding dropout to a de-terministic action head does not provide the same closed-loop benefit as diffusion-based can-didate generation. Overall, the strongest result comes from combining diffusion-generated action candidates with a robust selection rule. RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 13 
+
+Family Multimodality Variant DS ↑ RC ↑ IP ↑
+
+ADT Diffusion Candidate 0 75 .23 ±1.86 85 .97 ±2.31 0.87 ±0.01 
+
+Mean 78 .32 ±2.25 89 .77 ±1.36 0.89 ±0.01 
+
+NNM 82 .88 ±1.83 93 .12 ±1.91 0.88 ±0.02 
+
+CIL++ w/ TD ✗ Deterministic 74 .99 ±2.50 84 .10 ±2.06 0.91 ±0.01 
+
+CIL++ w/ TD Dropout Candidate 0 59 .13 ±9.54 72 .58 ±7.52 0.61 ±0.10 
+
+Mean 62 .76 ±4.04 76 .93 ±3.52 0.64 ±0.03 
+
+NNM 71 .24 ±3.11 84 .28 ±3.20 0.78 ±0.03 
+
+Table 5: Closed-loop Dev10 comparison of ADT, deterministic CIL++ w/ TD, and dropout variants. ADT variants compare different ways of exploiting diffusion-generated action candidates: a single sampled candidate, mean aggregation, and nearest-neighbour matching (NNM). The dropout variants evaluate whether MC-dropout provides a compa-rable action-space multimodality mechanism when applied to the deterministic CIL++ w/ TD policy. NNM gives the strongest driving score and route completion among all evalu-ated variants, showing that diffusion-generated candidates combined with candidate selec-tion provide the most effective closed-loop control. We evaluate each model three times with different seeds and report mean and standard deviation. 
+
+## 4.5 Ablation Study 
+
+Decoder and conditioning. Table 6 studies the main architectural components of ADT. Removing diffusion yields the weakest model (A1), showing that deterministic single-action prediction is not sufficient in this setting. Adding diffusion without timestep conditioning improves performance (A2), and adding timestep conditioning further helps (A3), confirm-ing that the denoising process benefits from explicit diffusion-time information. Replacing the mean observation token with a learned conditional query improves performance further (A3 →A4), while the Transformer-decoder denoiser gives a stronger action mapper than the MLP denoiser (A4 →ADT). Finally, comparing A5 with ADT isolates the effect of candi-date selection: both use the same diffusion, timestep conditioning, cond-query token and TD denoiser, but NNM selection raises DS from 75 .23 to 82 .88. Overall, the best config-uration combines time-aware diffusion, cond-query conditioning, a TD denoiser and NNM selection. 
+
+Denoising steps nd . Table 7 shows the latency–performance trade-off for the number of denoising steps. Moving from one to two steps gives the main gain, increasing DS from 74 .97 to 82 .88 while remaining below the 50 ms budget required for 20 FPS. Four steps stay just within this budget, but provide almost no additional DS. Beyond nd =4, the improve-ments are small relative to the latency cost, and the model runs above 50 ms, i.e., below 20 Hz. We therefore use nd =2. 
+
+Horizon length H. Table 8 evaluates action horizons larger than the default single-step control. In these ablations, the model predicts an H-step action sequence, but the agent replans at every simulator tick and executes only the first action of the newly predicted se-quence. The best result is obtained with H=1, while longer horizons consistently reduce 14 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 
+
+ID Diffusion Time Cond. Obs. Token Denoiser Selection Latency (ms) ↓ DS ↑ RC ↑ IP ↑
+
+A1 ✗ ✗ cond-query TD ✗ 7.5 44.59 58.39 0.71 A2 ✓ ✗ cond-query TD NNM 19.2 56.83 76.04 0.72 A3 ✓ ✓ mean TD NNM 19.2 62.78 91.23 0.71 A4 ✓ ✓ cond-query MLP NNM 18.5 69.72 84.98 0.81 A5 ✓ ✓ cond-query TD Candidate 0 11.3 75.23 85.97 0.87 
+
+ADT ✓ ✓ cond-query TD NNM 19.2 82.88 93.12 0.88 
+
+Table 6: Ablations of the Action Diffusion Transformer in Dev10 . We toggle the dif-fusion head, timestep conditioning, observation token, denoiser architecture, and candidate-selection strategy while keeping the perception backbone fixed. DS denotes Driving Score, RC denotes Route Completion, and IP denotes Infraction Penalty.                                 
+
+> ndLatency (ms) ↓DS ↑RC ↑IP ↑
+> 110.6 74.97 85.77 0.87
+> 219.2 82.88 93.12 0.88
+> 448.1 82.94 93.41 0.86 668.8 83.33 93.98 0.88 886.2 84.57 94.11 0.89 10 102.6 85.41 95.01 0.88
+
+Table 7: Denoising steps nd .                                
+
+> HLatency (ms) ↓DS ↑RC ↑IP ↑
+> 119.2 82.88 93.12 0.88
+> 219.2 73.78 91.10 0.81 419.2 72.38 83.38 0.89 619.2 63.59 81.69 0.82 819.2 59.88 83.85 0.71 10 19.2 45.19 61.47 0.69
+
+Table 8: Horizon length H.                                     
+
+> KLatency (ms) ↓DS ↑RC ↑IP ↑
+> 119.2 74.93 85.15 0.87 219.2 75.68 85.78 0.87 419.2 77.14 87.08 0.87 619.2 78.97 88.51 0.87 819.2 81.67 91.89 0.87
+> 10 19.2 82.88 93.12 0.88
+> 12 19.2 81.97 92.11 0.87
+
+Table 9: Number of action candidates K.
+
+closed-loop performance. We also tested executing consecutive actions from the same pre-dicted sequence before replanning, but this produced near-zero driving score. We therefore keep H=1. 
+
+Candidate number K. Table 9 shows that increasing the number of sampled candidates steadily improves closed-loop performance up to K=10. This confirms that ADT benefits from sampling multiple plausible controls and selecting among them. However, increasing to K=12 does not improve over K=10, suggesting that the useful candidate coverage has saturated. Since the latency is effectively unchanged across this range in our batched im-plementation, we adopt K=10 as the default candidate count. Further ablations on ADT are provided in the supplementary material. 
+
+# 5 Limitations and future work 
+
+ADT has three main limitations that open directions for future work. First, our horizon ablation shows that predicting multiple future actions ( H > 1) does not improve performance, suggesting that effective multi-step action execution remains an open challenge. Second, ADT currently uses a two-camera setup; extending it to additional sensors may improve performance. Third, our visual input resolution is modest compared with recent E2E-AD architectures: we use 300 ×300 camera images, whereas methods such as ETA and Hydra-NeXt operate at the full 1600 ×900 resolution. Exploring higher-resolution perception is therefore a promising direction. RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 15 
+
+# 6 Conclusion 
+
+We introduced Action Diffusion Transformer (ADT), an architecture that operates directly in action space by generating multiple throttle–steer–brake candidates and selecting the final command during inference with Nearest Neighbour Matching. Our experiments show that action-space multimodality is useful for end-to-end driving: diffusion produces richer and more balanced candidate sets than MC-dropout, while candidate selection is essential for translating multimodality into stronger closed-loop performance. Overall, ADT shows that direct control policies can benefit from explicit multimodal action prediction, and we hope this encourages further work on control-based E2E-AD for ADAS. 
+
+# References 
+
+[1] Holger Caesar, Varun Bankiti, Alex H. Lang, Sourabh Vora, Venice Erin Liong, Qiang Xu, Anush Krishnan, Yu Pan, Giancarlo Baldan, and Oscar Beijbom. nuscenes: A mul-timodal dataset for autonomous driving. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2020. [2] Li Chen, Penghao Wu, Kashyap Chitta, Bernhard Jaeger, Andreas Geiger, and Hongyang Li. End-to-end autonomous driving: Challenges and frontiers. IEEE Trans-actions on Pattern Analysis and Machine Intelligence , 2024. [3] Cheng Chi, Siyuan Feng, Yilun Du, Zhenjia Xu, Eric Cousineau, Benjamin Burchfiel, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. In Proceedings of the Robotics: Science and Systems (RSS) Conference , 2023. [4] Kashyap Chitta, Aditya Prakash, Bernhard Jaeger, Zehao Yu, Katrin Renz, and Andreas Geiger. Transfuser: Imitation with transformer-based sensor fusion for autonomous driving. IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI) ,2022. [5] Felipe Codevilla, Antonio M. Lopez, Vladlen Koltun, and Alexey Dosovitskiy. On offline evaluation of vision-based driving models. In Proceedings of the European Conference on Computer Vision (ECCV) , 2018. [6] Felipe Codevilla, Matthias Müller, Antonio López, Vladlen Koltun, and Alexey Doso-vitskiy. End-to-end driving via conditional imitation learning. In 2018 IEEE Interna-tional Conference on Robotics and Automation (ICRA) , 2018. [7] Felipe Codevilla, Eduardo Santana, Antonio M. López, and Adrien Gaidon. Exploring the limitations of behavior cloning for autonomous driving. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2019. [8] Daniel Dauner, Marcel Hallgarten, Tianyu Li, Xinshuo Weng, Zhiyu Huang, Ze-tong Yang, Hongyang Li, Igor Gilitschenski, Boris Ivanovic, Marco Pavone, Andreas Geiger, and Kashyap Chitta. Navsim: Data-driven non-reactive autonomous vehicle simulation and benchmarking. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. 16 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 
+
+[9] Alexey Dosovitskiy, German Ros, Felipe Codevilla, Antonio Lopez, and Vladlen Koltun. Carla: An open urban driving simulator. In Proceedings of the 1st Annual Conference on Robot Learning (CoRL) , 2017. [10] Fatih Erdo˘ gan, Merve Rabia Barın, and Fatma Güney. Mapping like a skeptic: Prob-abilistic bev projection for online hd mapping. In Proceedings of the British Machine Vision Conference (BMVC) , 2025. [11] William Falcon and The PyTorch Lightning team. PyTorch Lightning, March 2019. URL https://github.com/Lightning-AI/lightning .[12] Gianni Franchi, Xuanlong Yu, Andrei Bursuc, Ángel Tena, Rémi Kazmierczak, Séver-ine Dubuisson, Emanuel Aldea, and David Filliat. Muad: Multiple uncertainties for autonomous driving, a benchmark for multiple uncertainty types and tasks. In Pro-ceedings of the British Machine Vision Conference (BMVC) , 2022. [13] Yarin Gal and Zoubin Ghahramani. Dropout as a bayesian approximation: Repre-senting model uncertainty in deep learning. In Proceedings of the 33rd International Conference on Machine Learning (ICML) , 2016. [14] Aditya Nalgunda Ganesh and Gowri Srinivasa. D 3nav: Data-driven driving agents for autonomous vehicles in unstructured traffic. In Proceedings of the British Machine Vision Conference (BMVC) , 2024. [15] Shadi Hamdan, Chonghao Sima, Zetong Yang, Hongyang Li, and Fatma Güney. Eta: Efficiency through thinking ahead, a dual approach to self-driving with large models. In 
+
+Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) ,2025. [16] Jeffrey Hawke, Richard Shen, Corina Gurau, Siddharth Sharma, Daniele Reda, Nikolay Nikolov, Przemyslaw Mazur, Sean Micklethwaite, Nicholas Griffiths, Amar Shah, and Alex Kendall. Urban driving with conditional imitation learning. In Proceedings of the IEEE International Conference on Robotics and Automation (ICRA) , 2020. [17] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recognition. In 2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR) , pages 770–778, 2016. doi: 10.1109/CVPR.2016.90. [18] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In Advances in Neural Information Processing Systems (NeurIPS) , 2020. [19] Anthony Hu, Gianluca Corrado, Nicolas Griffiths, Zak Murez, Corina Gurau, Hud-son Yeo, Alex Kendall, Roberto Cipolla, and Jamie Shotton. Model-based imitation learning for urban driving. In Advances in Neural Information Processing Systems (NeurIPS) , 2022. [20] Ayesha Ishaq, Jean Lahoud, Fahad Shahbaz Khan, Salman Khan, Hisham Cholakkal, and Rao Muhammad Anwer. Tracking meets large multimodal models for driving scenario understanding. In Proceedings of the British Machine Vision Conference (BMVC) , 2025. RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 17 
+
+[21] Xiaosong Jia, Yulu Gao, Li Chen, Junchi Yan, Patrick Langechuan Liu, and Hongyang Li. Driveadapter: Breaking the coupling barrier of perception and planning in end-to-end autonomous driving. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2023. [22] Xiaosong Jia, Zhenjie Yang, Qifeng Li, Zhiyuan Zhang, and Junchi Yan. Bench2drive: Towards multi-ability benchmarking of closed-loop end-to-end autonomous driving. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2024. [23] Xiaosong Jia, Junqi You, Zhiyuan Zhang, and Junchi Yan. Drivetransformer: Unified transformer for scalable end-to-end autonomous driving. In International Conference on Learning Representations (ICLR) , 2025. [24] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based generative models. In Advances in Neural Information Processing Systems (NeurIPS) , 2022. [25] Gaeun Kim, Daeil Han, Yeong Jun Koh, and Hanul Kim. Dualdistill: A unified cross-modal knowledge distillation framework for camera-based bev representation. In Pro-ceedings of the British Machine Vision Conference (BMVC) , 2025. [26] Ellington Kirby, Mickael Chen, Renaud Marlet, and Nermin Samet. Logen: Toward lidar object generation by point diffusion. In Proceedings of the British Machine Vision Conference (BMVC) , 2025. [27] Qifeng Li, Xiaosong Jia, Shaobo Wang, and Junchi Yan. Think2drive: Efficient rein-forcement learning by thinking in latent world model for quasi-realistic autonomous driving (in carla-v2). In Proceedings of the European Conference on Computer Vision (ECCV) , 2024. [28] Zhenxin Li, Kailin Li, Shihao Wang, Shiyi Lan, Zhiding Yu, Yishen Ji, Zhiqi Li, Ziyue Zhu, Jan Kautz, Zuxuan Wu, Yu-Gang Jiang, and Jose M. Alvarez. Hydra-mdp: End-to-end multimodal planning with multi-target hydra-distillation. arXiv preprint arXiv:2406.06978 , 2024. [29] Zhenxin Li, Shihao Wang, Shiyi Lan, Zhiding Yu, Zuxuan Wu, and Jose M. Alvarez. Hydra-next: Robust closed-loop driving with open-loop training. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2025. [30] Zhiqi Li, Zhiding Yu, Shiyi Lan, Jiahan Li, Jan Kautz, Tong Lu, and José M. Álvarez. Is ego status all you need for open-loop end-to-end autonomous driving? 2024 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 14864–14873, 2023. [31] Bencheng Liao, Shaoyu Chen, Haoran Yin, Bo Jiang, Cheng Wang, Sixu Yan, Xinbang Zhang, Xiangyu Li, Ying Zhang, Qian Zhang, and Xinggang Wang. Diffusiondrive: Truncated diffusion model for end-to-end autonomous driving. In IEEE/CVF Confer-ence on Computer Vision and Pattern Recognition (CVPR) , 2025. [32] Shu Liu, Wenlin Chen, Weihao Li, Zheng Wang, Lijin Yang, Jianing Huang, Yipin Zhang, Zhongzhan Huang, Ze Cheng, and Hao Yang. Bridgedrive: Diffusion bridge policy for closed-loop trajectory planning in autonomous driving. In Proceedings of the International Conference on Learning Representations (ICLR) , 2026. 18 RODRÍGUEZ-VIDAL et al. : MULTIMODAL E2E AUTONOMOUS DRIVING 
+
+[33] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Des-maison, Andreas Köpf, Edward Yang, Zach DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and Soumith Chintala. Py-Torch: an imperative style, high-performance deep learning library . Curran Associates Inc., Red Hook, NY, USA, 2019. [34] Karl Pertsch, Kyle Stachowicz, Brian Ichter, Danny Driess, Suraj Nair, Quan Vuong, Oier Mees, Chelsea Finn, and Sergey Levine. Fast: Efficient action tokenization for vision-language-action models. In Proceedings of Robotics: Science and Systems (RSS) , 2025. [35] Hao Shao, Letian Wang, RuoBing Chen, Hongsheng Li, and Yu Liu. Safety-enhanced autonomous driving using interpretable sensor fusion transformer. In Proceedings of the Conference on Robot Learning (CoRL) , 2022. [36] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit mod-els. In Proceedings of the International Conference on Learning Representations (ICLR) , 2021. [37] Nitish Srivastava, Geoffrey Hinton, Alex Krizhevsky, Ilya Sutskever, and Ruslan Salakhutdinov. Dropout: A simple way to prevent neural networks from overfitting. 
+
+Journal of Machine Learning Research , 2014. [38] Shrestha Srivastava and Vaibhav Kumar. Lid-lab-nerf: Generating temporally consis-tent, labelled lidar point clouds using neural radiance fields. In Proceedings of the British Machine Vision Conference (BMVC) , 2025. [39] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Information Processing Systems (NeurIPS) , 2017. [40] Penghao Wu, Xiaosong Jia, Li Chen, Junchi Yan, Hongyang Li, and Yu Qiao. Trajectory-guided control prediction for end-to-end autonomous driving: A simple yet strong baseline. In Advances in Neural Information Processing Systems (NeurIPS) ,2022. [41] Yi Xiao, Felipe Codevilla, Diego Porres, and Antonio M. López. Scaling vision-based end-to-end autonomous driving with multi-view attention learning. In 2023 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , 2023. [42] Liuhan Yin, Runkun Ju, Guodong Guo, and Erkang Cheng. Diffrefiner: Coarse to fine trajectory planning via diffusion refinement with semantic interaction for end to end autonomous driving. In Proceedings of the AAAI Conference on Artificial Intelligence (AAAI) , 2026. [43] Jiang-Tian Zhai, Ze Feng, Jihao Du, Yongqiang Mao, Jiang-Jiang Liu, Zichang Tan, Yifu Zhang, Xiaoqing Ye, and Jingdong Wang. Rethinking the open-loop evaluation of end-to-end autonomous driving in nuscenes. arXiv preprint arXiv:2305.10430 , 2023. [44] Zhejun Zhang, Alexander Liniger, Dengxin Dai, Fisher Yu, and Luc Van Gool. End-to-end urban driving by imitating a reinforcement learning coach. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2021.
