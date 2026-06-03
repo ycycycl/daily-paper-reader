@@ -1,0 +1,496 @@
+Title: PARE: Pruning and Adaptive Routing for Efficient Video Generation
+
+URL Source: https://arxiv.org/pdf/2605.27336v1
+
+Published Time: Wed, 27 May 2026 01:35:33 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# PARE: Pruning and Adaptive Routing for Efficient Video Generation 
+
+Yutong Wang 1, Yunke Wang 1, Tianfan Xue 3,2 , Yu Qiao 2, Yaohui Wang 2,Xinyuan Chen 2∗ , Chang Xu 1∗
+
+> 1
+
+The University of Sydney 2Shanghai AI Laboratory 3The Chinese University of Hong Kong 
+
+## Abstract 
+
+Video Diffusion Transformers (DiTs) generate high-quality videos but demand substantial compute due to wide blocks, deep architectures, and iterative sampling. Recent methods reduce cost by compressing width, depth, or sampling steps, but typically commit to a fixed architecture that cannot adapt to individual inputs or denoising stages. We propose PARE (Pruning and Adaptive Routing for Efficient video generation), which jointly compresses width and depth with structure-aware pruning and input-adaptive routing. For width, we observe that attention heads specialize into spatial and temporal roles, and design importance scoring that accounts for this distinction to prevent motion-critical temporal heads from being pruned prematurely. For depth, we train a lightweight router conditioned on denoising timestep and visual content to dynamically select which blocks to execute at each step, enabling per-input compute adaptation rather than static block removal. A progressive pipeline first recovers width-pruned quality via distillation, then jointly optimizes the student and router to decouple the two learning objectives. Experiments on Wan2.1-14B for both image-to-video and text-to-video generation show that PARE substantially reduces per-step computation while preserving quality across VBench dimensions, and composes with step distillation for further acceleration. 
+
+## 1 Introduction 
+
+Diffusion Transformers [ 22 ] have brought video generation to remarkable fidelity [ 34 , 39 , 15 ], yet their inference cost remains prohibitive. Each denoising step must traverse dozens of transformer blocks with billions of parameters, and generating a single video requires tens of such steps. This cost spans three axes: width , the heads and FFN dimensions within each block; depth , the number of blocks executed per step; and steps , the denoising iterations. Recent methods have begun to compress multiple axes jointly [ 26 , 37 ], yet they remain static : the same reduced architecture serves every input at every timestep, all attention heads are treated uniformly regardless of their functional role, and there is no mechanism to adapt computation to input complexity. Two properties of video DiTs suggest a better strategy. First, attention heads exhibit clear spatial-temporal specialization [ 33 , 21 , 2]: shallow heads attend predominantly within frames while deeper heads capture cross-frame motion. Magnitude-based pruning systematically undervalues temporal heads, whose activations are smaller yet critical for motion coherence. Second, block importance varies across both timesteps and inputs [ 20 , 19 ]: early denoising steps that recover global structure rely on different blocks than late steps that refine details, and the optimal block subset further depends on scene complexity. These observations call for spatial-temporal aware width pruning within blocks and content-adaptive depth routing across blocks. 
+
+> ∗Corresponding author. Preprint.
+> arXiv:2605.27336v1 [cs.CV] 26 May 2026
+
+We present PARE (Pruning and Adaptive Routing for Efficient video generation), a framework that compresses video DiTs along both axes. For width, PARE scores attention heads via calibration-based importance with a protection multiplier for temporal heads, and selects FFN neurons through importance-plus-diversity filtering that exploits the factored up/down projection structure. For depth, a lightweight router conditioned on both timestep and visual content selects which blocks to execute, with a budget schedule that allocates more blocks to high-noise steps. A progressive training pipeline first recovers width-pruned quality via distillation, then jointly optimizes the pruned model and router, avoiding the compound difficulty of learning both from scratch. We evaluate PARE on Wan2.1-14B for both image-to-video and text-to-video generation. PARE halves per-step computation while preserving quality across VBench [ 12 ] dimensions, and composes with step distillation for further acceleration along the third axis. Our contributions are: • A spatial-temporal aware width pruning strategy that classifies attention heads by their intra-slice attention ratio and applies temporal protection to correct magnitude bias, combined with importance-plus-diversity FFN selection that exploits the factored projection structure. • A content-adaptive block router that conditions on both timestep and visual input to select which blocks to execute, with a budget schedule that allocates more computation to high-noise steps, enabling per-sample depth adaptation at negligible parameter overhead. • A progressive training pipeline that decouples width distillation from joint width-routing optimiza-tion, breaking the circular dependency between pruned feature quality and routing decisions. • Experiments on Wan2.1-14B showing that PARE halves per-step computation with minimal quality loss on both I2V and T2V, and composes with step distillation for up to ∼50 × total speedup. 
+
+## 2 Related Work 
+
+Static Compression for Diffusion Models. Scaling video DiTs to billions of parameters [ 34 , 39 ,15 , 23 ] has made per-step inference a bottleneck, motivating compression along two orthogonal axes. Structural pruning removes entire heads, neurons, or layers to reduce per-step cost. Early work targets image U-Nets with Taylor-expansion scores [ 7] or activation-aware criteria [ 31 ]. For video DiTs, FastLightGen [ 26 ] identifies redundant blocks via ELBO-based importance ranking and applies block-level pruning with stochastic skip training, NeoDragon [ 14 ] prunes MMDiT blocks by relative importance and recovers quality through two-stage distillation, and Wu et al. [ 37 ] search tri-level binary masks over 20K iterations. All operate at block granularity and treat every attention head uniformly, leaving intra-block redundancy unexploited and discarding temporal heads whose activations are small but motion-critical. Step distillation compresses the sampling trajectory instead: progressive distillation [ 25 ] halves steps iteratively, consistency models [ 28 , 18 ] learn direct mappings, and distribution matching [ 41 , 40 , 35 , 8] closes the few-step gap. Both axes apply the same reduced model to every input and timestep. PARE adds spatial-temporal aware width pruning that protects motion-critical heads, dynamic depth routing that adapts per sample, and remains compatible with step distillation for joint acceleration along all three axes. 
+
+Dynamic Computation for Diffusion Models. Dynamic networks adapt computation per input via Mixture-of-Experts [ 27 , 13 ], early exit [ 32 ], or token pruning [ 24 ]. In the diffusion setting, DyDiT [ 45 ] introduces timestep-conditioned dynamic width and spatial token pruning for image DiTs, but targets images only and conditions routing solely on the timestep without considering visual content. A separate line of work exploits inter-step feature redundancy without additional training: DeepCache [ 20 ] caches deep features across adjacent steps, ∆-DiT [ 4 ] caches block residuals, and PAB [ 47 ] broadcasts attention maps across frames. These caching strategies reduce redundant computation effectively but do not adapt the network architecture to input complexity. At a coarser granularity, Wan2.2 [ 34 ] trains two separate 14B experts for high-noise and low-noise regimes switched by a fixed SNR threshold, doubling storage while still applying the same expert to all inputs at a given noise level. PARE routes at block granularity within a single compressed model, conditioning on both timestep and visual content to enable input-adaptive depth without the storage overhead of dual experts, while jointly optimizing width and depth compression through a progressive distillation pipeline. 2. . .          
+
+> QVO
+> Calibration Dataset
+> Head-
+> Head importance
+> Head type
+> Spatial Temporal Mixed
+> Head Pruning for Block-1234J
+> K
+> .
+> Importance of Neuron-:
+> 4
+> Ranking  Skip neurons similar to already-selected ones
+> 2026 K170
+> 4
+> K
+> 713
+> Preserved neurons
+> Noise Timestep Emb Visual Condition
+> Pruned DiT Block
+> Router
+> Binary Routing Mask High-noise Timestep:
+> (structure recovery)
+> Low-noise Timestep:
+> (detail refinement)
+> 123Neuron-
+> 123
+> DiT Block-
+> (a) Spatial-Temporal Aware Width Pruning (b) Content-Adaptive Block Routing
+> Pruned DiT Block
+> Pruned DiT Block
+> Pruned DiT Block
+
+Figure 1: Overview of PARE. (a) Spatial-temporal aware width pruning. For attention, head importance scores si,j are computed on a calibration set and adjusted to ˜si,j based on each head’s spatial-temporal type, protecting motion-critical temporal heads from magnitude bias. For FFN, neurons are ranked by the product of their up/down projection norms and greedily selected while skipping candidates that are functionally similar to already-chosen ones, ensuring both importance and diversity. (b) Content-adaptive block routing. A lightweight router takes a timestep embedding and a visual condition as input and produces a binary mask that selects which pruned blocks to execute. A timestep-dependent budget allocates more blocks at high-noise steps for structure recovery and fewer at low-noise steps for detail refinement. 
+
+## 3 Method 
+
+As illustrated in Figure 1, PARE compresses video DiTs along two axes, width (intra-block) and 
+
+depth (inter-block), via spatial-temporal aware width pruning (§3.2), content-adaptive block routing (§3.3), and a progressive distillation pipeline (§3.4). 
+
+3.1 Preliminaries 
+
+We build on the flow matching framework [ 16 , 17 ] for video generation. Given a video latent 
+
+x0 ∈ RFl×Hl×Wl×C obtained via 3D VAE compression ( Fl temporal slices, spatial resolution 
+
+Hl × Wl, C channels), the forward process constructs a noisy sample xt = (1 − σt)x0 + σtϵ at time 
+
+t ∈ [0 , 1] , where σt increases monotonically from 0 to 1. A velocity network vΘ learns to predict the flow target (ϵ − x0) via: 
+
+LFM (Θ) = Et,x 0,ϵ 
+
+h
+
+∥vΘ(xt, t, c ) − (ϵ − x0)∥22
+
+i
+
+, (1) where c denotes the conditioning signal (text, reference image, or both). Videos are generated by integrating the learned ODE from t=1 to t=0 .The velocity network vΘ is a Diffusion Transformer (DiT) [ 22 ] with an input projection g1, N
+
+sequential transformer blocks, and an output projection g2:
+
+vΘ(xt, t, c ) = g2 ◦ BN −1 ◦ · · · ◦ B0 ◦ g1(xt, t, c ). (2) Each block Bi consists of multi-head self-attention (SA, Hsa heads) over the full spatiotemporal token sequence with 3D rotary embeddings [ 29 ], multi-head cross-attention (CA, Hca heads) to text and image conditions, and a feed-forward network (FFN, hidden dimension dffn ). Timestep conditioning enters via adaptive modulation [ 22 ]. For Wan2.1-14B-I2V, N =40 , Hsa =Hca =40 , dffn =13824 , and 
+
+d=5120 , yielding over 16B parameters whose per-step cost motivates the compression strategy described below. 
+
+3.2 Spatial-Temporal Aware Width Pruning 
+
+Attention heads in video DiTs serve heterogeneous roles: some process spatial (intra-slice) informa-tion, others capture temporal (inter-slice) dynamics. Standard magnitude-based pruning treats all heads uniformly, risking disproportionate removal of temporal heads, which tend to have smaller 30 5 10 15 20 25 30 35            
+
+> Block Index
+> 0
+> 10
+> 20
+> 30
+> 40
+> Number of Heads
+> (a) Head type distribution per block
+> Spatial Mixed Temporal
+> 0510 15 20 25 30 35
+> Block Index
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Avg Intra-Slice Attn Ratio  (b) Avg intra-slice attention ratio
+> s= 0.7
+> t= 0.3
+
+Figure 2: Spatial-temporal head analysis of Wan2.1-14B. (a) Head type distribution per block, classified by intra-slice attention ratio (Eq. (4) ). Shallow blocks (3–12) are spatial-dominant, while mid-to-deep blocks (15–31) are temporal-dominant. (b) Block-level average intra-slice attention ratio. The thresholds τs=0 .7 and τt=0 .3 partition heads into spatial, mixed, and temporal types. This heterogeneity motivates type-aware importance scoring: temporal heads have smaller activations yet are critical for motion coherence, and would be disproportionately pruned by magnitude-only criteria. activations yet are critical for motion coherence. We propose a width pruning pipeline with spatial-temporal aware scoring and temporal protection. 
+
+Head Importance Scoring. Each SA head hij in block Bi contributes ∆yj = W iO,j · ˜vij to the block output, where ˜vij is the attention-weighted value and W iO,j the output projection slice. Removing head j causes a perturbation bounded by ∥W iO,j ∥F · ∥ ˜vij ∥F , the WANDA criterion [ 31 ], a first-order approximation requiring neither gradients nor leave-one-out evaluation. We aggregate over a calibration set D with timestep weighting w(t) = log(1 + t/T ) that upweights high-noise steps: 
+
+si,j  
+
+> sa
+
+= 1
+
+|D| 
+
+X
+
+> (x,c )∈D
+> T
+
+X
+
+> t=1
+
+w(t) · ˜vij (xt, c ) F · W iO,j F . (3) Cross-attention importance si,j  
+
+> ca
+
+is computed analogously; for I2V, text and image contributions are summed ( si,j  
+
+> ca
+
+= si,j  
+
+> ca,text
+
++ si,j 
+
+> ca,img
+
+). A limitation of magnitude-based scoring is that temporal heads, whose attention spreads across all Fl slices, have lower per-position magnitudes and are systematically underscored. 
+
+Spatial-Temporal Classification and Temporal Protection. After VAE compression ( 4×8×8)and patch embedding ( 1×2×2), a video becomes FlL tokens ( Fl temporal slices, L spatial tokens each). We classify each SA head hij by its intra-slice attention ratio , the fraction of attention allocated within the same temporal slice: 
+
+ri,j  
+
+> intra
+
+= 1
+
+|Q| 
+
+X
+
+> q∈Q
+
+P 
+
+> k∈S (q)
+
+Ai,j q,k 
+
+P 
+
+> k
+
+Ai,j q,k 
+
+, type (hij ) = 
+
+
+
+spatial , r > 0.7,
+
+temporal , r < 0.3,
+
+mixed , else ,
+
+(4) where Ai,j q,k is the attention weight from query token q to key token k in head j of block i (after softmax), S(q) is the set of tokens sharing the same temporal slice as q, and Q is a uniformly sampled subset of query positions across slices. Empirically, shallow blocks (3–12) are spatial-dominant while mid-to-deep blocks (15–31) are temporal-dominant. To correct the magnitude bias, we scale temporal head scores by αtemp >1:
+
+˜si,j  
+
+> sa
+
+=
+
+(
+
+αtemp · si,j  
+
+> sa
+
+, if type (hij ) = temporal ,si,j  
+
+> sa
+
+, otherwise . (5) Each block retains K = max( Kmin , ⌈Hsa (1 −p)⌉) heads ranked by ˜si,j , where Hsa is the original head count, p is the target pruning ratio, and Kmin =8 . The count K is uniform across blocks, but the retained heads differ per block: protection prevents temporal heads from being pruned in temporal-dominant blocks, while spatial heads survive naturally in spatial-dominant blocks. 4200 400 600 800        
+
+> Timestep t
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> Block Index
+> (a) Block importance (teacher)
+> 0200 400 600 800 1000
+> Timestep t
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> Block Index
+> (b) Learned routing pattern
+> Low
+> Med
+> High
+> Relative Importance
+> Low
+> Med
+> High
+> Activation Freq.
+
+Figure 3: From block importance to learned routing. (a) Per-block contribution of the teacher model across denoising timesteps, measured by the residual norm ∥Bi(x(i)) − x(i)∥2 (each block normalized to [0 , 1] independently for visualization). Larger residual norms indicate that a block modifies the hidden state more at that timestep. The pattern reveals substantial heterogeneity: early blocks and boundary blocks contribute consistently, while middle blocks show timestep-dependent variation, suggesting that adaptive block selection can exploit this structure. (b) Activation frequency of the learned router. The router recovers the teacher’s importance structure, selectively skipping blocks deemed unimportant by the teacher, while enforcing a timestep-dependent budget that allocates more blocks to high-noise steps (structure recovery) and fewer to low-noise steps (detail refinement). 
+
+FFN Dimension Pruning. FFN hidden dimensions contribute additively to the output, and ranking them by importance alone tends to retain functionally redundant neurons. We therefore combine importance scoring with diversity-aware selection. Unlike attention heads, whose contributions depend on data-dependent attention patterns and require calibration-based evaluation, FFN neurons have a factored structure where each neuron k passes through an up-projection and a down-projection in sequence. This permits a purely structural importance score: 
+
+si,k  
+
+> ffn
+
+= ∥W i
+
+> up ,k, :
+
+∥2 · ∥ W i
+
+> down ,:,k
+
+∥2, (6) where W i 
+
+> up ,k, :
+
+and W i 
+
+> down ,:,k
+
+are the k-th row/column of the up/down projections, respec-tively. To prevent selecting neurons with near-identical behavior, we define a signature zik =[W i 
+
+> up ,k, :
+
+; W i
+
+> down ,:,k
+
+] ∈ R2d and perform greedy selection: candidates are visited in descending order of si,k  
+
+> ffn
+
+, skipping any whose cosine similarity to an already-selected neuron exceeds τffn :skip neuron k if max 
+
+> j∈K
+
+zik · zij
+
+∥zik∥∥ zij ∥ > τ ffn , (7) where K is the set of neurons selected so far. If the number of selected neurons falls short of the target budget after one pass, τffn is progressively relaxed and the skipped candidates are revisited until the budget is met. This yields a compact FFN where retained neurons are both individually important and functionally diverse. Dimensions are aligned to multiples of 128 for tensor-core efficiency. After width pruning, we extract the retained sub-matrices from the teacher to construct the student vΦ,which preserves all N blocks but with narrower sub-layers. 
+
+3.3 Content-Adaptive Block Routing 
+
+Width pruning applies the same compressed architecture to every input at every denoising step. Two sources of variation remain unexploited: (1) denoising difficulty varies across the trajectory: high-noise steps must establish global structure from near-random input, while low-noise steps only refine details; (2) the most useful block subset depends on visual content, as complex multi-object motion relies on different blocks than a near-static landscape. Static block pruning [ 26 ] ignores both by fixing the block set. We decouple the two with a budget schedule controlling how many 
+
+blocks to activate (timestep-dependent) and a learned router selecting which blocks (timestep- and content-dependent). 
+
+Timestep-Dependent Budget Schedule. The number of active blocks is governed by a linear schedule that reflects the asymmetric difficulty of denoising: 
+
+K(t) = Kmin + ( Kmax − Kmin ) · tT , (8) 5where Kmin and Kmax bound the budget. At high noise ( t → T ), the model must recover global structure (layout, object placement, motion trajectories) from near-random input, requiring more blocks. As noise decreases, the remaining task reduces to local refinement, for which fewer blocks suffice. Specific values of Kmin and Kmax are given in §4.1. 
+
+Router Architecture. Given the budget K(t), the router Rϕ determines which K(t) blocks to execute. It maps a conditioning vector to N block-wise importance logits: 
+
+Rϕ(t, c ) = W3 σ(W2 σ(W1 [SinEmb (t); ec] + b1) + b2) + b3, (9) where SinEmb (t) is a sinusoidal timestep embedding, ec is a content embedding, and σ denotes SiLU. For I2V, ec = CLIP cls (cimg ) summarizes the reference image; for T2V, ec is derived from noisy latent statistics. The timestep signal governs global routing behavior (which blocks matter at each noise level), while the content signal enables per-sample adaptation: at the same timestep and budget, a fast-motion video may activate temporal-processing blocks, while a near-static scene may favor spatial-processing blocks. 
+
+Top-K Gating with Straight-Through Estimator. Given router logits r = Rϕ(t, c ) ∈ RN and budget K = K(t), we select the top-K scoring blocks via a differentiable gating mechanism. The hard binary mask is defined as: 
+
+mhard  
+
+> i
+
+=
+
+1, if ri ∈ top-K(r),
+
+0, otherwise . (10) Since this discrete selection is non-differentiable, we employ the straight-through estimator (STE) [ 1]with a soft surrogate msoft  
+
+> i
+
+= sigmoid (ri):
+
+mi = mhard  
+
+> i
+
++ msoft  
+
+> i
+
+− sg (msoft  
+
+> i
+
+), (11) where sg (·) is the stop-gradient operator. In the forward pass mi equals the hard mask (discrete 0/1), while gradients flow through the sigmoid during backpropagation, enabling the router to learn from the distillation loss. 
+
+Block Execution. The routing mask modulates each block’s contribution via a residual blend: 
+
+x(i+1) = mi · Bi(x(i)) + (1 − mi) · x(i). (12) When mi = 0 , the block is skipped and x(i+1) = x(i). At inference, skipped blocks are not executed ,yielding real wall-clock savings. The first and last blocks ( B0, BN −1) are always active, as they interface with the input and output projections. 
+
+3.4 Progressive Training Pipeline 
+
+Width pruning and block routing compress orthogonal dimensions, but joint training from scratch creates a circular dependency: the router cannot learn meaningful block selection until the student produces reasonable features, yet the student cannot compensate for missing blocks until the router makes informed decisions. A progressive pipeline breaks this dependency by decoupling the two objectives. 
+
+Stage I: Width Distillation. The width-pruned student vΦ is first trained without routing via knowledge distillation from the frozen teacher vΘ. The distillation loss combines four terms that supervise complementary aspects of the student: 
+
+Lwidth = wf · L feat + wt · L TFM + wd · L DFM + wτ · L temp . (13) The feature matching loss Lfeat aligns teacher and student intermediate representations at randomly sampled blocks, using a linear projection P i when dimensions differ: 
+
+Lfeat = 1
+
+|S| 
+
+X
+
+> i∈S
+
+P i(f i
+
+> Φ
+
+) − sg (f i
+
+> Θ
+
+) 22 , (14) where sg (·) is the stop-gradient operator. Outlier token positions (beyond 3σ from the mean) are masked to stabilize training. The teacher velocity loss LTFM = ∥vΦ − sg (vΘ)∥22 aligns the 6student’s output with the teacher’s prediction, while the data velocity loss LDFM = ∥vΦ − (ϵ −
+
+x0)∥22 anchors it to the ground-truth flow target, preventing the student from merely copying the teacher without learning the underlying data distribution. The temporal consistency loss Ltemp =
+
+∥∆F (vΦ) − sg (∆ F (vΘ)) ∥22 matches inter-slice differences ∆F (·) between student and teacher, explicitly supervising motion coherence. Loss weights and training details are provided in §4.1. 
+
+Stage II: Joint Width-Routing Training. Starting from the Stage I checkpoint, we introduce the router and jointly optimize the student vΦ and router Rϕ. The loss follows the same structure as Eq. (13) , with one key modification: feature matching is restricted to active blocks ( mi > 0.5), since skipped blocks produce no features to align: 
+
+Ljoint = wf · L active feat + wt · L TFM + wd · L DFM + wτ · L temp . (15) 
+
+Stage III: Step Distillation. The per-step compressed model from Stage II is compatible with existing step distillation methods [ 41 , 40 , 35 ] that reduce the sampling trajectory from ∼50 to 4 steps, providing a multiplicative speedup orthogonal to the per-step compression from Stages I and II. As a further benefit, step-distilled models operate without classifier-free guidance [ 10 ], eliminating the duplicate forward pass and yielding an additional 2× reduction in per-step cost. 
+
+Compression Analysis. The three axes contribute independently to the total speedup. After width pruning, each block Bi retains a fraction ρi of its original FLOPs. After routing, only the K(t)
+
+selected blocks execute at timestep t. Let CB denote the average per-block FLOPs of the unpruned model, mi(t) ∈ { 0, 1} the routing decision for block i at timestep t (from Eq. (10) ), and Cembed 
+
+the fixed cost of input/output projections. The per-step cost is C(t) = Cembed + P 
+
+> i
+
+mi(t) · ρi · CB ,yielding an expected speedup of: Speedup ≈ N
+
+¯ρ · ¯K · Sorig 
+
+Sdistill 
+
+· G, (16) where ¯ρ is the mean width retention, ¯K the mean active block count, Sorig /S distill the step reduction ratio, and G the CFG multiplier ( G=2 when guidance is removed, 1 otherwise). For our configuration (¯ρ≈ 0.7, ¯K≈ 27 ), width and routing alone yield ∼2× per-step speedup; combined with 4-step distillation ( Sorig /S distill =50 /4, G=2 ), the projected total reaches ∼50 ×.
+
+## 4 Experiments 
+
+4.1 Experimental Setup Implementation Details. PARE is applied to Wan2.1 [ 34 ], evaluating on both the I2V-14B and T2V-14B variants (40 DiT blocks, d=5120 , Hsa =Hca =40 , dffn =13824 ). Width pruning targets ∼30% 
+
+overall parameter reduction for both tasks, with importance scores computed on 200 calibration samples across 10 timestep bins; temporal head protection uses αtemp =1 .5. For width pruning, we apply pruning ratios (SA 30% , CA 30% , FFN 30% ) with per-block head selection guided by the spatial-temporal aware scoring (§3.2). The block router uses budget bounds Kmin =20 ,
+
+Kmax =35 . Training uses 30K video-text pairs with precomputed latents (VAE, T5, CLIP). Stage I (width distillation) and Stage II (joint width-routing) each run for 7,000 steps on 4 ×H200 GPUs with FSDP, bf16 mixed precision, and batch size 4. The student learning rate is 3×10 −5 and the router learning rate is 5×10 −4, both with cosine decay and 100-step warmup. Loss weights are 
+
+(wf , w t, w d, w τ ) = (10 , 6, 1, 4) for I2V and (10 , 6, 1, 8) for T2V. FFN retained dimensions are aligned to multiples of 128 for tensor-core efficiency. We adopt the Self-Forcing framework for Stage III (step distillation). The learning rate is 2×10 −6, and the number of training steps is 1,200. 
+
+Baselines. We compare against methods spanning two acceleration categories. (1) Structural compression : NeoDragon [ 14 ], ICMD [ 36 ], and F3-Pruning [ 30 ]. (2) Step distillation : DMD2 [ 6 ], AccVideo [ 43 ], CausVid [ 42 ], and rCM [ 48 ], which reduce sampling to a few steps while keeping the full model. We also report several unaccelerated video generation models for reference. To isolate each compression axis, we include two ablation variants: Width-only (our pruned student without routing) and Routing-only (full-width model with block routing). The unpruned Wan2.1-14B [ 34 ]with 50-step sampling serves as the teacher upper bound. 7Table 1: Text-to-video generation results on VBench. We report VBench dimension scores (%). 
+
+Bold : best among compressed methods. Underline: second best. Highlighted : our full method.                                                                                                                                                       
+
+> Method #Act.Params Steps SubCon BgCon Aesth. Img.Q Mot.Sm Dyn. Avg.
+> Un-accelerated Text-to-video methods
+> VideoCrafter2 [3] 1.4B 50 ×298.16 98.48 66.34 68.46 98.42 17.48 74.56 LTX-Video [9] 13B 40 98.42 97.76 66.80 69.97 99.07 23.93 75.99 CogVideoX1.5 [39] 5B 50 ×292.66 94.95 56.24 62.81 96.96 46.11 74.95 Wan2.1-T2V [34] 1.3B 50 ×296.91 97.16 66.26 67.49 98.52 33.89 76.70 Wan2.1-T2V [34] (Teacher) 14B 50 ×296.99 97.49 68.76 68.20 98.59 36.20 77.70
+> Compression methods on Wan2.1-T2V-14B
+> NeoDragon [14] 10.5B (25% ↓)50 ×294.33 96.28 59.50 69.00 97.44 31.54 74.68
+> ICMD [36] 9.80B (30% ↓)50 ×271.42 87.46 29.13 37.66 97.20 15.35 56.37 F3-Pruning [30] 10.5B (25% ↓)50 ×297.84 96.50 57.92 57.83 98.55 10.37 69.84
+> Distillation methods on Wan2.1-T2V-14B
+> DMD2 [6] 14B 495.38 96.16 68.00 70.54 98.36 40.66 78.18
+> rCM [48] 14B 496.92 97.20 69.87 69.30 98.66 32.54 77.42 AccVideo [43] 14B 597.13 97.85 69.32 62.29 98.85 30.06 75.92 CausVid [42] 14B 497.34 97.17 68.54 69.14 98.36 34.17 77.45 PARE (Width-only) 9.8B (30% ↓)50 ×297.36 97.50 67.81 71.39 98.79 31.90 77.46
+> PARE (Routing-only) 9.5B (32% ↓)50 ×296.55 97.21 66.30 70.02 97.76 35.24 77.18 PARE 6.7B (52% ↓)50 ×297.56 97.37 66.39 71.55 98.76 30.98 77.10 PARE + Step Distill 7.7B (45% ↓)498.75 98.33 67.92 69.86 98.74 28.40 77.00
+
+Evaluation. We adopt VBench [ 12 ] for automatic evaluation, reporting six quality dimensions, including Aesthetic Quality, Imaging Quality, Motion Smoothness, Dynamic Degree, Background Consistency, and Subject Consistency, along with the normalized average. Inference uses the FlowUniPC scheduler [46] with 50 steps and classifier-free guidance scale 5.0. 
+
+4.2 Quantitative Results Text-to-Video. Table 1 reports results on Wan2.1-T2V-14B. PARE closely approaches the teacher while substantially outperforming other structural compression methods: NeoDragon, which relies solely on depth pruning, and ICMD and F3-Pruning, which lack spatial-temporal awareness, all fall well below PARE at similar or lower compression ratios. Combining PARE with step distillation preserves quality at only four steps, confirming that per-step compression and step reduction compose along orthogonal axes. 
+
+Image-to-Video. Table 2 shows a consistent trend on I2V. PARE closely preserves the teacher’s quality while halving per-step computation. NeoDragon falls well below PARE despite pruning fewer parameters, suggesting that depth-only compression without fine-grained width pruning leaves significant redundancy within each block. Compared to step distillation methods that keep the full model, PARE is competitive with DMD2 and CausVid at a fraction of the per-step cost, indicating that compressing per-step cost is a more parameter-efficient path to acceleration than keeping the full model and reducing steps alone. 
+
+4.3 Qualitative Results 
+
+Figure 4 shows representative examples from both tasks. For I2V, the teddy bear sequence demands fine texture and coherent object motion. PARE faithfully preserves the fur detail and climbing motion, though minor artifacts appear in later frames. These artifacts are resolved after step distillation, suggesting that step distillation not only reduces inference steps but also acts as an additional refinement stage that smooths out compression artifacts. For T2V, the aerial fantasy landscape tests global structure recovery. PARE reproduces the teacher’s composition and color fidelity, and the quality is maintained after step distillation reduces sampling to four steps. 8Table 2: Image-to-video generation results on VBench. Same evaluation protocol as Table 1. 
+
+Method #Act.Params Steps SubCon BgCon Aesth. Img.Q Mot.Sm Dyn. Avg. 
+
+Un-accelerated Image-to-video methods 
+
+SEINE [5] 0.9B 250 ×2 95.02 95.75 59.21 70.55 96.65 25.63 73.80 I2VGen-XL [44] 1.4B 50 ×2 96.65 97.27 65.45 69.49 98.43 20.28 74.60 DynamiCrafter [38] 1.4B 50 ×2 95.39 95.37 66.38 69.09 97.46 31.97 75.94 CogVideoX1.5 [39] 5B 50 ×2 94.53 95.13 62.20 69.44 98.35 34.49 75.69 Step-Video-TI2V [11] 30B 50 ×2 95.36 96.12 63.74 68.38 97.40 37.34 76.39 Wan2.1-I2V [34] (Teacher) 16.2B 50 ×2 95.23 96.05 65.03 70.47 98.19 42.54 77.92 
+
+Compression methods on Wan2.1-I2V-14B 
+
+NeoDragon [14] 12.2B (25% ↓) 50 ×2 93.45 94.67 59.12 67.40 97.02 30.23 73.65 
+
+ICMD [36] 11.3B (30% ↓) 50 ×2 72.00 86.65 30.72 45.45 98.93 12.98 57.79 F3-Pruning [30] 12.2B (25% ↓) 50 ×2 71.93 85.00 35.70 63.05 93.97 55.67 67.55 
+
+Distillation methods on Wan2.1-I2V-14B 
+
+DMD2 [6] 16.2B 4 94.00 95.00 63.74 69.64 97.47 38.59 76.40 AccVideo [43] 16.2B 5 95.62 96.02 63.09 69.28 97.88 18.21 73.35 CausVid [42] 16.2B 4 94.32 95.03 64.87 70.85 97.35 38.12 76.76 
+
+PARE (Width-only) 11.3B (30% ↓) 50 ×2 94.86 95.25 63.13 70.90 98.39 40.00 77.09 
+
+PARE (Routing-only) 10.9B (32% ↓) 50 ×2 96.50 94.38 65.07 68.17 98.33 36.86 76.55 PARE 7.7B (52% ↓) 50 ×2 95.34 95.36 62.12 70.57 98.56 35.49 76.24 PARE + Step Distill 8.9B (45% ↓) 4 95.60 95.98 62.97 68.86 98.32 33.84 75.93 
+
+Figure 4: Qualitative comparison between the teacher, PARE, and PARE + Step Distill. 
+
+4.4 Ablation Studies 
+
+Table 3 ablates each design choice on the I2V task. The progressive pipeline is critical: skipping Stage I width distillation and training the router directly on the raw pruned model causes a large quality drop, as the router cannot learn meaningful block selection from degraded features (a). For the pruning axis, replacing our spatial-temporal aware strategy with uniform width reduction substantially degrades quality, confirming that temporal head protection and diversity-aware FFN selection are essential under aggressive compression (c). For the routing axis, conditioning on visual content improves over timestep-only routing on both I2V and T2V, with the consistent gains in imaging quality, indicating that different inputs benefit from different block subsets (b). The learned router also substantially outperforms random block pruning, confirming that it discovers meaningful selection patterns (f). The budget schedule provides a smooth quality-speed trade-off: tighter bounds improve quality at the cost of fewer skipped blocks (d). Finally, each loss component contributes complementarily: feature matching provides the largest gain by aligning intermediate representations, while the temporal consistency loss further improves motion smoothness (e). 
+
+## 5 Conclusion 
+
+We presented PARE, a framework that compresses video DiTs along both width and depth. The two axes demand fundamentally different strategies. Width pruning benefits from understanding the spatial-temporal roles of attention heads and the factored structure of FFN layers, whereas depth reduction benefits from adapting to both the denoising timestep and the visual content. PARE combines spatial-temporal aware width pruning with a learned content-adaptive block router, trained 9Table 3: Ablation studies on PARE Training. Each subtable varies one design choice while keeping others at their default ( highlighted ).                                
+
+> Initialization Avg. ↑
+> Raw pruned 72.49 Width-distilled 76.24 (a) Training initialization. Router input Img.Q ↑Avg. ↑
+> I2V-Rϕ(t)69.71 75.40 I2V-Rϕ(t, c img )70.57 76.24 T2V-Rϕ(t)71.27 76.84 T2V-Rϕ(t, c lat )71.55 77.10 (b) Router conditioning. Strategy Avg. ↑
+> Uniformly 30% width pruning 71.78 PARE width pruning 77.09 (c) Width pruning strategy.
+> Kmin Kmax Avg. ↑
+> 20 35 76.24 25 35 76.45 30 38 77.13 (d) Budget schedule.
+> Lfeat LTFM LDFM Ltemp Avg. ↑
+> 72.10 75.34 76.24 (e) Loss components (Stage II). Strategy Avg. ↑
+> Randomly 30% block pruning 73.08 PARE block routing 76.55 (f) Block routing strategy.
+
+through a progressive pipeline that decouples the two objectives and avoids circular optimization difficulties. On Wan2.1-14B, PARE halves per-step computation for both image-to-video and text-to-video generation while closely preserving quality, and composes naturally with step distillation for acceleration along all three cost axes of video diffusion models. 
+
+Limitations. Our pruning ratios and router budgets are currently set as global hyperparameters and validated on Wan2.1-14B. Transferring them to architectures with substantially different block designs (e.g., MMDiT, U-ViT) may require re-calibration. The spatial-temporal head classification relies on attention patterns observed during calibration, which could shift under distribution changes such as significantly longer videos or unseen motion categories. Additionally, while the progressive training pipeline is more efficient than training from scratch, it still requires access to a moderate-scale dataset and multi-GPU resources, which may limit adoption in resource-constrained settings. 
+
+Societal Impact. By substantially reducing the computational cost of video generation, PARE can lower the energy consumption and carbon footprint associated with large-scale video synthesis, making high-quality generation more accessible to researchers and practitioners with limited hardware budgets. However, the same efficiency gains could also lower the barrier to generating misleading or harmful video content at scale. We encourage the community to pair efficient generation methods with robust watermarking, provenance tracking, and content authentication mechanisms to mitigate potential misuse. 
+
+## References 
+
+[1] Yoshua Bengio, Nicholas Léonard, and Aaron Courville. Estimating or propagating gradients through stochastic neurons for conditional computation. arXiv preprint arXiv:1308.3432 , 2013. [2] Gedas Bertasius, Heng Wang, and Lorenzo Torresani. Is space-time attention all you need for video understanding? In Icml , volume 2, page 4, 2021. [3] Haoxin Chen, Yong Zhang, Xiaodong Cun, Menghan Xia, Xintao Wang, Chao Weng, and Ying Shan. Videocrafter2: Overcoming data limitations for high-quality video diffusion models. In 
+
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 7310–7320, 2024. [4] Pengtao Chen, Mingzhu Shen, Peng Ye, Jianjian Cao, Chongjun Tu, Christos-Savvas Bouganis, Yiren Zhao, and Tao Chen. ∆-DiT: A Training-Free Acceleration Method Tailored for Diffusion Transformers. arXiv preprint arXiv:2406.01125 , 2024. [5] Xinyuan Chen, Yaohui Wang, Lingjun Zhang, Shaobin Zhuang, Xin Ma, Jiashuo Yu, Yali Wang, Dahua Lin, Yu Qiao, and Ziwei Liu. Seine: Short-to-long video diffusion model for generative transition and prediction. In The Twelfth International Conference on Learning Representations ,2023. 10 [6] LightX2V Contributors. Lightx2v: Light video generation inference framework. https: //github.com/ModelTC/lightx2v , 2025. [7] Gongfan Fang, Xinyin Ma, and Xinchao Wang. Structural pruning for diffusion models. In 
+
+Advances in Neural Information Processing Systems , 2023. [8] Xingtong Ge, Yi Zhang, Yushi Huang, Dailan He, Xiahong Wang, Bingqi Ma, Guanglu Song, Yu Liu, and Jun Zhang. Salt: Self-consistent distribution matching with cache-aware training for fast video generation. arXiv preprint arXiv:2604.03118 , 2026. [9] Yoav HaCohen, Nisan Chiprut, Benny Brazowski, Daniel Shalem, Dudu Moshe, Eitan Richard-son, Eran Levin, Guy Shiran, Nir Zabari, Ori Gordon, et al. Ltx-video: Realtime video latent diffusion. arXiv preprint arXiv:2501.00103 , 2024. [10] Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598 , 2022. [11] Haoyang Huang, Guoqing Ma, Nan Duan, Xing Chen, Changyi Wan, Ranchen Ming, Tianyu Wang, Bo Wang, Zhiying Lu, Aojie Li, et al. Step-video-ti2v technical report: A state-of-the-art text-driven image-to-video generation model. arXiv preprint arXiv:2503.11251 , 2025. [12] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. Vbench: Comprehensive benchmark suite for video generative models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21807–21818, 2024. [13] Albert Q Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, et al. Mixtral of experts. arXiv preprint arXiv:2401.04088 , 2024. [14] Animesh Karnewar, Denis Korzhenkov, Ioannis Lelekas, Adil Karjauv, Noor Fathima, Hanwen Xiong, Vancheeswaran Vaidyanathan, Will Zeng, Rafael Esteves, Tushar Singhal, et al. Neo-dragon: Mobile video generation using diffusion transformer. arXiv preprint arXiv:2511.06055 ,2025. [15] Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, et al. Hunyuanvideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603 , 2024. [16] Yaron Lipman, Ricky TQ Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative modeling. arXiv preprint arXiv:2210.02747 , 2022. [17] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. arXiv preprint arXiv:2209.03003 , 2022. [18] Simian Luo, Yiqin Tan, Longbo Huang, Jian Li, and Hang Zhao. Latent consistency models: Synthesizing high-resolution images with few-step inference. arXiv preprint arXiv:2310.04378 ,2023. [19] Xinyin Ma, Gongfan Fang, Michael Bi Mi, and Xinchao Wang. Learning-to-cache: Accelerating diffusion transformer via layer caching. Advances in Neural Information Processing Systems ,37:133282–133304, 2024. [20] Xinyin Ma, Gongfan Fang, and Xinchao Wang. Deepcache: Accelerating diffusion models for free. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition ,pages 15762–15772, 2024. [21] Paul Michel, Omer Levy, and Graham Neubig. Are sixteen heads really better than one? 
+
+Advances in neural information processing systems , 32, 2019. [22] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF international conference on computer vision , pages 4195–4205, 2023. 11 [23] Adam Polyak, Amit Zohar, Andrew Brown, Andros Tjandra, Animesh Sinha, Ann Lee, Apoorv Vyas, Bowen Shi, Chih-Yao Ma, Ching-Yao Chuang, et al. Movie gen: A cast of media foundation models. arXiv preprint arXiv:2410.13720 , 2024. [24] Yongming Rao, Wenliang Zhao, Benlin Liu, Jiwen Lu, Jie Zhou, and Cho-Jui Hsieh. Dynamicvit: Efficient vision transformers with dynamic token sparsification. Advances in neural information processing systems , 34:13937–13949, 2021. [25] Tim Salimans and Jonathan Ho. Progressive distillation for fast sampling of diffusion models. 
+
+arXiv preprint arXiv:2202.00512 , 2022. [26] Shitong Shao, Yufei Gu, and Zeke Xie. Fastlightgen: Fast and light video generation with fewer steps and parameters. arXiv preprint arXiv:2603.01685 , 2026. [27] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538 , 2017. [28] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. 2023. [29] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. [30] Sitong Su, Jianzhi Liu, Lianli Gao, and Jingkuan Song. F3-pruning: a training-free and generalized pruning strategy towards faster and finer text-to-video synthesis. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 38, pages 4961–4969, 2024. [31] Mingjie Sun, Zhuang Liu, Anna Bair, and J Zico Kolter. A simple and effective pruning approach for large language models. arXiv preprint arXiv:2306.11695 , 2023. [32] Surat Teerapittayanon, Bradley McDanel, and Hsiang-Tsung Kung. Branchynet: Fast inference via early exiting from deep neural networks. In 2016 23rd international conference on pattern recognition (ICPR) , pages 2464–2469. IEEE, 2016. [33] Elena Voita, David Talbot, Fedor Moiseev, Rico Sennrich, and Ivan Titov. Analyzing multi-head self-attention: Specialized heads do the heavy lifting, the rest can be pruned. In Proceedings of the 57th annual meeting of the association for computational linguistics , pages 5797–5808, 2019. [34] Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314 , 2025. [35] Yutong Wang, Haiyu Zhang, Tianfan Xue, Yu Qiao, Yaohui Wang, Chang Xu, and Xinyuan Chen. Vdot: Efficient unified video creation via optimal transport distillation. arXiv preprint arXiv:2512.06802 , 2025. [36] Yiming Wu, Zhenghao Chen, Huan Wang, and Dong Xu. Individual content and motion dynamics preserved pruning for video diffusion models. arXiv preprint arXiv:2411.18375 ,2024. [37] Yushu Wu, Yanyu Li, Anil Kag, Ivan Skorokhodov, Willi Menapace, Ke Ma, Arpit Sahni, Ju Hu, Aliaksandr Siarohin, Dhritiman Sagar, Yanzhi Wang, and Sergey Tulyakov. Taming diffusion transformer for efficient mobile video generation in seconds. arXiv preprint arXiv:2507.13343 ,2025. [38] Jinbo Xing, Menghan Xia, Yong Zhang, Haoxin Chen, Wangbo Yu, Hanyuan Liu, Gongye Liu, Xintao Wang, Ying Shan, and Tien-Tsin Wong. Dynamicrafter: Animating open-domain images with video diffusion priors. In European Conference on Computer Vision , pages 399–417. Springer, 2024. [39] Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, et al. Cogvideox: Text-to-video diffusion models with an expert transformer. arXiv preprint arXiv:2408.06072 , 2024. 12 [40] Tianwei Yin, Michaël Gharbi, Taesung Park, Richard Zhang, Eli Shechtman, Fredo Durand, and William T Freeman. Improved distribution matching distillation for fast image synthesis. 
+
+Advances in neural information processing systems , 37:47455–47487, 2024. [41] Tianwei Yin, Michaël Gharbi, Richard Zhang, Eli Shechtman, Fredo Durand, William T Freeman, and Taesung Park. One-step diffusion with distribution matching distillation. In 
+
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 6613–6623, 2024. [42] Tianwei Yin, Qiang Zhang, Richard Zhang, William T Freeman, Fredo Durand, Eli Shechtman, and Xun Huang. From slow bidirectional to fast autoregressive video diffusion models. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 22963–22974, 2025. [43] Haiyu Zhang, Xinyuan Chen, Yaohui Wang, Xihui Liu, Yunhong Wang, and Yu Qiao. Accvideo: Accelerating video diffusion model with synthetic dataset. arXiv preprint arXiv:2503.19462 ,2025. [44] Shiwei Zhang, Jiayu Wang, Yingya Zhang, Kang Zhao, Hangjie Yuan, Zhiwu Qin, Xiang Wang, Deli Zhao, and Jingren Zhou. I2vgen-xl: High-quality image-to-video synthesis via cascaded diffusion models. arXiv preprint arXiv:2311.04145 , 2023. [45] Wangbo Zhao, Yizeng Han, Jiasheng Tang, Kai Wang, Yibing Song, Gao Huang, Fan Wang, and Yang You. Dynamic diffusion transformer. arXiv preprint arXiv:2410.03456 , 2024. [46] Wenliang Zhao, Lujia Bai, Yongming Rao, Jie Zhou, and Jiwen Lu. Unipc: A unified predictor-corrector framework for fast sampling of diffusion models. Advances in Neural Information Processing Systems , 36:49842–49869, 2023. [47] Xuanlei Zhao, Xiaolong Jin, Kai Wang, and Yang You. Real-time video generation with pyramid attention broadcast. arXiv preprint arXiv:2408.12588 , 2024. [48] Kaiwen Zheng, Yuji Wang, Qianli Ma, Huayu Chen, Jintao Zhang, Yogesh Balaji, Jianfei Chen, Ming-Yu Liu, Jun Zhu, and Qinsheng Zhang. Large scale diffusion distillation via score-regularized continuous-time consistency. arXiv preprint arXiv:2510.08431 , 2025. 13

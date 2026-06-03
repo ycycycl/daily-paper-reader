@@ -1,0 +1,1388 @@
+Title: Implicit Drifting Policy: One-Step Action Generation via Conditional Expert Geometry
+
+URL Source: https://arxiv.org/pdf/2606.01098v1
+
+Published Time: Tue, 02 Jun 2026 01:18:49 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# Implicit Drifting Policy: One-Step Action Generation via Conditional Expert Geometry 
+
+Zemin Yang 1, Yaoyu He 1, Yiming Zhong 1, Yuhao Zhang 2, Xinge Zhu 3
+
+Yao Mu 2, Qingqiu Huang 4, Yuexin Ma 1∗
+
+> 1
+
+ShanghaiTech University 2Shanghai Jiao Tong University 
+
+> 3
+
+The Chinese University of Hong Kong 4Morphi Robot 
+
+{csyangzm, mayuexin}@shanghaitech.edu.cn 
+
+Project Page: https://implicit-drifting-policy.github.io/ 
+
+## Abstract 
+
+Generative action policies based on diffusion or flow matching excel in behavior cloning, yet their iterative sampling is prohibitive for high-frequency robot control. While recent one-step formulations alleviate this latency, they inevitably discard the intermediate trajectory evolution that provides crucial action correction. Directly recovering this mechanism by explicitly estimating a training-time drifting field is mathematically ill-posed due to extreme conditional demonstration sparsity. We introduce Implicit Drifting Policy (IDP) , a one-step imitation learning framework that brings the training-time correction of Drifting into policy learning without explicit vector field estimation. IDP extracts a conditional expert geometry from the local variation of observation-similar expert actions, and compares it against a global reference geometry to isolate condition-specific constraints. This local geometric structure adaptively weights a scalar potential objective. Combined with an expert-proximal terminal evaluation, IDP directly enforces manifold constraints on the one-step generator during training. Extensive evaluations across 2D, 3D, and real-world manipulation tasks show IDP effectively maintains adherence to valid action manifolds, improving upon explicit drifting methods and achieving competitive performance with strong one-step baselines. 
+
+## 1 Introduction 
+
+Robot imitation learning maps observations to continuous actions. To achieve this, behavior cloning commonly trains a policy with a regression loss to predict an expert action or action sequence from an observation. This form is simple and efficient, but it compresses action generation into a single prediction. Diffusion Policy introduced diffusion models into this setting by formulating action prediction as conditional denoising, gradually generating actions from noise toward expert actions [ 5]. Subsequent flow-based policies further describe action generation with continuous flows or flow matching [ 34 ]. Compared with direct prediction, diffusion and flow policies retain intermediate states during generation, allowing an action to be formed through multiple updates. This intermediate computation is one of the key distinctions between generative policies and regression-based policies. The inference cost of generative policies has motivated faster action generation methods. Consistency Policy and One-Step Diffusion Policy compress diffusion policies through consistency training or distillation [ 27 , 31 ]; Shortcut Models and flow-map methods learn longer-range generative maps to reduce sampling steps [ 10 , 22 ]. Beyond sampling speed, a more basic question is what multi-step generation contributes to control. Much Ado About Noising analyzes generative robotic control from this perspective and argues that its benefits are closely tied to stochasticity injection and supervised intermediate computation, rather than multimodality alone [ 25 ]. This raises a question for one-step policies: when inference no longer contains multi-step updates, how can training still provide a useful action-correction signal?     
+
+> ∗Corresponding author. Preprint.
+> arXiv:2606.01098v1 [cs.RO] 31 May 2026 ￿
+> ￿
+> Extra samples Conditional Expert
+> Geometry
+> Expert actions Generated samples Expert neighbors
+> (a) Explicit Drifting. (b) Implicit Drifting.
+
+Figure 1: (a) Explicit Drifting constructs targets by estimating a drifting field between expert actions (purple) and policy predictions (blue). Relying on the evolving policy state and mini-batch sampling makes this target sensitive and unstable. (b) Implicit Drifting Policy (Ours) directly extracts a Conditional Expert Geometry (green) from expert actions under similar observations. Drifting models study a related mechanism in generative modeling. Drifting trains a single-pass generator and uses a drifting field during training to move the current model distribution toward the data distribution [ 7 ]. Recent analyses connect this field to score-based transport directions and terminal data-grounded correction [ 18 , 22 ]. Here, correction affects the learning dynamics while inference remains a single generator evaluation. This makes Drifting relevant to one-step action policies: the training objective itself can carry part of the action-correction role, reducing reliance on additional sampling steps at deployment. However, behavior cloning provides a different form of supervision. For a given observation, demonstrations usually provide a single expert action. Estimating a drifting field around the policy output thus requires batch neighbors and the prediction location to approximate local conditional structure. Such estimates vary with the mini-batch and evolving policy state, making the target sensitive to implementation details (Fig 1 (a)). We argue that a reliable correction signal should instead emerge from the local structure already present in demonstrations. A single observation provides one expert action, while expert actions under similar observations provide local references. Similar observations often correspond to nearby task states or control contexts; within these local references, variation among expert actions indicates which action directions are more consistent near the current condition and which directions allow more variation. We use this demonstration-supported information to build a training signal that emphasizes errors along locally important action directions, without estimating a drifting field as a separate supervision target. This keeps the training-time correction view of Drifting while grounding the correction source in local action structure observable in imitation learning. Motivated by this, we propose Implicit Drifting Policy (IDP). IDP formulates an implicit correction objective that minimizes a geometry-aware potential. The core of this potential lies in its adaptive directional weights, which we derive by extracting a conditional expert geometry from the local variation of expert actions under similar observations (Fig 1 (b)). To isolate condition-specific constraints, we further compare this local geometry with a global reference geometry , ensuring that inherently low-variance dimensions are not mistakenly penalized. Finally, to ensure the network effectively captures the local manifold topology defined by this potential, IDP introduces an expert-proximal evaluation during training, exposing the one-step generator to the local correction structure near expert actions. Across 2D, 3D imitation tasks, and real-world robot experiments, IDP improves over explicit drifting variants and remains competitive with strong one-step policy baselines. In summary, our contributions are as follows: • We introduce Implicit Drifting Policy (IDP) , a one-step imitation learning framework. By minimizing a geometry-aware potential and introducing an expert-proximal training evaluation, IDP brings the training-time correction of drifting into policy learning. • We propose a method to extract local action correction structures by comparing the condi-tional expert geometry under similar observations against a global reference geometry .This adaptively isolates condition-specific constraints to weight the correction potential. • We evaluate IDP across 2D, 3D, and real-world manipulation tasks. Results demonstrate that IDP outperforms explicit drifting variants and exhibits stronger adherence to local action constraints over strong one-step baselines. 22 Related Work 
+
+Generative action policies and one-step acceleration. Continuous-action imitation learning commonly uses behavior cloning, where a policy predicts expert actions from observations. Diffusion Policy formulates action prediction as conditional denoising, so that actions are formed through multiple denoising steps [ 5 ]. Flow matching provides a continuous-time transport formulation for generative modeling [ 23 ], and has been used for policies with point-cloud inputs, spatially structured action representations, 3D manipulation, and action-to-action generation [ 6, 11 , 34 , 16 ]. Recent work reduces the inference cost of generative policies from several directions: Consistency Policy [ 27 ]and ManiCM [ 24 ] use consistency models to accelerate diffusion policies; One-Step Diffusion Policy [ 31 ], One-Step Flow Policy [ 20 ], and MP1 [ 30 ] obtain single-step policies through distillation, self-distillation, or average-velocity learning; Streaming Diffusion Policy [ 13 ], Falcon [ 4], and Real-Time Iteration Scheme [ 8] reduce, reorganize, or reuse the denoising process to lower latency. In broader generative modeling, Shortcut Models [ 10 ], Mean Flows [ 12 ], flow-map distillation [ 2], and Align Your Flow [ 29 ] study long-interval or one-step generative mappings. Much Ado About Noising [ 25 ] moves the discussion from sampling steps to mechanism, arguing that the benefit of generative control policies is closely tied to stochasticity injection and supervised intermediate computation. Our work follows this concern for one-step policy training and asks how training can retain an action-correction signal once deployment uses a single policy evaluation. 
+
+Drifting models and training-time correction. Drifting models study one-step generative model-ing from the perspective of training-time distribution evolution, where a drifting field describes the direction that moves the current model distribution toward the data distribution. Generative Modeling via Drifting [ 7] trains a single-pass generator and uses this drifting field during training. Subsequent analysis relates the drifting field to score-based transport directions [ 18 ]. Long-Short Flow-Map [ 22 ]further interprets data-grounded terminal correction as supervision for a long map. These works provide a view of training-time correction for one-step generation, primarily in distribution-level generative modeling. Behavior cloning provides a more specific form of supervision. Since demon-strations usually provide only a single deterministic expert action for a given observation, estimating a continuous drifting field around the current policy output is forced to depend on local mini-batch neighborhoods and the evolving prediction location. We build on the training-time correction view of Drifting while grounding the correction signal in local information available in imitation learning. 
+
+Geometric structure in imitation learning. Imitation learning has long used demonstrations to represent action distributions, trajectory structure, and variability. Gaussian mixture regression, dynamic movement primitives, probabilistic movement primitives, kernelized movement primitives, and stable dynamical systems learn local means, covariances, temporal evolution, or stable control fields from demonstration trajectories [ 3 , 15 , 26 , 14 , 17 ]. More recently, Geometry-aware Policy Imitation treats demonstrations as geometric curves and derives distance fields that induce attraction and progression flows for policy synthesis [ 21 ]. Another line of deep imitation learning focuses on multimodal continuous actions. Implicit Behavioral Cloning uses energy-based objectives, and VQ-BeT uses latent action tokens for behavior generation [ 9, 19 ]. These works show that imitation data contains structure beyond a single regression target. Our use of geometry focuses on the local variation of expert actions under similar observations as a training-time correction signal for one-step policies. Compared with distance-field policy synthesis or action-distribution modeling, our objective uses local geometry during training while preserving single-evaluation deployment. 
+
+## 3 Preliminaries 
+
+From Multi-Step to One-Step Action Generation. In conditional imitation learning, given a dataset of expert demonstrations D = {(oi, a ∗ 
+
+> i
+
+)}Ni=1 , the objective is to learn a policy mapping an observation o ∈ O to a expert action chunk a∗ from the target data distribution pdata (a∗|o). Traditional behavior cloning (BC) frames this as a single-step direct mapping a = fθ (o), optimizing the isotropic mean squared error Eo,a ∗∼pdata ∥fθ (o) − a∗∥22. While deployment is highly efficient, this objective reduces generation to an isolated endpoint prediction, failing to exploit the geometric structure of the expert action manifold. Generative action policies address this by constructing a continuous trajectory over a virtual time t ∈ [0 , 1] , where at denotes the intermediate state. Starting from an initial source sample a0 ∼ p0, diffusion models progressively reach the final action via a denoising path, typically 3optimized using the denoising loss LDP = E[∥ϵθ (at, o, t ) − ϵ∥22]. Evolving from this, flow matching directly formulates the trajectory via an ordinary differential equation (ODE) da t = vθ (at, o, t )dt 
+
+driven by a velocity field, optimizing LFM = E[∥vθ (at, o, t ) − ddt at∥22]. This multi-step evolution naturally retains the capacity for progressive error correction. To reduce inference latency, recent acceleration algorithms compress the intermediate path to di-rectly learn a one-step endpoint mapping or a large-stride velocity. For instance, Consistency Models [ 27 ] learn a mapping fθ (o, a t, t ) by imposing a cross-time self-consistency constraint: 
+
+LCM = E
+
+h
+
+∥fθ (o, a t, t ) − fϕ(o, a t′ , t ′)∥22
+
+i
+
+, enforcing any intermediate point on the trajectory to map to the same endpoint (where ϕ is the target network parameter). Similarly, MeanFlow [ 12 ] learns the average velocity uθ (at, o, r, t ) over a time interval [r, t ] by satisfying an intrinsic identity between aver-age and instantaneous velocities: LMF = E
+
+h
+
+uθ (at, o, r, t ) − sg vt − (t − r) ddt uθ (at, o, r, t ) 22
+
+i
+
+,where sg[ ·] denotes the stop-gradient operator. However, whether relying on target-network distilla-tion or higher-order derivative identities, the optimization processes encounter specific challenges. When the physical intermediate evolution is bypassed, reconstructing the corrective signal for the one-step mapping without relying on expensive cross-step constraints remains a crucial problem. 
+
+Explicit Drifting in Behavior Cloning. Drifting models offer a mathematical framework to isolate the correction mechanism entirely within the training phase. Given the target data distribution pdata 
+
+and generated distribution qθ , Drifting constructs an explicit continuous vector field Vp,q (a) = 
+
+V + 
+
+> p
+
+(a) − V − 
+
+> q
+
+(a) comprising attraction and repulsion. This field dictates the optimal displacement for a generated sample a toward the data manifold. Based on a kernel function k(·, ·), the attraction and repulsion fields are respectively defined as: 
+
+V + 
+
+> p
+
+(a) = Ey∼pdata [k(a, y )( y − a)] 
+
+Ey∼pdata [k(a, y )] , V − 
+
+> q
+
+(a) = Ey∼qθ [k(a, y )( y − a)] 
+
+Ey∼qθ [k(a, y )] . (1) The one-step generator fθ is trained to regress this field-displaced frozen target: 
+
+LDrift (θ) = Ea0∼p0 ∥fθ (o, a 0, 0) − sg [ fθ (o, a 0, 0) + Vp,q (fθ (o, a 0, 0))] ∥22 . (2) In unconditional generation, the rich sample sets supporting the distributions enable the vector field to provide smooth manifold guidance. However, directly porting this explicit drifting mechanism to conditional behavior cloning encounters a fundamental structural degeneration. Consider the following proposition: 
+
+Proposition 3.1 (Degeneration of Explicit Drifting in Behavior Cloning) . Assume that in behavior cloning, the dataset provides only a unique, deterministic expert action a∗ 
+
+> i
+
+for a specific observation 
+
+oi, and the generator produces a single prediction a = fθ (oi, a 0, 0) per training iteration. The empirical conditional distributions degenerate into Dirac measures ˆpdata (y|oi) = δ(y − a∗ 
+
+> i
+
+) and 
+
+ˆqθ (y|oi) = δ(y − a). For any translation-invariant positive kernel k(·, ·), the empirical conditional drifting field mathematically evaluates exactly to Vˆp, ˆq (a|oi) = a∗ 
+
+> i
+
+− a. Consequently, the field-displaced regression objective becomes exactly equivalent to the isotropic Mean Squared Error, losing all local geometric guidance. (Proof. See Appendix A.1.) 
+
+While the underlying control task may tolerate variations around a∗ 
+
+> i
+
+(e.g., alternative valid trajectories or recoverable states), the preceding analysis highlights that the empirical target distribution in standard BC training is too sparse to directly support the estimation of a continuous drifting field. To circumvent this degeneration in practice, models must resort to empirical approximations, such as synthesizing a localized empirical distribution by drawing multiple independent noise samples per observation during training and applying self-masking heuristics. While successful in avoiding the collapse to MSE, these approximations significantly increase computational overhead and entangle the correction field with transient sampling densities. This practical challenge motivates us to explore an alternative path: rather than regressing an explicit dynamic vector field, we extract the static local geometric structure directly from demonstrations. 
+
+## 4 Implicit Drifting Policy 
+
+Given the challenges of estimating explicit continuous vector fields under sparse empirical distri-butions, we explore an alternative path. Our core idea is to shift away from regressing dynamic 4(a) Expert actions (b) Conditional neighbors (c) Geometry excess (d) Potential supervision    
+
+> Observation-similar
+> ExpertactionsExcess-constrainedregion
+> ⁄￿
+
+Figure 2: Overview of Implicit Drifting Policy. (a) Expert action a∗ 
+
+> i
+
+anchors the local action space. (b) Weights wij select observation-similar expert actions to form a Conditional Expert Geometry 
+
+Gi around a∗ 
+
+> i
+
+. (c) Comparing Gi with reference geometry Σref yields the Local Geometry Excess 
+
+mi (coordinate-wise precision excess). (d) The induced metric Mi defines a potential Ei, where 
+
+−∇ Ei(a) supervises both deployment proposal yi and expert-proximal evaluation zi.drifting fields, and instead consider extracting the local geometric structure directly from static expert demonstrations, converting it into a potential objective that induces correction (see Fig 2). 
+
+4.1 Implicit Correction Objective and Local-Aware Evaluation 
+
+To avoid regressing a high-dimensional and unstable continuous drifting field, we consider construct-ing an implicit correction field directed toward the expert target a∗ 
+
+> i
+
+. In the most basic case, a simple attraction field can be written as Vbase (a) = a∗ 
+
+> i
+
+− a. However, this simple attraction is isotropic. In multi-step generative models, isotropic targets, like MSE loss, are sufficient because the model can implicitly adjust and align with the action manifold through hundreds of inference iterations along the intermediate trajectory. However, for a one-step generator, it loses the ability to progressively correct errors along the intermediate path. If the training objective does not explicitly reinforce the tightness of constraints across different action dimensions, the prediction is highly prone to diverging from the valid manifold structure in a single stride. Therefore, for a given predicted action a, we consider applying a geometry-aware correction vector: 
+
+∆i(a) = Mi(a∗ 
+
+> i
+
+− a), (3) where Mi ⪰ 0 is a positive semi-definite symmetric matrix acting as geometry-adaptive weights, determining the strength of the correction force along different directions. We elucidate the mathe-matical properties of this vector through the following proposition. 
+
+Proposition 4.1 (Geometry-Induced Correction Potential) . For any constant positive semi-definite symmetric matrix Mi ⪰ 0, the geometry-induced correction field defined by ∆geo  
+
+> i
+
+(a) = Mi(a∗ 
+
+> i
+
+− a) is a conservative field. Mathematically, it corresponds exactly to the negative gradient ( −∇ aEgeo  
+
+> i
+
+(a) = ∆geo  
+
+> i
+
+(a)) of the following geometry-only potential function: (Proof. See Appendix A.2.) 
+
+Egeo  
+
+> i
+
+(a) = 12 (a − a∗ 
+
+> i
+
+)⊤Mi(a − a∗ 
+
+> i
+
+). (4) The complete geometric potential objective incorporates the isotropic error of behavior cloning: 
+
+Ei(a) = 12 ∥a − a∗ 
+
+> i
+
+∥22 + Egeo  
+
+> i
+
+(a) = 12 [∥a − a∗ 
+
+> i
+
+∥22
+
+| {z }
+
+> isotropic error
+
++ ( a − a∗ 
+
+> i
+
+)⊤Mi(a − a∗ 
+
+> i
+
+)
+
+| {z }
+
+> geometry-adaptive penalty
+
+] (5) whose full negative gradient naturally yields a combined correction force: −∇ aEi(a) = ( I +
+
+Mi)( a∗ 
+
+> i
+
+− a) (Fig 2 (d)). The first term of this potential is equivalent to the isotropic error of behavior cloning, while the second term adaptively increases the penalty for constrained directions based on 
+
+Mi. We transform the regression of an explicit vector field into the minimization of a potential. However, the constraint characterized by matrix Mi is statistically grounded primarily within the local vicinity of the expert action a∗ 
+
+> i
+
+. If the optimization process applies this potential constraint exclusively at the standard initial prediction point yi = fθ (oi, a 0, 0) , the network might struggle to adequately learn the true topology of the local manifold. To ensure that this local potential effectively guides network learning, we consider introducing an expert-proximal evaluation anchor during training. By selecting a time scalar t∗ ∈ (0 , 1) close to 1, we construct a probing input ˜ai = a∗ 
+
+> i
+
++ (1 − t∗)ϵi
+
+(where ϵi ∼ N (0 , I )) by injecting exploratory noise proportional to the distance around the expert 5action. We evaluate the mapping at this proximal location, yielding zi = fθ (oi, ˜ai, t ∗). Therefore, the single-step prediction and the local probing are controlled by the same geometric potential objective, formulating our total training objective as: 
+
+L = Ei∼D [Ei(yi) + λprox Ei(zi)] , (6) where λprox is a hyperparameter balancing the standard endpoint regression and the expert-proximal evaluation. We adopt the implementation choice of MIP [ 25 ] for this weight; details are deferred to Appendix D.2. This construction establishes the skeleton of the entire implicit correction framework. The core challenge then becomes how to extract the adaptive constraint matrix Mi from static demonstration data to reflect the current control state. 
+
+4.2 Conditional Expert Geometry as the Correction Source 
+
+To ensure the adaptive penalty effectively limits invalid actions, we consider grounding the con-struction of matrix Mi in the authentic structure of the demonstration data. In control manifolds, similar observation states usually correspond to analogous robot poses or environmental layouts, which physically often impose similar operational bottlenecks and obstacle avoidance constraints. Therefore, under similar observation conditions, the variation in expert actions naturally reflects the specific motion constraints and acceptable tolerances of the current task. To extract this structure, we need to identify and aggregate similar control contexts in the feature space. However, because feature representations dynamically update during training, to ensure that the similarity metric relies on stable features, we consider applying a stop-gradient operation and normalization to the embeddings before computation: 
+
+hi = sg[ ϕθ (oi)] 
+
+.  ∥ sg[ ϕθ (oi)] ∥2 + ε. (7) To evaluate the correlation between different states, we first compute the pairwise feature inner products sij = h⊤ 
+
+> i
+
+hj . Considering that the observation density across different regions of the state space in the demonstration dataset is often highly imbalanced (e.g., abundant samples in routine states but very few in edge cases), directly using inner products can lead to local weight collapse in sparse regions. To mitigate this issue, we adopt row-normalization ¯sij = sij −μi 
+
+> σi+ε
+
+, and obtain the local neighborhood weights wij ∝ exp(¯ sij ) via Softmax. Based on these weights, to quantify the degree of action divergence under the current observation, we define the Conditional Expert Geometry matrix within the local space of the expert action a∗ 
+
+> i
+
+(Fig 2 (b)): 
+
+Gi = Ej∼D\{ i}
+
+wij (a∗ 
+
+> j
+
+− a∗ 
+
+> i
+
+)( a∗ 
+
+> j
+
+− a∗ 
+
+> i
+
+)⊤ . (8) Note that the query sample itself ( j = i) is explicitly excluded to prevent the zero-distance term from artificially collapsing the local variance estimate. From a nonparametric statistical perspective, this construction can be interpreted through kernel smoothing, serving as an estimate of the local condi-tional covariance Σa|o. Directions in Gi with small variance indicate strict operational constraints, whereas directions with large variance represent redundant dimensions of the action. 
+
+4.3 Local Geometry Excess 
+
+Directly utilizing the inverse of Gi as Mi could introduce biases. This is because certain action coordinates may naturally maintain extremely low variance globally across the entire task. We consider it necessary to distinguish the condition-specific constraints triggered purely by the current observation from this inherent global action scale. In a general multivariate form, distinguishing the condition-specific constraints from the global marginal prior typically requires comparing their inverse covariance matrices. Let P cond  
+
+> i
+
+= ( Gi +
+
+εI )−1 and P ref = (Σ ref + εI )−1. The geometry excess can be conceptualized via a non-negative truncated comparison, such as Mi ∝ [( P ref )−1/2P cond  
+
+> i
+
+(P ref )−1/2 − I]+, which usually involves expensive generalized eigenvalue decomposition operations. Considering computational efficiency and to ensure relatively independent penalties across dimensions, we adopt a diagonal instantiation in practice. Specifically, we compute the diagonal conditional variance vcond  
+
+> i,d
+
+= Ej∼D [wij (a∗ 
+
+> j,d
+
+−a∗
+
+> i,d
+
+)2]
+
+and the global reference variance vref  
+
+> d
+
+= Ei∼D [( a∗ 
+
+> i,d
+
+− ¯a∗
+
+> d
+
+)2]. To eliminate dimensional impacts and 6Table 1: Performance on 3D pointcloud manipulation. We assess performance on 56 challenging tasks with 3 random seeds.                                                                                                                                                                                          
+
+> Methods NFE Adroit DexArt MetaWorld Avg.
+> Hammer Door Pen Laptop Faucet Bucket Toilet Easy (28) Medium (11) Hard (5) Very Hard (5)
+> Multi-Step:
+> DP3 †10 100 ±062 ±443 ±683 ±163 ±246 ±282 ±490.9 ±1.461.6 ±6.538.0 ±4.249.0 ±6.873.9 ±3.3
+> Flow 10 100 ±072 ±369 ±392 ±337 ±534 ±580 ±766.7 ±7.741.3 ±7.440.3 ±7.246.7 ±7.657.9 ±7.0
+> DP3 ∗10 100 ±058 ±553 ±383 ±240 ±225 ±174 ±291.5 ±0.974.5 ±5.754.2 ±1.871.8 ±4.079.4 ±2.4
+> Flow ∗10 99 ±169 ±345 ±385 ±042 ±426 ±374 ±392.2 ±0.774.6 ±5.055.2 ±3.070.8 ±3.079.9 ±2.2
+> Flow-Map / Shortcut / Few-Step:
+> CP 198 ±367 ±565 ±587 ±344 ±429 ±482 ±468.3 ±1.832.1 ±4.328.7 ±5.236.0 ±2.354.7 ±2.9
+> MP1 1100 ±074 ±372 ±388 ±542 ±133 ±082 ±270.5 ±6.137.9 ±5.934.3 ±9.532.3 ±5.557.4 ±5.8
+> OneDP 199 ±167 ±265 ±289 ±445 ±333 ±683 ±477.7 ±0.539.6 ±9.238.7 ±4.441.7 ±1.662.4 ±3.0
+> OFP 1100 ±079 ±776 ±792 ±346 ±439 ±081 ±387.9 ±4.652.4 ±5.743.3 ±2.449.2 ±0.771.6 ±4.1
+> CP ∗197 ±266 ±054 ±276 ±11 38 ±025 ±573 ±479.8 ±14 59.4 ±12 41.4 ±14 62.0 ±8.268.4 ±11 .9
+> MP1 ∗199 ±148 ±258 ±482 ±346 ±226 ±369 ±391.3 ±1.275.4 ±5.657.6 ±4.672.8 ±4.279.7 ±2.8
+> FlowPolicy ∗198 ±266 ±155 ±286 ±240 ±128 ±076 ±390.4 ±0.867.0 ±6.251.2 ±4.867.0 ±3.076.9 ±2.5
+> Drifting Methods:
+> Naive Drifting ∗1100 ±067 ±343 ±595 ±446 ±329 ±182 ±692.7 ±1.870.7 ±6.554.2 ±5.873.2 ±5.279.8 ±3.5
+> Ours ∗1100 ±067 ±252 ±496 ±348 ±130 ±083 ±693.2 ±0.873.6 ±3.956.4 ±4.274.2 ±1.481.3 ±2.0
+> ∗
+
+Results are reproduced on a single NVIDIA A40. † Results are cited from DP3. All other baselines cited from OFP. 
+
+compare the tightness of different dimensions on the same relative baseline, we convert them into normalized precision scales (i.e., standardized inverse variance): 
+
+scond 
+
+i,d =  vcond 
+
+i,d +ε−1/2.
+
+Ek
+
+(vcond 
+
+i,k +ε)−1/2, sref 
+
+d =  vref 
+
+d +ε−1/2.
+
+Ek
+
+(vref 
+
+k +ε)−1/2. (9) Since we only wish to penalize dimensions that become more strictly constrained due to the current observation than they usually are, we consider utilizing the filtering property of the one-sided ReLU operator to define the Geometry Excess (Fig 2 (c)): 
+
+mi,d = ReLU 
+
+
+
+scond 
+
+i,d 
+
+.
+
+(sref 
+
+d + ε) − 1
+
+
+
+, Mi = Diag( mi). (10) The ReLU operator ensures that a dimension is extracted only when the local precision exceeds the global marginal precision prior. Consequently, we filter out inherent features that do not surpass the baseline, extract the specific geometry purely associated with the current state, and use it as the adaptive weight matrix Mi for the potential in Section 4.1. 
+
+## 5 Experiments 
+
+We design our experiments to examine four questions that follow the construction of IDP: • H1: Performance. Can IDP improve one-step action generation across simulated and real manipulation tasks, while narrowing the performance gap to multi-step generative policies? • H2: Implicit Correction and Local-Aware Evaluation. Can IDP internalize the local manifold structure by being evaluated near expert actions during training? • H3: Conditional Expert Geometry. Do expert actions under similar observations provide a useful local covariance structure for guiding action correction? • H4: Local Geometry Excess. Does comparing conditional geometry with reference geometry isolate condition-specific constraints from marginal action variation? 
+
+5.1 Experimental Setup Tasks. We evaluate IDP on three settings: (i) 2D state- and image-based benchmarks following the MIP protocol [ 25 ] on Robomimic (Lift, Can, Square, Transport, with both ph and mh ), Tool-Hang, and PushT; (ii) 3D pointcloud-conditioned manipulation following OFP [ 20 ] and FlowPolicy [ 34 ] on 56 tasks across Adroit [ 28 ], DexArt [ 1 ], and MetaWorld [ 32 ]; and (iii) a real-world “Pick Peach” task on a single-arm ALOHA platform with a strictly bimodal demonstration distribution. 
+
+Baselines. We compare against multi-step generative policies (DP [ 5 ], DP3 [ 33 ], Flow [ 23 ]), few-step / one-step accelerated policies (CP [ 27 ], MIP [ 25 ], MP1 [ 30 ], OneDP [ 31 ], OFP [ 20 ], FlowPolicy [34]), and the explicit drifting baseline (Naive Drifting [7]). 7Table 2: Performance on 2D state-based robotics manipulation tasks. We present success rates with different checkpoint selection methods in the format of (max performance) / (average of last 5 checkpoints), with each averaged across 2 network architectures (Transformer, CNN), 3 training seeds, and 50 different environment initial conditions.                                                                                                    
+
+> Methods NFE Lift Can Square Transport Tool-Hang PushT Avg.
+> mh ph mh ph mh ph mh ph
+> Multi-Step:
+> DP 100 1.00 /0.99 1.00 /1.00 0.98 /0.92 1.00 /0.98 0.81/ 0.72 0.96/ 0.92 0.45 /0.34 0.73/ 0.62 0.84 /0.71 0.95/0.92 0.87 /0.81
+> Flow 91.00 /0.99 1.00 /1.00 0.96/0.92 1.00 /0.98 0.76/0.65 0.95/0.90 0.33/0.23 0.74 /0.59 0.70/0.57 0.96/ 0.94 0.84/0.78
+> Few-Step / Flow-Map / Shortcut:
+> MIP 21.00 /0.99 1.00 /1.00 0.96/ 0.94 1.00 /0.98 0.80/0.69 0.96/0.88 0.44/ 0.35 0.71/0.58 0.68/0.55 0.96/ 0.94 0.85/0.79 CP 10.99/0.97 1.00 /1.00 0.83/0.74 0.99/0.96 0.49/0.45 0.88/0.82 0.01/0.01 0.32/0.24 0.43/0.33 0.94/0.91 0.69/0.64 MP1 11.00 /0.99 1.00 /1.00 0.96/0.87 1.00 /0.97 0.77/0.62 0.96/0.88 0.24/0.14 0.52/0.39 0.76/0.63 0.95/0.92 0.82/0.74
+> Drifting Methods:
+> Naive Drifting 11.00 /0.99 1.00 /1.00 0.96/0.91 0.99/0.96 0.70/0.60 0.97 /0.90 0.30/0.22 0.68/0.58 0.53/0.42 0.95/0.91 0.81/0.75 Ours 11.00 /0.99 1.00 /1.00 0.98 /0.94 1.00 /0.97 0.82 /0.68 0.95/0.88 0.41/0.29 0.72/0.58 0.81/0.60 0.97 /0.92 0.87 /0.79
+
+Table 3: Performance on 2D image-based robotics manipulation tasks. We present success rates with different checkpoint selection methods in the format of (max performance) / (average of last 5 checkpoints), with each averaged across 2 network architectures (Transformer, CNN), 3 training seeds, and 50 different environment initial conditions. 
+
+Methods NFE Lift Can Square Tool-Hang PushT Avg. 
+
+mh ph mh ph mh ph 
+
+Multi-Step: 
+
+DP 100 1.00 /0.98 1.00 /0.99 0.90/0.82 0.98/ 0.94 0.87 /0.76 0.97/ 0.91 0.48 /0.33 0.93 /0.88 0.89 /0.83 
+
+Flow 9 1.00 /0.98 1.00 /0.99 0.93/0.83 0.99 /0.94 0.86/ 0.78 0.98 /0.90 0.47/ 0.35 0.92/0.86 0.89 /0.83 
+
+Few-Step / Flow-Map / Shortcut: 
+
+MIP 2 1.00 /0.96 1.00 /0.99 0.89/0.83 0.97/0.93 0.82/0.71 0.95/0.83 0.46/0.28 0.87/0.84 0.87/0.80 CP 1 1.00 /0.98 1.00 /1.00 0.77/0.63 0.80/0.60 0.70/0.59 0.92/0.86 0.22/0.12 0.88/0.83 0.79/0.70 MP1 1 1.00 /0.97 1.00 /0.99 0.87/0.77 0.77/0.68 0.85/ 0.78 0.96/0.90 0.43/0.27 0.86/0.79 0.84/0.77 
+
+Drifting Methods: 
+
+Naive Drifting 1 0.99/0.96 1.00 /0.98 0.90/0.79 0.95/0.84 0.80/0.69 0.92/0.84 0.46/0.26 0.91/ 0.86 0.87/0.78 Ours 1 1.00 /0.97 1.00 /0.99 0.95 /0.88 0.99 /0.94 0.82/0.74 0.94/0.86 0.48 /0.33 0.92 /0.86 0.89 /0.82 
+
+Metrics. We report success rates averaged across 3 architectures (Transformer / CNN) and 3 seeds for 2D tasks, and across 3 seeds for 3D tasks. Detailed task descriptions, baseline reproduction settings, hyperparameters, and compute resources are deferred to Appendix C–D. 
+
+5.2 One-Step Policy Performance (H1) Simulated Manipulation. To address H1 , we evaluate the control performance of IDP across the 2D and 3D simulated benchmarks. As detailed in Tables 2, 3, and 1, IDP achieves highly competitive success rates across state, image, and pointcloud modalities. Compared to the explicit Naive Drifting baseline, IDP generally yields more stable and improved performance, suggesting that the implicit geometric objective can serve as a more reliable correction mechanism than empirical vector field estimation. When assessed against other leading single-step methods (e.g., CP, MP1, and OFP), IDP demonstrates solid performance, matching or slightly exceeding their success rates on the majority of tasks. Furthermore, operating purely at NFE = 1 , IDP performs closely to the multi-step generative references (e.g., 100-step DP and 10-step DP3) in several settings. These results indicate that incorporating implicit geometry effectively aids in synthesizing high-quality actions without necessarily relying on iterative inference steps. 
+
+Real-World Manipulation. We further validate IDP on a single-arm ALOHA platform on a “Pick Peach” task with a strictly bimodal demonstration distribution ( 50% left, 50% right). Each method is evaluated over 10 trials ( 5 per mode) under both state-based ( qpos ) and vision-based modalities; full hardware and protocol are deferred to Appendix C.3. In the vision-based setting (Table 4), IDP achieves 50% success while DP, Naive Drifting, and MIP all fail at 0% . Qualitatively, the failing baselines exhibit a consistent deviation from the action manifold : they grasp at locations noticeably behind the target peach, and multi-step DP additionally outputs invalid intermediate gripper commands (e.g., freezing at 0.769 ) while breaking the high-frequency control loop with its sluggish inference. IDP adheres to valid grasping poses with real-time reactivity, supporting our geometric hypothesis. In the state-based setting, where joint-angle proximity is a poor proxy for task context, IDP-qpos (30% ) underperforms MIP-qpos (40% ); we discuss this regime in Appendix F. 8(1 ) (2)  
+
+> (3) (4)
+
+Figure 3: Real-world “Pick Peach” task visualization. Table 4: Success rates on the real-world “Pick Peach” task.           
+
+> Modality Method SR (%) State-based (qpos )
+> DP 10 MIP 40
+> Naive Drifting 0Ours 30
+> Vision-based (image )
+> DP 0MIP 0Naive Drifting 0Ours 50
+
+Table 5: Ablation results on ToolHang-State (Max / Avg).           
+
+> Method ToolHang-State
+> Naive Drifting 53.2 / 42.4 IDP (Ours) 81.0 /60.0
+> w/o terminal eval 40.0 / 25.5 uniform neighbors 65.0 / 59.5 shuffled neighbors 75.0 / 52.0 w/o reference geometry 78.0 / 54.5 absolute excess 75.0 / 57.0
+
+Figure 4: Observation-conditioned expert geometry on PushT-State. Colored points denote weighted neighbors; blue and gray ellipses show local and global action covariances. All evaluated single-step models (including IDP and MIP) collapse to a single placement mode under perfectly balanced bimodal demonstrations. Multi-step DP fails on both modes due to its lack of geometric constraints. IDP retains action-validity within the learned mode; mode coverage remains an open problem we discuss in Appendix F. 
+
+5.3 Ablation Study (H2 ∼ H4) 
+
+We ablate the core designs of IDP to address hypotheses H2 ∼ H4 . As our geometric objective primarily benefits tasks with narrow successful action regions, we conduct quantitative ablations on ToolHang-State (Table 5). 
+
+Expert-proximal evaluation (H2): Removing the expert-proximal probe collapses the success rates on ToolHang-State from 81 .0% /60 .0% to 40 .0% /25 .5% , well below Naive Drifting ( 53 .2% /42 .4% ). The probe is therefore essential for internalizing the local correction structure into the one-step generator. Conditional expert geometry (H3): Replacing observation-conditioned neighborhood weights with uniform or shuffled ones degrades the success rates to 65 .0% /59 .5% and 75 .0% /52 .0% 
+
+respectively, confirming that the geometry must be condition-specific. Fig. 4 visualizes this construc-tion on PushT-State: observation-similar demonstrations form local covariances that deviate from the global reference with moderate anisotropy ( κ ≈ 1.2–1.7). Reference geometry and local excess (H4): Removing the reference geometry preserves the peak success rate but drops the average to 
+
+64 .5% , and replacing the positive relative excess with an absolute one further degrades the policy (75 .0% /57 .0% ). The reference comparison thus contributes mainly to training stability by filtering out marginal action-scale priors. 
+
+## 6 Conclusion 
+
+This paper addresses the loss of intermediate error correction in one-step action generation by proposing the Implicit Drifting Policy (IDP). IDP extracts local geometric constraints directly from expert actions under similar observations. By combining this conditional expert geometry with an expert-proximal training evaluation, IDP structurally internalizes the local manifold topology into a single-step generator. Extensive evaluations across 2D, 3D, and real-world manipulation benchmarks demonstrate that IDP effectively adheres to valid action manifolds, substantially improving upon explicit drifting methods while achieving superior geometric precision against strong one-step baselines. While IDP improves one-step policy precision, several caveats remain: single-step policies struggle to cover multi-modal action distributions, and the conditional expert geometry relies on a reasonable density of expert actions under similar observations. We discuss these and other limitations in Appendix F; sparse-data and multi-modal regimes are promising directions for future work. 97 Acknowledgments 
+
+This work was supported by the National Natural Science Foundation of China (Project Number 62595774), Shanghai Frontiers Science Center of Human-centered Artificial Intelligence (ShangHAI), MoE Key Laboratory of Intelligent Perception and Human-Machine Collaboration (KLIP-HuMaCo). 
+
+## References 
+
+[1] Chen Bao, Helin Xu, Yuzhe Qin, and Xiaolong Wang. Dexart: Benchmarking generalizable dexterous manipulation with articulated objects. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21190–21200, 2023. [2] Nicholas M. Boffi, Michael S. Albergo, and Eric Vanden-Eijnden. How to build a consistency model: Learning flow maps via self-distillation, 2025. URL https://arxiv.org/abs/2505. 18825 .[3] Sylvain Calinon, Florent Guenter, and Aude Billard. On learning, representing, and generalizing a task in a humanoid robot. IEEE Transactions on Systems, Man, and Cybernetics, Part B (Cybernetics) , 37(2):286–298, 2007. [4] Haojun Chen, Minghao Liu, Chengdong Ma, Xiaojian Ma, Zailin Ma, Huimin Wu, Yuanpei Chen, Yifan Zhong, Mingzhi Wang, Qing Li, and Yaodong Yang. Falcon: Fast visuomotor policies via partial denoising, 2025. URL https://arxiv.org/abs/2503.00339 .[5] Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion, 2024. URL https://arxiv.org/abs/2303.04137 .[6] Eugenio Chisari, Nick Heppert, Max Argus, Tim Welschehold, Thomas Brox, and Abhinav Val-ada. Learning robotic manipulation policies from point clouds with conditional flow matching, 2024. URL https://arxiv.org/abs/2409.07343 .[7] Mingyang Deng, He Li, Tianhong Li, Yilun Du, and Kaiming He. Generative modeling via drifting, 2026. URL https://arxiv.org/abs/2602.04770 .[8] Yufei Duan, Hang Yin, and Danica Kragic. Real-time iteration scheme for diffusion policy, 2025. URL https://arxiv.org/abs/2508.05396 .[9] Pete Florence, Corey Lynch, Andy Zeng, Oscar Ramirez, Ayzaan Wahid, Laura Downs, Adrian Wong, Johnny Lee, Igor Mordatch, and Jonathan Tompson. Implicit behavioral cloning, 2021. URL https://arxiv.org/abs/2109.00137 .[10] Kevin Frans, Danijar Hafner, Sergey Levine, and Pieter Abbeel. One step diffusion via shortcut models, 2025. URL https://arxiv.org/abs/2410.12557 .[11] Niklas Funk, Julen Urain, Joao Carvalho, Vignesh Prasad, Georgia Chalvatzaki, and Jan Peters. Actionflow: Equivariant, accurate, and efficient policies with spatially symmetric flow matching, 2024. URL https://arxiv.org/abs/2409.04576 .[12] Zhengyang Geng, Mingyang Deng, Xingjian Bai, J. Zico Kolter, and Kaiming He. Mean flows for one-step generative modeling, 2025. URL https://arxiv.org/abs/2505.13447 .[13] Sigmund H. Høeg, Yilun Du, and Olav Egeland. Streaming diffusion policy: Fast policy synthesis with variable noise diffusion models, 2024. URL https://arxiv.org/abs/2406. 04806 .[14] Yanlong Huang, Leonel Rozo, João Silvério, and Darwin G. Caldwell. Kernelized movement primitives, 2018. URL https://arxiv.org/abs/1708.08638 .[15] Auke Jan Ijspeert, Jun Nakanishi, Heiko Hoffmann, Peter Pastor, and Stefan Schaal. Dynamical movement primitives: Learning attractor models for motor behaviors. Neural Computation , 25 (2):328–373, 2013. 10 [16] Jindou Jia, Gen Li, Xiangyu Chen, Tuo An, Yuxuan Hu, Jingliang Li, Xinying Guo, and Jianfei Yang. Action-to-action flow matching, 2026. URL https://arxiv.org/abs/2602.07322 .[17] S. Mohammad Khansari-Zadeh and Aude Billard. Learning stable nonlinear dynamical systems with gaussian mixture models. IEEE Transactions on Robotics , 27(5):943–957, 2011. [18] Chieh-Hsin Lai, Bac Nguyen, Naoki Murata, Yuhta Takida, Toshimitsu Uesaka, Yuki Mitsufuji, Stefano Ermon, and Molei Tao. A unified view of drifting and score-based models, 2026. URL 
+
+https://arxiv.org/abs/2603.07514 .[19] Seungjae Lee, Yibin Wang, Haritheja Etukuru, H. Jin Kim, Nur Muhammad Mahi Shafiullah, and Lerrel Pinto. Behavior generation with latent actions, 2024. URL https://arxiv.org/ abs/2403.03181 .[20] Shaolong Li, Lichao Sun, and Yongchao Chen. One-step flow policy: Self-distillation for fast visuomotor policies, 2026. URL https://arxiv.org/abs/2603.12480 .[21] Yiming Li, Nael Darwiche, Amirreza Razmjoo, Sichao Liu, Yilun Du, Auke Ijspeert, and Sylvain Calinon. Geometry-aware policy imitation, 2025. URL https://arxiv.org/abs/ 2510.08787 .[22] Zhiqi Li and Bo Zhu. A long-short flow-map perspective for drifting models, 2026. URL 
+
+https://arxiv.org/abs/2602.20463 .[23] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative modeling, 2023. URL https://arxiv.org/abs/2210.02747 .[24] Guanxing Lu, Zifeng Gao, Tianxing Chen, Wenxun Dai, Ziwei Wang, Wenbo Ding, and Yansong Tang. Manicm: Real-time 3d diffusion policy via consistency model for robotic manipulation, 2025. URL https://arxiv.org/abs/2406.01586 .[25] Chaoyi Pan, Giri Anantharaman, Nai-Chieh Huang, Claire Jin, Daniel Pfrommer, Chenyang Yuan, Frank Permenter, Guannan Qu, Nicholas Boffi, Guanya Shi, and Max Simchowitz. Much ado about noising: Dispelling the myths of generative robotic control, 2026. URL 
+
+https://arxiv.org/abs/2512.01809 .[26] Alexandros Paraschos, Christian Daniel, Jan Peters, and Gerhard Neumann. Probabilistic movement primitives. In Advances in Neural Information Processing Systems , volume 26, 2013. [27] Aaditya Prasad, Kevin Lin, Jimmy Wu, Linqi Zhou, and Jeannette Bohg. Consistency policy: Accelerated visuomotor policies via consistency distillation, 2024. URL https://arxiv. org/abs/2405.07503 .[28] Aravind Rajeswaran, Vikash Kumar, Abhishek Gupta, Giulia Vezzani, John Schulman, Emanuel Todorov, and Sergey Levine. Learning complex dexterous manipulation with deep reinforcement learning and demonstrations. In Robotics: Science and Systems (RSS) , 2018. [29] Amirmojtaba Sabour, Sanja Fidler, and Karsten Kreis. Align your flow: Scaling continuous-time flow map distillation, 2025. URL https://arxiv.org/abs/2506.14603 .[30] Juyi Sheng, Ziyi Wang, Peiming Li, and Mengyuan Liu. Mp1: Meanflow tames policy learning in 1-step for robotic manipulation, 2025. URL https://arxiv.org/abs/2507.10543 .[31] Zhendong Wang, Zhaoshuo Li, Ajay Mandlekar, Zhenjia Xu, Jiaojiao Fan, Yashraj Narang, Linxi Fan, Yuke Zhu, Yogesh Balaji, Mingyuan Zhou, Ming-Yu Liu, and Yu Zeng. One-step diffusion policy: Fast visuomotor policies via diffusion distillation, 2024. URL https: //arxiv.org/abs/2410.21257 .[32] Tianhe Yu, Deirdre Quillen, Zhanpeng He, Ryan Julian, Karol Hausman, Chelsea Finn, and Sergey Levine. Meta-world: A benchmark and evaluation for multi-task and meta reinforcement learning. In Conference on Robot Learning (CoRL) , 2020. [33] Yanjie Ze, Gu Zhang, Kangning Zhang, Chenyuan Hu, Muhan Wang, and Huazhe Xu. 3d diffusion policy: Generalizable visuomotor policy learning via simple 3d representations. In 
+
+Robotics: Science and Systems (RSS) , 2024. URL https://arxiv.org/abs/2403.03954 .11 [34] Qinglun Zhang, Zhen Liu, Haoqiang Fan, Guanghui Liu, Bing Zeng, and Shuaicheng Liu. Flowpolicy: Enabling fast and robust 3d flow-based policy via consistency flow matching for robot manipulation, 2024. URL https://arxiv.org/abs/2412.04987 .12 Appendix 
+
+## A Proofs and Derivations 
+
+This section provides full derivations for the two propositions stated in the main text and for two additional structural facts that we used informally there. We organize the section as follows: Sec. A.1 proves the degeneration of explicit drifting under the Dirac empirical conditional (Proposition 3.1); Sec. A.2 proves that the geometry-induced correction field admits a global scalar potential (Proposi-tion 4.1); Sec. A.3 interprets the Conditional Expert Geometry as a non-parametric kernel-smoothed estimator of the conditional covariance; and Sec. A.4 derives the diagonal instantiation as a tractable approximation of the full multivariate excess. 
+
+A.1 Proof of Proposition 3.1 (Degeneration of Explicit Drifting in Behavior Cloning) 
+
+Proof. We compute the empirical conditional drifting field explicitly under the Dirac assumptions and substitute it into the field-displaced regression objective. We first restate the conditional drifting field. Conditioning on oi, the attraction and repulsion components are 
+
+V +ˆp (a | oi) = Ey∼ ˆpdata (·| oi)[k(a, y )( y − a)] 
+
+Ey∼ ˆpdata (·| oi)[k(a, y )] , V − 
+
+> ˆq
+
+(a | oi) = Ey∼ˆqθ (·| oi)[k(a, y )( y − a)] 
+
+Ey∼ˆqθ (·| oi)[k(a, y )] , (11) where the empirical conditional distributions are ˆpdata (y | oi) = δ(y − a∗ 
+
+> i
+
+) and ˆqθ (y | oi) = δ(y − a)
+
+with a = fθ (oi, a 0, 0) .We next evaluate the attraction V +ˆp . By the sifting property of the Dirac measure, 
+
+Ey∼ ˆpdata (·| oi)[k(a, y )( y − a)] = 
+
+Z
+
+k(a, y ) ( y − a) δ(y − a∗ 
+
+> i
+
+) dy = k(a, a ∗ 
+
+> i
+
+) ( a∗ 
+
+> i
+
+− a), (12) 
+
+Ey∼ ˆpdata (·| oi)[k(a, y )] = 
+
+Z
+
+k(a, y ) δ(y − a∗ 
+
+> i
+
+) dy = k(a, a ∗ 
+
+> i
+
+). (13) Since k is positive ( k(a, a ∗ 
+
+> i
+
+) > 0 for all a, by assumption), the ratio is well-defined and the kernel cancels out exactly: 
+
+V +ˆp (a | oi) = k(a, a ∗ 
+
+> i
+
+) ( a∗ 
+
+> i
+
+− a)
+
+k(a, a ∗ 
+
+> i
+
+) = a∗ 
+
+> i
+
+− a. (14) The kernel thus contributes nothing to the conditional attraction direction once the support of 
+
+ˆpdata (· | oi) collapses onto a single point. Turning to the repulsion V − 
+
+> ˆq
+
+, the term reduces to a self-evaluation since ˆqθ (· | oi) is concentrated on the prediction a:
+
+Ey∼ˆqθ (·| oi)[k(a, y )( y − a)] = 
+
+Z
+
+k(a, y ) ( y − a) δ(y − a) dy = k(a, a ) ( a − a) = 0 , (15) 
+
+Ey∼ˆqθ (·| oi)[k(a, y )] = 
+
+Z
+
+k(a, y ) δ(y − a) dy = k(a, a ). (16) By translation invariance of k, k(a, a ) = k(0 , 0) , which is a strictly positive constant independent of 
+
+a. Hence 
+
+V − 
+
+> ˆq
+
+(a | oi) = 0
+
+k(a, a ) = 0 . (17) Composing the two components, 
+
+Vˆp, ˆq (a | oi) = V +ˆp (a | oi) − V − 
+
+> ˆq
+
+(a | oi) = ( a∗ 
+
+> i
+
+− a) − 0 = a∗ 
+
+> i
+
+− a. (18) The empirical conditional drifting field thus collapses to a constant attractive vector pointing from the prediction to the expert action, independently of the choice of kernel. 13 It remains to substitute this drifting field into the field-displaced regression objective. With a =
+
+fθ (oi, a 0, 0) ,
+
+LDrift (θ) = Ea0∼p0 ∥fθ (oi, a 0, 0) − sg[ fθ (oi, a 0, 0) + Vˆp, ˆq (fθ (oi, a 0, 0) | oi)] ∥22 (19) 
+
+= Ea0∼p0 ∥a − sg[ a + ( a∗ 
+
+> i
+
+− a)] ∥22 (20) 
+
+= Ea0∼p0 ∥a − sg[ a∗ 
+
+> i
+
+]∥22 . (21) Since a∗ 
+
+> i
+
+is a fixed dataset target and not a function of θ, the stop-gradient operator acts as the identity on it, yielding 
+
+LDrift (θ) = Ea0∼p0 ∥fθ (oi, a 0, 0) − a∗ 
+
+> i
+
+∥22 , (22) which is exactly the isotropic Mean Squared Error of behavior cloning. All directional information that the kernel could in principle encode is annihilated by the Dirac concentration of the conditional empirical distributions, and no local geometric guidance survives. 
+
+A.2 Proof of Proposition 4.1 (Geometry-Induced Correction Potential) 
+
+Proof. We prove the claim by defining a candidate scalar potential, computing its gradient component-wise from first principles, and verifying that the negative gradient coincides with the geometry-induced correction field. We first define the candidate potential 
+
+Egeo  
+
+> i
+
+: Rda → R≥0, Egeo  
+
+> i
+
+(a) = 12 (a − a∗ 
+
+> i
+
+)⊤Mi (a − a∗ 
+
+> i
+
+). (23) Since Mi is symmetric and positive semi-definite by assumption, Egeo  
+
+> i
+
+is a non-negative quadratic form, with Egeo  
+
+> i
+
+(a) = 0 if and only if a − a∗ 
+
+> i
+
+∈ ker( Mi). As a polynomial in a, it is smooth ( C∞)on Rda , so its gradient is well-defined everywhere. To compute this gradient, let r := a − a∗ 
+
+> i
+
+, so that rj = aj − a∗ 
+
+> i,j
+
+and ∂r j /∂a l = δjl . Expanding the quadratic form along its components, 
+
+Egeo  
+
+> i
+
+(a) = 12
+
+> da
+
+X
+
+> j=1
+> da
+
+X
+
+> k=1
+
+(Mi)j,k rj rk. (24) For an arbitrary index l ∈ { 1, . . . , d a}, differentiating term by term and using ∂(rj rk)/∂a l =
+
+δjl rk + rj δkl ,
+
+∂E geo 
+
+> i
+
+∂a l
+
+= 12
+
+> da
+
+X
+
+> j=1
+> da
+
+X
+
+> k=1
+
+(Mi)j,k 
+
+ δjl rk + rj δkl 
+
+ (25) 
+
+= 12
+
+h daX
+
+> k=1
+
+(Mi)l,k rk +
+
+> da
+
+X
+
+> j=1
+
+(Mi)j,l rj
+
+i
+
+. (26) The symmetry of Mi implies (Mi)j,l = ( Mi)l,j , so the two sums coincide and 
+
+∂E geo 
+
+> i
+
+∂a l
+
+=
+
+> da
+
+X
+
+> k=1
+
+(Mi)l,k rk = ( Mi r)l. (27) Stacking the components into a vector, 
+
+∇aEgeo  
+
+> i
+
+(a) = Mi r = Mi (a − a∗ 
+
+> i
+
+). (28) Negating the gradient yields exactly the geometry-induced correction field defined in the main text: 
+
+−∇ aEgeo  
+
+> i
+
+(a) = −Mi (a − a∗ 
+
+> i
+
+) = Mi (a∗ 
+
+> i
+
+− a) = ∆ geo  
+
+> i
+
+(a). (29) That is, ∆geo  
+
+> i
+
+is the negative gradient of a globally defined smooth scalar potential on Rda . By the fundamental theorem of vector calculus on the simply connected domain Rda , this implies (i) 
+
+∇ × ∆geo  
+
+> i
+
+= 0 everywhere; (ii) the line integral of ∆geo  
+
+> i
+
+along any closed curve vanishes; and (iii) the line integral between any two points a and b is path-independent and equals Egeo  
+
+> i
+
+(a) − Egeo  
+
+> i
+
+(b).Therefore ∆geo  
+
+> i
+
+is a conservative vector field. 14 Remark A.1 (Combined potential) . Adding the isotropic regression term to the geometric potential yields the full Ei used by IDP: 
+
+Ei(a) = 12 ∥a − a∗ 
+
+> i
+
+∥22 + Egeo  
+
+> i
+
+(a) = 12 (a − a∗ 
+
+> i
+
+)⊤(I + Mi) ( a − a∗ 
+
+> i
+
+). (30) By linearity of the gradient and the component-wise computation above, 
+
+−∇ aEi(a) = −(a − a∗ 
+
+> i
+
+) − Mi (a − a∗ 
+
+> i
+
+) = ( I + Mi) ( a∗ 
+
+> i
+
+− a), (31) which is exactly the combined correction force quoted in the main text. Since I + Mi ≻ 0 for any 
+
+Mi ⪰ 0, Ei is a strictly convex function with a unique global minimum at a = a∗ 
+
+> i
+
+.
+
+A.3 Conditional Expert Geometry as Local Kernel Smoothing 
+
+Although the empirical conditional distribution under behavior cloning is too sparse to support an explicit drifting field (Sec. A.1), the dataset as a whole provides enough information to estimate the local second-order structure of the action manifold. We make this connection precise by interpreting the Conditional Expert Geometry Gi in Eq. (8) as a non-parametric kernel-smoothed estimator of the conditional covariance Σa∗|o.
+
+Remark A.2 (Kernel-smoothed local covariance) . The matrix Gi =
+
+Ej∼D\{ i}
+
+wij (a∗ 
+
+> j
+
+− a∗ 
+
+> i
+
+)( a∗ 
+
+> j
+
+− a∗ 
+
+> i
+
+)⊤ is structurally identical to a Nadaraya–Watson estima-tor applied to the centered second moment of expert actions, with the soft weights wij acting as a smooth nearest-neighbor selector in observation feature space. 
+
+Argument. Recall that the weights are obtained by row-normalizing the standardized similarities 
+
+¯sij = ( sij − μi)/σ i followed by softmax, yielding wij ∝ exp(¯ sij ). As the embedding ϕθ becomes informative for the conditional p(a∗ | o), the weights concentrate on demonstrations j whose observations satisfy hj ≈ hi. In the asymptotic regime where the dataset becomes dense and the soft neighborhood becomes a local indicator, 
+
+Gi −−−−−→
+
+> |D|→∞
+> soft NN
+
+Ea∗∼p(a∗|oi)
+
+(a∗ − a∗ 
+
+> i
+
+)( a∗ − a∗ 
+
+> i
+
+)⊤ . (32) Decomposing the right-hand side around the conditional mean μ∗ 
+
+> i
+
+:= E[a∗ | oi] and using the bias-variance identity for the second moment of a translated random variable, 
+
+Ea∗|oi
+
+(a∗ − a∗ 
+
+> i
+
+)( a∗ − a∗ 
+
+> i
+
+)⊤ = Σ a∗|oi + ( μ∗ 
+
+> i
+
+− a∗ 
+
+> i
+
+)( μ∗ 
+
+> i
+
+− a∗ 
+
+> i
+
+)⊤. (33) The dominant term is the conditional covariance Σa∗|oi , and the residual rank-one term is controlled by the gap between the query expert action a∗ 
+
+> i
+
+and the conditional mean. When a∗ 
+
+> i
+
+is itself a typical sample under oi (which holds for behavior cloning datasets where each demonstration is collected from an expert distribution), the bias term is small, and Gi provides a faithful estimator of Σa∗|oi
+
+from a single forward pass over the minibatch. This nonparametric viewpoint clarifies why the eigenvalues of Gi encode local task constraints: directions with small conditional variance correspond to tightly bound action coordinates under the current observation, whereas directions with large variance admit redundancy that the policy may absorb without affecting task success. 
+
+A.4 General Multivariate Excess and Diagonal Instantiation 
+
+In Sec. 4.3 of the main text we instantiated the geometry excess via a coordinate-wise comparison of standardized inverse variances and noted, in passing, the existence of a more general multivariate form. Here we make that derivation explicit and discuss why the diagonal instantiation is appropriate for our setting. 
+
+Full multivariate excess. Let P cond  
+
+> i
+
+:= ( Gi + εI )−1 and P ref := (Σ ref + εI )−1 be the regularized conditional and reference precision matrices. To compare them on a common scale, we whiten P cond 
+
+> i
+
+against P ref :
+
+Ri := ( P ref )−1/2 P cond  
+
+> i
+
+(P ref )−1/2. (34) Eigenvalues λd(Ri) of Ri measure how much tighter the conditional precision is along each general-ized direction relative to the reference. The natural matrix-valued positive excess is then 
+
+M full  
+
+> i
+
+= Ui Diag 
+
+h  λd(Ri) − 1
+
+> +
+
+i
+
+U ⊤ 
+
+> i
+
+, (35) where Ui is the orthogonal matrix of eigenvectors of Ri and (·)+ = max( ·, 0) .15 Algorithm 1 IDP Training  
+
+> 1:
+
+Input: Dataset D = {(oi, a ∗ 
+
+> i
+
+)}Ni=1 , schedule scalar t∗ ∈ (0 , 1)  
+
+> 2:
+
+while not converged do  
+
+> 3:
+
+Sample minibatch {(oi, a ∗ 
+
+> i
+
+)}Bi=1 ∼ D  
+
+> 4:
+
+hi ← sg[ ϕθ (oi)] /∥ · ∥ 2; wij ← softmax j
+
+(h⊤ 
+
+> i
+
+hj − μi)/σ i
+
+ ▷ neighborhood  
+
+> 5:
+
+Mi ← Diag  ReLU( scond  
+
+> i,d
+
+/s ref  
+
+> d
+
+− 1)  ▷ geometry excess (Sec. 4.3)  
+
+> 6:
+
+εi ∼ N (0 , I ); ˜ai ← a∗ 
+
+> i
+
++ (1 − t∗) εi 
+
+> 7:
+
+yi ← fθ (oi, 0, 0) ; zi ← fθ (oi, ˜ai, t ∗) ▷ proposal & probe  
+
+> 8:
+
+θ ← θ − λ ∇θ
+
+ Ei(yi) + λprox Ei(zi)  
+
+> 9:
+
+end while  
+
+> 10:
+
+return fθ
+
+Reduction to the diagonal form. Computing M full  
+
+> i
+
+requires a generalized eigenvalue decomposi-tion (GEVD) of P cond  
+
+> i
+
+and P ref at a cost of O(d3
+
+> a
+
+) per training sample , which is prohibitive in the in-ner loop of policy training. Under the diagonal restriction Gi ≈ Diag( vcond  
+
+> i
+
+) and Σref ≈ Diag( vref ),both precision matrices become diagonal, Ui = I, and the eigenvalue ratio reduces to the per-coordinate inverse-variance ratio: 
+
+λd(Ri) = 1(vcond  
+
+> i,d
+
++ ε)1(vref  
+
+> d
+
++ ε) = vref  
+
+> d
+
++ εvcond  
+
+> i,d
+
++ ε . (36) Standardizing the coordinate-wise inverse standard deviations (Sec. 4.3 of the main text) and applying 
+
+ReLU( · − 1) yields exactly the diagonal Mi = Diag( mi) used in our implementation. 
+
+Why the diagonal approximation is justified here: 
+
+• Computational cost. The cost drops from O(d3
+
+> a
+
+) to O(da) per sample, eliminating GEVD from the training inner loop entirely. • Use case for Mi. The metric Mi is consumed only via the contraction r⊤Mir for r = a−a∗ 
+
+> i
+
+.Coordinate-wise penalties along physically meaningful action axes (joint angles, end-effector velocities, gripper command) already constitute a strong inductive bias; cross-coordinate coupling is in principle informative but is empirically a higher-order effect for the action dimensionalities considered ( da ∈ { 2, 7, 10 , 26 }). • Statistical stability. Diagonal estimation is far more sample-efficient than full-matrix es-timation in the per-minibatch regime. Estimating O(d2
+
+> a
+
+) off-diagonal entries from O(B)
+
+effective neighbors (where B is the minibatch size) is statistically unreliable; diagonal entries, in contrast, only need scalar second-moment estimates and are robust at typical batch sizes. The diagonal instantiation thus trades a small fraction of the full geometric expressiveness for a substantial gain in computational and statistical robustness, which we find essential for stable training across the benchmark suite. 
+
+## B Algorithms 
+
+Algorithm 1 summarizes IDP’s training loop, which computes the geometry-aware total loss in Eq. (6). Inference is described separately in prose below, since it reduces to a single forward pass. 
+
+Inference (deployment). The trained policy is deployed as a = fθ (o, 0, 0) in a single forward pass per call ( NFE = 1 ). The neighborhood weights wij , the geometry Mi, the expert-proximal probe zi, and the proximal loss weight λprox are all training-only. A few additional non-obvious points about the training loop are worth highlighting. • Stop-gradient on the geometry path. The conditional weights wij , the geometry Mi, and the standardized inverse-variance ratios in lines 4–5 of Alg. 1 are all detached from the 16 computation graph. Their role is to shape the loss landscape for θ, not to be optimized themselves; gradient flow reaches the policy parameters θ only through the residuals yi − a∗
+
+> i
+
+and zi − a∗ 
+
+> i
+
+in line 8. • Per-minibatch reference geometry. vref  
+
+> d
+
+used in line 5 is estimated within the current minibatch, vref  
+
+> d
+
+= 1
+
+> B
+
+P
+
+> i
+
+(a∗ 
+
+> i,d
+
+− ¯a∗
+
+> d
+
+)2. This avoids any extra dataset-level pass and adapts naturally when D is augmented or filtered. • Self-inclusive neighborhood. The softmax in line 4 is taken over all B minibatch indices including j = i. The diagonal entry wii contributes a zero term to Gi via (a∗ 
+
+> i
+
+− a∗ 
+
+> i
+
+)( a∗ 
+
+> i
+
+−
+
+a∗ 
+
+> i
+
+)⊤ = 0 , so explicit self-exclusion is not required and avoids special-case logic; this matches the formulation in Eq. (8). 
+
+## C Detailed Experimental Setup 
+
+C.1 2D Benchmarks 
+
+We follow the protocol of MIP [ 25 ] for all 2D experiments. The benchmark suite consists of six continuous-control manipulation tasks: • Robomimic Lift / Can / Square / Transport : four manipulation primitives ranging from picking-and-lifting (Lift, easy) to two-arm transport (hardest). Each task is evaluated on ph 
+
+(proficient-human, 200 expert demonstrations) and mh (multi-human, 300 demonstrations from operators of varying skill). • Tool-Hang : a long-horizon precision task where a hook tool must be inserted onto a wall mount. Notable for its narrow valid grasping pose region, which makes it a strong testbed for IDP’s local geometric correction. • PushT : a 2D pushing task with an underactuated dynamic shape. The action manifold is broad, making the task relatively insensitive to anisotropic geometric constraints — a property we verify both in our quantitative ablations and in our qualitative covariance visualization (Fig. 3 in the main text). For each task we evaluate under two observation modalities: (i) state-based , where the observation is the low-dimensional proprioceptive state of the simulator; and (ii) image-based , where the observation consists of RGB rendering(s). We use the same dataset splits, action chunking horizons, and replan strides as MIP. Evaluation is run for 50 environment initial conditions per seed, repeated over 3
+
+random seeds, and averaged across two architectures (Transformer and CNN) for both observation modalities. Final numbers are reported as “best checkpoint / average of last 5 checkpoints” following the MIP protocol. 
+
+C.2 3D Benchmarks 
+
+For 3D pointcloud-conditioned manipulation we follow OFP [ 20 ] and FlowPolicy [ 34 ]. The suite contains 56 tasks organized as: • Adroit [28 ] (3 tasks): Hammer, Door, Pen. A 26 -DoF dexterous hand-arm, requiring high-precision contact-rich manipulation. • DexArt [1 ] (4 tasks): Laptop, Faucet, Bucket, Toilet. Articulated-object manipulation with diverse joint configurations. • MetaWorld [32 ] (49 tasks): a broad set of parallel-gripper tasks. Following OFP, we partition the 49 tasks into difficulty levels (28 Easy / 11 Medium / 5 Hard / 5 Very-Hard) for analysis. Observations are point clouds of the workspace ( 1024 points per frame, sampled following DP3 [ 33 ]). All training and evaluation hyperparameters that are not specific to IDP follow OFP / FlowPolicy unchanged. Each method is averaged over 3 random seeds, and per-task standard deviations are reported in Table 9. 17 C.3 Real-world “Pick Peach” Setup Hardware. We use a single-arm ALOHA platform equipped with a parallel-jaw gripper. Two RGB cameras provide visual feedback: one front-view and one head-mounted (egocentric). 
+
+Task. The robot must pick up a peach placed at one of two designated positions and transport it onto a target plate. The task simultaneously tests spatial generalization (peach position varies within each side) and multi-modal modeling (left vs. right placement). 
+
+Demonstrations. We collect teleoperated demonstrations under a strictly bimodal placement distribution: 50% of trajectories place the peach on the left side of the plate and 50% on the right. The two modes are exactly balanced, providing a clean test of whether single-step policies can preserve multi-modality without iterative stochastic injection. 
+
+Evaluation. Each method is evaluated for 10 trials, 5 from each mode (left / right). A trial is counted as successful only if the peach is grasped, lifted, transported, and released onto the plate. We test under two observation modalities: state-based ( qpos only, no visual feedback) and vision-based (both RGB streams). Results are summarized in Table 4 of the main text. 
+
+C.4 Baseline Reproduction Details 
+
+For 2D state- and image-based experiments, the baselines DP, MIP, MP1, and Flow follow MIP’s protocol and code base unchanged. For 3D experiments, the multi-step DP3 / Flow baselines and the few-step CP / MP1 / FlowPolicy baselines are reproduced from the OFP repository on a single NVIDIA A40 to ensure fair compute comparison. Results marked with ∗ in Table 1 (and Tab. 9) indicate this re-running protocol; numbers without ∗ are cited from the corresponding original papers (OFP / FlowPolicy / DP3) when reproduction was infeasible due to compute budget. The Naive Drifting baseline corresponds to the original empirical drifting formulation [ 7] adapted to the same code base as IDP, with the geometry term zeroed out ( Mi = 0 ). This isolates the effect of the conditional expert geometry from any other architectural difference. 
+
+## D Implementation Details and Hyperparameters 
+
+D.1 Architecture Policy backbone. For 2D experiments we adopt the Transformer and CNN backbones from MIP [ 25 ] unchanged. Each task is run with both architectures and the success rates are then averaged. For 3D experiments we use the DP3 PointNet-based encoder [ 33 ] for the point-cloud observation and a Transformer policy network, identical to the setup used by OFP [20] and FlowPolicy [34]. 
+
+Observation embedding ϕθ . The embedding ϕθ (oi) used to compute the neighborhood weights 
+
+wij is read from the final hidden representation of the observation encoder, prior to any task-specific head. Stop-gradient ( detach ) and L2-normalization are applied to ϕθ (oi) before computing pairwise inner products, so that the neighborhood weights are stable across optimizer steps and do not back-propagate into the encoder via the geometry path. 
+
+D.2 Hyperparameters 
+
+Table 6 summarizes all IDP-specific hyperparameters. For all other quantities (learning rate, batch size, training steps, action chunking horizon, evaluation protocol) we strictly follow MIP for 2D and OFP / FlowPolicy for 3D. 
+
+Implementation note on λprox . The choice t∗ = 0 .9 matches the value used by MIP [ 25 ], and we did not tune t∗ separately for IDP. The proximal weight λprox = ( t∗/(1 − t∗)) 2 = 81 follows directly from the practical implementation of MIP, in which each per-anchor loss is divided by the squared distance from its evaluation time to the supervision target along the linear interpolation path; the two divisions 1/t 2 
+
+> ∗
+
+and 1/(1 − t∗)2 in the implementation differ only by a global scalar from the 18 Table 6: IDP-specific hyperparameters. All values are kept identical across 2D state, 2D image, 3D, and real-world experiments unless otherwise noted.                                                
+
+> Symbol Value Description
+> t∗0.9Schedule scalar for the expert-proximal probe (matches MIP).
+> λprox
+>  t∗/(1 −t∗)2= 81 Loss weight of the expert-proximal evaluation (Eq. (6)). Probe noise εiN(0 , I )Scaled by (1 −t∗)in ˜ai=a∗
+> i+ (1 −t∗)εi.Neighborhood scope full minibatch wij over all j∈ { 1, . . . , B }including j=i.Softmax temperature 1Applied directly on row z-scored similarities (no extra temperature). Numerical ε10 −6Used in L2-normalization, variance flooring, and ratio denominators.
+> vref
+> destimation per-minibatch vref
+> d=1
+> B
+> P
+> i(a∗
+> i,d −¯a∗
+> d)2, no EMA / no precompute. Stop-gradient on wij , M iyes Geometry path does not flow gradient into θ.
+
+form in Eq. (6) . We use this single value of λprox across all 2D, 3D, and real-world experiments without per-task tuning, so IDP introduces no new tunable hyperparameters relative to MIP. 
+
+D.3 Compute Resources 
+
+All training runs are performed on a single NVIDIA A40. The bulk of the computational overhead introduced by IDP relative to MIP / OFP is concentrated in the inner loop: • One additional forward pass per minibatch to obtain the expert-proximal probe zi, which approximately doubles the policy-network cost per training step. • One B×B similarity matrix and one B×B softmax for the neighborhood weights, O(B2dh)
+
+where dh is the embedding dimension. • Per-coordinate (diagonal) variance estimates for Gi and Σref , O(B2da).For the typical batch sizes used in our experiments, this overhead is dominated by the additional forward pass; the geometry-specific computations contribute a small fraction of the per-step wall-clock. Inference, by construction, has identical NFE = 1 cost to MIP / OFP / Naive Drifting, since IDP deploys fθ in a single forward pass. 
+
+## E Detailed Per-Task Results 
+
+We provide complete per-task breakdowns of the simulation experiments. Table 8 reports per-architecture and per-task numbers for the 2D state- and image-based suites; Table 9 reports per-task numbers for the 3D pointcloud suite (Adroit, DexArt, and MetaWorld). For 3D, Table 10 additionally reports the success rate of the expert demonstrators that were used to collect the imitation data, providing an upper bound on imitation-learning performance. 
+
+## F Limitations 
+
+While IDP improves over explicit drifting baselines and matches strong one-step policies in our experiments, our evaluation also reveals several limitations that we believe deserve explicit discussion. We organize them by the experimental observation that motivated each. 
+
+Mode collapse persists under bimodal demonstrations. On the real-world “Pick Peach” task we deliberately constructed a strictly bimodal demonstration distribution ( 50% left placement, 50% 
+
+right). All evaluated policies: IDP ( NFE = 1 ), MIP ( NFE = 2 ), Naive Drifting ( NFE = 1 ), and DP (NFE = 100 ) collapsed to a single mode, mastering one placement while ignoring the other. While IDP preserves the geometric precision of the learned mode (achieving 50% vision-based success while all baselines fail at 0% , see Table 4), it does not solve the mode-coverage problem inherent to compressing a multi-modal distribution into a single forward pass without iterative stochastic injection. Restoring multi-modality without sacrificing one-step inference remains an open problem orthogonal to the geometric correction we propose. 19 Table 7: Detailed 2D simulation results on state-based robotic manipulation tasks. For each task, we report the best checkpoint performance / averaged performance over the last 5 checkpoints. Each experiment is run with 3 seeds, and we report the average performance across all seeds. Architecture Method Lift Can Square Transport Tool-Hang Push-T mh ph mh ph mh ph mh ph Transformer DP 1.00 /0.99 1.00 /1.00 0.97 /0.89 1.00 /0.97 0.74/0.67 0.95/0.90 0.37/0.25 0.64/0.54 0.77/ 0.68 0.92/0.88 Flow 1.00 /1.00 1.00 /1.00 0.92/0.87 1.00 /0.98 0.69/0.53 0.94/0.88 0.23/0.14 0.71 /0.56 0.58/0.46 0.94/ 0.92                                                                                                                         
+
+> MIP 1.00 /0.99 1.00 /1.00 0.94/ 0.91 1.00 /0.98 0.77 /0.69 0.98 /0.91 0.40 /0.26 0.69/0.54 0.73/0.61 0.94/0.91 CP 0.98/0.96 1.00 /1.00 0.78/0.73 0.99/0.93 0.43/0.40 0.92/0.85 0.02/0.01 0.34/0.27 0.38/0.33 0.94/0.91 MP1 1.00 /0.99 1.00 /1.00 0.94/0.80 1.00 /0.97 0.64/0.46 0.94/0.84 0.14/0.05 0.47/0.33 0.70/0.56 0.93/0.88 Naive Drifting 1.00 /0.99 1.00 /1.00 0.94/0.86 0.99/0.96 0.56/0.47 0.98 /0.89 0.15/0.11 0.61/0.55 0.46/0.37 0.93/0.88 IDP 1.00 /0.99 1.00 /1.00 0.97 /0.91 1.00 /0.97 0.76/0.63 0.96/0.90 0.34/0.23 0.65/ 0.57 0.78 /0.68 0.97 /0.92
+> CNN DP 1.00 /1.00 1.00 /1.00 1.00 /0.95 1.00 /0.99 0.88/0.77 0.97/ 0.93 0.53 /0.43 0.81 /0.71 0.91 /0.74 0.98 /0.96 Flow 1.00 /0.99 1.00 /1.00 1.00 /0.96 1.00 /0.99 0.83/0.77 0.96/0.91 0.43/0.31 0.78/0.63 0.81/0.69 0.98 /0.96 MIP 1.00 /1.00 1.00 /1.00 0.99/ 0.96 1.00 /0.98 0.83/0.69 0.94/0.84 0.48/ 0.45 0.73/0.62 0.63/0.49 0.98 /0.97
+> CP 1.00 /0.98 1.00 /1.00 0.88/0.76 1.00 /0.98 0.56/0.49 0.84/0.80 0.01/0.00 0.29/0.22 0.49/0.33 0.94/0.91 MP1 1.00 /1.00 1.00 /1.00 0.99/0.94 1.00 /0.98 0.89 /0.78 0.98 /0.91 0.33/0.22 0.57/0.44 0.81/0.70 0.97/0.96 Naive Drifting 1.00 /0.99 1.00 /1.00 0.99/0.95 1.00 /0.97 0.83/0.74 0.96/0.90 0.46/0.33 0.74/0.61 0.59/0.48 0.96/0.94 IDP 1.00 /1.00 1.00 /1.00 1.00 /0.96 1.00 /0.98 0.88/0.72 0.94/0.86 0.48/0.36 0.78/0.60 0.84/0.53 0.98 /0.91
+
+Table 8: Detailed 2D simulation results on image-based robotic manipulation tasks. For each task, we report the best checkpoint performance / averaged performance over the last 5 checkpoints. Each experiment is run with 3 seeds, and we report the average performance across all seeds. Architecture Method Lift Can Square Tool-Hang Push-T mh ph mh ph mh ph Transformer DP 1.00 /0.98 1.00 /0.99 0.97 /0.92 0.99 /0.96 0.85 /0.74 0.97/0.89 0.35/0.17 0.93 /0.87 Flow 1.00 /0.99 1.00 /0.99 0.92/0.85 0.99 /0.94 0.81/0.73 0.97/0.88 0.35/ 0.26 0.90/0.84 MIP 1.00 /0.97 1.00 /1.00 0.91/0.86 0.99 /0.94 0.85 /0.73 0.98 /0.86 0.33/0.14 0.93 /0.89 
+
+CP 1.00 /0.98 1.00 /1.00 0.78/0.64 0.86/0.61 0.72/0.63 0.92/0.87 0.25/0.16 0.86/0.82 MP1 1.00 /1.00 1.00 /0.99 0.91/0.82 0.79/0.69 0.85 /0.75 0.95/ 0.91 0.30/0.13 0.83/0.72 Naive Drifting 1.00 /0.99 1.00 /0.99 0.95/0.90 0.97/0.86 0.85 /0.73 0.94/0.89 0.37 /0.19 0.90/0.86 Ours 1.00 /0.98 1.00 /1.00 0.97 /0.91 0.99 /0.94 0.81/0.74 0.96/0.89 0.37 /0.21 0.92/0.87 CNN DP 1.00 /0.99 1.00 /0.99 0.82/0.73 0.98/0.92 0.89/0.78 0.97/ 0.93 0.61 /0.48 0.92/ 0.89 
+
+Flow 1.00 /0.98 1.00 /0.99 0.93 /0.81 0.99 /0.93 0.91 /0.83 0.99 /0.92 0.59/0.45 0.93 /0.88 MIP 1.00 /0.96 1.00 /0.99 0.87/0.81 0.96/0.92 0.79/0.68 0.91/0.81 0.60/0.42 0.81/0.79 CP 1.00 /0.98 1.00 /1.00 0.76/0.62 0.75/0.59 0.67/0.56 0.92/0.86 0.19/0.09 0.89/0.85 MP1 1.00 /0.95 1.00 /0.99 0.83/0.72 0.74/0.66 0.86/0.80 0.97/0.88 0.55/0.40 0.90/0.86 Naive Drifting 0.99/0.94 1.00 /0.98 0.85/0.69 0.93/0.83 0.75/0.64 0.90/0.80 0.55/0.33 0.91/0.87 Ours 1.00 /0.96 1.00 /0.99 0.92/ 0.85 0.99 /0.94 0.83/0.75 0.92/0.84 0.59/0.45 0.92/0.86 
+
+Conditional expert geometry requires sufficient local data density. Constructing Gi in Eq. (8) implicitly assumes that, for a given minibatch, there exist demonstrations (oj , a ∗
+
+j ) with hj ≈ hi, so the softmax weights wij concentrate on truly relevant neighbors. In low-density regions of the state space—rare configurations or under-explored corners of the demonstration distribution—the soft neighborhood degenerates toward a uniform distribution, Gi approaches the global covariance Σref ,and the geometry excess Mi becomes nearly zero, in which case IDP’s training signal effectively reduces to that of Naive Drifting. While our evaluation suite does not contain extremely low-density cases, deployment in such regimes would likely amplify this degeneration. 
+
+Diagonal Mi ignores cross-coordinate coupling. For computational tractability, we instantiate 
+
+Mi as a diagonal matrix (Sec. 4.3 of the main text and App. A.4), which assumes that the geometric constraints of the expert action distribution decompose along the canonical action axes. For action spaces with strong cross-axis coupling—e.g., dexterous manipulation with 26 -DoF hands where finger joints jointly determine grasp shape—a full-matrix Mi may capture richer constraints. Implementing the full multivariate excess at the cost of an O(d3
+
+a) generalized eigenvalue decomposition per sample remains future work. 
+
+Degradation under purely proprioceptive observations. The Conditional Expert Geometry relies on the observation embedding ϕθ (o) to identify task-similar contexts. When the observation is purely proprioceptive (e.g., qpos -only state with no visual feedback), the similarity metric reflects only joint-angle proximity, which is a poor proxy for task context similarity. We observe this on the real-world state-based setting (Table 4), where IDP-qpos achieves only 30% success—below MIP-qpos (40% ). This suggests that when the observation modality does not supply enough signal 20 Table 9: Detailed 3D simulation results on Adroit, DexArt, and Meta-World. Results are averaged over 3 random seeds and reported as mean ± standard deviation. The best result in each column is highlighted in bold .
+
+Methods NFE Adroit DexArt Meta-World (Easy) 
+
+Hammer Door Pen Laptop Faucet Bucket Toilet Coffee Button Dial Turn Door Close Door Lock DP3 10 100 ±0 58 ±5 53 ±3 83 ±2 40 ±2 25 ±1 74 ±2 100 ±0 91 ±3 100 ±0 100 ±0
+
+Flow 10 99 ±1 69 ±3 45 ±3 85 ±0 42 ±4 26 ±3 74 ±3 100 ±0 81 ±5 100 ±0 100 ±0
+
+CP 1 97 ±2 66 ±0 54 ±2 76 ±11 38 ±0 25 ±5 73 ±4 90 ±14 82 ±2 93 ±9 74 ±34 
+
+MP1 1 99 ±1 48 ±2 58 ±4 82 ±3 46 ±2 26 ±3 69 ±3 100 ±0 91 ±5 100 ±0 100 ±0
+
+FlowPolicy 1 98 ±2 66 ±1 55 ±2 86 ±2 40 ±1 28 ±0 76 ±3 100 ±0 81 ±5 100 ±0 99 ±1
+
+Naive Drifting 1 100 ±0 67 ±3 43 ±5 95 ±4 46 ±3 29 ±1 82 ±6 100 ±0 97 ±2 100 ±0 100 ±0
+
+Ours 1 100 ±0 67 ±2 52 ±4 96 ±3 48 ±1 30 ±0 83 ±6 100 ±0 97 ±4 100 ±0 100 ±0
+
+Methods NFE Meta-World (Easy) 
+
+Button Press ButtonPress Topdown ButtonPress Topdown Wall ButtonPress Wall Door Open Door Unlock Drawer Close Drawer Open Faucet Close DP3 10 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0
+
+Flow 10 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0
+
+CP 1 95 ±8 70 ±42 71 ±41 100 ±0 85 ±22 100 ±0 100 ±0 92 ±12 100 ±0
+
+MP1 1 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0
+
+FlowPolicy 1 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0
+
+Naive Drifting 1 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0
+
+Ours 1 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0 100 ±0
+
+Methods NFE Meta-World (Easy) 
+
+Faucet Open Handle Press Handle Pull Handle Press Side Handle Pull Side Lever Pull Plate Slide Plate Slide Back Plate Slide Back Side Plate Slide Side DP3 10 100 ±0 98 ±1 59 ±11 100 ±0 66 ±5 85 ±2 100 ±0 100 ±0 100 ±0 100 ±0
+
+Flow 10 100 ±0 100 ±0 72 ±8 100 ±0 72 ±2 85 ±1 100 ±0 100 ±0 100 ±0 100 ±0
+
+CP 1 85 ±21 91 ±10 66 ±0 88 ±16 17 ±0 65 ±25 74 ±37 93 ±9 92 ±11 99 ±1
+
+MP1 1 100 ±0 98 ±3 60 ±9 100 ±0 49 ±6 84 ±4 100 ±0 100 ±0 100 ±0 100 ±0
+
+FlowPolicy 1 100 ±0 97 ±3 64 ±1 100 ±0 41 ±0 79 ±4 100 ±0 100 ±0 100 ±0 100 ±0
+
+Naive Drifting 1 100 ±0 98 ±2 68 ±16 100 ±0 65 ±7 88 ±9 100 ±0 100 ±0 100 ±0 100 ±0
+
+Ours 1 100 ±0 100 ±0 80 ±1 100 ±0 67 ±4 93 ±2 100 ±0 100 ±0 100 ±0 100 ±0
+
+Methods NFE Meta-World (Easy) Meta-World (Medium) 
+
+Reach Reach Wall Window Close Window Open Peg Unplug Side Basketball Bin Picking Box Close Coffee Pull DP3 10 25 ±2 67 ±1 100 ±0 100 ±0 72 ±1 100 ±0 48 ±18 69 ±5 88 ±5
+
+Flow 10 28 ±1 73 ±2 100 ±0 100 ±0 71 ±1 100 ±0 37 ±13 67 ±1 88 ±2
+
+CP 1 27 ±1 56 ±16 96 ±6 75 ±33 57 ±23 96 ±0 48 ±0 60 ±18 72 ±22 
+
+MP1 1 28 ±1 76 ±2 100 ±0 100 ±0 71 ±3 100 ±0 44 ±15 69 ±10 91 ±2
+
+FlowPolicy 1 30 ±1 70 ±2 100 ±0 99 ±0 71 ±6 86 ±8 35 ±11 74 ±2 88 ±1
+
+Naive Drifting 1 48 ±2 70 ±4 100 ±0 100 ±0 62 ±9 100 ±0 35 ±21 53 ±10 85 ±4
+
+Ours 1 30 ±3 67 ±6 100 ±0 100 ±0 77 ±3 100 ±0 40 ±6 70 ±4 85 ±1
+
+Methods NFE Meta-World (Medium) Meta-World (Hard) 
+
+Coffee Push Hammer Peg Insert Side Push Wall Soccer Sweep Sweep Into Hand Insert Pick Out of Hole DP3 10 89 ±3 87 ±3 83 ±4 88 ±7 26 ±2 95 ±5 46 ±14 15 ±2 51 ±0
+
+Flow 10 89 ±2 88 ±4 87 ±7 90 ±2 31 ±5 96 ±1 48 ±18 17 ±2 46 ±6
+
+CP 1 86 ±14 71 ±25 72 ±0 47 ±0 20 ±8 58 ±39 23 ±8 17 ±4 30 ±0
+
+MP1 1 92 ±1 90 ±5 86 ±8 89 ±3 30 ±2 95 ±3 43 ±13 16 ±2 38 ±12 
+
+FlowPolicy 1 93 ±5 85 ±4 75 ±6 51 ±3 29 ±2 84 ±5 37 ±21 20 ±1 22 ±10 
+
+Naive Drifting 1 92 ±2 84 ±3 85 ±4 93 ±6 33 ±8 93 ±5 25 ±8 12 ±2 40 ±11 
+
+Ours 1 92 ±3 90 ±4 79 ±5 95 ±2 27 ±1 100 ±0 32 ±17 20 ±6 44 ±4
+
+Methods NFE Meta-World (Hard) Meta-World (Very Hard) Avg. 
+
+Assembly Pick Place Push Shelf Place Disassemble Stick Pull Stick Push Pick Place Wall DP3 10 94 ±1 54 ±3 57 ±3 41 ±15 78 ±3 68 ±1 100 ±0 72 ±4 79.4 ±2.4
+
+Flow 10 94 ±1 61 ±2 58 ±4 41 ±9 74 ±1 67 ±3 100 ±0 72 ±2 79.9 ±2.2
+
+CP 1 74 ±25 51 ±19 35 ±24 36 ±4 60 ±2 48 ±23 99 ±1 67 ±11 68.4 ±11 .9
+
+MP1 1 96 ±1 65 ±1 73 ±7 44 ±12 70 ±3 72 ±4 100 ±0 78 ±2 79.7 ±2.8
+
+FlowPolicy 1 96 ±3 60 ±4 58 ±6 39 ±6 63 ±4 64 ±1 100 ±0 69 ±4 76.9 ±2.5
+
+Naive Drifting 1 97 ±2 65 ±8 57 ±6 45 ±4 90 ±4 58 ±12 100 ±0 73 ±6 79.8 ±3.5
+
+Ours 1 96 ±3 57 ±4 65 ±4 43 ±2 91 ±1 69 ±2 100 ±0 68 ±2 81.3 ±2.0
+
+21 Table 10: Success rates of experts on 3D simulation tasks. We evaluate 200 episodes for each task. Results are averaged over 3 random seeds and reported as mean ± standard deviation.                                                                                    
+
+> Methods Adroit DexArt Meta-World (Easy)
+> Hammer Door Pen Laptop Faucet Bucket Toilet Coffee Button Dial Turn Door Close Door Lock Expert 100 ±097 ±196 ±191 ±154 ±467 ±276 ±1100 ±0100 ±0100 ±0100 ±0
+> Methods Meta-World (Easy)
+> Button Press ButtonPress Topdown ButtonPress Topdown Wall ButtonPress Wall Door Open Door Unlock Drawer Close Drawer Open Faucet Close Expert 100 ±0100 ±0100 ±097 ±297 ±2100 ±0100 ±0100 ±0100 ±0
+> Methods Meta-World (Easy)
+> Faucet Open Handle Press Handle Pull Handle Press Side Handle Pull Side Lever Pull Plate Slide Plate Slide Back Plate Slide Back Side Plate Slide Side Expert 100 ±0100 ±0100 ±0100 ±0100 ±098 ±0100 ±0100 ±0100 ±0100 ±0
+> Methods Meta-World (Easy) Meta-World (Medium)
+> Reach Reach Wall Window Close Window Open Peg Unplug Side Basketball Bin Picking Box Close Coffee Pull Expert 100 ±0100 ±0100 ±0100 ±099 ±1100 ±096 ±188 ±2100 ±0
+> Methods Meta-World (Medium) Meta-World (Hard) Avg.
+> Coffee Push Hammer Peg Insert Side Push Wall Soccer Sweep Sweep Into Hand Insert Pick Out of Hole Expert 100 ±0100 ±091 ±2100 ±091 ±2100 ±091 ±1100 ±0100 ±0
+> Methods Meta-World (Hard) Meta-World (Very Hard) Avg.
+> Assembly Pick Place Push Shelf Place Disassemble Stick Pull Stick Push Pick Place Wall Expert 100 ±0100 ±099 ±099 ±095 ±195 ±1100 ±0100 ±098.5 ±0.5
+
+to discriminate task contexts, the geometric correction signal cannot localize task constraints reliably; IDP therefore benefits most when the observation modality is visually grounded. 
+
+Per-batch reference geometry depends on batch composition. We estimate Σref from the current minibatch rather than maintaining a dataset-level running estimate, which keeps the implementation simple but introduces variance in the reference scale: small batches with non-representative action distributions can produce noisy vref  
+
+> d
+
+and consequently unstable excess values mi,d . EMA-based or dataset-precomputed reference geometries are alternatives that we have not extensively evaluated; we use the per-batch estimator as the simpler default. 
+
+Saturated tasks see minimal benefit. On tasks whose successful action regions are wide and isotropic, most prominently PushT-State, the conditional excess mi,d is small across coordinates (κ ≈ 1.2–1.7 in our covariance visualization), and the IDP objective approaches isotropic regression. The ablation in Sec. 5.3 of the main text confirms that IDP performs essentially identically to weaker variants on PushT, indicating that the benefit of geometry-induced correction is concentrated on tasks with narrow valid action regions (Tool-Hang). This is by design but limits the headline gain when the benchmark mix is dominated by saturated tasks. 
+
+Reference geometry’s task-marginal assumption. Estimating one global Σref implicitly treats action statistics as task-marginal. When demonstrations from substantially different tasks are mixed (e.g., dexterous manipulation pooled with parallel-gripper tasks during multi-task training), the global reference may flatten task-specific anisotropies, leading to suboptimal excess estimates for individual tasks. Task-conditioned reference geometries or hierarchical reference schemes are a natural extension that we leave for future work. 22
