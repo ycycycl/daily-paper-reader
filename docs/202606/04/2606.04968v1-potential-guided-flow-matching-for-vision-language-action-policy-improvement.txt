@@ -1,0 +1,1237 @@
+Title: Potential-Guided Flow Matching for Vision-Language-Action Policy Improvement
+
+URL Source: https://arxiv.org/pdf/2606.04968v1
+
+Published Time: Thu, 04 Jun 2026 01:29:56 GMT
+
+Number of Pages: 37
+
+Markdown Content:
+# Potential-Guided Flow Matching for Vision-Language-Action Policy Improvement 
+
+Yunpeng Mei 1,∗ Jiakai He 1,∗ Hongjie Cao 1,∗ Chenyu Wang 1,∗
+
+Xiaowen Zhu 1 Yihan Zhou 2 Jiamin Wang 1 Chenbo Xin 1 Peng Cheng 1
+
+Yuxuan Yang 1 Yijie Wang 1 Xinhu Zheng 3 Gao Huang 2 Jie Chen 1 Gang Wang 1,†
+
+## Abstract 
+
+Large vision-language-action (VLA) policies are increasingly trained as conditional generative models over action chunks. Yet deployment produces mixed-quality experience-successful demonstrations, partial completions, recoverable mistakes, and failures-that is difficult to use with standard imitation. Full behavior cloning (BC) imitates failures, filtered BC discards useful sub-trajectories, and offline reinforcement learning adds a large critic. We introduce ForesightFlow , a self-guided flow-matching policy that augments each generated action chunk with a learned success-potential trajectory. The same flow proposes and scores candidate actions, enabling best-of-K inference without an external critic. The key issue is that policy improvement and value calibration require different supervision: advantage weighting should emphasize high-quality actions, but applying the same weights to potential coordinates suppresses failure gradients and creates overconfident scores. We address this with decoupled advantage-weighted flow matching, applying exponentiated advantage weights only to action velocities while training potential velocities uniformly. We further derive a one-step boundary estimator for conditional flow matching, allowing advantage computation with a single stop-gradient forward pass. Across five BEHAVIOR-1K simulation tasks and five real-world bimanual tasks, ForesightFlow improves over imitation baselines, matches the strongest separate-critic baseline in simulation success, improves real-world success, and reduces training compute by 38% . Ablations show that decoupling prevents value hallucination, the one-step estimator preserves candidate-ranking fidelity, and self-guided sampling improves long-horizon execution. 
+
+## 1 Introduction 
+
+Large vision-language-action (VLA) models can parse language, fuse high-dimensional observations, and generate temporally extended action chunks for manipulation. Flow-matching policies are especially attractive because they combine supervised-training stability with expressive continuous action distributions and flexible sampling [ 1– 4]. Yet deployed robots collect mixed-quality experience: demonstrations, partial completions, recoverable mistakes, and failures. Full behavior cloning imitates failures, filtered behavior cloning discards useful sub-trajectories, and offline reinforcement learning (RL) usually requires a large separate critic. This paper asks a simple question: can the generative policy itself provide the foresight normally supplied by a critic? 
+
+We answer yes with ForesightFlow , a self-guided flow policy that augments each generated action chunk a with a temporally aligned success-potential vector s. The same flow therefore proposes candidate actions and scores them, enabling best-of-K inference without a standalone critic. The central challenge is that action learning and potential learning require different supervision. Action updates should emphasize high-advantage behavior, while potential updates must keep failure     
+
+> 1Beijing Institute of Technology 2Tsinghua University 3The Hong Kong University of Science and Technology (Guangzhou)
+> ∗Equal contribution †Corresponding author: gangwang@bit.edu.cn .
+> arXiv:2606.04968v1 [cs.RO] 3 Jun 2026
+
+Data collection & Reward labeling  
+
+> Expert demonstrations Policy rollouts
+
+Policy learning        
+
+> Mixed-quality dataset
+> Optimal flow path
+> Target distribution
+> Gaussian noise
+> s = 0.7
+> Self-guided flow matching
+> Image Prompt Proprioception
+> Context c s = 0.1
+> s = 0.3
+> s = 0.2
+> s = 0.5
+
+Inference 
+
+> Reinforce good trajectories
+> Suppress bad trajectories
+> Failure
+> trajectory
+> Success
+> trajectory
+> Action
+> Success potential
+> Calibrate success potential
+> Decoupled
+> AWR
+
+Figure 1: ForesightFlow as a self-guided flow policy. ForesightFlow augments each flow endpoint with action and success-potential coordinates. Decoupled training applies advantage weights only to action velocities while uniformly supervising potential velocities for calibration. At inference, generated potentials rank candidate action chunks without a separate critic. samples visible for calibration. Applying the same advantage weights to both parts masks corrective gradients on overconfident failures. ForesightFlow avoids this with a decoupled objective: action velocities receive clipped exponentiated advantage weights, while potential velocities are trained uniformly on the full mixed-quality dataset. Figure 1 summarizes the training and inference pipeline. A second challenge is efficiency. Instead of integrating the flow ODE for every training example, ForesightFlow uses a one-step baseline from a conditional-flow boundary identity under independent endpoint sampling. This justifies an action-independent context baseline for advantage-weighted regression (AWR); candidate ranking uses generated endpoint potentials, and we empirically validate the model’s one-step ranking fidelity against high-NFE (number of function evaluations) references. We evaluate ForesightFlow on five BEHAVIOR-1K simulation tasks and five real-world bimanual manipulation tasks. ForesightFlow achieves the best average simulation score, matches the strongest separate-critic baseline in average simulation success, improves real-world success, and reduces training compute by 38% . Ablations show that decoupling mitigates value hallucination, the single-step estimator preserves candidate rankings in our validation protocol, and self-guided sampling improves long-horizon performance. 
+
+Contributions. This paper makes three contributions. 1. A self-guided flow policy for VLA improvement. We introduce ForesightFlow, a condi-tional flow policy that augments action chunks with learned success potentials, enabling the same generative backbone to propose and score candidate actions. 2. Decoupled advantage-weighted flow matching. We identify value hallucination as a failure mode of naively weighting all coordinates in a unified action-potential flow. We propose a decoupled objective that applies advantage weights only to action velocities while training potential velocities uniformly for calibration. 3. Efficient one-step foresight and best-of-K inference. We derive a boundary estimator for conditional flow matching, compute AWR baselines with one stop-gradient forward pass, and use generated potentials for best-of-K inference. 
+
+## 2 Preliminaries 
+
+2.1 Sparse-Outcome Episodic Control 
+
+We consider long-horizon manipulation as a finite-horizon partially observed Markov decision process 
+
+M = ( S, O, A, P, R, ρ 0, T ), (1) where zt ∈ S is the latent environment state, ot ∈ O is the robot observation, at ∈ A ⊂ Rda is the primitive action, P is the transition kernel, R is a sparse outcome signal, ρ0 is the initial-state 2distribution, and T is the horizon. The policy conditions on a multimodal context ct = ( o≤t, ℓ )
+
+consisting of observation history and a language instruction ℓ.Following recent generative robot policies, we use action chunking [ 5, 6 ]. At decision time t, the policy predicts a flattened chunk 
+
+a ≡ at:t+H−1 ∈ RHd a , (2) where H is the chunk horizon. We use t for environment time and σ ∈ [0 , 1] for flow interpolation time. This distinction is important because ForesightFlow learns a continuous flow over action-potential endpoints, not over physical time. 
+
+2.2 Conditional Flow Matching 
+
+Conditional flow matching (CFM) learns a vector field that transports a simple prior p0 = N (0 , I )
+
+to a context-conditioned data distribution p1(· | c) [ 7]. Let x0 ∼ p0 and x1 ∼ p1(· | c) denote independently sampled noise and data endpoints. The linear interpolation path is 
+
+xσ = (1 − σ)x0 + σx 1, uσ = x1 − x0. (3) The learned velocity field vθ is trained by squared regression to the conditional velocity as follows 
+
+LCFM (θ) = Ec,x 0,x 1,σ 
+
+h
+
+∥vθ (xσ , σ, c ) − uσ ∥22
+
+i
+
+. (4) The population minimizer satisfies 
+
+v∗(xσ , σ, c ) = E[uσ | xσ , σ, c ]. (5) This conditional-mean property is the basis of our one-step baseline estimator in Section 3; it also makes clear why the estimator should be interpreted as a population identity and empirically validated for finite networks. 
+
+2.3 KL-Regularized Policy Improvement 
+
+Offline policy improvement must be conservative because the dataset only covers a limited set of actions. A standard formulation maximizes value while penalizing deviation from the behavior distribution πβ :
+
+max  
+
+> π
+
+Ec∼D 
+
+Ea∼π(·| c)Q(c, a ) − τ D KL (π(·| c) ∥ πβ (·| c))  , (6) where Q(c, a ) is an action-quality function and τ > 0 controls the strength of behavior regularization. The closed-form optimizer is the Boltzmann-reweighted behavior distribution 
+
+π∗(a|c) = 1
+
+Z(c) πβ (a|c) exp 
+
+ Q(c, a )
+
+τ
+
+
+
+, (7) with normalization Z(c). Advantage-weighted regression approximates this projection by upweight-ing high-advantage actions while retaining support near the data. ForesightFlow adapts this principle to flow matching, but applies it only to the action coordinates and not to the success-potential ones. 
+
+## 3 Method: ForesightFlow 
+
+ForesightFlow fine-tunes a VLA flow policy from mixed-quality data by combining four ingredients: i) an augmented action-potential endpoint, ii) stage-level success-potential targets, iii) decoupled advantage-weighted flow matching, and, iv) self-guided best-of-K inference. 
+
+3.1 Action-Potential Flow State 
+
+A standard flow VLA policy models a conditional distribution over action chunks a. Foresight-Flow extends the endpoint with a success-potential vector s ∈ [0 , 1] H aligned with the same horizon 
+
+x =
+
+as
+
+
+
+∈ RH(da+1) . (8) 3The potential coordinate is not a separate critic network. It is an additional generated coordinate of the same flow endpoint. Intuitively, each sk estimates the conditional likelihood that the corresponding local segment lies on a successful task trajectory under the dataset distribution. This gives every generated action chunk an intrinsic score. Unless otherwise stated, we aggregate the potential into a chunk-level score by temporal averaging [8] 
+
+ˆQθ (c, a ) = 1
+
+H
+
+> H
+
+X
+
+> k=1
+
+sk, (9) which is used as the endpoint candidate score during inference. During training, the boundary estimator below provides an action-independent context baseline ˆVi,t for AWR; this baseline is distinct from the generated endpoint score used for best-of-K selection. 
+
+3.2 Stage-Level Potential Targets 
+
+Sparse binary episode outcomes are too coarse for long-horizon manipulation: a failed episode may still contain a good grasp, a correct approach, or a useful recovery. We therefore assign stage-level targets to each training chunk. For trajectory i and time t, let 
+
+yi,t =
+
+1, if the semantic stage assigned to chunk (i, t ) is completed, 
+
+0, otherwise. (10) The endpoint target for the potential dimension is the broadcast vector s1,i,t = yi,t 1H ∈ { 0, 1}H
+
+obtained by repeating this chunk-level stage label across the action horizon. This target construction keeps positive supervision for functional sub-trajectories even when the full rollout fails, while retaining negative supervision for calibration. Given a current baseline estimate ˆVi,t , we define the advantage 
+
+Ai,t = yi,t − ˆVi,t . (11) Successful chunks that the current model underestimates receive positive advantage and are empha-sized in the action update. Failed chunks that the model overestimates receive negative advantage and are suppressed in the action update, but they remain essential for training the potential coordinate. 
+
+3.3 One-Step Foresight for Advantage Estimation 
+
+A naive baseline would require integrating the learned flow for every training context, which Policy Loss ℒ 𝜃𝜃  = 𝑣𝑣 𝜃𝜃 𝑎𝑎 − 𝑢𝑢 𝑎𝑎 2           
+
+> +𝑣𝑣 𝜃𝜃 𝑠𝑠 − 𝑢𝑢 𝑠𝑠 2
+> Weight ：（𝑦𝑦−� 𝑉𝑉
+> 𝜏𝜏 ）
+> 2nd forward ：With gradient 1st forward ：No gradient
+
+# ... ... Action  Potential              
+
+> Decoupled Weighting
+> 𝑥𝑥 𝜎𝜎 𝜎𝜎 = 0 , 𝑐𝑐 𝑥𝑥 𝜎𝜎 𝜎𝜎 ∼ 𝒰𝒰 0,1 ,𝑐𝑐
+> Action :𝑣𝑣 𝜃𝜃 𝑎𝑎 &potential :𝑣𝑣 𝜃𝜃 𝑠𝑠
+> =𝑒𝑒 𝑥𝑥 𝑒𝑒
+
+w
+
+w
+
+Figure 2: Decoupled AWR in ForesightFlow. A stop-gradient boundary pass at σ = 0 produces a one-step potential baseline and an advantage weight. A random-time CFM update then applies this weight only to the action velocity, while the potential velocity remains uniformly supervised on both successes and failures. would add many NFEs per gradient step. ForesightFlow instead uses a boundary es-timator derived from the CFM conditional-mean identity. For the linear path xσ =(1 − σ)x0 + σx 1 with independent end-points, the population-optimal velocity at 
+
+σ = 0 satisfies 
+
+v∗(x0, 0, c ) = E[x1 | c] − x0. (12) Thus a single Euler prediction from the noise endpoint estimates the conditional data mean 
+
+ˆx1 = x0 + sg ( vθ (x0, 0, c )) , (13) where sg( ·) stops gradients through the baseline. We extract the success-potential component ˆsi,t from ˆx1 and compute 
+
+ˆVi,t = 1
+
+H
+
+> H
+
+X
+
+> k=1
+
+ˆsi,t,k . (14) The estimator is exact at the population optimum under independent endpoint sampling. At that optimum, however, this boundary estimate is an action-independent context baseline rather than an 4action-conditioned candidate scorer. Candidate ranking at test time uses generated endpoint potentials after flow integration; when we use the one-step boundary proxy for ranking analysis, we treat it as an empirical property of the trained finite model rather than a consequence of the boundary identity. Figure 2 illustrates how the stop-gradient baseline and decoupled action-potential losses are combined in each update. 
+
+3.4 Decoupled Advantage-Weighted Flow Matching 
+
+The exponentiated advantage-weighted regression (AWR) weight is 
+
+wi,t = min 
+
+
+
+M, exp 
+
+ Ai,t 
+
+τ
+
+ 
+
+, (15) where τ is the temperature and M clips extreme weights. The scalar weight wi,t is broadcast across the action coordinates of the chunk; the potential velocity loss remains uniformly weighted over its full horizon vector. Let vθ = ( v(a) 
+
+> θ
+
+, v (s) 
+
+> θ
+
+) and u = ( u(a), u (s)) denote the action and potential components of the predicted and target velocities. ForesightFlow optimizes 
+
+L(θ) = E
+
+wi,t v(a) 
+
+> θ
+
+(xσ , σ, c ) − u(a)
+
+> i,t
+> 22
+
+| {z }
+
+> advantage-weighted policy improvement
+
++ v(s) 
+
+> θ
+
+(xσ , σ, c ) − u(s)
+
+> i,t
+> 22
+
+| {z }
+
+> uniform potential calibration
+
+ . (16) The expectation is over (i, t ) ∼ D , x0 ∼ p0, and σ ∼ U [0 , 1] .This decoupling is the main difference between a unified action-potential flow and a naive joint actor-critic flow. The action coordinates should be selective: low-advantage actions should have little influence on the policy. The potential coordinates should be corrective: low-quality and failed samples must remain visible so that the model learns not to overestimate them. Applying wi,t to both parts removes corrective gradients on exactly the overconfident failures that matter most, leading to value hallucination. The decoupled objective retains the conservative AWR reweighting bias for actions while keeping the potential coordinate calibrated. 
+
+3.5 Self-Guided Inference 
+
+At test time, ForesightFlow uses the generated potential to guide its own samples. Given context ct,we draw K independent noise samples, integrate the learned flow, and obtain candidate endpoints 
+
+x(k) = [ a(k); s(k)]. We then execute the candidate with the largest potential score 
+
+k∗ = arg max 
+
+> k∈{ 1,...,K }
+
+1
+
+H
+
+> H
+
+X
+
+> j=1
+
+s(k) 
+
+> j
+
+, a∗ 
+
+> t
+
+= a(k∗) 
+
+> t
+
+. (17) This best-of-K rule is intentionally simple. It does not change the training distribution, does not require a separate critic forward pass, and uses the same action-potential coupling learned by the flow. 
+
+## 4 Experiments 
+
+We evaluate whether ForesightFlow can turn mixed-quality experience into better VLA policies without the cost of a separate critic. The experiments are organized around four questions. Q1: Does ForesightFlow outperform full BC, filtered BC, and flow/offline-RL baselines on mixed-quality data? 
+
+Q2: Does decoupled weighting prevent value hallucination? Q3: Does one-step foresight preserve the useful ranking information of higher-NFE integration? Q4: Does self-guided best-of-K inference improve long-horizon execution? 
+
+Simulation tasks. We evaluate on five BEHAVIOR-1K tasks [ 9] in OmniGibson using the Galaxea R1 Pro humanoid embodiment, following VLA evaluation protocols [ 9, 10 ]. The tasks–Turning on radio, Picking up trash, Spraying fruit trees, Cook hot dogs, and Wash a baseball cap–span bimanual coordination, articulated-object interaction, mobile manipulation, and long-horizon sequencing. Episodes last 200 -500 seconds and terminate when the goal is satisfied or the horizon is exceeded. We report success rate over 100 trials per task and a normalized Q-Score capturing stage-wise progress. 5Figure 3: Evaluation suite. ForesightFlow is evaluated in both simulation and the real world: (a) Turning on radio, (b) Picking up trash, (c) Spraying fruit trees, (d) Cook hot dogs, (e) Wash a baseball cap, (f) Set-Paper-Roll, (g) Pick-Trash, (h) Cube-Stack, (i) Transfer-Food, and (j) Wipe-Whiteboard. The tasks require long-horizon sequencing, bimanual coordination, contact-rich manipulation, and precision placement. 
+
+Real-world robot tasks. We further evaluate on the DexTeleop TeleAvatar Lite, a bimanual platform with dual 7-DoF arms, custom parallel grippers, a head-mounted binocular perception module, and wrist RGB-D cameras. The controller runs at 20 Hz. The five real-world tabletop tasks–Set-Paper-Roll, Pick-Trash, Cube-Stack, Transfer-Food, and Wipe-Whiteboard, cover precision placement, contact-rich manipulation, and multi-stage bimanual coordination with durations from 19 
+
+to 138 seconds. Figure 3 summarizes the task suite; full scoring rules are in Appendix D. 
+
+Datasets. For each task, we construct a mixed-quality dataset with 200 expert demonstrations and 100 autonomous rollouts. Simulation expert data come from BEHAVIOR-1K demonstrations, while real-world expert trajectories are collected through VR teleoperation. Autonomous rollouts are generated by a pretrained π0.5 checkpoint [ 3]. All trajectories are annotated with sparse stage-wise labels used to construct the binary targets in (10) . Details on dataset composition and frame-level success and failure statistics are provided in Appendix D.3. 
+
+4.1 Baselines 
+
+We use matched backbones within each domain. In simulation, all methods fine-tune the π0.5
+
+architecture from a checkpoint pretrained on 50 BEHAVIOR-1K tasks [ 11 ]. In the real-world experiments, all methods use the π0 architecture [ 1]. We compare against four baselines. BC 
+
+trains the flow policy on the full mixed-quality dataset, measuring the cost of imitating failures. 
+
+Filtered BC trains only on successful trajectories, measuring the cost of discarding partial but useful behavior. IDQL is a representative separate-critic offline RL baseline adapted to flow policies [ 12 ]. 
+
+FQL is a recent flow-aware offline RL method that distills a multi-step flow policy into a one-step student [ 13 ]. These baselines isolate whether ForesightFlow’s benefit comes from using mixed data, from value-guided improvement, or from embedding the value signal directly in the flow. 
+
+4.2 Main Results Simulation. Table 1 shows that the mixed-quality setting exposes the weaknesses of standard imitation. Full BC preserves data coverage but can imitate failures, collapsing on Spray ( 0% 
+
+SR). Filtered BC improves some precision behaviors but loses useful sub-trajectories, for example underperforming full BC on Cook Hot Dogs. ForesightFlow achieves the best average score ( 0.46 )and matches the separate-critic IDQL baseline in average success rate ( 39 .6% vs 39 .0% ), while outperforming the baselines on Radio, Trash, and Wash. To isolate candidate budget, Table 6 compares IDQL and ForesightFlow at both K=1 and K=5 : ForesightFlow is weaker than IDQL in average SR at K=1 (34 .6% vs 39 .0% ), but remains ahead at K=5 (39 .6% vs 38 .4% ). Relative to IDQL, the main advantage is not only performance but simplicity: the same flow that samples actions also supplies the score used for candidate selection. FQL is a strong flow-RL reference, but in high-dimensional π0.5 action-chunk setting ( 23 DoF and H=30 ), one-step distillation does not surpass IDQL or ForesightFlow. 6Table 1: Simulation results on BEHAVIOR-1K. We report normalized task score and success rate (SR, %) on five long-horizon manipulation tasks. This table reports each method under its default deployment protocol: ForesightFlow uses its self-guided inference protocol with K=5 candidates; BC, Filtered BC, FQL, and IDQL use single-sample inference. Best entries are bolded.                                                                              
+
+> Method Radio Trash Spray Hotdog Wash Average Score SR Score SR Score SR Score SR Score SR Score SR BC 0.42 42 .00.46 35 .00.02 0.00.68 65 .00.19 13 .00.35 31 .0
+> Filtered BC 0.44 44 .00.43 30 .00.18 14 .00.51 46 .00.33 24 .00.38 31 .6
+> FQL 0.42 42 .00.47 32 .00.19 18 .00.62 59 .00.24 21 .00.39 34 .4
+> IDQL 0.47 47 .00.48 36 .00.23 21.0 0.68 66 .00.34 25 .00.44 39 .0
+> ForesightFlow (ours) 0.51 51.0 0.57 38.0 0.28 20 .00.62 59 .00.34 30.0 0.46 39.6
+
+Table 2: Real-world results. We report normalized task score and full-horizon success rate (SR, %) across five bimanual manipulation tasks. ForesightFlow achieves the best average score and success rate while avoiding a separate critic network.                                                      
+
+> Model Set-Paper-Roll Pick-Trash Cube-Stack Transfer-Food Whiteboard Average Score SR Score SR Score SR Score SR Score SR Score SR Filtered BC 0.52 23 .00.36 38 .00.62 19 .00.57 29 .00.47 14 .00.51 24 .6
+> IDQL 0.59 33 .00.48 46 .00.64 23 .00.66 41.0 0.57 20.0 0.59 32.6 ForesightFlow (ours) 0.62 36.0 0.48 51.0 0.72 26.0 0.69 45.0 0.59 19 .00.62 35.4
+
+Real-world deployment. Table 2 shows that ForesightFlow also improves real-world manipulation. It reaches the best average score ( 0.62 ) and success rate ( 35 .4% ), outperforming Filtered BC by 10 .8
+
+percentage points and IDQL by 2.8 percentage points in average SR. The gains are largest on tasks where partial progress matters: Cube-Stack benefits from calibrated ranking of precise placements, and Transfer-Food benefits from selecting action chunks that preserve multi-stage progress. Figure 4 provides the stage-wise breakdown. Table 3: Computational efficiency. Foresight-Flow matches IDQL-level performance while reduc-ing training compute and removing the separate critic network. “Critic params” counts only additional value-related parameters.                  
+
+> Training Critic Latency Method GPU hrs Params Total K=1 K=5
+> IDQL 287 ∼500 M ∼2.84 B 119 ms 183 ms ForesightFlow (ours) 178 ∼1 K 2.35 B 127 ms 155 ms
+
+Compute and parameter efficiency. Ta-ble 3 compares ForesightFlow with IDQL on the simulation backbone. IDQL re-quires a sequential critic-pretraining stage followed by actor fine-tuning, totaling 287 
+
+GPU hours. ForesightFlow uses a single joint fine-tuning stage and 178 GPU hours, yielding a 38% reduction. The parameter count differs sharply: ForesightFlow adds only a ∼1K-parameter progress projec-tion head, while IDQL uses a ∼500M-parameter separate critic. At K=5 , ForesightFlow is faster at inference because candidate scoring is produced jointly with action generation. 
+
+4.3 Ablation Studies 
+
+Table 4: Stage-wise task completion rates (%) on Turn-ing on Radio.                
+
+> Model Stage 1Stage 2Stage 3
+> BC baseline 88 .059 .044 .0
+> ForesightFlow-coupled 92 .062 .042 .0
+> ForesightFlow-decoupled (ours) 97 .060 .051 .0
+
+Decoupled weighting prevents value hal-lucination. We analyze per-step poten-tial predictions across 19 ,905 frames from five mixed-quality Radio rollouts. Figure 5 shows that the coupled baseline assigns high potentials to explicit failures such as knocking the radio over or slipping. In contrast, decoupled training lowers these predictions while preserving high scores for successful segments. The stage-wise evaluation in 7st1 st2 st3 st1 st2 st3 st1 st2 st3 st1 st2 st3 st1 st2 st3 st4     
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Scores
+> Set-Paper-Roll Pick-Trash Cube-Stack Transfer-Food Wipe-Whiteboard
+> ForesightFlow
+> IDQL
+> Filtered BC
+
+Figure 4: Stage-wise real-world progress. Normalized completion score for each stage across five bimanual tasks. ForesightFlow improves most on stages where failures are recoverable and partial trajectories provide useful supervision. Table 4 shows the downstream effect: the coupled model improves early approach/grasp behavior but degrades at final actuation, whereas ForesightFlow maintains improvement through the final stage. S1   
+
+> S2
+> S1
+> 0.172 S2
+> 0.396
+> S1
+> 0.837 S2
+> 0.937
+
+Figure 5: Value calibration on mixed-quality roll-outs. Coupled AWR overestimates failures because the potential loss is down-weighted on negative samples. Decoupled AWR keeps failure supervision active and produces calibrated potentials. 
+
+One-step foresight preserves useful rank-ings. For training efficiency, we com-pare the one-step estimator (NFE = 1 ) with multi-step ODE integration (NFE = 20 ). NFE = 1 requires 8.4 hours per 5,000 steps versus 11 hours for NFE = 20 , and both reach comparable success by 15 k steps. For ranking fidelity, we use NFE = 100 as a high-NFE reference. Under a held-out within-observation protocol with K = 8 
+
+candidates, Kendall τ between NFE = 1 
+
+and NFE = 100 rankings ranges from 0.801 
+
+to 0.863 across tasks, with mean top-1
+
+agreement of 87 .2% and mean MC gain ratio of 96 .8% (Table 5). MC gain denotes the fraction of the NFE = 100 best-of-K
+
+improvement retained when candidates are ranked by the NFE = 1 estimator. 
+
+Self-guided sampling improves long-horizon performance. Table 6 compares K=1 and K=5 
+
+candidate ranking. ForesightFlow’s average SR improves from 34 .6% to 39 .6% , with the largest gains on multi-stage tasks such as Radio, Trash, and Hotdog. IDQL is comparatively flat under the same protocol. We do not claim this is a universal property of separate critics; rather, it suggests that in this setting, coupling candidate generation and potential prediction inside the same flow produces a useful ranking signal for best-of-K inference. Table 5: Cross-task NFE = 1 vs NFE = 100 ranking fidelity. For each held-out observation, K = 8 
+
+candidates are scored with both estimators. The one-step estimator largely preserves the candidate ranking used by self-guided inference. The MC gain measures the fraction of the NFE = 100 
+
+best-of-K improvement retained by NFE = 1 ranking, and κ reports trajectory curvature in the success-potential subspace. 
+
+Task Kendall τ Top-1 agree Pairwise acc MC gain κ med, frac( < 0.1)Radio 0.863 93.8% 93.1% 98.5% 0.026, 99.6% Hot Dogs 0.801 84.4% 90.1% 96.7% 0.028, 98.0% Trash 0.835 82.8% 91.7% 95.3% 0.039, 90.2% Baseball Cap 0.818 84.4% 90.9% 95.5% 0.030, 96.9% Fruit Trees 0.853 90.6% 92.6% 97.9% 0.027, 96.5% Mean 0.834 87.2% 91.7% 96.8% 0.030, 96.2% 
+
+8Table 6: MC ranking ablation across five simulation tasks ( K=1 vs K=5 ). ForesightFlow’s success rate improves with MC ranking by +5 .0 pp on average, while IDQL’s is essentially flat. Score/SR (%) reported per task. Boldface marks the best within each method group (IDQL K=1 vs 
+
+K=5 ; ForesightFlow K=1 vs K=5 ).                                                                  
+
+> Method Radio Trash Spray Hotdog Wash Average Score SR Score SR Score SR Score SR Score SR Score SR IDQL ( K=1 )0.47 47.0 0.48 36.0 0.23 21.0 0.68 66.0 0.34 25.0 0.44 39.0
+> IDQL ( K=5 )0.49 49.0 0.47 35.0 0.21 18.0 0.65 64.0 0.35 26.0 0.43 38.4 ForesightFlow ( K=1 )0.45 45.0 0.55 28.0 0.28 21.0 0.54 53.0 0.31 26.0 0.43 34.6 ForesightFlow ( K=5 )0.51 51.0 0.57 38.0 0.28 20.0 0.62 59.0 0.34 30.0 0.46 39.6
+
+## 5 Related Work 
+
+VLA models and generative robot policies. Large VLA models [ 1, 14 – 18 ] combine broad visual-language pretraining with robot action prediction, enabling general-purpose manipulation across tasks and embodiments. Early systems often discretized actions [ 14 , 19 ]; more recent policies use continuous generative models, including diffusion policies [ 6] and flow-matching policies [ 1 , 7, 20 ]. These models provide expressive multimodal action distributions, but are still commonly improved through supervised imitation on curated demonstrations. ForesightFlow targets the next stage: improving such generative policies from the mixed-quality data produced during deployment. 
+
+Offline RL and advantage-weighted policy improvement. Offline RL methods regularize policy improvement to avoid extrapolating beyond the dataset, using behavior constraints, conservative value estimation, or advantage-weighted updates [ 21 –25 ]. Recent VLA-oriented RL systems often attach explicit value networks or critics to large generative policies [ 2, 26 – 31 ]. These critics can be effective but introduce additional optimization and inference cost. Flow-aware methods such as FQL [ 13 ]adapt RL to flow policies through distillation. In contrast, ForesightFlow keeps the multi-step flow generator and embeds the quality signal as a generated coordinate, making the policy self-guided without a separate critic. 
+
+Self-guided generation. Best-of-K sampling and guidance are widely used to improve generative-model outputs when a score is available. In robotics, such guidance is usually supplied by an external value function, reward model, or hand-designed cost. ForesightFlow learns the score jointly with the action endpoint, which is especially natural for flow policies: each sample carries both a candidate action and a potential forecast. The resulting inference rule is simple but effective, and the ablations show that its usefulness depends on calibrated potential learning. 
+
+## 6 Conclusion 
+
+We introduced ForesightFlow, a self-guided flow-matching framework that improves VLA policies from mixed-quality robot experience by jointly generating action chunks and success potentials. Decoupled advantage-weighted flow matching preserves corrective supervision for failures while selectively improving actions, and a one-step CFM boundary estimator keeps advantage computation comparable in cost to supervised flow matching. Across BEHAVIOR-1K and real-world bimanual tasks, ForesightFlow improves over imitation baselines, matches a separate-critic baseline, and reduces training compute. Limitations remain: the method requires stage labels, sparse outcomes can still make very long-horizon credit assignment difficult, and the one-step estimator is approximate in finite networks. More capable robot policies may also introduce safety risks if deployed without validation, failure detection, and human oversight. Future work will investigate scaling self-guided flows to larger multi-task datasets, automatically inferred progress signals, and online settings where robots can reuse their own mixed-quality experience. 9References 
+
+[1] Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom, Karol Hausman, Brian Ichter, Szymon Jakubczak, Tim Jones, Liyiming Ke, Sergey Levine, Adrian Li-Bell, Mohith Mothukuri, Suraj Nair, Karl Pertsch, Lucy Xiaoyang Shi, James Tanner, Quan Vuong, Anna Walling, Haohuan Wang, and Ury Zhilinsky. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 , 2024. URL https://arxiv.org/abs/2410.24164 .[2] Physical Intelligence, Ali Amin, Raichelle Aniceto, Ashwin Balakrishna, Kevin Black, Ken Conley, Grace Connors, James Darpinian, Karan Dhabalia, Jared DiCarlo, Danny Driess, Michael Equi, Adnan Esmail, Yunhao Fang, Chelsea Finn, Catherine Glossop, Thomas Godden, Ivan Goryachev, Lachy Groom, Hunter Hancock, Karol Hausman, Gashon Hussein, Brian Ichter, Szymon Jakubczak, Rowan Jen, Tim Jones, Ben Katz, Liyiming Ke, Chandra Kuchi, Marinda Lamb, Devin LeBlanc, Sergey Levine, Adrian Li-Bell, Yao Lu, Vishnu Mano, Mohith Mothukuri, Suraj Nair, Karl Pertsch, Allen Z. Ren, Charvi Sharma, Lucy Xiaoyang Shi, Laura Smith, Jost Tobias Springenberg, Kyle Stachowicz, Will Stoeckle, Alex Swerdlow, James Tanner, Marcel Torne, Quan Vuong, Anna Walling, Haohuan Wang, Blake Williams, Sukwon Yoo, Lili Yu, Ury Zhilinsky, and Zhiyuan Zhou. π∗
+
+> 0.6
+
+: a vla that learns from experience, 2025. URL https://arxiv.org/abs/2511.14759 .[3] Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Manuel Y. Galliker, Dibya Ghosh, Lachy Groom, Karol Hausman, Brian Ichter, Szymon Jakubczak, Tim Jones, Liyiming Ke, Devin LeBlanc, Sergey Levine, Adrian Li-Bell, Mohith Mothukuri, Suraj Nair, Karl Pertsch, Allen Z. Ren, Lucy Xiaoyang Shi, Laura Smith, Jost Tobias Springenberg, Kyle Stachowicz, James Tanner, Quan Vuong, Homer Walke, Anna Walling, Haohuan Wang, Lili Yu, and Ury Zhilinsky. π0.5: A vision-language-action model with open-world generalization, 2025. URL https://arxiv.org/abs/2504.16054 .[4] Zhaohan Feng, Ruiqi Xue, Lei Yuan, Yang Yu, Ning Ding, Meiqin Liu, Bingzhao Gao, Jian Sun, Xinhu Zheng, and Gang Wang. Multi-agent embodied AI: Advances and future directions. Science China Information Sciences , 69(5):151202, 2026. [5] Tony Z. Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained biman-ual manipulation with low-cost hardware. In Robotics: Science and Systems , 2023. URL https: //arxiv.org/abs/2304.13705 .[6] Cheng Chi, Siyuan Feng, Yilun Du, Zhenjia Xu, Eric Cousineau, Benjamin Burchfiel, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. In Robotics: Science and Systems , 2023. URL https://arxiv.org/abs/2303.04137 .[7] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative modeling. In International Conference on Learning Representations , 2023. URL https: //arxiv.org/abs/2210.02747 .[8] Qiyang Li, Zhiyuan Zhou, and Sergey Levine. Reinforcement learning with action chunking. arXiv preprint arXiv:2507.07969 , 2025. [9] Chengshu Li, Ruohan Zhang, Josiah Wong, Cem Gokmen, Sanjana Srivastava, Roberto Martín-Martín, Chen Wang, Gabrael Levine, Michael Lingelbach, Jiankai Sun, et al. BEHAVIOR-1K: A benchmark for embodied AI with 1,000 everyday activities and realistic simulation. In Conference on Robot Learning ,pages 80–93, 2023. [10] Yunfan Jiang, Ruohan Zhang, Josiah Wong, Chen Wang, Yanjie Ze, Hang Yin, Cem Gokmen, Shuran Song, Jiajun Wu, and Li Fei-Fei. BEHAVIOR robot suite: Streamlining real-world whole-body manipulation for everyday household activities, 2025. URL https://arxiv.org/abs/2503.05652 .[11] Ilia Larchenko, Gleb Zarin, and Akash Karnatak. Task adaptation of vision-language-action model: 1st place solution for the 2025 BEHAVIOR challenge, 2025. URL https://arxiv.org/abs/2512.06951 .[12] Philippe Hansen-Estruch, Ilya Kostrikov, Michael Janner, Jakub Grudzien Kuba, and Sergey Levine. IDQL: Implicit Q-learning as an actor-critic method with diffusion policies. In arXiv preprint arXiv:2304.10573 ,2023. URL https://arxiv.org/abs/2304.10573 .[13] Seohong Park, Qiyang Li, and Sergey Levine. Flow Q-learning, 2025. URL https://arxiv.org/abs/ 2502.02538 .[14] Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Joseph Dabis, Chelsea Finn, Keerthana Gopalakrishnan, Karol Hausman, Alex Herzog, Jasmine Hsu, et al. RT-2: Vision-language-action models transfer web knowledge to robotic control. In Annual Conference on Robot Learning , 2023. URL 
+
+https://arxiv.org/abs/2307.15818 .
+
+10 [15] Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan Foster, Grace Lam, Pannag Sanketi, et al. OpenVLA: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 , 2024. URL https://arxiv.org/abs/2406.09246 .[16] Johan Bjorck, Fernando Castañeda, Nikita Cherniadev, Xingye Da, Runyu Ding, Linxi Fan, Yu Fang, Dieter Fox, Fengyuan Hu, Spencer Huang, et al. Gr00t n1: An open foundation model for generalist humanoid robots. arXiv preprint arXiv:2503.14734 , 2025. [17] Songming Liu, Lingxuan Wu, Bangguo Li, Hengkai Tan, Huayu Chen, Zhengyi Wang, Ke Xu, Hang Su, and Jun Zhu. RDT-1B: A diffusion foundation model for bimanual manipulation. arXiv preprint arXiv:2410.07864 , 2024. [18] Yucheng Hu, Yanjiang Guo, Pengchao Wang, Xiaoyu Chen, Yen-Jen Wang, Jianke Zhang, Koushil Sreenath, Chaochao Lu, and Jianyu Chen. Video prediction policy: A generalist robot policy with predictive visual representations. arXiv preprint arXiv:2412.14803 , 2024. [19] Anthony Brohan, Yevgen Chebotar, Chelsea Finn, Karol Hausman, Alexander Herzog, Daniel Ho, Julian Ibarz, Alex Irpan, Eric Jang, Ryan Julian, et al. RT-1: Robotics transformer for real-world control at scale. In Robotics: Science and Systems , 2023. URL https://arxiv.org/abs/2212.06817 .[20] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In International Conference on Learning Representations , 2023. URL 
+
+https://arxiv.org/abs/2209.03003 .[21] Scott Fujimoto, David Meger, and Doina Precup. Off-policy deep reinforcement learning without explo-ration. In International conference on machine learning , pages 2052–2062. PMLR, 2019. [22] Scott Fujimoto and Shixiang Shane Gu. A minimalist approach to offline reinforcement learning. Advances in neural information processing systems , 34:20132–20145, 2021. [23] Aviral Kumar, Aurick Zhou, George Tucker, and Sergey Levine. Conservative Q-learning for offline reinforcement learning. Advances in Neural Information Processing Systems , 33:1179–1191, 2020. [24] Xue Bin Peng, Aviral Kumar, Grace Zhang, and Sergey Levine. Advantage-weighted regression: Simple and scalable off-policy reinforcement learning. arXiv preprint arXiv:1910.00177 , 2019. URL https: //arxiv.org/abs/1910.00177 .[25] Ashvin Nair, Abhishek Gupta, Murtaza Dalal, and Sergey Levine. AWAC: Accelerating online rein-forcement learning with offline datasets. In arXiv preprint arXiv:2006.09359 , 2020. URL https: //arxiv.org/abs/2006.09359 .[26] Mitsuhiko Nakamoto, Yuexiang Zhai, Anikait Singh, Max Sobol Mark, Yi Ma, Chelsea Finn, Aviral Kumar, and Sergey Levine. Cal-QL: Calibrated offline RL pre-training for efficient online fine-tuning. In Advances in Neural Information Processing Systems , volume 36, pages 62244–62269, 2023. [27] Yecheng Jason Ma, Shagun Sodhani, Dinesh Jayaraman, Osbert Bastani, Vikash Kumar, and Amy Zhang. VIP: Towards universal visual reward and representation via value-implicit pre-training. In International Conference on Learning Representations , 2023. URL https://arxiv.org/abs/2210.00030 .[28] Kun Lei, Huanyu Li, Dongjie Yu, Zhenyu Wei, Lingxiao Guo, Zhennan Jiang, Ziyu Wang, Shiyu Liang, and Huazhe Xu. RL-100: Performant robotic manipulation with real-world reinforcement learning, 2025. URL https://arxiv.org/abs/2510.14830 .[29] Kang Chen, Zhihao Liu, Tonghe Zhang, Zhen Guo, Si Xu, Hao Lin, Hongzhi Zang, Xiang Li, Quanlu Zhang, Zhaofei Yu, Guoliang Fan, Tiejun Huang, Yu Wang, and Chao Yu. πRL : Online RL fine-tuning for flow-based vision-language-action models, 2025. URL https://arxiv.org/abs/2510.25889 .[30] Guanxing Lu, Wenkai Guo, Chubin Zhang, Yuheng Zhou, Haonan Jiang, Zifeng Gao, Yansong Tang, and Ziwei Wang. VLA-RL: Towards masterful and general robotic manipulation with scalable reinforcement learning. arXiv preprint arXiv:2505.18719 , 2025. [31] Hao Bai, Yifei Zhou, Mert Cemri, Jiayi Pan, Alane Suhr, Sergey Levine, and Aviral Kumar. DigiRL: Training in-the-wild device-control agents with autonomous reinforcement learning. In Advances in Neural Information Processing Systems , 2024. URL https://arxiv.org/abs/2406.11896 .
+
+11 [32] Lucas Beyer, Andreas Steiner, André Susano Pinto, Alexander Kolesnikov, Xiao Wang, Daniel Salz, Maxim Neumann, Ibrahim Alabdulmohsin, Michael Tschannen, Emanuele Bugliarello, Thomas Unterthiner, Daniel Keysers, Skanda Koppula, Fangyu Liu, Adam Grycner, Alexey Gritsenko, Neil Houlsby, Manoj Kumar, Keran Rong, Julian Eisenschlos, Rishabh Kabra, Matthias Bauer, Matko Bošnjak, Xi Chen, Matthias Minderer, Paul Voigtlaender, Ioana Bica, Ivana Balazevic, Joan Puigcerver, Pinelopi Papalampidi, Olivier Henaff, Xi Xiong, Radu Soricut, Jeremiah Harmsen, and Xiaohua Zhai. Paligemma: A versatile 3b vlm for transfer, 2024. URL https://arxiv.org/abs/2407.07726 .[33] Xiaohua Zhai, Basil Mustafa, Alexander Kolesnikov, and Lucas Beyer. Sigmoid loss for language image pre-training. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , pages 11975–11986, October 2023. 
+
+12 Appendix 
+
+A Theoretical Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14 A.1 Setup and Assumptions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14 A.2 Consistency of Success Potential Learning . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14 A.3 Policy Improvement via Weighted Flow Matching . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.4 Resolving Hallucination in Unified Architectures . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 A.5 MC Ranking Protocol . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 A.6 Cross-Task Within-Observation Validation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 
+
+B Implementation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 B.1 ForesightFlow Algorithm Pipeline . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 B.2 Model Configuration and Hyperparameters . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 B.3 Imitation Learning Baselines . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 B.4 IDQL Implementation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 B.5 Flow Q-learning Implementation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 
+
+C Hardware Components . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 
+
+D Task Definition . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 D.1 Simulation Tasks . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 D.2 Real-World Robot Tasks . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 27 D.3 Dataset description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31 
+
+E Qualitative Visualization . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32 13 A Theoretical Analysis 
+
+This appendix formalizes the two mathematical claims used in the main text. First, under independent endpoint sampling, the boundary velocity of the population CFM minimizer recovers the conditional data mean, whose potential component is the dataset-conditional success probability. Second, in the unclipped population setting, advantage-weighted flow matching on the action coordinates admits a reweighting interpretation under expected advantage weights. These results are population-level identities; the main paper therefore validates the finite-network approximations empirically. 
+
+A.1 Setup and Assumptions 
+
+Let πβ (a|c) denote the behavior distribution of the dataset D. Let Y ∈ { 0, 1} denote the random binary chunk-level stage target and yi,t its observed realization. We define the action-quality function 
+
+Q(c, a ) = E[Y | c, a ]. Unless stated otherwise, all equalities involving v∗ refer to the population minimizer of the CFM objective. 
+
+A.2 Consistency of Success Potential Learning 
+
+We first justify using the augmented success potential vector s as a baseline that recovers the dataset-conditional success probability PD (Y = 1 | c) at the population optimum. The connection to the standard MDP state value function V πβ is discussed in Remark A.4. In ForesightFlow, the success potential dimension is trained via flow matching with uniform weights ( w = 1 ) on sparse binary targets Y ∈ { 0, 1}.
+
+Theorem A.1 (Boundary Identity for Conditional CFM) . Suppose: 1. (Linear interpolation path) Endpoints x0 ∼ p0 (the noise prior, e.g., N (0 , I )) and x1 ∼
+
+pdata (· | c) (the data conditional on context c) are coupled via the linear interpolation 
+
+xσ = (1 − σ)x0 + σx 1 with target velocity uσ = x1 − x0, σ ∈ [0 , 1] .2. (Independent endpoint sampling) The noise endpoint is sampled independently of the data pair: x0 ⊥⊥ (x1, c ). We do not use minibatch optimal-transport coupling. 3. (Population minimizer with regularity) Let v∗ achieve the global minimum of the CFM squared regression loss 
+
+LCFM (v) = Eσ∼p(σ), x 0,x 1,c 
+
+∥v(xσ , σ, c ) − uσ ∥2 .
+
+We assume v∗ admits a continuous extension as σ ↓ 0 under standard regularity of the data distribution and p(σ).4. (Sparse undiscounted reward) Episode/stage outcomes are encoded as a binary label 
+
+Y ∈ { 0, 1}, and the success-potential endpoint is x(s)1 = Y 1H ; reward is sparse and undiscounted ( γ = 1 ). Then the one-step boundary estimator 
+
+ˆx1 := x0 + v∗(x0, 0, c ) (18) 
+
+satisfies, for p0-almost every x0,
+
+ˆx1 = Ex1∼pdata (·| c)[x1]. (19) 
+
+In particular, the success-potential component recovers the dataset-conditional success probability after chunk-level averaging: 
+
+ˆx(s)1 = E[Y | c]1H , ˆV (c) := 1
+
+> HH
+
+X
+
+> k=1
+
+ˆx(s)1,k = E[Y | c] = PD (Y = 1 | c). (20) 
+
+Proof. By the L2-Bayes regressor characterization, the population minimizer of the squared loss is the conditional mean: 
+
+v∗(x, σ, c ) = E [x1 − x0 | xσ = x, σ, c ] , (21) 14 defined pσ -a.e. for each fixed σ. By Assumption 3, this extends continuously to σ = 0 . At σ = 0 ,the flow state degenerates to pure noise: xσ=0 = x0, so 
+
+v∗(x0, 0, c ) = E [x1 − x0 | x0, c ] = E[x1 | x0, c ] − x0. (22) By Assumption 2, x0 ⊥⊥ (x1, c ), which by the graphoid weak-union axiom implies x0 ⊥⊥ x1 | c.Hence the conditional expectation simplifies to the marginal expectation: 
+
+E[x1 | x0, c ] = Ex1∼pdata (·| c)[x1 | c]. (23) Substituting yields v∗(x0, 0, c ) = E[x1 | c] − x0, so for p0-a.e. x0:
+
+ˆx1 = x0 + v∗(x0, 0, c ) = E[x1 | c]. (24) For the success-potential component, the target is Y 1H , so 
+
+E[x(s)1 | c] = E[Y | c]1H , E[Y | c] = PD (Y = 1 | c). (25) 
+
+Remark A.2 (Finite-capacity approximation) . Theorem A.1 concerns the population minimizer v∗ of the CFM objective. In practice, the trained network vθ is a finite-capacity approximation to v∗, and we do not provide a formal bound on ∥vθ − v∗∥. The theorem justifies the boundary estimate as a context baseline for AWR; it does not imply that the boundary value itself ranks multiple candidates under the same context. Section 4.3 therefore treats the within-observation ranking induced by vθ at 
+
+NFE = 1 as an empirical finite-model property and compares it against a high-NFE reference. 
+
+Remark A.3 (Single-step boundary approximation) . Theorem A.1 concerns the boundary value 
+
+v∗(x0, 0, c ), whereas a high-NFE sampler follows the learned ODE and returns 
+
+xODE 1 = x0 +
+
+Z 10
+
+vθ (xODE  
+
+> σ
+
+, σ, c ) dσ. 
+
+The NFE = 1 estimator ˆx1 = x0 + vθ (x0, 0, c ) is therefore a boundary proxy obtained by evaluating the vector field only at σ = 0 , not an exact surrogate for the integrated ODE endpoint. Population optimality of the CFM objective alone does not make this proxy equal to xODE 1 ; such equality would require additional structure not assumed here. Our use of NFE = 1 for ranking analysis relies on the weaker empirical property that the trained finite model’s boundary proxy preserves within-observation rankings against a high-NFE reference, and the success-potential trajectories are near-linear in practice ( κ median ≤ 0.039 across tasks). 
+
+Remark A.4 (State value function interpretation) . Under the additional assumption that the dataset D
+
+is generated by a single stationary behavior policy πβ with sparse undiscounted reward and that Y is the episode-level success outcome, ˆV (c) = PD (Y = 1 | c) coincides with the standard MDP state value function V πβ (c). In our mixed-quality dataset (200 expert + 100 autonomous rollouts), πβ is interpreted as the dataset-mixture policy. 
+
+A.3 Policy Improvement via Weighted Flow Matching Theorem A.5 (Population AWR Reweighting for Flow Matching) . Fix a context c and let Q(c, a ) = 
+
+E[Y | c, a ] denote the population action-quality function. Consider the unclipped population weighted flow matching objective on the action coordinates with 
+
+¯w(c, a ) = exp(( Q(c, a ) − V (c)) /τ ),
+
+where V (c) is independent of a. Then minimizing the weighted population CFM objective is equiva-lent, up to a positive context-dependent constant, to minimizing the CFM loss under the reweighted behavior distribution 
+
+π ¯w(a|c) ∝ πβ (a|c) ¯ w(c, a ) ∝ πβ (a|c) exp( Q(c, a )/τ ).
+
+Proof. Let LCFM (θ; c, a ) = Eσ,x 0 [∥vθ (xσ , σ, c ) − uσ ∥2] denote the conditional flow matching loss for a specific action a. The idealized population weighted objective for the policy is defined as: 
+
+Lπ (θ) = Ea∼πβ (·| c) [ ¯ w(c, a )LCFM (θ; c, a )] . (26) 15 We rewrite the expectation as an integral over the action space: 
+
+Lπ (θ) = 
+
+Z
+
+πβ (a|c) ¯ w(c, a ) LCFM (θ; c, a ) da, (27) Recall the closed-form solution for the optimal policy derived from the KL-regularized objective [ 24 ]: 
+
+π∗(a|c) = 1
+
+Z(c) πβ (a|c) exp 
+
+ Q(c, a )
+
+τ
+
+
+
+(28) where Z(c) = R πβ (a|c) exp 
+
+ Q(c,a )
+
+> τ
+
+
+
+da is the partition function that normalizes the probability distribution. By defining the population importance weight as ¯w(c, a ) = exp( Q(c,a )−V (c) 
+
+> τ
+
+), we observe the following relationship between the distributions: 
+
+πβ (a|c) ¯ w(c, a ) = πβ (a|c) exp 
+
+ Q(c, a )
+
+τ
+
+
+
+exp 
+
+ −V (c)
+
+τ
+
+
+
+(29) 
+
+= [ Z(c)π∗(a|c)] exp 
+
+ −V (c)
+
+τ
+
+
+
+. (30) Let C(c) = Z(c) exp( −V (c)/τ ) be the normalization constant which is independent of a. Substitut-ing this back into Eq. 27: 
+
+Lπ (θ) = 
+
+Z
+
+[C(c)π∗(a|c)] LCFM (θ; c, a ) da (31) 
+
+= C(c)
+
+Z
+
+π∗(a|c) LCFM (θ; c, a ) da (32) 
+
+= C(c) Ea∼π∗(·| c) [LCFM (θ; c, a )] . (33) Since C(c) is constant with respect to the network parameters θ, minimizing the weighted objective 
+
+Lπ (θ) is equivalent to minimizing the flow matching loss under the optimal policy distribution π∗:
+
+∇θ Lπ (θ) ∝ ∇ θ Ea∼π∗ [LCFM (θ; c, a )] . (34) Thus, in the idealized unclipped population setting with expected advantage weights, weighted flow matching fits the action flow induced by the Boltzmann reweighted behavior distribution. 
+
+Remark A.6 (Binary label implementation) . The implemented objective uses realized binary labels and clipped weights min( M, exp(( yi,t − ˆVi,t )/τ )) . For stochastic binary labels, these weights are not an unbiased estimator of exp(( Q(c, a ) − V (c)) /τ ). For the unclipped exact-baseline idealization, if Y | (c, a ) ∼ Bernoulli( Q(c, a )) , then 
+
+E[exp(( Y − V (c)) /τ ) | (c, a )] = exp( −V (c)/τ ) (1 + Q(c, a )(exp(1 /τ ) − 1)) .
+
+This quantity is monotone in Q(c, a ) but is not the exact Boltzmann factor. Therefore, the practical update should be interpreted as an AWR reweighting surrogate motivated by the population projection. 
+
+A.4 Resolving Hallucination in Unified Architectures 
+
+A key contribution of ForesightFlow is the decoupled AWR formulation. Here, we analyze why standard “Coupled” training, which applies the same AWR weight to the joint action-potential loss, can create a self-masking calibration failure in unified models. Let H ⊂ D be the set of hallucinated failure samples: trajectories with target label y = 0 for which the current potential predicts high success, ˆVθ ≈ 1. For these samples, 
+
+A = y − ˆVθ ≈ − 1, w = exp( A/τ ) ≈ 0 (35) for small temperature τ .We compare the correction received by the success-potential predictor. Let θs denote parameters that affect the potential prediction; for shared parameters, the same argument applies to the potential-loss component of the shared gradient. 16 Case 1: Coupled AWR. The coupled objective applies w to both the action loss and the potential loss. On H, the potential-correction contribution is 
+
+∇θs Lcoupled H ⊃ w ∇θs Lpotential ≈ 0. (36) The overestimated potential makes A strongly negative, which makes w nearly zero; the same small weight then masks the regression signal that would reduce ˆVθ . The action loss on these samples is also downweighted while w ≈ 0, so the failure mode is not continued high-weight imitation of failure actions. Rather, the false-positive potential can remain uncorrected, corrupting later advantage estimates and self-guided candidate rankings. 
+
+Case 2: Decoupled AWR (Ours). The decoupled objective applies w only to the action coordinates and keeps the potential regression uniformly weighted. Thus hallucinated failures still provide an unmasked potential correction: 
+
+∇θs Ldecoupled H ⊃ ∇ θs Lpotential . (37) This gradient drives the predicted potential on failure-labelled samples toward their target, ˆVθ →
+
+y = 0 . After this correction, the sample no longer receives a strongly negative advantage from value overestimation. Decoupling therefore breaks the self-masking loop: currently overestimated failures are downweighted in the action loss, while their potential targets remain visible for calibration, improving the reliability of both advantage weights and inference-time rankings. 
+
+A.5 MC Ranking Protocol 
+
+For fairness across methods, both ForesightFlow and IDQL use the same MC ranking protocol at each K: K candidate action chunks are independently sampled from the policy, and the chunk with the highest score is executed. ForesightFlow’s score is the chunk-level average of the embedded progress projection; IDQL’s score is the chunk-level Q-value from the separate critic forward pass on each candidate. 
+
+A.6 Cross-Task Within-Observation Validation 
+
+We extend the within-observation ranking analysis to all five BEHAVIOR-1K simulation tasks. Following a uniform protocol on the final ForesightFlow model, for each held-out observation we generate K = 8 candidate actions, compute their progress scores under NFE = 1 (our estimator) and 
+
+NFE = 100 (high-NFE reference), and report (i) Kendall τ , (ii) top-1 agreement, (iii) pairwise accu-racy, (iv) MC gain ratio, and (v) trajectory curvature κ in the success-potential subspace. Aggregate per-task metrics are reported in Table 5. Figure 6 visualizes score alignment between NFE = 1 and NFE = 100 , Figure 7 summarizes ranking fidelity across tasks and outcomes, and Figure 8 analyzes trajectory geometry and value separation. 
+
+Score scatter. Figure 6 plots NFE = 1 progress scores against the NFE = 100 reference for 
+
+K = 8 candidates per held-out observation, separately per task. The monotone alignment along the diagonal indicates that one-step scores closely track the high-NFE reference, supporting the ranking-fidelity results reported in Table 5. 
+
+Per-task and outcome stratification. Figure 7 (a) shows the Kendall τ distribution per task; (b) separates τ by success vs failure trajectories. Median τ ≥ 0.80 holds across both groups, addressing the concern that NFE = 1 error may be heavier on failure cases. 
+
+Trajectory geometry and value calibration. Figure 8 (a) shows curvature κ concentrated near zero (median ≤ 0.039 ), supporting the near-linearity assumption underlying single-step Euler integration. (b) Per-stage value violin plot shows separation between success and failure trajectories across stages, indicating that the embedded progress head provides a discriminative progress signal. 17 Figure 6: NFE =1 vs NFE =100 score scatter (per task). Each point is a candidate action’s progress score under the two NFE settings. Monotone alignment along the diagonal indicates ranking preservation across all five tasks.      
+
+> (a) Kendall τdistribution per task. (b) τstratified by success vs failure trajectories.
+
+Figure 7: Per-task ranking fidelity. (a) Per-task Kendall τ box plot. (b) τ remains high on both success and failure trajectories, addressing concerns about failure-mode error distribution. 
+
+## B Implementation Details 
+
+B.1 ForesightFlow Algorithm Pipeline 
+
+ForesightFlow is implemented as two decoupled procedures: an offline training algorithm and a test-time policy improvement algorithm. 
+
+Training. In training (Algorithm 1), we learn a conditional velocity field vθ (xσ , σ, c ) over an augmented latent vector x = [ a; s] ∈ RH(d+1) , where a ∈ RdH is an action chunk and s ∈ [0 , 1] H
+
+is a learned progress potential vector. The potential is supervised by sparse stage-level quality via the broadcasted target starget  
+
+> i,t
+
+, and we perform policy improvement using a Decoupled Advantage Weighted Regression objective: the AWR weight wi,t = min( M, exp( Ai,t /τ )) is applied only to the action-component flow-matching loss, while the potential component is trained with uniform regression to remain a calibrated progress estimator. To keep training efficient, the baseline is estimated with an NFE = 1 approximation ˆx1 ≈ x0 + vθold (x0, 0, c ).18 (a) Trajectory curvature κ distribution. (b) Per-stage value distribution. 
+
+Figure 8: Trajectory geometry and value calibration. (a) Curvature κ in the success-potential subspace is concentrated near zero (median ≤ 0.039 across tasks), supporting the near-linearity assumption. (b) Per-stage value violin plot shows separation between success and failure trajectories. 
+
+Algorithm 1 ForesightFlow Training: Decoupled Advantage Weighted Flow Matching 
+
+Require: Offline dataset D = {ξi}Ni=1 , trajectory ξi = {(oi,t , a i,t , y i,t , T i)}Ti
+
+> t=1
+
+; chunk horizon H; flow time distribution p(σ); noise prior p0(x); temperature τ ; clip constant M ; learning rate η.
+
+Ensure: Trained velocity field vθ . 
+
+> 1:
+
+Model: augmented latent x = [ a; s] ∈ RH(d+1) , with conditional velocity field vθ (xσ , σ, c ). 
+
+> 2:
+
+Initialize parameters θ. 
+
+> 3:
+
+for each gradient step do  
+
+> 4:
+
+Sample trajectory index i and timestep t (ensure t ≤ Ti − H + 1 ); set condition c ← oi,t . 
+
+> 5:
+
+Construct targets:  
+
+> 6:
+
+Construct broadcast potential target: starget  
+
+> i,t
+
+← yi,t 1H ∈ RH . 
+
+> 7:
+
+Form endpoint (data) sample: 
+
+x1 ←
+
+ai,t :t+H−1
+
+starget 
+
+> i,t
+
+
+
+. 
+
+> 8:
+
+Sample x0 ∼ p0(x) and σ ∼ p(σ); interpolate xσ ← (1 − σ)x0 + σx 1. 
+
+> 9:
+
+Flow-matching target velocity u ← x1 − x0; split u = ( u(a), u (s)). 
+
+> 10:
+
+Efficient NFE=1 baseline estimation (Sec. 4.2):  
+
+> 11:
+
+Predict ˆx1 ← x0 + sg( vθ (x0, 0, c )) ; extract ˆsi,t ← ˆx(s)1 . 
+
+> 12:
+
+Aggregate baseline: ˆVi,t ← 1
+
+> H
+
+PHk=1 ˆsi,t,k . 
+
+> 13:
+
+Advantage Ai,t ← yi,t − ˆVi,t ; weight wi,t ← min 
+
+
+
+M, exp 
+
+ Ai,t 
+
+> τ
+
+ 
+
+. 
+
+> 14:
+
+Predict v ← vθ (xσ , σ, c ); split v = ( v(a), v (s)). 
+
+> 15:
+
+Decoupled loss (Eq. 16):  
+
+> 16:
+
+L(θ) ← wi,t ∥v(a) − u(a)∥22 + ∥v(s) − u(s)∥22. 
+
+> 17:
+
+Gradient update: θ ← θ − η∇θ L(θ). 
+
+> 18:
+
+end for 
+
+Inference. At test time, we deploy the trained unified flow model to perform self-guided decision making, as detailed in Algorithm 2. Unlike standard behavior cloning which greedily samples a single action, ForesightFlow leverages the learned potential field to assess the quality of its own generations. For a given context ct, we generate K parallel candidate trajectories by integrating the ODE from distinct noise samples. Since the backbone models the joint distribution pθ (a, s |c), each generated sample automatically includes a dense progress potential vector s(k) 
+
+> t
+
+. We aggregate this vector into a scalar quality score Q(k) by averaging over the chunk horizon, serving as a representative metric for the trajectory’s value. The policy then executes the action chunk corresponding to the highest score, using the learned potential for self-guided best-of-K selection. 19 Algorithm 2 ForesightFlow Inference: Monte Carlo Policy Improvement 
+
+Require: Trained velocity field vθ ; noise prior p0(x); Monte Carlo samples K; current condition ct.
+
+Ensure: Receding-horizon action chunk a∗ 
+
+> t
+
+. 
+
+> 1:
+
+for k = 1 to K do  
+
+> 2:
+
+Sample x(k)(0) ∼ p0(x). 
+
+> 3:
+
+Integrate the probability flow ODE from σ : 0 → 1:
+
+dx dσ = vθ (x, σ, c t),
+
+to obtain x(k)(1) = [ a(k) 
+
+> t
+
+; s(k) 
+
+> t
+
+]. 
+
+> 4:
+
+end for  
+
+> 5:
+
+Compute chunk scores: Q(k) ← 1
+
+> H
+
+PHj=1 s(k) 
+
+> t,j
+
+. 
+
+> 6:
+
+Select k∗ ← arg max k∈{ 1,...,K } Q(k). 
+
+> 7:
+
+Output a∗ 
+
+> t
+
+← a(k∗) 
+
+> t
+
+(execute in receding-horizon manner). 
+
+Table 7: Hyperparameters of ForesightFlow on simulation (based on π0.5). 
+
+Hyperparameter Value 
+
+Action Expert Width 1024 Action Expert Depth 18 Action Expert MLP Dim 4096 Batch Size 128 Chunk Size 30 Learning Rate 1e-5 LR Scheduler Cosine Optimizer AdamW AdamW Betas [0.9, 0.95] AdamW Epsilon 1e-8 Weight Decay 1e-10 Max Training Steps 30,000 Number of Flow Samples 15 AWR Temperature τ 0.3 AWR Clip Constant M 20.0 Fine-tune Method Full parameter 
+
+B.2 Model Configuration and Hyperparameters 
+
+We evaluate ForesightFlow on two distinct domains, employing architecture-specific modifications to integrate the potential field. 
+
+Simulation (BEHAVIOR-1K). We implement ForesightFlow on the π0.5 architecture [ 3]. To enable decoupled learning, we modify the Action Expert’s output layer: the unified projection is replaced with two independent linear heads, an action head ( Rdmodel → Rd) and a progress potential head ( Rdmodel → R1). Specific hyperparameters are listed in Table 7. 
+
+Real-World Robot. We implement ForesightFlow on the π0 architecture [ 1]. As π0 predicts actions via learnable query tokens appended to the VLM sequence (without a separate Action Expert), we augment the token projection dimension to include the potential field and apply the same decoupled head strategy. Specific hyperparameters are listed in Table 8. 20 Table 8: Hyperparameters of ForesightFlow on real-world robot (based on π0). 
+
+Hyperparameter Value 
+
+Action Expert Width 1024 Action Expert Depth 18 Action Expert MLP Dim 4096 Batch Size 128 Chunk Size 30 Learning Rate 2.5e-5 LR Scheduler Cosine Optimizer AdamW AdamW Betas [0.9, 0.95] AdamW Epsilon 1e-8 Weight Decay 1e-10 Max Training Steps 20,000 Fine-tune Method Full parameter Number of Flow Samples 15 AWR Temperature τ 0.3 AWR Clip Constant M 20.0 Table 9: Hyperparameters of BC on simulation (based on π0.5). 
+
+Hyperparameter Value 
+
+Action Expert Width 1024 Action Expert Depth 18 Action Expert MLP Dim 4096 Batch Size 128 Chunk Size 30 Learning Rate 1e-5 LR Scheduler Cosine Optimizer AdamW AdamW Betas [0.9, 0.95] AdamW Epsilon 1e-8 Weight Decay 1e-10 Max Training Steps 30,000 Fine-tune Method Full parameter 
+
+B.3 Imitation Learning Baselines 
+
+To ensure a rigorous comparison, our Behavior Cloning (BC) baselines use the exact same backbone architectures as ForesightFlow: π0.5 [3] for simulation and π0 [1] for real-world tasks. 
+
+BC on Simulation (BEHAVIOR-1K). The simulation baseline utilizes the unmodified π0.5 archi-tecture. Unlike ForesightFlow, this model retains the original unified output projection and is trained solely via the standard conditional flow matching objective on the mixed-quality dataset. It does not incorporate the success potential dimension or advantage weighting. Consequently, this baseline indiscriminately imitates both successful and failed trajectories, serving as a control to quantify the necessity of our decoupled policy improvement mechanism. Key hyperparameters are provided in Table 9. 
+
+BC on Real-World Robot. Similarly, the real-world baseline employs the standard π0 architecture. It processes multi-view RGB observations and language instructions to directly generate action velocities via learnable tokens. As with the simulation baseline, it is trained using the standard flow matching loss without potential field augmentation. Key hyperparameters are listed in Table 10. 21 Table 10: Hyperparameters of BC on real-world robot (based on π0). 
+
+Hyperparameter Value 
+
+Action Expert Width 1024 Action Expert Depth 18 Action Expert MLP Dim 4096 Batch Size 128 Chunk Size 30 Learning Rate 2.5e-5 LR Scheduler Cosine Optimizer AdamW AdamW Betas [0.9, 0.95] AdamW Epsilon 1e-8 Weight Decay 1e-10 Max Training Steps 20,000 Fine-tune Method Full parameter 
+
+B.4 IDQL Implementation 
+
+We implement Implicit Diffusion Q-Learning (IDQL) [ 12 ] by training a separate critic network to guide the policy. 
+
+Critic Architecture. The value model employs a Transformer backbone to naturally handle multi-modal inputs. As illustrated in Figure 9, observations are processed via modality-specific encoders: three egocentric RGB views (front, left, right) are tokenized into visual sequences, while language instructions are embedded to provide goal guidance. Proprioceptive signals (e.g., joint angles, end-effector poses) are normalized and projected into a compact state vector. These heterogeneous tokens are concatenated and fed into a pretrained PaliGemma model [ 32 ], using attention masks to manage cross-modal interactions. Finally, an MLP-based decoder maps the fused representation to scalar Q-value estimates. 
+
+Policy and Training. The policy architecture and hyperparameters are identical to the BC baselines described in Appendix B.3. The critic is trained via temporal difference learning, and the policy is fine-tuned using IQL-style advantage weighting. Detailed configurations are listed in Table 11. Transformer     
+
+> ViT ViT ViT
+> Three-view RGB observations
+> “turn on the radio”
+> Language Instruction Proprioception
+> state
+> Value
+> Decoder
+> 𝐀𝀀𝐀𤀀𝐀𨐀
+> Value
+> Decoder 𝐀
+> 𝐀
+
+Figure 9: The architecture of the value model in Implicit Diffusion Q-Learning (IDQL). 
+
+B.5 Flow Q-learning Implementation 
+
+We implement FQL [ 13 ] on π0.5 following the original method: a multi-step flow policy is first trained on the mixed-quality dataset, then distilled into a one-step student via Q-guided policy optimization. The Q function is trained jointly with the student policy on the same dataset. Detailed configurations are listed in Table 12. 
+
+Model Architecture. We retain the pretrained vision-language prefix of π0.5 and train only the action-side components used by the distilled student. For each observation and language instruction, 22 Table 11: Hyperparameters of value network of IDQL. 
+
+Hyperparameter Value 
+
+Value model Architecture 
+
+Value Network MLP[ 256 × 1024 × 256 ]Exponential Weight β 1
+
+Image Encoder SigLIP [33] Transformer Model PaliGemma [32] Width 256 
+
+Depth 4
+
+MLP Dim 1024 
+
+Number of Heads 8
+
+Number of KV Heads 1
+
+Training Configuration 
+
+Batch Size 64 
+
+Learning Rate 1e−5
+
+LR Scheduler Cosine Optimizer AdamW AdamW Betas [0 .9, 0.95] 
+
+Weight Decay 1e−4
+
+Max Training Steps 30 , 000 
+
+the frozen VLM prefix encodes the visual and task context once, and this shared representation is consumed by both the multi-step flow teacher and the one-step student action expert. During Flow Q-learning training, the VLM prefix and the multi-step teacher action expert are kept frozen. The teacher therefore acts as a fixed reference policy that provides supervised flow targets, while the student action expert is the only policy component updated by the distillation, behavior-cloning and value-guided objectives. The critic is implemented as an independent twin-Q architecture, where the two Q networks use separate vision encoders, separate transformer backbones, and separate action-value heads, enabling pessimistic value estimation through the minimum of the two predictions. 
+
+Policy and Training. The Q function is trained jointly with the student policy on the same mixed-quality offline dataset. At each update, the critic is fitted with a temporal-difference objective using dataset actions and target values computed from the target twin-Q networks. The student is optimized to match the frozen flow teacher while also maximizing the learned critic value of its predicted actions. In addition to the original Flow Q-learning objective, we add a behavior-cloning anchor directly on the student action expert, which regularizes the student’s predicted action toward the dataset action. Thus, the trainable student receives gradients from teacher distillation, critic-based policy improvement, and the BC anchor, while the VLM prefix and teacher remain frozen throughout training. 23 Table 12: Hyperparameters of Flow Q-learning. 
+
+Hyperparameter Value 
+
+Q model architecture 
+
+Vision encoder SigLIP-M/ 14 (×2 separate) Transformer backbone Gemma ( ×2 separate) Width 256 
+
+Depth 4
+
+MLP dim 1,024 
+
+Attention heads / KV heads 8 / 1
+
+Action dim × Horizon 32 × 30 
+
+Trainable SigLIP layers 12 
+
+Student action expert architecture 
+
+Action Expert Width 1024 Action Expert Depth 18 Action Expert MLP Dim 4096 Batch Size 128 Chunk Size 30 
+
+Training 
+
+γ (discount factor) 0.99 
+
+Distillation weight αdistill 10 
+
+BC anchor weight αBC 5
+
+Teacher flow ODE steps 20 
+
+Target Q EMA rate τ 0.005 
+
+Optimizer AdamW Student learning rate 1 × 10 −4
+
+Q learning rate 3 × 10 −5
+
+Batch size 128 
+
+Max training steps 20 ,000 
+
+## C Hardware Components 
+
+As shown in Figure 10, our hardware setup consists of a DexTeleop TeleAvatar Lite robot and a virtual reality (VR) teleoperation kit. The TeleAvatar Lite is equipped with two 7-DoF arms, each fitted with a DexTeleop custom parallel gripper. For data collection, the robot carries a binocular fisheye camera module (two lenses) providing a 180 ◦ field of view and 3840 × 1080 video, with a glass-to-glass latency below 150 ms. In addition, two RGB-D cameras are mounted on the wrists to capture 
+
+1280 × 720 video. All three cameras operate at 30 Hz. The VR kit comprises a head-mounted display, low-latency tracking sensors, and handheld controllers. The controller buttons are used to start, pause, save, and discard recordings. The logged modalities include VR-perspective RGB images, head-pose estimates, eye-tracking signals, interaction event logs, and motion control commands. 
+
+## D Task Definition 
+
+D.1 Simulation Tasks Turning on radio Task Description In this task, the robot must visually locate a target radio, navigate to it, grasp it with the right gripper, press the power switch with the left gripper, and then place the radio back on the table. A key challenge is combining mobile manipulation with bimanual control, since the robot must maintain a stable grasp while counteracting the contact forces induced by pressing the switch. In each trial, the radio is placed at a different position and orientation on the table within the robot’s field of view and reachable workspace. The maximum episode horizon at inference time is 6000 steps. 24 stereo fisheye camera 
+
+> high-performance
+> 7-DoF robotic arm
+> quick-change
+> end-effector gripper
+> omnidirectional
+> mobile base
+
+Figure 10: Hardware overview of the TeleAvatar robot and its teleoperation system. 
+
+Figure 11: Turning on radio 
+
+Picking up trash Task Description In this task, the robot grasps a trash bin with its right gripper and carries it while navigating sequentially to three soda cans. At each stop, it picks up a can with the left gripper, drops it into the bin, and, after collecting all three cans, places the bin back on the floor. The main difficulty is the long-horizon mobile manipulation sequence, which requires asymmetric bimanual coordination: the right arm must stabilize the bin while the left arm performs repeated pick-and-place actions. In each trial, the trash bin and soda cans are placed at different locations, requiring active navigation. To further evaluate generalization, the robot’s initial base pose is also randomized within a constrained range. The maximum episode horizon at inference time is 13,000 steps. 
+
+Figure 12: Picking up trash 
+
+Spraying fruit trees Task Description In this task, the robot must visually locate and grasp a watering device with its left gripper and then navigate sequentially to two target trees. At each tree, it uses the right gripper 25 to switch the device to the “on” state, waters the tree, and switches the device back to “off” before moving to the next target. This setting is challenging because it combines mobile manipulation with multi-stage bimanual tool use: the left arm must stabilize the watering device and maintain its aim, while the right arm actuates the switch without disturbing the tool pose. In each trial, the watering device and the trees are randomly positioned within the workspace, requiring active visual search and planning. To further evaluate generalization, the robot’s initial base pose is also varied. The maximum episode horizon at inference time is 10,000 steps. 
+
+Figure 13: Spraying fruit trees 
+
+Cook hot dogs Task Description In this task, the robot opens a refrigerator to retrieve two hot dogs, closes the door, places one hot dog on the tabletop, and puts the other into a microwave. It then transfers the staged hot dog into the microwave, closes the microwave door, and presses the start switch. A key challenge is long-horizon planning across multiple functional zones, requiring the robot to coordinate articulated-door manipulation with pick-and-place actions in the storage, staging, and cooking areas. In each trial, the initial object positions and the robot’s base pose are varied to evaluate generalization. The maximum episode horizon at inference time is 15,000 steps. 
+
+Figure 14: Cook hot dogs 26 Wash a baseball cap Task Description In this task, the robot navigates to a washing machine, opens its door, and finds two baseball caps. It grasps one cap with each gripper, carries them to the washer, places both caps into the confined drum one after the other, closes the door, and presses the power switch. The main challenge is long-horizon mobile manipulation that combines articulated object control with simultaneous bimanual carrying. The robot must navigate with both grippers occupied and place the caps accurately into the confined drum. In each trial, the initial cap positions and the robot’s starting base pose are varied to evaluate generalization. The maximum episode horizon at inference time is 10,000 steps. 
+
+Figure 15: Wash a baseball cap 
+
+D.2 Real-World Robot Tasks Set-Paper-Roll Task Description In this task, the robot picks up a toilet paper roll with its right gripper, transfers it to the left gripper, and places it onto a cylindrical holder. A key challenge is the multi-stage sequence itself, which couples grasp acquisition, coordinated bimanual handover, and accurate placement onto the holder. In each trial, the toilet paper roll and the cylindrical holder are randomly positioned on the tabletop within the robot’s workspace and field of view. To evaluate generalization, the robot’s initial base pose is also randomized within a constrained range. 
+
+Figure 16: Set-Paper-Roll 
+
+Stage 1: Grasp paper roll 
+
+• 0.0 points : The robot failed to grasp the toilet paper roll. • 0.5 points : The robot grasped the roll but dropped it afterward. • 1.0 points : The robot successfully grasped the roll with the right gripper. 
+
+Stage 2: Transport paper roll 
+
+• 0.0 points : The robot failed to transfer the roll from the right gripper to the left gripper. • 0.5 points : The robot dropped the roll during the handover. • 1.0 points : The robot successfully transferred the roll from the right gripper to the left gripper. 27 Stage 3: Place paper roll onto holder 
+
+• 0.0 points : The robot failed to place the roll onto the holder. • 0.5 points : The robot placed the roll on the holder but did not fully insert it. • 1.0 points : The robot successfully inserted the roll onto the holder. 
+
+Pick-Trash Task Description In this task, the robot opens the lid of a tabletop trash bin with its left gripper, repeatedly picks up crumpled paper balls from the tabletop with its right gripper, drops them into the bin, and finally closes the lid. The main challenge is twofold: the paper balls are randomly distributed and deformable, and the lid-opening motion depends on the bin geometry and contact conditions. In each trial, the trash bin, the paper balls, and the robot’s initial base and torso poses are randomized within a constrained range. 
+
+Figure 17: Pick-Trash 
+
+Stage 1: Open trash bin lid 
+
+• 0.0 points : The robot failed to open the trash bin lid. • 0.5 points : The robot opened the trash bin lid, but only after multiple attempts. • 1.0 points : The robot successfully opened the trash bin lid on the first attempt. 
+
+Stage 2: Place paper balls in trash bin 
+
+• 0.0 points : The robot failed to place any paper ball into the trash bin. • 0.5 points : The robot placed one paper ball into the trash bin. • 1.0 points : The robot successfully placed both paper balls into the trash bin. 
+
+Stage 3: Close trash bin lid 
+
+• 0.0 points : The robot failed to close the trash bin lid. • 0.5 points : The robot closed the trash bin lid, but only after multiple attempts. • 1.0 points : The robot successfully closed the trash bin lid on the first attempt. 
+
+Cube-Stack Task Description In this task, the robot sequentially grasps three colored blocks from the tabletop and stacks them on a plate while ensuring that no block falls off during placement. The robot selects the manipulation arm based on each block’s position relative to the plate: blocks on the left are grasped with the left gripper, whereas blocks on the right are grasped with the right gripper. A key challenge is controlling the end-effector pose during placement and stacking so as to maintain stability and avoid slippage or toppling within the confined area of the plate. In each trial, the blocks and plate, as well as the robot’s initial base and torso poses, are randomized within a constrained range. 
+
+Stage 1: Place red cube on plate 
+
+• 0.0 points : The robot failed to grasp the red cube. • 0.5 points : The robot grasped the red cube but failed to place it on the plate. • 1.0 points : The robot successfully placed the red cube on the plate. 28 Figure 18: Cube-Stack 
+
+Stage 2: Stack orange cube on red cube 
+
+• 0.0 points : The robot failed to grasp the orange cube. • 0.5 points : The robot grasped the orange cube but failed to stack it on the red cube. • 1.0 points : The robot successfully stacked the orange cube on the red cube. 
+
+Stage 3: Stack purple cube on orange cube 
+
+• 0.0 points : The robot failed to grasp the purple cube. • 0.5 points : The robot grasped the purple cube but failed to stack it on the orange cube. • 1.0 points : The robot successfully stacked the purple cube on the orange cube. 
+
+Transfer-Food Task Description In this task, the robot first picks several peanuts from the table with its right gripper and places them into a small bowl on the right that already contains some peanuts. It then grasps the small bowl, pours all of its contents into a larger central bowl, and returns the small bowl to its original position. Finally, it uses the left gripper to pick up assorted bread items and place them into the large bowl. This task is challenging because the bread items are irregularly shaped and require different grasping strategies, while the overall sequence also involves small-object manipulation and a pouring action. To evaluate generalization, the quantities, types, and initial poses of the food items, as well as the robot’s base position, are randomized within the workspace in every trial. 
+
+Figure 19: Transfer-Food 
+
+Stage 1: Peanut Pick-and-Place 
+
+• 0.0 points : The robot failed to pick and place any peanut. • 0.5 points : The robot placed the first peanut into the bowl but failed to place the second peanut. • 1.0 points : The robot successfully placed both peanuts into the bowl. 
+
+Stage 2: Peanut Pouring 
+
+• 0.0 points : The robot failed to grasp the bowl. • 0.5 points : The robot grasped the bowl but failed to complete the pouring. • 1.0 points : The robot successfully poured all peanuts into the large bowl. 29 Stage 3: Bread Transfer 
+
+• 0.0 points : The robot failed to transfer any bread into the large bowl. • 0.5 points : The robot deposited the first two pieces of bread but failed to transfer the third. • 1.0 points : The robot successfully transferred all three pieces of bread into the large bowl. 
+
+Wipe-Whiteboard Task Description In this task, the robot lifts a cover plate with its left gripper to reveal hidden text on a whiteboard, grasps the eraser with its right gripper, wipes the board clean, and finally returns the plate to its original position. The main difficulty is the long-horizon sequence that combines coordinated bimanual manipulation with surface interaction. Unlike standard pick-and-place actions, the erasing step requires force modulation and trajectory tracking to remove the writing effectively. To evaluate generalization, the initial poses of the plate, eraser, and text, as well as the robot’s base position, are randomized within the workspace in every trial. 
+
+Figure 20: Wipe-Whiteboard 
+
+Stage 1: Grasp the plate 
+
+• 0.0 points : The robot failed to grasp the plate. • 0.5 points : The plate fell after being grasped. • 1.0 points : The robot successfully grasped the plate. 
+
+Stage 2: Grasp the eraser 
+
+• 0.0 points : The robot failed to grasp the eraser. • 0.5 points : The robot grasped the eraser but with a pose unsuitable for erasing. • 1.0 points : The robot grasped the eraser in a pose suitable for erasing. 
+
+Stage 3: Wipe markings 
+
+• 0.0 points : The robot did not execute the erasing motion. • 0.5 points : The robot executed the erasing motion but failed to remove the writing. • 1.0 points : The robot successfully removed the writing from the whiteboard. 
+
+Stage 4: Return the plate 
+
+• 0.0 points : The plate was dropped during transport, or no placement was attempted. • 0.5 points : The robot attempted to place the plate but did not return it to its original position. • 1.0 points : The robot successfully placed the plate at its original position on the white-board. 30 6.2% 
+
+17.8% 
+
+25.2% 26.3% 
+
+24.5% 
+
+Simulation - Task Distribution 
+
+> Turning On Radio
+> Picking Up Trash
+> Spraying Fruit Trees
+> Cook Hot Dogs
+> Wash Baseball Cap
+
+15.8% 
+
+17.4% 
+
+23.0% 
+
+29.3% 
+
+14.4% 
+
+Real - Task Distribution         
+
+> Set-Paper-Roll
+> Pick-Trash
+> Cube-Stack
+> Transfer-Food
+> Wipe-Whiteboard
+> Expert
+> Rollout Success
+> Rollout Fail
+> Expert
+> Rollout Success
+> Rollout Fail
+> Expert
+> Rollout Success
+> Rollout Fail
+> Expert
+> Rollout Success
+> Rollout Fail
+> Expert
+> Rollout Success
+> Rollout Fail
+> 0.0
+> 5.0
+> 10.0
+> 15.0
+> 20.0
+> Frame Number (×10 )  Turning On Radio Picking Up Trash Spraying Fruit Trees Cook Hot Dogs Wash Baseball Cap
+> Expert
+> Rollout Success
+> Rollout Fail
+> Expert
+> Rollout Success
+> Rollout Fail
+> Expert
+> Rollout Success
+> Rollout Fail
+> Expert
+> Rollout Success
+> Rollout Fail
+> Expert
+> Rollout Success
+> Rollout Fail
+> 0.0
+> 5.0
+> 10.0
+> 15.0
+> Frame Number (×10 )  Set-Paper-Roll Pick-Trash Cube-Stack Transfer-Food Wipe-Whiteboard
+
+Figure 21: Dataset composition. Frame-level distribution of expert and autonomous rollout data across the five simulation and five real-world tasks, including successful and failed trajectories. 
+
+D.3 Dataset description 
+
+For each task in the simulation and real-world datasets, we construct a mixed-quality dataset consisting of 200 expert demonstrations and 100 autonomous rollouts. For the simulation tasks, we use official human demonstrations from the BEHAVIOR-1K Challenge, while the real-world trajectories are collected via VR teleoperation. To increase behavioral diversity and capture failure modes, we additionally generate autonomous rollouts using a pretrained π0.5 checkpoint [ 3]. These rollouts span a broad range of outcomes, including complete successes, partial completions, and failures. Figure 21 shows the frame distribution across the 10 tasks in the simulation and real-world datasets, together with the numbers of successful and failed trajectories collected from autonomous rollouts. In addition, all trajectories are annotated with sparse stage-wise labels, from which we derive the binary targets y defined in Section 3. For IDQL, we assign an additional label of −1 to the final step of each failed rollout episode. 31 E Qualitative Visualization 
+
+To further verify the learned potential field s, we visualize the temporal evolution of the predicted success potential st across five simulated tasks and five real-world tasks. For each task, both successful and failed trajectories are presented, with representative frames aligned to key stages along the potential curve. As shown in Figs. 22–26, in the simulated tasks, successful trajectories generally exhibit clear local peaks around meaningful subgoal completions, such as opening articulated objects, grasping target objects, transferring items, or completing task-specific interactions. In contrast, failed trajectories typically show transient increases near partial progress, followed by sharp drops or persistently low potential after incorrect actions. Similar patterns can be observed in the real-world tasks shown in Figs. 27–31. Successful executions produce stage-wise potential increases that align with semantically important manipulation steps, whereas failed executions lead to low or decreasing potential when the robot deviates from the correct task sequence. Overall, these qualitative results indicate that s captures meaningful success-related semantics across both simulated and real-world manipulation tasks. 
+
+> (a) Success: S1 opens the refrigerator; S2 grasps the first hot dog; S3 opens the microwave, matching local potential peaks.
+> (b) Failure: S1 opens the refrigerator; at S2, an incorrect grasping motion causes a sharp potential drop; around S3, repeated wrong attempts keep the potential low.
+
+Figure 22: Success and failure trajectory frames for the simulated Cook Hot Dogs task. 32 (a) Success: S1 grasps the radio; S2 aligns the left hand with the power button; S3 turns on the radio, with local potential peaks. 
+
+(b) Failure: S1 reaches the radio; at S2, the robot knocks it over; around S3, repeated ineffective attempts keep the potential low. 
+
+Figure 23: Success and failure trajectory frames for the simulated Turning on radio task. 
+
+(a) Success: S1 approaches the bin; S2–S3 grasp the two cans, matching local potential peaks. 
+
+(b) Failure: S1 approaches the bin; S2 approaches the first can; at S3, the robot wrongly places the bin on the floor and the potential stays low. 
+
+Figure 24: Success and failure trajectory frames for the simulated Picking up trash task. 33 (a) Success: S1 grasps the watering can; S2 waters the first tree; S3 approaches the second tree, with local potential peaks. 
+
+(b) Failure: S1 grasps the watering can; at S2, the can is dropped; around S3, incorrect attempts keep the potential low. 
+
+Figure 25: Success and failure trajectory frames for the simulated Spraying fruit trees task. 
+
+(a) Success: S1 approaches the washing machine; S2 grasps the first cap; S3 carries two caps toward the machine, with local potential peaks. 
+
+(b) Failure: S1 opens the door; S2 grasps one cap; around S3, the robot fails to open the machine and searches incorrectly, keeping the potential low. 
+
+Figure 26: Success and failure trajectory frames for the simulated Wash a baseball cap task. 34 (a) Success: S1 grasps the first block; S2 grasps the second block; S3 stacks the third block, with local potential peaks. 
+
+(b) Failure: S1 grasps a block; S2 places it on the plate; around S3, failed grasp attempts keep the potential low. 
+
+Figure 27: Success and failure trajectory frames for the real-world Cube-Stack task. 
+
+(a) Success: S1 prepares to grasp the plate; S2 grasps the eraser and moves the bowl aside; S3 wipes the board, with local potential peaks. 
+
+(b) Failure: S1 orients toward the objects; S2 grasps the plate; around S3, the robot wipes the wrong area and the potential stays low. 
+
+Figure 28: Success and failure trajectory frames for the real-world Wipe-Whiteboard task. 35 (a) Success: S1 grasps the food item; S2 grasps the peanut bowl; S3 prepares to grasp the bread, with local potential peaks. 
+
+(b) Failure: S1 orients toward the targets; around S2–S3, repeated failed peanut-grasp attempts drive the potential low. 
+
+Figure 29: Success and failure trajectory frames for the real-world Transfer-Food task. 
+
+(a) Success: S1 grasps the paper roll; S2 transfers it between hands; S3 places it onto the holder, with local potential peaks. 
+
+(b) Failure: S1 orients toward the target; S2 moves close to the roll; around S3, the hand moves away and the potential drops. 
+
+Figure 30: Success and failure trajectory frames for the real-world Set-Paper-Roll task. 36 (a) Success: S1 approaches the target; S2 adjusts after opening the bin; S3 grasps the trash, with a final local potential peak. 
+
+(b) Failure: S1 orients toward the object; S2 moves close to the target; around S3, incorrect actions make the potential drop. 
+
+Figure 31: Success and failure trajectory frames for the real-world Pick-Trash task. 37
