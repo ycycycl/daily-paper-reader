@@ -1,0 +1,1531 @@
+Title: VISTA: Vision-Grounded and Physics-Validated Adaptation of UMI data for VLA Training
+
+URL Source: https://arxiv.org/pdf/2606.04708v2
+
+Published Time: Fri, 05 Jun 2026 00:55:04 GMT
+
+Number of Pages: 33
+
+Markdown Content:
+VISTA: Vision-Grounded and Physics-Validated Adaptation of UMI data for VLA Training 
+
+Siyuan Yang 1,3,†, Linzheng Guo 1,4,†, Ouyang Lu 1,4, Zhaxizhuoma 5, Daoran Zhang 1,6, Xinmiao Wang 1,7,
+
+Ting Xiao 6, Fangzheng Yan 1,‡, Zhijun Chen 1,‡, Yan Ding 2,8‡, Chao Yu 2,⋆ , Chenjia Bai 1,⋆ , Xuelong Li 1,⋆ 
+
+> 1
+
+Institute of AI (TeleAI), China Telecom, 2Lumos Robotics, 3University of Science and Technology of China, 4Northwestern Polytechnical University, 5Shanghai Jiao Tong University, 6East China University of Science and Technology, 7Harbin Engineering University, 8Fudan University 
+
+> †
+
+Equal Contribution ‡Project Lead ⋆Corresponding Authors 
+
+Universal Manipulation Interface (UMI) enables scalable real-world robot data collection without hardware-specific teleoperation, yet leveraging UMI data to train large-scale Vision-Language-Action (VLA) models remains fundamentally challenging. We identify two critical mismatches: wrist-mounted fisheye views, with severe radial distortion and local gripper-centric perspectives, are out-of-distribution for pretrained VLMs; and human-collected trajectories frequently violate kinematic limits, incur collisions, or exceed controller bandwidth, teaching VLA policies physically infeasible actions. To address the challenges, we present VISTA , a framework that bridges this dual gap through three synergistic components. (i) UMI-VQA, the first large-scale VQA dataset tailored to wrist-mounted fisheye observations, aligns VLM representations to the distorted visual regime via auxiliary vision-language supervision. (ii) A systematic physical-validation pipeline performs a data-completeness pre-check and scores each valid trajectory for trajectory continuity, self-collision risk, and execution fidelity before it enters training. (iii) A two-stage co-training recipe jointly learns vision-language grounding on UMI-VQA and action prediction on validated trajectories. Our experiments empirically show that incorporating UMI-VQA consistently improves downstream policy performance, and that physical-validation scores are strongly predictive of deployment success. On diverse simulation and real-world manipulation tasks, VISTA significantly outperforms strong baselines including π0.5,LingBot-VLA, and Wall-X. We release the physical-validation pipeline, UMI-VQA, validated trajectory data, and the pre-trained model for the community.  
+
+> Date:
+
+May, 2026  
+
+> Project:
+
+https://tele-umi-vista.github.io  
+
+> Code:
+
+https://github.com/TeleHuman/umi-vista  
+
+> Correspondence to:
+
+Chenjia Bai ( baicj@chinatelecom.cn )
+
+## 1 Introduction 
+
+Universal Manipulation Interface (UMI) (Chi et al., 2024) and its successor FastUMI (Liu et al., 2024) have demonstrated that handheld gripper interfaces offer a scalable pathway to real-world robotic data collection. By equipping a human-operated gripper with a wrist-mounted fisheye camera and onboard tracking sensors, these systems capture first-person visual observations together with explicit end-effector trajectories and gripper states, all without additional data collection to a specific robot platform. The resulting datasets have proven highly effective for training compact imitation-learning policies such as Diffusion Policy (Chi et al., 2023) and ACT (Zhao et al., 2023), enabling impressive real-world deployment on various tasks. However, leveraging UMI-collected data to train large-scale Vision-Language-Action (VLA) models—such as OpenVLA (Kim et al., 2024), and π-series (Black et al., 2024, 2025)—presents a qualitatively different challenge. VLA models rely on powerful Vision-Language Model (VLM) backbones pretrained on massive internet-scale corpora, and they derive their generalization from deep cross-modal alignment among vision, language, and low-level action. When UMI data is used for VLA training, we observe limited gains and unreliable real-world deployment, not because the data is intrinsically unsuitable, but because the observation and execution assumptions of UMI differ fundamentally from those assumed by VLA pretraining and deployment. 1
+
+> arXiv:2606.04708v2 [cs.RO] 4 Jun 2026
+
+We summarize the manifests along two critical and largely orthogonal axes: visual grounding and physical plausibility. (i) For visual grounding , contemporary VLA models are typically trained with robot demonstrations and auxiliary vision-language supervision that provide relatively global scene context. Many robot datasets include third-person or main-view observations, and action-free vision-language data used for co-training is often collected from standard perspective images. In these data sources, projection geometry is relatively regular, scene layouts are stable, and spatial cues are often globally visible. In contrast, UMI and FastUMI collect demonstrations from wrist-mounted fisheye cameras attached to the handheld gripper, e.g., cameras with a 180 ◦ field of view. The resulting observations are local, gripper-centric, and substantially different from global or main-view visual supervision. In addition to this viewpoint shift, fisheye projection introduces severe radial distortion and highly non-uniform spatial resolution: the image center preserves fine detail while peripheral regions are heavily compressed. Moreover, wrist-mounted placement introduces frequent self-occlusion from the gripper or robot arm. Together, the geometric warping induced by fisheye projection and the wrist-only, gripper-centric viewpoint shift UMI observations away from the visual distributions commonly seen during VLM pretraining and VLA co-training, rendering them effectively out-of-distribution for existing visual representations; (ii) For physical plausibility , the very freedom that makes UMI scalable—humans can demonstrate anywhere without robot hardware—also severs the link between collected trajectories and the physical constraints of downstream target embodiments. First, regarding kinematic constraints , FastUMI records handheld gripper poses via onboard tracking modules (e.g., RealSense T265). Yet during collection, the recorded trajectories are not constrained by the target robot’s joint limits, reachable workspace, or motion-speed limits. They may therefore contain kinematically unreachable poses, tracking-induced discontinuities or abrupt jumps, or motions that require excessively high joint velocities during inverse-kinematics replay. Second, 
+
+collision constraints are entirely absent during collection. The tracking system monitors only the gripper pose, not the full robot body; the human operator naturally avoids environmental obstacles by repositioning the gripper, but the robot’s elbow, torso, or base may still collide with each other during deployment. Third, 
+
+tracking and execution constraints are not enforced during collection. Recorded trajectories may require motions that exceed the target robot controller’s bandwidth or tracking capability, and such infeasibilities are often exposed only during replay or deployment. When a VLA model learns from trajectories that violate kinematic limits, incur self-collisions, or exceed controller tracking bandwidth, it internalizes not only manipulation skills but also physically hallucinated action patterns that cause systematic deployment failures. To bridge this dual gap, we introduce VISTA , a VLA adaptation framework that aligns UMI-collected data with the perceptual and physical requirements of generalist robot policies through three synergistic components. (i) To resolve the visual grounding mismatch, we construct UMI-VQA , which is, to our knowledge, the first 
+
+large-scale vision-language dataset tailored to wrist-mounted fisheye observations. UMI-VQA contains 8M question-answer pairs grounded in the same fisheye visual regime, covering scene understanding, interaction grounding, and spatial reasoning. By co-training the VLM backbone on UMI-VQA alongside action data, we align its visual representations to the distorted geometry and local first-person perspective inherent in wrist-mounted fisheye views, rather than forcing costly fine-tuning from scratch. (ii) To ensure physical plausibility, we propose a systematic physical validation pipeline applied to every trajectory before it enters the VLA training. Unlike coarse per-pose filtering, our validation audits entire trajectories along three dimensions: trajectory-level kinematic reachability and smoothness, self-collision checks, and controller tracking-feasibility analysis. Only trajectories that pass three audits are retained for training, thereby guaranteeing that the VLA model learns exclusively from embodiment-compatible and physically consistent demonstrations. (iii) We train VISTA with a two-stage co-training recipe. Stage one performs joint autoregressive learning on large-scale UMI-VQA and validated UMI discrete action token to establish aligned vision-language-action representations. Stage two refines continuous control generation via a flow-matching action expert (Lipman et al., 2023; Liu et al., 2023b), which captures the multimodal, high-dimensional action distributions. We pre-train the model on 100K real-world UMI trajectories that pass our physical validation, together with 8M UMI-VQA samples, to obtain the final pre-trained VISTA model. We evaluate VISTA through three tiers of experiments designed to isolate and validate each design choice.  
+
+> (1) Diagnostic validation:
+
+We show that current state-of-the-art embodied-specific VLMs suffer significant degradation in visual understanding and spatial reasoning when evaluated on fisheye-adapted benchmarks; we further demonstrate that a large fraction of raw UMI trajectories cannot be replayed on real robots due to kinematic limits, collisions, or tracking errors, confirming the empirical validity of our stated challenges.  
+
+> (2) Data-level validation:
+
+We verify that co-training with UMI-VQA improves downstream policy performance 2compared with action-only training and standard-view VQA supervision. Moreover, through score-controlled subset experiments, we find that higher physical-validation scores generally correspond to better deployment outcomes, suggesting that our validation metric is a useful proxy for data utility. (3) Model-level validation: We fine-tune and evaluate VISTA on UMI-style simulation benchmarks, including RoboTwin-UMI and LIBERO-UMI, as well as 20 diverse real-world manipulation tasks. Under controlled same-data conditions, VISTA outperforms strong baselines including π0.5, LingBot-VLA, and Wall-X. Our contributions are summarized as follows: 
+
+• We identify and formalize two critical bottlenecks in adapting VLA models to UMI data: a Visual Ground-ing mismatch between wrist-mounted fisheye observations and standard-perspective VLM pretraining domains, and a Physical-Plausibility mismatch between human-collected trajectories and target-robot embodiment constraints. 
+
+• We propose VISTA , a UMI-oriented VLA framework comprising UMI-VQA for perceptual alignment, a systematic trajectory-level physical validation pipeline for embodiment-aware data curation, and a two-stage co-training recipe with a flow-matching action expert. 
+
+• We introduce and release UMI-VQA , the first large-scale VQA dataset for wrist-mounted fisheye obser-vations (8M samples), and release physically validated UMI trajectories to support future research in scalable robot learning. 
+
+• We demonstrate on 20 real-world tasks and two UMI-style simulation benchmarks that VISTA substan-tially exceeds the performance of existing VLA baselines, establishing that explicit visual-grounding and physical-plausibility alignment are essential for unlocking the value of handheld demonstration data in generalist robot policy learning. 
+
+## 2 Related Work  
+
+> Scalable Robot Data Collection.
+
+Large-scale robot learning hinges on diverse, action-labeled datasets. Conven-tional approaches collect demonstrations via teleoperation on physical robot platforms (Dasari et al., 2019; Khazatsky et al., 2024; Walke et al., 2023; Fang et al., 2023; O’Neill et al., 2024; Wu et al., 2025b), which provides precise action supervision but remains costly, labor-intensive, and tightly coupled to specific hardware stacks. Because such data reflects the particular sensor configurations, kinematics, and actuators of the collection platform, policies trained on one embodiment rarely generalize to others without extensive domain adaptation. To break this hardware dependence, Universal Manipulation Interface (UMI) (Chi et al., 2024) introduces a handheld paradigm in which human operators freely manipulate a portable gripper equipped with a wrist-mounted fisheye camera, recording wrist-mounted fisheye cameras and end-effector trajectories without requiring a physical robot at collection time. Follow-up works like FastUMI (Liu et al., 2024, 2025), DexUMI (Xu et al., 2025), ActiveUMI (Zeng et al., 2025), UMI-3D (Wang, 2026), and RDT2 (Liu et al., 2026) refine tracking accuracy, expand dataset scale, and broaden gripper compatibility, demonstrating encouraging cross-embodiment results for compact imitation-learning policies without requiring explicit model-side embod-iment adaptation, such as aligning target action distributions under embodiment shifts (Zhang et al., 2025). Yet these efforts largely treat UMI data as directly consumable by any downstream learner. We contend that this assumption collapses when the downstream model is a large-scale VLA system: the wrist-mounted fisheye visual distribution and the physically unconstrained nature of human-collected trajectories introduce fundamental mismatches—both perceptual and physical—against the pretraining and deployment assumptions of modern VLM architectures (Beyer et al., 2024; Steiner et al., 2024; Bjorck et al., 2025). Our work identifies and closes these gaps to make UMI data truly effective for VLA training.  
+
+> VLA Models and Visual Grounding.
+
+Modern VLA models (Brohan et al., 2023; Zitkovich et al., 2023; Kim et al., 2024; Black et al., 2024, 2025; Intelligence et al., 2026; Cen et al., 2025; Zhang et al., 2026) build upon large-scale Vision-Language Models (VLMs) (Steiner et al., 2024; Wang et al., 2024; Bai et al., 2025) that provide strong pre-trained capacities for visual feature extraction, spatial reasoning, and language grounding. By conditioning low-level robot actions on these rich visual-linguistic representations, VLA systems achieve impressive generalization across language-conditioned manipulation tasks (Chen et al., 2025; Atreya et al., 2025; Sun et al., 2026). When robot observations stem from fixed main-view cameras, or conventional egocentric frames, they align well with the visual distribution of VLM pretraining corpora, enabling effective 3knowledge transfer. In contrast, UMI data is captured from wrist-mounted fisheye cameras with extreme radial distortion, highly non-uniform spatial resolution, and severe self-occlusion by the gripper and arm (Liu et al., 2024; Chi et al., 2024). This creates a severe domain gap: the distorted, local, gripper-centric visual regime diverges sharply from the pinhole-perspective, globally structured images that dominate VLM pretraining. FastUMI (Liu et al., 2024) attempts to mitigate this gap by post-processing fisheye frames with monocular depth estimators to produce pseudo-depth maps, but this merely augments a visually novel modality rather than aligning the backbone’s visual grounding to the fisheye domain.  
+
+> Physical Validation of UMI Demonstrations.
+
+Beyond perception, UMI-style learning must also account for whether collected demonstrations are physically executable on the target robot embodiment. To prevent physically infeasible action patterns from corrupting the training process, prior UMI-style systems (Chi et al., 2024; Wang et al., 2026) adopt a hard-filtering approach that simply discards trajectories violating joint limits or dynamic feasibility. In contrast, VISTA adopts a soft-validation approach: it continuously scores entire trajectories on continuity, self-collision risk, and execution fidelity, allowing for more nuanced selection of UMI demonstrations based on target-robot executability. Together with UMI-VQA data construction for visual grounding, such trajectory-level validation allows VISTA to address both perceptual alignment and physical plausibility in UMI-style learning. 
+
+## 3 Method 
+
+We study language-conditioned manipulation policies learned from UMI-style demonstrations. At each timestep t, the policy πθ , parameterized by θ, receives a natural-language instruction l, a visual observation 
+
+ot comprising paired left- and right-wrist-mounted fisheye camera views, and a proprioceptive robot state st.The policy predicts an action chunk of horizon H:
+
+at:t+H−1 ∼ πθ (· | ot, s t, l ), (1) where st denotes the proprioceptive robot state, such as the current end-effector pose and gripper width, and 
+
+at:t+H−1 = {at, a t+1 , . . . , a t+H−1} denotes a sequence of H future robot actions. The objective is to learn πθ
+
+from large-scale UMI corpora such that it generalizes to diverse language-conditioned tasks while remaining physically executable on the target robot embodiment. Standard VLA pretraining assumes that visual observations align with the VLM’s pretraining domain and that action labels reflect physically feasible robot motions. Raw UMI data satisfies neither assumption. Perceptually, the observations ot exhibit severe radial distortion, non-uniform spatial resolution, and gripper-centric local perspective, placing them out-of-distribution for VLMs trained on standard-perspective images. Physically, the trajectories are collected by humans who have no awareness of the target robot’s joint limits, collision geometry, or controller bandwidth; they therefore serve as unreliable direct supervision for a VLA policy. Consequently, raw UMI demonstrations cannot be fed into a VLA training pipeline without first resolving both the visual grounding and physical plausibility gaps. To bridge this dual gap, we introduce VISTA , a framework that converts raw UMI data into aligned, validated, and VLA-compatible training corpora. In the following, we start by introducing the UMI hardware, followed by three synergistic stages. (i) Perception alignment via UMI-VQA: we construct the first large-scale vision-language dataset tailored to wrist-mounted fisheye observations, and use it to adapt the VLM backbone to the distorted, gripper-centric visual regime during joint VQA-action co-training. (ii) Physical validation : every trajectory is audited against the target robot’s kinematics, collision geometry, and controller characteristics; only trajectories that pass these checks are retained for training. (iii) Two-stage co-training : we first perform autoregressive vision-language-action co-training on UMI-VQA and validated UMI trajectories to align cross-modal representations, then refine continuous action generation with a flow-matching action expert. The resulting VISTA model can be directly fine-tuned on downstream embodiment-specific validated data for real-world deployment. 
+
+3.1 UMI Hardware for Cross-embodiment Data Collection 
+
+We use the FastUMI Pro system from Lumos Robotics as our data-collection platform (Fig. 2, left). The handheld gripper integrates a multi-sensor suite in a lightweight, self-contained form factor ( ∼600 g). A 4VLM performance drops under fisheye observations 
+
+Pre -train Stage 1 
+
+Vis ion -Language Backbone        
+
+> UMI observation &Fisheye data
+> "A red doll sits on the table …"
+> "… is positioned left side of …"
+> "<loc 22><loc 150><loc 45><loc 180>"
+> -17 32 15 64 45 -1Discrete Action
+> Grounding
+> Spatial Reasoning
+> Scene Captioning
+> "Describe this image"
+> "Detect the flower"
+> "Put the green cube on the red one"
+> "Relationship between two cups"
+
+Pre -train Stage 2  
+
+> Stage1 VLM
+
+Action 
+
+Expert 
+
+> Image token
+> Text token
+> Training
+> Frozen
+
+Visual Grounding Gap 
+
+> 100k UMI Episodes
+> Standard View
+> 50.6
+> Fisheye View
+> 46.2
+
+Fisheye -Aligned Supervision 
+
+> …
+> 8M UMI -VQA
+
+Physical Executability Gap  
+
+> Desired -Feasible Pose Mismatch
+> Desired UMI demo
+> Feasible Robot demo
+> ΔPose
+
+Physical Trajectory Validation   
+
+> Execution
+> Fidelity
+> Collision
+> Risk
+> Trajectory
+> Continuity
+> Avg. VLM score drops under fisheye views
+
+1) Simulation Benchmark s
+
+2) 20 Real Tasks 
+
+3) Cross -Embodiment Deployment 
+
+Experiment results 
+
+> RoboTwin -UMI
+> LIBERO -UMI
+
+Figure 1 Raw UMI data poses two critical mismatches for VLA training: wrist-mounted fisheye views are out-of-distribution for pretrained VLMs, and human-collected trajectories may be physically infeasible for target robot embodiments. VISTA addresses these challenges with an 8M-sample UMI-VQA dataset for fisheye vision-language alignment, a physical-validation pipeline for kinematic reachability, collision freedom, and tracking feasibility, and a two-stage VQA-action co-training recipe. Across UMI-style simulation, real-world, and cross-embodiment experiments, VISTA significantly outperforms strong baselines. 
+
+main fisheye camera is mounted centrally above the gripper jaws, providing a wide-angle ( ≈180 ◦ diagonal field of view) RGB observation of the local workspace. Flanking the main camera are two auxiliary fisheye cameras that together with an onboard depth camera constitute a quad-ocular visual system; this redundancy maintains robust visual tracking even when the central view is occluded by the gripper fingers or suffers from texture-poor regions. End-effector pose is recovered by fusing two independent tracking streams: a Vive Tracker that provides 6-DoF pose via an external lighthouse system, and a real-time visual-inertial SLAM pipeline running on the onboard camera array. The fused pose estimate achieves sub-centimeter accuracy (∼3 mm) and is robust to transient occlusion, which is critical for maintaining data quality during contact-rich manipulation. Gripper width is measured by an internal encoder and is actuated by a handheld trigger, allowing the human operator to control aperture continuously during demonstration. A key design feature of this platform is its local, gripper-centric sensing: the observations ot comprise paired left- and right-wrist-mounted fisheye views from the two gripper jaws, with no external main-view or third-person camera. This enables flexible data collection in both indoor and outdoor environments, but it also means the visual input is subject to severe radial distortion, non-uniform resolution, and extreme self-occlusion by the gripper and operator hands—properties that are central to the visual-grounding challenge. For downstream policy execution we mount the same wrist-camera configuration and end-effectors on distinct dual-arm embodiments: RealMan, AC one, and Galaxea R1 Pro (Fig. 2, right). The end-effector cameras are identical to those on the handheld device, ensuring that the visual observation distribution at deployment matches the training distribution. The gripper jaws on the robot side are mechanically adapted to each platform while preserving the same fingertip geometry and camera extrinsics, so that policies trained on handheld data can be transferred without recalibrating the visual frame. 5Cameras   
+
+> Vive Tracker
+> Gripper
+> Trigger
+> Depth Camera
+> Main Fisheye
+> Fisheye Cameras
+> RealMan
+> AC one
+> R1 Pro
+> Left Right Figure 2 FastUMI Pro and observation examples. ( Left ) The handheld data-collection device, with labeled sensors: a central main fisheye camera, two lateral fisheye cameras, a depth camera, a Vive Tracker for 6-DoF pose estimation, and a trigger-actuated gripper with encoder-based width sensing. ( Right ) The same wrist-mounted camera configuration is deployed on three dual-arm robot platforms (RealMan, AC one, and Galaxea R1 Pro). For each platform we show the paired left- and right-wrist fisheye observations; note the purely gripper-centric viewpoint with no external main-view camera, enabling portable in-the-wild collection but also introducing severe radial distortion and self-occlusion.
+
+3.2 UMI-VQA for Perception Alignment 
+
+To address the visual-grounding mismatch from limited UMI data, we construct UMI-VQA , a large-scale vision-language dataset that provides auxiliary perceptual supervision within the same fisheye observation regime as the action data. UMI-VQA is built from two complementary visual sources that together cover both authentic fisheye geometry and diverse scene layouts. 
+
+• Real-world UMI demonstration frames. The dominant portion of UMI-VQA is derived from real-world UMI-style manipulation videos. We sample frames from trajectories collected by the handheld device described in Sec. 3.1, preserving the full suite of visual properties encountered during policy learning: severe radial distortion, non-uniform spatial resolution, extreme self-occlusion by the gripper and operator hands, and local gripper-centric viewpoints. These frames are annotated through a semi-automatic pipeline: a large-scale VLM (Bai et al., 2025) is prompted to generate structured descriptions covering scene content, object states, and spatial relations, followed by lightweight human verification to ensure factual correctness and manipulation relevance. Because these annotations are grounded in authentic fisheye observations, they directly adapt the VLM to the exact visual distribution that the policy will encounter at deployment. 
+
+• Edited spatial-diversity images. While real UMI trajectories provide fisheye geometry, they remain limited in environmental diversity due to the constrained scope of our data collection, which covers a relatively narrow range of scenes, layouts, and object configurations. To broaden coverage of spatial relations and scene configurations, we supplement the real frames with images from RefSpatial (Zhou et al., 2025), a large-scale dataset emphasizing 3D spatial reasoning. However, these images are captured from standard perspectives and must be brought into the fisheye domain. A naive approach would be to apply classical geometric warping (e.g., polynomial distortion) to remap pinhole-perspective images into fisheye projections. However, we find it is insufficient as conventional perspective-to-fisheye warping is a pure geometric pixel-remapping operation; when the target fisheye field of view exceeds the original image’s visible scope—which is precisely the case for lenses with ≈180 ◦ diagonal FoV—such remapping inevitably 6UMI VQA 8M 
+
+Interaction Grounding 
+
+Spatial -Diversity VQA Supplement 5M 
+
+Captioning  
+
+> Q:Detail the current scene in detail.
+> A robotic arm holds open a white cabinet door,
+> revealing its empty interior …
+
+Object Grounding 
+
+> white plastic
+> laundry basket
+> with slats
+> the object that is directly
+> below the plush turtle on
+> the shelf
+
+Scene Understanding 
+
+> What objects are visible on the desk and
+> where are they relative to the robot grippers?
+> A white geometric pot with a succulent sits
+> center -back. A yellow …
+> If the utensil tray were shifted left, how should
+> the robot adjust its motion?
+> Reorient its end -effector leftward, recalibrate
+> its approach angle to align …
+
+Spatial Reasoning 
+
+> How far apart are the
+> two eggs on the table?
+> The two eggs are about
+> 10 cm …
+> Between the plush toy and the purple object, which is
+> farther from the camera based on perspective distortion?
+> The purple object is farther. It appears smaller and more
+> compressed at the table’s edge …
+> Highest point
+> Between tulips
+> and cabinet
+> Equidistant from basket
+> and figurine
+> (640,417)
+> (503,602)
+> (617,650)
+
+… …   
+
+> Perspective -view images Fisheye -style images Is satin silver coffee maker at right, which is the
+> 2nd kettle from left to right, directly adjacent to
+> matte yellow kettle at center? (A) yes (B) no
+> (B) satin silver coffee maker at right, which …
+> FLUX.2 fisheye adaptation
+> Q:
+> A:
+> Q:
+> A:
+> A:
+> Q:
+> A:
+> Q:
+> A:
+> Q:
+> A:
+
+Real -World 
+
+5 Task Families 
+
+UMI VQA 
+
+3M Pairs 
+
+842K 
+
+406K 
+
+894K 
+
+103K 
+
+824K 
+
+> 27.5%
+> 26.9%
+> 13.2%
+> 29.1%
+> 3.3%
+
+Figure 3 Overview of UMI-VQA. UMI-VQA contains 8M samples from two complementary sources: 3M real-world wrist-fisheye UMI VQA pairs organized into five capability-oriented subsets—Object Grounding (842K, 27.5%), Scene Understanding (406K, 13.2%), Captioning (103K, 3.3%), Interaction Grounding (894K, 29.1%), and Spatial Reasoning (824K, 26.9%)—and a 5M spatial-diversity VQA supplement adapted from perspective-view images into fisheye-style images. 
+
+produces stretched boundaries, unnatural extrapolation, or missing content in the periphery, because geometric transforms cannot synthesize plausible scene structure beyond the original viewing frustum. In contrast, we employ a diffusion-based image-editing model (i.e., FLUX.2-dev (Labs, 2025)) to perform semantic-aware image-to-image translation. The model not only applies geometric distortion but also hallucinates physically plausible peripheral content conditioned on global scene semantics, yielding fisheye-style views with naturally compressed edges and coherent wide-angle perspective that more closely mimic the optical characteristics of real fisheye lenses. This generative approach preserves the spatial-relation annotations of the original RefSpatial images while placing them in a visually authentic fisheye regime. An example is given in Fig. 3. The real-world UMI-VQA portion is organized into five capability-oriented subsets designed to supervise complementary perceptual abilities required by wrist-fisheye manipulation. Each subset follows task-specific annotation guidelines that define the expected visual evidence, response format, and manipulation-relevant focus. We describe the objective of each subset as follows. 
+
+• Scene Captioning set provides concise contextual descriptions of wrist-mounted fisheye observations. Rather than describing only salient objects, the annotations summarize the visible scene in terms of objects, gripper-object relations, and manipulation context. This subset helps preserve manipulation-relevant scene context within the visible wrist-fisheye view, even when the input is local, distorted, and partially observed. 
+
+• Scene-State Understanding set captures the task-relevant state of a wrist-fisheye observation. The annotations require the model to infer how the scene is configured for manipulation, including the current gripper status, relevant objects, possible obstacles, and constraints that may affect the next action. This subset encourages the model to interpret the current manipulation state rather than only recognize objects. 7• Object Grounding set associates language references with task-relevant visual targets. The referred targets are localized with bounding boxes and may be described by category names, spatial relations, or task context. This subset improves reference resolution under local viewpoints, occlusion, and fisheye distortion. 
+
+• Interaction Grounding set identifies where manipulation should occur. Instead of only localizing entire objects, the annotations point to actionable regions such as grasp sites, contact regions, functional parts, and relation-dependent interaction points. This subset encourages the model to reason about affordances and contact geometry under gripper-centric observations. 
+
+• Spatial Reasoning set focuses on geometric and relational understanding under fisheye observations. The annotations require the model to reason about object layout, relative position, depth, orientation, reachability, and potential collision constraints in the workspace. This subset strengthens the model’s ability to interpret spatial structure from distorted wrist-mounted views. Together, these real-world UMI VQA subsets provide structured wrist-fisheye perception supervision for semantic understanding, spatial grounding, and task-aware reasoning. Combined with the RefSpatial-based spatial-diversity supplement, UMI-VQA further expands the range of spatial relations and scene layouts covered by this perception supervision. By co-training the VLM backbone on UMI-VQA, we align its visual representations to the distorted geometry, non-uniform resolution, and gripper-centric perspective inherent in wrist-mounted manipulation, establishing a stronger perceptual foundation for downstream action learning. Fig. 3 summarizes the dataset structure and representative examples. The complete annotation prompts and data construction pipeline are provided in Appendix C. 
+
+3.3 A Trajectory Scoring Framework for Physical Validation 
+
+Raw UMI trajectories are collected by human operators who have no knowledge of the downstream robot embodiment. To prevent unreliable or physically infeasible demonstrations from entering the training corpus, we introduce a trajectory-level validation mechanism. It first applies a data-completeness pre-check and then scores each valid trajectory along three dimensions: trajectory continuity, self-collision risk, and execution fidelity. Here, trajectory continuity measures embodiment-agnostic recording quality and motion smoothness, whereas self-collision risk and execution fidelity evaluate embodiment-conditioned physical feasibility. Unlike binary accept/reject filters, our scoring-based formulation provides continuous, threshold-adjustable quality control that naturally supports cross-embodiment policy learning. Because the target deployment robot is unknown during pre-training, we can apply a loose validation threshold that retains trajectories with moderate scores across a diverse set of candidate embodiments. This preserves data diversity and encourages the policy to learn embodiment-agnostic action priors. During downstream fine-tuning, the threshold is tightened for the 
+
+specific target robot, ensuring that only trajectories with high kinematic compatibility and collision safety are used for specialization. This two-stage curation balances generalization and deployability. Fig. 4 illustrates the physical validation process. A cross-embodiment trajectory replay system is developed as the basis of validation, using a MuJoCo simulation (Todorov et al., 2012) with kinematics computed via the Mink library (Zakka, 2026). The kinematic models of all robots are built using Mink. Once the task and robot type are selected, the robot is first initialized to home. Then a smooth trajectory passing all waypoints is planned and executed in a coordinate frame aligned with the UMI. The joint-space trajectories are derived by inverse kinematics and sent to the simulation or the real robot via the control interface. Scores are collected during the replay.  
+
+> Trajectory Continuity
+
+(stc ). Trajectory continuity measures the intrinsic smoothness of the recorded gripper motion in task space. Large discontinuities between consecutive waypoints indicate sensor dropout, tracking loss, or abrupt human motion, all of which cause unstable robot execution. This score is embodiment-agnostic 
+
+because it evaluates the raw trajectory prior to any robot-specific mapping. Given a trajectory ξ, let dpt and drt
+
+denote the positional and angular displacements between the consecutive waypoints at timestep t, respectively. We first define a three-regime piecewise scoring function for a generic displacement d with hyperparameters α
+
+8#333333 
+
+## Cross -Embodiment Trajectory Replay System  
+
+> RealMan
+> R1 Pro
+> AC One
+> ......
+> Mink
+> IK/FK
+> Joint -space
+> Trajectory
+> Task 1
+> Task 2
+> Task 3
+> ......
+> SIM
+> REAL
+> Task
+> Select
+> Robot
+> Select
+> Motion
+> Planning
+> Homing
+> Coordinate
+> Frame
+> Alignment
+> Smoothing
+> Kinematics
+> Model
+> Control
+> Interface
+
+Data Completeness    
+
+> High Score: Keep Low Score: Filter Out
+
+Trajectory Continuity  Self -Collision Risk 
+
+> Collision -pair distances
+> (highlighted in yellow)
+
+Execution Fidelity 
+
+> desired
+> feasible
+> File Missing?
+> File Empty?
+> Frame Drops?
+> Replay & Scoring
+> Replay to Validate
+> Multi -Process
+
+Figure 4 Cross-embodiment physical-validation pipeline. Raw UMI trajectories are replayed on target robot kinematics in simulation. Each trajectory first undergoes a data-completeness pre-check and is then scored along three axes: trajectory continuity, self-collision risk, and execution fidelity. An overall score S(ξ, e ) determines the evaluation score. 
+
+and β:
+
+g(d) = 
+
+
+
+100 , if d ≤ dmin ,
+
+100 − α d − dmin 
+
+dmax − dmin 
+
+, if dmin < d ≤ dmax ,β exp 
+
+
+
+− d − dmax 
+
+dscale 
+
+
+
+, if d > d max .
+
+(2) The first regime rewards near-ideal smoothness with full marks; the second applies a linear penalty for moderate deviations; the third imposes an exponential decay for severe discontinuities that likely stem from hardware failures or tracking loss. Positional and angular components are scored separately with task-specific hyperparameters. The lower score between the positional and angular components is used as the continuity score at each timestep, and the trajectory-level score stc (ξ) is obtained by taking the minimum continuity score over all consecutive waypoints. In practice, we use dmin = 5 mm , dmax = 45 mm , and dscale = 100 mm for translation, and 1◦, 9◦, and 20 ◦ for rotation, with α = 40 and β = 60 .
+
+Self-collision risk (ssr ). While UMI collection is embodiment-agnostic, deployment is not. We evaluate self-collision by replaying each trajectory in the cross-embodiment trajectory replay system. Given a trajectory 
+
+ξ and a target embodiment e, we record the minimum collision-pair distance dcol (ξ, e ) over all timesteps and all designated robot link pairs during replay. The self-collision score is 
+
+ssr (ξ, e ) = 
+
+
+
+100 , if dcol (ξ, e ) ≥ dcol ,max ,
+
+100 · dcol (ξ, e ) − dcol ,min 
+
+dcol ,max − dcol ,min 
+
+, if dcol ,min < d col (ξ, e ) < d col ,max ,
+
+0, if dcol (ξ, e ) ≤ dcol ,min .
+
+(3) Trajectories exhibiting link-link distances below dcol ,min receive a zero score, corresponding to a hard self-9collision violation, whereas those maintaining a safety margin above dcol ,max are fully rewarded. Scene objects are excluded from this check to isolate self-collision from environment interaction.  
+
+> Execution fidelity
+
+(sef ). The execution fidelity measures how faithfully a target robot can reproduce the demonstrated end-effector motion. Using the same cross-embodiment replay infrastructure, we replay the UMI trajectory on the target embodiment and compute the tracking deviation between the demonstrated end-effector pose and the pose actually achieved by the robot under its joint-level controller. This deviation aggregates multiple embodiment-specific factors: proximity to joint limits, kinematic singularities, and workspace boundaries. Given a trajectory ξ and a target embodiment e, we compute the replay tracking error 
+
+ereplay (ξ, e ) over the replayed trajectory. The positional and angular replay errors are scored separately using the same functional form as stc , and the lower component score is used at each timestep. The minimum score over the entire replay is taken as the execution-fidelity score sef (ξ, e ). 
+
+> Overall cross-embodiment score.
+
+Because ssr and sef are inherently embodiment-dependent, the overall quality of a trajectory ξ must be conditioned on a specific robot e. We aggregate the three scores via a weighted product model that preserves the hard-constraint nature of physical feasibility while allowing flexible emphasis: 
+
+S(ξ, e ) = 100 ·
+
+ stc (ξ)100 
+
+w1  ssr (ξ, e )100 
+
+w2  sef (ξ, e )100 
+
+w3
+
+, wi ≥ 0,
+
+> 3
+
+X
+
+> i=1
+
+wi = 3 . (4) The weights wi can be adjusted per training stage; for example, raising w2 during fine-tuning prioritizes collision-free trajectories. Unless otherwise specified, we use uniform weights w1 = w2 = w3 = 1 . For pre-training across N candidate embodiments, we rank trajectories by their average cross-embodiment compatibility 
+
+(Scross (ξ) = 1
+
+> N
+
+PNe=1 S(ξ, e )) , ensuring that broadly feasible demonstrations contribute preferentially to the generalist policy. 
+
+3.4 Model Training and Deployment  
+
+> The pre-training stages.
+
+VISTA model is initialized from the π0.5 checkpoint and further adapted on large-scale perception-aligned corpora comprising 8M UMI-VQA samples and 100K real-world robot trajectories. Because the pre-training objective is to learn embodiment-agnostic manipulation priors, the robot trajectories are curated with a lenient physical validation threshold that retains a broad spectrum of cross-embodiment behaviors while filtering only severely defective demonstrations. The pre-training proceeds in two stages: first, autoregressive co-training on VQA and discretized actions to align the VLM backbone with the fisheye observation regime; second, continuous-action refinement via a knowledge-isolated flow-matching expert. 
+
+Stage 1: VQA-Action Autoregressive Co-training. We first co-train the VLM backbone on action prediction and VQA answering. For action learning, each continuous action chunk at:t+H−1 is converted into a sequence of discrete FAST tokens z1: Na . Given visual observations ot, language instruction l, and robot state st, the target output is the action-token sequence z1: Na . For UMI-VQA supervision, given an image observation o, a language question q, and the target answer sequence u1: Nq , the target output is the answer-token sequence 
+
+u1: Nq . Action tokens and answer tokens are optimized with the same autoregressive next-token prediction objective. Let Dmix denote the Stage-1 training corpus, where each example is represented as an input-output pair (x, y ):
+
+(x, y ) = 
+
+(  (ot, l, s t), z 1: Na
+
+, for action samples ,
+
+ (o, q ), u 1: Nq
+
+, for UMI-VQA samples . (5) The Stage-1 objective is: 
+
+Lstage1 (θ) = −E(x,y )∼D mix 
+
+1
+
+|y|
+
+> |y|
+
+X
+
+> j=1
+
+log pθ (yj | y<j , x ), (6) where |y| denotes the number of target tokens in the current sample. This stage adapts the backbone to wrist-mounted fisheye observations through perception-aligned UMI-VQA supervision, while learning discrete action-token representations for subsequent continuous-control refinement. 10 Heterogeneous 
+
+> Robot Arms
+
+Zenoh Unified Communication Middleware    
+
+> Zero-copy Shared Memory | Pub/Sub over machine
+> Host Machine
+> Scheduler
+> State Collection
+> &Batch Builder
+> VLA Model Temporal
+> Ensembling
+> Fusing & Routing
+> Batched
+> States
+> Batched
+> Actions
+> VLA Model
+> Scheduler
+> State Collection
+> &Batch Builder
+> Satellite Machine 1
+> GPU compute Node
+> VLA Model
+> Scheduler
+> State Collection
+> &Batch Builder
+> Satellite Machine 2
+> GPU compute Node
+> VLA Model
+> Scheduler
+> State Collection
+> &Batch Builder
+> Satellite Machine N
+> GPU compute Node
+> Heterogeneous
+> Robot Arms
+> State
+> Streams
+> Routed
+> Actions
+> State Flow
+> Action Flow
+
+Figure 5 The architecture of multi-machine to multi-heterogeneous robot deployment system. Heterogeneous robotic arms publish observations to Zenoh topics. Host and satellite nodes retrieve these observations to perform distributed inference. The host node subsequently handles action ensembling and routing, dispatching the final commands back to the respective robotic arms via the Zenoh middleware for execution. 
+
+Stage 2: Knowledge-Isolated Flow Matching Action Expert. While discrete action tokens provide a convenient interface for autoregressive VLA training, continuous control benefits from a more expressive action generator. To prevent catastrophic forgetting of the perception and discrete-action knowledge acquired in Stage 1, we follow the knowledge-isolation strategy introduced in Driess et al. (2026), keeping the pretrained VLM backbone frozen and training a separate continuous action expert on top. Specifically, given the fixed backbone representation hθ (ot, l, s t), the action expert fϕ is trained with a flow-matching objective to model the conditional generation of continuous action chunks. For a clean action chunk a and noise ϵ, we construct an interpolated action aτ at time τ ∈ [0 , 1] :
+
+aτ = (1 − τ )ϵ + τ a. (7) The action expert predicts the target velocity field conditioned on the VLA representation: 
+
+Lfm = Ea,ϵ,τ 
+
+h
+
+∥fϕ(aτ , τ, h θ (ot, l, s t)) − (a − ϵ)∥22
+
+i
+
+. (8) The resulting expert learns a continuous action distribution while reusing the frozen perception and language representations from Stage 1. 
+
+Downstream task fine-tuning. After pre-training, VISTA can be adapted to downstream tasks and target embodiments. We first apply a strict physical validation threshold to filter the downstream task data for the specific deployment robot, removing trajectories with kinematic violations, self-collision risks, or poor replay fidelity. During fine-tuning, we unfreeze the full model and update both the VLM backbone and the flow-matching action expert end-to-end. This adaptation protocol allows the model to preserve the generalist visual-linguistic knowledge learned during pre-training while jointly specializing perception and continuous action generation to the target robot’s dynamics and task distribution. 
+
+Multi-robot deployment system. To fully exploit the cross-embodiment potential of VISTA, we implement a pure Python distributed deployment architecture for heterogeneous robotic arms. The system uses Zenoh as the communication middleware, enabling transparent shared-memory or network-level transmission across local processes, LANs, or WANs. State streams from multiple arms are aggregated to distributed GPU compute nodes for batched inference; predicted action chunks are temporally ensembled and routed back to the respective robots via synchronous RPC calls to ensure strict temporal alignment and prevent command accumulation. This design eliminates heavy ROS dependencies and allows seamless integration of new robot arms that satisfy the UMI end-effector mounting specification. An illustration of this system is given in Fig. 5. Further architectural details are provided in Appendix A. 11 Model LIBERO RoboTwin Avg. Drop Standard View Wrist-Fisheye Standard View Wrist-Fisheye                                                          
+
+> π0.596.3 92.2 82.0 59.4 13.4 Wall-X 74.6 70.0 14.9 15.2 2.2 LingBot-VLA 85.3 81.7 77.6 49.9 15.7
+> Table 1 Policy degradation under UMI-style wrist-fisheye observations on LIBERO and RoboTwin. For each benchmark, we compare the separately fine-tuned standard-view policy with the wrist-only fisheye policy. Avg. Drop reports the average performance decrease across the two benchmarks caused by the UMI-style observation regime.
+> Model Where2Place RefSpatial ERQA EmbSpatial Avg.
+> Qwen2.5VL-3B 0.300 / 0.200 0.330 / 0.262 0.328 / 0.345 0.415 / 0.404 0.343 / 0.303 (↓11.8%)
+> Qwen3VL-4B 0.680 / 0.650 0.485 / 0.441 0.383 / 0.363 0.539 / 0.539 0.522 / 0.498 (↓4.5%)
+> Embodied-R1-3B-v1 0.570 / 0.460 0.398 / 0.293 0.348 / 0.318 0.431 / 0.437 0.437 / 0.377 (↓13.7%)
+> RoboBrain2.5-4B 0.780 / 0.690 0.550 / 0.535 0.353 / 0.333 0.542 / 0.528 0.556 / 0.522 (↓6.2%)
+> VLASER-2B 0.690 / 0.570 0.420 / 0.398 0.338 / 0.325 0.501 / 0.480 0.487 / 0.443 (↓9.0%) Table 2 Perception degradation under fisheye observations. Each benchmark entry reports performance on original resized images / fisheye-transformed images. The Avg. column reports the mean performance across four benchmarks for each model, with the relative degradation shown in parentheses.
+
+## 4 Experiments 
+
+Our experiments are organized into three tiers that isolate and validate each design choice of VISTA. First, 
+
+diagnostic validation confirms the empirical validity of the two core challenges: we show that state-of-the-art VLMs and VLA policies suffer significant degradation under wrist-mounted fisheye observations, and that a substantial fraction of raw UMI trajectories cannot be faithfully replayed on target embodiments due to kinematic infeasibility, collision risks, or poor replay fidelity. Second, data-level validation verifies the efficacy of our proposed data-level remedies: we demonstrate that co-training UMI-VQA with action data consistently improves downstream policy performance over generic VQA supervision, and that physical-validation scores are strongly predictive of real-world deployment success, establishing the score as an effective proxy for data utility. Third, model-level validation evaluates the complete VISTA system against strong VLA baselines on UMI-style simulation benchmarks and 20 diverse real-world manipulation tasks, accompanied by ablation studies on key architectural components. 
+
+4.1 Diagnostic Validation Experiments 
+
+Diagnostic validation aims to verify that the two UMI-to-VLA bottlenecks—perception mismatch and physical infeasibility—are empirically real and significant. We first show that wrist-mounted fisheye observations degrade both policy learning and visual reasoning. We then demonstrate that raw human-collected UMI trajectories are not directly executable on target robot embodiments. 
+
+Fisheye observations degrade policy learning. We first isolate how the UMI-style observation regime affects policy learning. On RoboTwin (Chen et al., 2025), replacing the standard main-view-plus-wrist observation setup with wrist-only perspective cameras causes a severe drop in π0.5 success rate to 13.1%, indicating that narrow-FOV wrist views alone provide insufficient scene context. Expanding the wrist cameras to UMI-style wide-angle fisheye observations recovers part of this lost context, but still leaves a clear gap to the standard-view setting, as shown in Table 1. This suggests that UMI-style wrist-fisheye observations are more informative than narrow wrist views, yet remain challenging because the policy must rely on local, gripper-centric views with radial distortion rather than globally organized main-view observations. We further verify this observation shift across different VLA backbones and benchmarks. As shown in Table 1, switching from standard-view training to wrist-fisheye training reduces the average performance on LIBERO (Liu et al., 2023a) and RoboTwin for all three models, including π0.5, LingBot-VLA, and Wall-X. 12 glue stick handover  drawer pulling  stapler placement     
+
+> Feasible
+> Desired
+> success
+> drawer dragged away
+> Desired
+> Feasible
+> high deviation
+> success
+> glue stick drop ped
+> success
+> stapler dropped
+> Desired
+> Feasible
+> failure
+> low deviation high deviation high deviation low deviation low deviation
+> failure failure Figure 6
+
+Comparison of UMI trajectory feasibility. The curves show the position and orientation errors computed from the discrepancy between the feasible pose and the UMI desired pose. The boxes mark the key trajectory segments where large pose deviations lead to task failures. Detailed pose trajectories are provided in Appendix B. 
+
+The degradation is particularly pronounced for π0.5 and LingBot-VLA, whose average success rates drop by 13.4 and 15.7 points, respectively. Overall, these results demonstrate that UMI-style wrist-fisheye observations introduce a genuine perception bottleneck for VLA policy learning. 
+
+Fisheye observations degrade robot-relevant visual reasoning. The policy degradation above suggests that VLM backbones struggle to parse fisheye-distorted scenes. To quantify this, we evaluate general and robot-specialized VLMs, i.e., Qwen2.5VL (Wu et al., 2025a), Qwen3VL (Bai et al., 2025), Embodied-R1 (Yuan et al., 2025), RoboBrain 2.5 (Tan et al., 2026), VLASER (Yang et al., 2025), on four spatial-reasoning benchmarks—Where2Place (Yuan et al., 2024), RefSpatial (Zhou et al., 2025), ERQA (Kirillova et al., 2021), and EmbSpatial (Du et al., 2024)—under both standard-perspective and fisheye-transformed images, using identical questions and evaluation protocols. As shown in Table 2, fisheye transformation causes a consistent mean absolute drop of 4.0 points (8.6% relative degradation) across all models, with individual model drops ranging from 4.5% to 13.7%. This confirms that pretrained VLMs do not automatically preserve object and spatial understanding under the distorted, local, wrist-mounted fisheye regime, directly motivating the need for perception-aligned VQA. 
+
+Raw UMI trajectories are not always executable. We next audit the executability of raw UMI demonstrations on three representative tasks—glue stick handover, drawer pulling, and stapler placement—performed by the RealMan robot, as illustrated in Fig. 6. The raw UMI trajectories are collected and replayed both in simulation and on the physical robot. The end-effector of the robot arm is not always able to reach the desired pose, which can lead to task failure. By visually comparing the replays in MuJoCo and quantitatively analyzing the deviation between the desired and feasible poses, we observe that although the raw UMI data provides a correct trajectory, the robot’s execution deviates due to its inherent constraints. This deviation is identified as the root cause of task failure. These findings empirically confirm that human-collected UMI data cannot be treated as directly executable robot supervision; without physical validation, VLA models would inevitably learn from physically infeasible and potentially hazardous trajectories. 
+
+4.2 Data-Level Validation Experiments 
+
+Having established wrist-fisheye perception mismatch and physical infeasibility as two key bottlenecks in UMI-to-VLA adaptation, we next evaluate whether the two data-level components of VISTA effectively address these issues: UMI-VQA for perception-aligned supervision and physical validation for executability-aware trajectory selection. 13 Training Setting Task 1 Task 2 Task 3 Overall                              
+
+> Action-only π0.59/20 (45.0%) 10/20 (50.0%) 8/20 (40.0%) 27/60 (45.0%)
+> π0.5+ Standard-view VQA 4/20 (20.0%) 4/20 (20.0%) 11/20 (55.0%) 19/60 (31.7%)
+> π0.5+ UMI-VQA 8/20 (40.0%) 11/20 (55.0%) 14/20 (70.0%) 33/60 (55.0%)
+> Table 3 Real-robot success rates under different auxiliary VQA supervision sources. Task 1, Task 2, and Task 3 correspond to Stack Side Cubes on Center Cube, Stack Paper Cups, and Stack Pen Holders, respectively. Each setting is evaluated over 20 trials per task, and the overall score aggregates all 60 trials.
+
+Effect of perception-aligned VQA. Given the wrist-fisheye perception mismatch identified in Section 4.1, we evaluate whether UMI-VQA provides effective auxiliary supervision for policy learning under the UMI observation regime. We conduct this study on top of π0.5 using a controlled subset of UMI training data. Across all variants, we keep the UMI action data, observation inputs, training budget, and optimization procedure fixed, and vary only the auxiliary VQA supervision. We compare three settings: action-only training without VQA supervision, co-training with standard-view VQA, and co-training with UMI-VQA. Here, standard-view VQA denotes auxiliary VQA supervision composed of standard-perspective web VQA data and main-view robot VQA data, whose visual distributions differ from the wrist-fisheye observations used by UMI policies. As shown in Table 3, standard-view VQA achieves a lower aggregate success rate than action-only training. This result suggests that auxiliary VQA supervision is not universally beneficial in co-training. One possible explanation is that standard-view VQA provides supervision under global, regular-perspective observations, whereas UMI action prediction relies on local, distorted, gripper-centric wrist-fisheye cues. When optimized with a shared backbone, such distributional mismatch may bias representation learning away from the visual cues needed for UMI-style action prediction. By contrast, co-training with UMI-VQA achieves the highest overall success rate across the three evaluated tasks. Compared with action-only training, UMI-VQA improves the aggregate success rate from 45.0% to 55.0%. The improvement is most pronounced on Stack Pen Holders, while the results on Stack Cubes and Stack Cups are comparable to action-only training. Compared with standard-view VQA, UMI-VQA also yields a higher aggregate success rate, improving from 31.7% to 55.0%. The results suggest that wrist-fisheye-aligned VQA provides a more suitable auxiliary signal for UMI-style policy learning. 
+
+Effects of physical score validation. We evaluate whether physical validation scores can guide UMI trajectory filtering before policy training. As motivated by the physical gap diagnosed in Sec. 4.1, human-collected UMI trajectories are not guaranteed to be reproducible by a target robot arm. Here, we test this risk through real-robot deployment after policy learning. We use the stapler-placement task as a controlled case study and compare policies trained on UMI subsets with different RealMan-conditioned validation scores under the same model, data budget, and training procedure. Since the main embodiment-induced execution errors in this task occur during post-grasp placement, we report Grasping Success Rate (GSR), Overall Success Rate (OSR), and Post-grasp Success Rate (PSR), computed as OSR/GSR when GSR is nonzero.  
+
+> Score-controlled comparison.
+
+To control for data quantity while varying target-embodiment compatibility, we construct two RealMan-conditioned subsets with the same number of demonstrations but different validation scores: a low-score subset and a high-score subset. As shown in Fig. 7(a), the two subsets are clearly separated in their RealMan validation scores. Table 4 reports the corresponding deployment results. The two policies achieve comparable GSR, but differ sharply in OSR and PSR: the low-score policy can grasp the object in some trials but fails to complete post-grasp placement, whereas the high-score policy achieves much higher post-grasp and overall success. These results show that higher target-embodiment compatibility leads to more reliable real-robot deployment after policy training.  
+
+> Failure analysis.
+
+We further inspect representative deployment cases to understand how low-score training trajectories affect policy execution. As shown in Fig. 8, the low-score policy generates post-grasp desired poses that are difficult for RealMan to realize, producing a large gap between the desired and nearest feasible trajectories during placement. In contrast, the high-score policy generates trajectories that can be closely followed by the target embodiment. The deployment snapshots in Fig. 9 illustrate the resulting failure-success contrast. These results suggest that low-score training data can lead the learned policy to produce motions that are semantically plausible but physically hard for the target robot to execute. 14 Overall Continuity Fidelity Collision 020 40 60 80 100 Score low-score sample high-score sample low-score mean high-score mean (a) RealMan Overall Continuity Fidelity Collision 020 40 60 80 100 Score low-score sample high-score sample low-score mean high-score mean (b) R1Pro Overall Continuity Fidelity Collision 020 40 60 80 100 Score low-score sample high-score sample low-score mean high-score mean (c) ACone 
+
+Figure 7 Physical-validation score distributions of the same low-score and high-score UMI trajectory subsets across different robot embodiments. The subsets are selected on RealMan and then re-scored on R1Pro and ACone. Panel (a) shows the score separation used in the score-controlled comparison, while panels (b)–(c) show that the same subsets receive different score distributions on other embodiments, indicating that trajectory executability depends on the target robot embodiment. 
+
+Traj. Type #Traj. Continuity Collision Fidelity Avg. Score GSR OSR PSR 
+
+Low-score subset 50 100.00 94.69 39.35 35.50 0.55 0.00 0.00 High-score subset 50 100.00 100.00 99.21 99.21 0.65 0.65 1.00 
+
+Table 4 Score-controlled subset analysis on the RealMan embodiment. Both subsets contain 50 demonstrations and are evaluated over 20 trials on the stapler-placement task with RealMan. PSR is computed as OSR/GSR and measures task completion conditioned on successful grasping. 
+
+Embodiment-conditioned scoring. We next examine whether trajectory filtering should be conditioned on the target embodiment. Since the validation score is defined as S(ξ, e ), the same trajectory can receive different scores under different robot embodiments. We therefore re-score the RealMan-selected low-score and high-score subsets on R1Pro and ACone. As shown in Fig. 7, the same subsets exhibit different score distributions across embodiments. In particular, the low-score subset on RealMan receives higher scores on R1Pro, suggesting that data poorly matched to one robot may be more executable on another. The deployment results in Table 5 show the same trend: the low-score policy fails on RealMan and ACone, but achieves non-zero OSR and high PSR on R1Pro. These results support embodiment-conditioned filtering: the same UMI data can be risky for one robot but suitable for another, depending on embodiment-specific reachability and trajectory-following constraints. Together, these real-robot results validate physical scoring as a practical criterion for UMI data curation. Training directly on unvalidated UMI trajectories can introduce embodiment-mismatched supervision, while target-embodiment-conditioned filtering selects trajectories that the deployment robot is more likely to reproduce reliably. 
+
+4.3 Model Evaluation Experiments 
+
+After validating the roles of perception-aligned auxiliary supervision and executability-aware trajectory selection, we further evaluate the complete VISTA pipeline under UMI-style settings. 
+
+Simulation benchmark. We evaluate VISTA against three strong VLA baselines on our adapted UMI-style simulation benchmark, including RoboTwin-UMI and LIBERO-UMI. All methods are trained on the same recollected wrist-fisheye demonstrations, ensuring that the comparison isolates the effect of the proposed UMI-oriented adaptation rather than differences in training data. As shown in Table 6, VISTA achieves the best performance on both benchmarks. On RoboTwin-UMI, VISTA improves the success rate from 0.594 to 0.683 over the strongest baseline π0.5. On LIBERO-UMI, VISTA further improves from 0.922 to 0.943. Overall, VISTA obtains an average success rate of 0.813, outperforming π0.5 by 5.5 points, LingBot-VLA by 15.5 points, and Wall-X by 38.7 points. These results show that explicitly adapting the model to UMI-style wrist-fisheye observations and physically validated action data leads to more effective policy learning under 15 0% 25% 50% 75% 100%       
+
+> progress (%)
+> 0.000
+> 0.025
+> 0.050
+> 0.075
+> 0.100
+> pos. error (m)
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> ori. error (rad)
+> Low-score (n=6) High-score (n=6) Figure 8
+
+Failure analysis of policies trained on low-score and high-score subsets during RealMan deployment. The curves show the mean position and orientation errors between the policy-generated desired trajectory and the nearest feasible trajectory under the target embodiment constraints, plotted over task progress. Shaded regions indicate variation across six deployment trials. The low-score policy exhibits large post-grasp deviations, indicating poor trajectory followability during placement and leading to task failure. Detailed pose trajectories are provided in Appendix B. (a) High-score subset: succeed 
+
+(b) Low-score subset: failed  
+
+> Figure 9
+
+Snapshots of deployment experiments on RealMan. The low-score subset leads to post-grasp execution failure, while the high-score subset leads to successful task completion. 
+
+controlled same-data conditions.  
+
+> Policy Avg. Success Rate
+
+LingBot-VLA 0.313 
+
+π0.5 0.528 VISTA 0.598 Table 7 Real-robot evaluation averaged over 20 UMI-collected manipulation tasks. All methods are trained on the same validated UMI dataset and evaluated with 20 trials per task. Success rates are reported in [0 , 1] .
+
+Real-robot evaluation. We further evaluate VISTA on 20 real-world UMI-collected manipulation tasks, covering pre-cise spatial localization, dual wrist-view integration, and local interaction reasoning. All methods are trained on the same validated UMI dataset and evaluated under the same robot platform, task setup, and object configurations. For each task, we conduct 20 real-world trials and report the average success rate across all tasks. As shown in Table 7, VISTA achieves the highest average success rate among all compared methods. It improves over π0.5 from 0.528 to 0.598, corresponding to a 7.0-point absolute gain, and substantially outperforms LingBot-VLA by 28.5 points. These results demonstrate that the benefits of VISTA transfer beyond simulation to real-world deployment, where wrist-fisheye perception, local interaction understanding, and physically executable action supervision are all critical. Detailed task descriptions and per-task results are provided in Appendix D. 16 Training Data #Demos RealMan ACone R1Pro GSR OSR PSR GSR OSR PSR GSR OSR PSR                                      
+
+> Low-score subset 50 0.55 0.00 0.00 0.60 0.00 0.00 0.80 0.80 1.00 High-score subset 50 0.65 0.65 1.00 0.60 0.55 0.92 0.75 0.75 1.00
+> Table 5 Cross-embodiment deployment results for policies trained with low-score and high-score UMI data subsets. Each policy is evaluated over 20 trials on the stapler-placement task under the same deployment protocol.
+> Model RoboTwin-UMI LIBERO-UMI Avg.
+> LingBot-VLA 0.499 0.817 0.658 Wall-X 0.152 0.700 0.426
+> π0.50.594 0.922 0.758 VISTA 0.683 0.943 0.813
+> Table 6 Main simulation results under UMI-style wrist-fisheye observations. All methods are trained on the same recollected demonstrations.
+
+4.4 Ablations and Analysis 
+
+We finally analyze which components of VISTA contribute to the final performance. We study model-level components and action/state representation choices. 
+
+Component ablation. We conduct a unified component ablation to analyze the key design choices of VISTA. As shown in Table 8, the full model achieves a success rate of 68.3%. Removing the Stage-2 training design substantially degrades performance: using a scratch expert drops success to 52.4%, while replacing it with the original π0.5 expert reaches only 60.2%. This confirms that the Stage-2 expert learned in VISTA provides a stronger action prior for UMI-style wrist-fisheye policies. We also find that both state conditioning and delta action prediction are important. Removing proprioceptive state input reduces success to 61.9%, indicating that embodiment and execution context complements visual observations. Replacing delta action prediction with absolute action prediction further reduces success to 53.1%, suggesting that relative action representation is crucial for mapping handheld UMI trajectories to robot execution. Together, these ablations validate the contributions of the learned action expert, proprioceptive state input, and delta action representation. 
+
+Attention-based analysis of visual grounding. We further visualize attention maps to qualitatively inspect how VISTA processes dual wrist-fisheye observations. The visualization compares π0.5 with VISTA on representative RoboTwin-UMI frames. Under this observation regime, the policy relies on wrist-mounted fisheye cameras rather than a global main-view camera, and the two wrist views can provide complementary information about the active gripper, target object, and local interaction region. As shown in Fig. 10, each example is taken from the wrist camera of the non-acting gripper, which serves as an auxiliary observer of the manipulation performed by the other gripper. Compared with π0.5, which often exhibits more diffuse attention in this auxiliary wrist view, VISTA tends to produce more localized attention around task-relevant regions, including the active gripper, manipulated object, and local interaction area. This qualitative comparison suggests that VISTA develops stronger visual grounding under UMI-style observations. 
+
+## 5 Conclusion 
+
+In this work, we presented VISTA, a vision-grounded and physics-validated framework for adapting UMI-collected data to VLA training. We identified two key mismatches in raw UMI data: wrist-mounted fisheye observations are visually misaligned with standard VLM pretraining domains, and human-collected trajectories may be physically infeasible for downstream robot embodiments. VISTA addresses these issues through UMI-VQA for fisheye-aligned visual grounding, trajectory-level physical validation for embodiment-compatible data curation, and a two-stage co-training recipe for vision-language-action learning. Experiments on UMI-style simulation benchmarks, real-world manipulation tasks, and cross-embodiment deployment show that VISTA 17 Variant Stage-2 Expert State Delta Action Success 
+
+VISTA ours ✓ ✓ 68.3 w/o Stage 2, scratch expert scratch ✓ ✓ 52.4 w/o Stage 2, π0.5 expert π0.5 ✓ ✓ 60.2 w/o state ours – ✓ 61.9 w/o delta action ours ✓ – 53.1  
+
+> Table 8
+
+Unified component ablation of VISTA. We compare the full model with variants that replace the Stage-2 action expert, remove proprioceptive state input, or remove delta action prediction. The ablation tests the contributions of the learned action expert, state conditioning, and relative action representation. Input π0.5 VISTA  
+
+> Figure 10
+
+Attention visualization under dual UMI-style wrist-fisheye observations. Columns correspond to lift pot, open microwave, stack bowls, and stamp seal, respectively. Rows show the input image, π0.5 attention, and VISTA attention. 
+
+consistently improves over strong VLA baselines. These results suggest that explicit perceptual alignment and physical feasibility validation are essential for scaling VLA training with handheld demonstration data. 18 References 
+
+Hongjun An, Wenhan Hu, Sida Huang, Siqi Huang, Ruanjun Li, Yuanzhi Liang, Jiawei Shao, Yiliang Song, Zihan Wang, Cheng Yuan, et al. Ai flow: Perspectives, scenarios, and approaches. Vicinagearth , 2026. Pranav Atreya, Karl Pertsch, Tony Lee, Moo Jin Kim, Arhan Jain, Artur Kuramshin, Clemens Eppner, Cyrus Neary, Edward Hu, Fabio Ramos, et al. Roboarena: Distributed real-world evaluation of generalist robot policies. arXiv preprint arXiv:2506.18123 , 2025. Shuai Bai, Yuxuan Cai, Ruizhe Chen, Keqin Chen, Xionghui Chen, Zesen Cheng, Lianghao Deng, Wei Ding, Chang Gao, Chunjiang Ge, et al. Qwen3-vl technical report. arXiv preprint arXiv:2511.21631 , 2025. Lucas Beyer, Andreas Steiner, André Susano Pinto, Alexander Kolesnikov, Xiao Wang, Daniel Salz, Maxim Neumann, Ibrahim Alabdulmohsin, Michael Tschannen, Emanuele Bugliarello, et al. Paligemma: A versatile 3b vlm for transfer. 
+
+arXiv preprint arXiv:2407.07726 , 2024. Johan Bjorck, Fernando Castañeda, Nikita Cherniadev, Xingye Da, Runyu Ding, Linxi Fan, Yu Fang, Dieter Fox, Fengyuan Hu, Spencer Huang, et al. Gr00t n1: An open foundation model for generalist humanoid robots. arXiv preprint arXiv:2503.14734 , 2025. Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom, Karol Hausman, Brian Ichter, et al. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 , 2024. Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Robert Equi, Chelsea Finn, Niccolo Fusai, Manuel Y Galliker, et al. π0.5: a vision-language-action model with open-world generalization. In 9th Annual Conference on Robot Learning , 2025. Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Joseph Dabis, Chelsea Finn, Keerthana Gopalakr-ishnan, Karol Hausman, Alexander Herzog, Jasmine Hsu, et al. Rt-1: Robotics transformer for real-world control at scale. Robotics: Science and Systems XIX , 2023. Jun Cen, Siteng Huang, Yuqian Yuan, Kehan Li, Hangjie Yuan, Chaohui Yu, Yuming Jiang, Jiayan Guo, Xin Li, Hao Luo, et al. Rynnvla-002: A unified vision-language-action and world model. arXiv preprint arXiv:2511.17502 , 2025. Tianxing Chen, Zanxin Chen, Baijun Chen, Zijian Cai, Yibin Liu, Zixuan Li, Qiwei Liang, Xianliang Lin, Yiheng Ge, Zhenyu Gu, et al. Robotwin 2.0: A scalable data generator and benchmark with strong domain randomization for robust bimanual robotic manipulation. arXiv preprint arXiv:2506.18088 , 2025. Cheng Chi, Siyuan Feng, Yilun Du, Zhenjia Xu, Eric Cousineau, Benjamin Burchfiel, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. In Proceedings of Robotics: Science and Systems (RSS) ,2023. Cheng Chi, Zhenjia Xu, Chuer Pan, Eric Cousineau, Benjamin Burchfiel, Siyuan Feng, Russ Tedrake, and Shuran Song. Universal manipulation interface: In-the-wild robot teaching without in-the-wild robots. arXiv preprint arXiv:2402.10329 , 2024. Sudeep Dasari, Frederik Ebert, Stephen Tian, Suraj Nair, Bernadette Bucher, Karl Schmeckpeper, Siddharth Singh, Sergey Levine, and Chelsea Finn. Robonet: Large-scale multi-robot learning. arXiv preprint arXiv:1910.11215 ,2019. Danny Driess, Jost Springenberg, Brian Ichter, Lili Yu, Adrian Li-Bell, Karl Pertsch, Allen Ren, Homer Walke, Quan Vuong, Lucy Xiaoyang Shi, et al. Knowledge insulating vision-language-action models: Train fast, run fast, generalize better. Advances in Neural Information Processing Systems , 38:102867–102888, 2026. Mengfei Du, Binhao Wu, Zejun Li, Xuan-Jing Huang, and Zhongyu Wei. Embspatial-bench: Benchmarking spatial understanding for embodied tasks with large vision-language models. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers) , pages 346–355, 2024. Hao-Shu Fang, Hongjie Fang, Zhenyu Tang, Jirong Liu, Chenxi Wang, Junbo Wang, Haoyi Zhu, and Cewu Lu. Rh20t: A comprehensive robotic dataset for learning diverse skills in one-shot. arXiv preprint arXiv:2307.00595 , 2023. Physical Intelligence, Bo Ai, Ali Amin, Raichelle Aniceto, Ashwin Balakrishna, Greg Balke, Kevin Black, George Bokinsky, Shihao Cao, Thomas Charbonnier, et al. π0.7: a steerable generalist robotic foundation model with emergent capabilities. arXiv preprint arXiv:2604.15483 , 2026. 
+
+19 Alexander Khazatsky, Karl Pertsch, Suraj Nair, Ashwin Balakrishna, Sudeep Dasari, Siddharth Karamcheti, Soroush Nasiriany, Mohan Kumar Srirama, Lawrence Yunliang Chen, Kirsty Ellis, et al. Droid: A large-scale in-the-wild robot manipulation dataset. arXiv preprint arXiv:2403.12945 , 2024. Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan Foster, Grace Lam, Pannag Sanketi, et al. Openvla: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 , 2024. Anastasia Kirillova, Eugene Lyapustin, Anastasia Antsiferova, and Dmitry Vatolin. Erqa: Edge-restoration quality assessment for video super-resolution. arXiv preprint arXiv:2110.09992 , 2021. Black Forest Labs. FLUX.2 [dev]. Hugging Face Model Card, 2025. URL https://huggingface.co/ black-forest-labs/FLUX.2-dev . License: FLUX Non-Commercial License. 32B-parameter open-weight recti-fied flow transformer derived from the FLUX.2 base model, supporting text-to-image generation, single-reference image editing, and multi-reference image editing in a single checkpoint. Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. In The Eleventh International Conference on Learning Representations , 2023. URL https: //openreview.net/forum?id=PqvMRDCJT9t .Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qiang Liu, Yuke Zhu, and Peter Stone. Libero: Benchmarking knowledge transfer for lifelong robot learning. arXiv preprint arXiv:2306.03310 , 2023a. Kehui Liu, Chuyue Guan, Zhongjie Jia, Ziniu Wu, Xin Liu, Tianyu Wang, Shuai Liang, Pengan Chen, Pingrui Zhang, Haoming Song, et al. Fastumi: A scalable and hardware-independent universal manipulation interface with dataset. 
+
+arXiv preprint arXiv:2409.19499 , 2024. Kehui Liu, Zhongjie Jia, Yang Li, Pengan Chen, Song Liu, Xin Liu, Pingrui Zhang, Haoming Song, Xinyi Ye, Nieqing Cao, et al. Fastumi-100k: Advancing data-driven robotic manipulation with a large-scale umi-style dataset. arXiv preprint arXiv:2510.08022 , 2025. Songming Liu, Bangguo Li, Kai Ma, Lingxuan Wu, Hengkai Tan, Xiao Ouyang, Hang Su, and Jun Zhu. Rdt2: Exploring the scaling limit of umi data towards zero-shot cross-embodiment generalization. arXiv preprint arXiv:2602.03310 ,2026. Xingchao Liu, Chengyue Gong, and qiang liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In The Eleventh International Conference on Learning Representations , 2023b. URL https: //openreview.net/forum?id=XVjTT1nw5z .Abby O’Neill, Abdul Rehman, Abhiram Maddukuri, Abhishek Gupta, Abhishek Padalkar, Abraham Lee, Acorn Pooley, Agrim Gupta, Ajay Mandlekar, Ajinkya Jain, et al. Open x-embodiment: Robotic learning datasets and rt-x models: Open x-embodiment collaboration 0. In 2024 IEEE International Conference on Robotics and Automation (ICRA) ,pages 6892–6903. IEEE, 2024. Andreas Steiner, André Susano Pinto, Michael Tschannen, Daniel Keysers, Xiao Wang, Yonatan Bitton, Alexey Gritsenko, Matthias Minderer, Anthony Sherbondy, Shangbang Long, et al. Paligemma 2: A family of versatile vlms for transfer. arXiv preprint arXiv:2412.03555 , 2024. Yu Sun, Meng Cao, Ping Yang, Rongtao Xu, Yunxiao Yan, Runze Xu, Liang Ma, Roy Gan, Andy Zhai, Qingxuan Chen, et al. Maniparena: Comprehensive real-world evaluation of reasoning-oriented generalist robot manipulation. 
+
+arXiv preprint arXiv:2603.28545 , 2026. Huajie Tan, Enshen Zhou, Zhiyu Li, Yijie Xu, Yuheng Ji, Xiansheng Chen, Cheng Chi, Pengwei Wang, Huizhu Jia, Yulong Ao, et al. Robobrain 2.5: Depth in sight, time in mind. arXiv preprint arXiv:2601.14352 , 2026. Emanuel Todorov, Tom Erez, and Yuval Tassa. Mujoco: A physics engine for model-based control. In 2012 IEEE/RSJ international conference on intelligent robots and systems , pages 5026–5033. IEEE, 2012. Homer Rich Walke, Kevin Black, Tony Z Zhao, Quan Vuong, Chongyi Zheng, Philippe Hansen-Estruch, Andre Wang He, Vivek Myers, Moo Jin Kim, Max Du, et al. Bridgedata v2: A dataset for robot learning at scale. In Conference on Robot Learning , pages 1723–1736. PMLR, 2023. Junming Wang, Teng Pu, Wingmun Fung, Jindong Wang, Shanchang Wang, Yuan Deng, Shuyuan Wang, Ziwei Liu, Kunhao Pan, Ping Yang, et al. Xrzero-g0: Pushing the frontier of dexterous robotic manipulation with interfaces, quality and ratios. arXiv preprint arXiv:2604.13001 , 2026. 
+
+20 Peng Wang, Shuai Bai, Sinan Tan, Shijie Wang, Zhihao Fan, Jinze Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, et al. Qwen2-vl: Enhancing vision-language model’s perception of the world at any resolution. arXiv preprint arXiv:2409.12191 , 2024. Ziming Wang. Umi-3d: Extending universal manipulation interface from vision-limited to 3d spatial perception. arXiv preprint arXiv:2604.14089 , 2026. Chenfei Wu, Jiahao Li, Jingren Zhou, Junyang Lin, Kaiyuan Gao, Kun Yan, Sheng-ming Yin, Shuai Bai, Xiao Xu, Yilei Chen, et al. Qwen-image technical report. arXiv preprint arXiv:2508.02324 , 2025a. Shihan Wu, Xuecheng Liu, Shaoxuan Xie, Pengwei Wang, Xinghang Li, Bowen Yang, Zhe Li, Kai Zhu, Hongyu Wu, Yiheng Liu, et al. Robocoin: An open-sourced bimanual robotic data collection for integrated manipulation. arXiv preprint arXiv:2511.17441 , 2025b. Mengda Xu, Han Zhang, Yifan Hou, Zhenjia Xu, Linxi Fan, Manuela Veloso, and Shuran Song. Dexumi: Using human hand as the universal manipulation interface for dexterous manipulation. arXiv preprint arXiv:2505.21864 , 2025. Ganlin Yang, Tianyi Zhang, Haoran Hao, Weiyun Wang, Yibin Liu, Dehui Wang, Guanzhou Chen, Zijian Cai, Junting Chen, Weijie Su, et al. Vlaser: Vision-language-action model with synergistic embodied reasoning. arXiv preprint arXiv:2510.11027 , 2025. Wentao Yuan, Jiafei Duan, Valts Blukis, Wilbert Pumacay, Ranjay Krishna, Adithyavairavan Murali, Arsalan Mousavian, and Dieter Fox. Robopoint: A vision-language model for spatial affordance prediction for robotics. 
+
+arXiv preprint arXiv:2406.10721 , 2024. Yifu Yuan, Haiqin Cui, Yaoting Huang, Yibin Chen, Fei Ni, Zibin Dong, Pengyi Li, Yan Zheng, and Jianye Hao. Embodied-r1: Reinforced embodied reasoning for general robotic manipulation. arXiv preprint arXiv:2508.13998 ,2025. Kevin Zakka. Mink: Python inverse kinematics based on mujoco. https://github.com/kevinzakka/mink , 2026. Version 1.1.0. Qiyuan Zeng, Chengmeng Li, Jude St John, Zhongyi Zhou, Junjie Wen, Guorui Feng, Yichen Zhu, and Yi Xu. Activeumi: Robotic manipulation with active perception from robot-free human demonstrations. arXiv preprint arXiv:2510.01607 , 2025. Yang Zhang, Chenwei Wang, Ouyang Lu, Yuan Zhao, Yunfei Ge, Zhenglong Sun, Xiu Li, Chi Zhang, Chenjia Bai, and Xuelong Li. Align-then-steer: Adapting the vision-language action models through unified latent guidance. arXiv preprint arXiv:2509.02055 , 2025. Yang Zhang, Jiangyuan Zhao, Chenyou Fan, Fangzheng Yan, Tian Li, Haitong Tang, Sen Fu, Xuan’er Wu, Qizhen Weng, Weinan Zhang, et al. Prts: A primitive reasoning and tasking system via contrastive representations. arXiv preprint arXiv:2604.27472 , 2026. Tony Z. Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained bimanual manipulation with low-cost hardware. In ICML Workshop on New Frontiers in Learning, Control, and Dynamical Systems , 2023. Enshen Zhou, Jingkun An, Cheng Chi, Yi Han, Shanyu Rong, Chi Zhang, Pengwei Wang, Zhongyuan Wang, Tiejun Huang, Lu Sheng, et al. Roborefer: Towards spatial referring with reasoning in vision-language models for robotics. 
+
+Advances in Neural Information Processing Systems , 38:28404–28481, 2025. Brianna Zitkovich, Tianhe Yu, Sichun Xu, Peng Xu, Ted Xiao, Fei Xia, Jialin Wu, Paul Wohlhart, Stefan Welker, Ayzaan Wahid, et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. In Conference on Robot Learning , pages 2165–2183. PMLR, 2023. 
+
+21 A The details of Multi-robot deployment System Single  VL A Model  
+
+> Figure 11 As shown in the figure, this is a schematic diagram of us using the same model to control heterogeneous robotic arms to complete the same task. By using our framework, a single model can be deployed simultaneously on these heterogeneous robotic arms.
+
+The primary engineering objective of this work is to fully exploit the deployment potential of UMI-pretrained VLA models on heterogeneous devices. To this end, we design and implement a pure Python-based distributed deployment architecture for multiple heterogeneous robotic arms. This architecture eliminates the heavy reliance on the ROS ecosystem typical in traditional embodied AI deployments, thereby reducing complex learning and configuration overheads. Meanwhile, by employing Zenoh as the underlying communication middleware, the system automatically adapts to the communication medium (inter-process on the same machine, LAN, or even WAN) to achieve shared-memory-level zero-copy or transparent network-level transmission. This design circumvents the concurrency bottlenecks caused by the GIL in older Python versions (<3.13), maximizing the utilization of all available computational resources within the system. Benefiting from the inherent uniformity of the UMI dataset in both state observation and action spaces, our system has achieved a high degree of compatibility with heterogeneous robotic arms. In practical deployment, for any unseen heterogeneous robotic arm, provided that the physical mounting of its end-effector and camera aligns with UMI data collection specifications, developers should only need to implement a basic Cartesian space control interface based on "XYZ spatial coordinates + quaternions." Once this step is completed, the heterogeneous robotic arm can be seamlessly integrated into the current scheduling network as a standard physical terminal, requiring no additional custom adaptations on the algorithm side or other architectural components. As illustrated in Fig.5, implementation follows a strictly decoupled host-satellite logic. The distributed compute nodes—depicted as Satellite Machine 1 through N in the lower tier—run persistently as lightweight system-level daemons. During bootstrapping, the Host Machine simply triggers its master orchestrator, which dispatches a configuration JSON payload via the Zenoh backbone to the target satellites. Upon receipt, these satellite orchestrators autonomously instantiate their respective VLA Model and data processing pipelines without any manual intervention. This elegantly reduces the deployment of a complex multi-machine, multi-GPU cluster across a LAN to the execution of a single local script, achieving absolute transparency and zero redundant operational overhead. 22 0% 25% 50% 75% 100%                          
+
+> progress (%)
+> −0.4
+> −0.3
+> −0.2
+> −0.1
+> x
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.06
+> 0.12
+> 0.18
+> 0.24
+> y
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.96
+> 1.04
+> 1.12
+> 1.20
+> z
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.00
+> 0.08
+> 0.16
+> qx
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.60
+> 0.64
+> 0.68
+> 0.72
+> qy
+> 0% 25% 50% 75% 100%
+> progress (%)
+> −0.30
+> −0.15
+> 0.00
+> qz
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.56
+> 0.64
+> 0.72
+> 0.80
+> qw
+> feasible desired
+
+(1)Infeasible trajectory with high deviation. 0% 25% 50% 75% 100%                           
+
+> progress (%)
+> −0.4
+> −0.3
+> −0.2
+> −0.1
+> x
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.06
+> 0.12
+> 0.18
+> 0.24
+> y
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.96
+> 1.04
+> 1.12
+> 1.20
+> z
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.00
+> 0.08
+> 0.16
+> qx
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.60
+> 0.64
+> 0.68
+> 0.72
+> qy
+> 0% 25% 50% 75% 100%
+> progress (%)
+> −0.30
+> −0.15
+> 0.00
+> qz
+> 0% 25% 50% 75% 100%
+> progress (%)
+> 0.56
+> 0.64
+> 0.72
+> 0.80
+> qw
+> feasible desired
+
+(2)Feasible trajectory with low deviation. 
+
+Figure 12 Desired and feasible poses observed during the replay of UMI trajectories on the RealMan robot executing the glue stick handover task. 
+
+At the data flow and inference layer, independent state streams from each robotic arm are aggregated on the computing nodes via the Zenoh network. Notably, when evaluating different embodied policy models, researchers only need to modify the corresponding model inference process configuration in a YAML file, while the entire distributed communication architecture remains completely unchanged. Furthermore, the multi-machine asynchronous inference mechanism eliminates the computational and I/O blocking typical of single nodes, ensuring high-frequency control responses. During the action dispatch phase, the batched predicted actions output by all parallel computing nodes ultimately converge at the core "Ensembling and Routing Node." In our implementation, we utilize Temporal Ensembling to leverage and fuse the action chunks generated by the multi-machine asynchronous inference. Once the action trajectories undergo temporal fusion, the Router performs targeted distribution based on a predefined mapping table. In this critical process, the RPC (Remote Procedure Call) mechanism plays an essential, interlocking role: rather than dispatching commands via a loosely coupled publish/subscribe pattern, the Temporal Ensembling node employs RPC to synchronously call the underlying robot control processes. It strictly ensures that the corresponding commands have been pushed into the command queue of the robot control process before proceeding to unpack and dispatch the next frame of actions. This strongly coupled state machine design based on RPC ensures strict temporal synchronization between the compute cluster and the physical execution terminals, thereby preventing command accumulation or frame dropping. As illustrated in Fig. 11, this robust framework ultimately enables a single model to be deployed simultaneously across three distinct machines to control heterogeneous robotic arms for the same task. Taken together, this engineering implementation fully utilizes the inherent state-alignment advantages of VISTA and instantiates the AI Flow vision in heterogeneous embodied AI systems, demonstrating a deployment paradigm from distributed inference clusters to heterogeneous robot clusters(An et al., 2026) 
+
+## B Details of poses in the replay and deployment 
+
+Details of the desired and feasible poses observed during the replay of UMI trajectories on RealMan for the three tasks are shown in Figs. 12– 14, respectively. Orientation is represented using quaternions. Additionally, details of the desired and feasible poses for one deployment trail on RealMan for the stapler placement task are shown in Fig.15. These figures more clearly demonstrate the deviation in each dimension. 23 0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.4 
+
+−0.3 
+
+−0.2 
+
+> x
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.1 
+
+0.2 
+
+0.3 
+
+> y
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.96 
+
+0.99 
+
+1.02 
+
+1.05 
+
+> z
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.05 
+
+0.00 
+
+0.05 
+
+> qx
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.68 
+
+0.70 
+
+0.72 
+
+0.74 
+
+> qy
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.00 
+
+0.03 
+
+0.06 
+
+> qz
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.68 
+
+0.70 
+
+0.72 
+
+0.74 
+
+> qw
+
+feasible desired (1)Infeasible trajectory with high deviation. 0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.4 
+
+−0.3 
+
+−0.2 
+
+> x
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.1 
+
+0.2 
+
+0.3 
+
+> y
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.96 
+
+0.99 
+
+1.02 
+
+1.05 
+
+> z
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.05 
+
+0.00 
+
+0.05 
+
+> qx
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.68 
+
+0.70 
+
+0.72 
+
+0.74 
+
+> qy
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.00 
+
+0.03 
+
+0.06 
+
+> qz
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.68 
+
+0.70 
+
+0.72 
+
+0.74 
+
+> qw
+
+feasible desired (2)Feasible trajectory with low deviation. 
+
+Figure 13 Desired and feasible poses observed during the replay of UMI trajectories on the RealMan robot executing the drawer-pulling task. 0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.40 
+
+−0.32 
+
+−0.24 
+
+> x
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+> y
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2 
+
+> z
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.00 
+
+0.15 
+
+0.30 
+
+> qx
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.72 
+
+0.80 
+
+0.88 
+
+0.96 
+
+> qy
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.12 
+
+−0.08 
+
+−0.04 
+
+0.00 
+
+> qz
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.2 
+
+0.4 
+
+0.6 
+
+> qw
+
+feasible desired 
+
+(1)Infeasible trajectory with high deviation. 0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.40 
+
+−0.32 
+
+−0.24 
+
+> x
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+> y
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.9 
+
+1.0 
+
+1.1 
+
+1.2 
+
+> z
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.00 
+
+0.15 
+
+0.30 
+
+> qx
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.72 
+
+0.80 
+
+0.88 
+
+0.96 
+
+> qy
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.12 
+
+−0.08 
+
+−0.04 
+
+0.00 
+
+> qz
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.2 
+
+0.4 
+
+0.6 
+
+> qw
+
+feasible desired (2)Feasible trajectory with low deviation. 
+
+Figure 14 Desired and feasible poses observed during the replay of UMI trajectories on the RealMan robot executing the stapler-placement task. 
+
+24 0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.40 
+
+−0.32 
+
+−0.24 
+
+> x
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.12 
+
+0.16 
+
+0.20 
+
+0.24 
+
+> y
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.9 
+
+1.0 
+
+1.1 
+
+> z
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.00 
+
+0.15 
+
+0.30 
+
+> qx
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.72 
+
+0.80 
+
+0.88 
+
+0.96 
+
+> qy
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.04 
+
+−0.02 
+
+0.00 
+
+> qz
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.2 
+
+0.4 
+
+0.6 
+
+> qw
+
+feasible desired Low-score: high deviation between desired and feasible poses. 0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.40 
+
+−0.32 
+
+−0.24 
+
+> x
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.12 
+
+0.16 
+
+0.20 
+
+0.24 
+
+> y
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.9 
+
+1.0 
+
+1.1 
+
+> z
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.00 
+
+0.15 
+
+0.30 
+
+> qx
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.72 
+
+0.80 
+
+0.88 
+
+0.96 
+
+> qy
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+−0.04 
+
+−0.02 
+
+0.00 
+
+> qz
+
+0% 25% 50% 75% 100% 
+
+progress (%) 
+
+0.2 
+
+0.4 
+
+0.6 
+
+> qw
+
+feasible desired 
+
+High-score: low deviation between desired and feasible poses. 
+
+Figure 15 Desired and feasible end-effector poses for one deployment trail on RealMan for the stapler placement task. Low-score data causes tracking failure due to workspace limits, while high-score data produces more executable desired poses. 
+
+25 C UMI-VQA Construction Pipeline and Prompt Templates 
+
+This appendix provides the data construction pipeline and prompt templates for UMI-VQA. UMI-VQA is constructed from two complementary sources: real-world UMI wrist-fisheye observations and a RefSpatial-based spatial-diversity supplement. The former provides authentic gripper-centric fisheye observations from manipulation demonstrations, while the latter increases the diversity of spatial relations and scene layouts under fisheye-style views. 
+
+C.1 Real-world UMI VQA Construction 
+
+For the real-world UMI portion, we sample images from UMI demonstration episodes collected with paired left- and right-wrist fisheye cameras. For each episode, we randomly sample frames from both wrist views and organize the sampled images into a candidate image pool. To reduce redundancy, we remove near-duplicate frames that correspond to visually similar states within the same episode or across adjacent timesteps. Each retained wrist-fisheye image is then annotated with Qwen3-VL-235B-A22B-Instruct using five groups of prompts, corresponding to scene captioning, scene-state understanding, object grounding, interaction grounding, and spatial reasoning. For each image, we provide the image and its corresponding task instruction to the model. The task instruction is used only as a weak reference, since human-annotated task names may be noisy, incomplete, or unavailable. After generation, we post-process the resulting question–answer pairs by filtering malformed outputs and removing duplicated or near-duplicated QA pairs. This process yields the real-world UMI VQA portion organized into five capability-oriented subsets. 
+
+## Prompt for Scene Captioning 
+
+You are an expert in visual analysis. Your task is to generate a concise image caption, under 80 words, for an image of a robotic arm performing a specific task. Additional Rules: 1. Do not describe motion. Provide only a static description of the scene. 2. Focus only on objects that appear on the table surface or in the manipulation workspace; ignore walls, lighting, and camera viewpoint. 3. The terms front, back, left, right, up, and down in the generated caption should correspond to the 3D space of the image. Input task performed by the robotic arm: {task_text} Output caption: 
+
+## Prompt for Scene-State Understanding 
+
+You are an AI assistant analyzing robot arm camera images and task instructions. Given the robot arm camera image and the task instruction: {task_text}, generate natural open-ended question-answer pairs about the image and task. Question Categories: 1. Visible objects in the image, or the current state or position of the robot gripper. 2. How to accomplish the given task, or what obstacles or challenges may affect task execution. 3. Safety considerations or manipulation constraints relevant to the image and task. 4. Counterfactual reasoning: if a factor changes, such as the environment, object existence or condition, task goal, or robot condition, how must the robot adapt its movement to still complete the task? Example: If the table is wet, can the current trajectory still complete the task? Example: To grasp a durian instead of a cube, how must the robot’s action change? Answer Relevance [STRICT]: 1. Answer only the specific question asked, without adding task background, general advice, future steps, or unrelated observations. 2. Keep the answer scoped to the question type: if the question asks about distance, answer 
+
+26 only about distance; if it asks about orientation, answer only about orientation. 3. Do not use expansion phrases such as "additionally", "furthermore", "also note", or similar expressions. 4. Interpret front, back, left, right, up, and down according to the 3D space of the image. Length Constraint [STRICT]: Question: < 50 words. Answer: < 100 words. Output Format: Return the result as a JSON array ONLY. Do not include any explanations or extra text: [{"Question": "Your question here", "Answer": "Your answer here - STRICTLY LIMITED to the question scope" }, {"Question": "Your question here", "Answer": "Your answer here - STRICTLY LIMITED to the question scope" }, ... ]Generate exactly 4 question-answer pairs. Make sure each question is natural and each answer is informative for understanding the robot arm’s environment and task. 
+
+## Prompt for Object Grounding 
+
+You are an AI assistant specializing in visual grounding analysis of robot arm camera images. Given the robot arm camera image and the task instruction: {task_text}. Generate diverse question-answer pairs focused on visual grounding. Question Types: Type 1: Direct Object Localization. Target the object directly by its name. Example: Detect the [object] in the image. Example: Detect the [object] in the scene. Type 2: Spatial Relationship Reasoning. Target the object by describing its spatial relationship to other objects, without mentioning the target object’s name. Example: Detect the object positioned between [object A] and [object B]. Type 3: Task-Contextual Grounding. Target the object according to the current task context {task_text}, without explicitly naming the object. Example: Detect the object that should be manipulated to complete the task. Additional Rules: 1. Generate exactly 10 QA pairs: 5 questions for Type 1, 3 questions for Type 2, and 2 questions for Type 3. 2. All questions must start with "Detect" while maintaining natural fluency and diverse expressions. 3. The answers should cover both single-object and multi-object detection cases. 4. Interpret spatial relations, including up/down, front/back, left/right, and near/far, according to the 3D space of the image. Do not confuse front/back depth relations with up/down vertical relations. 5. Each answer should contain only bounding-box coordinates [x1, y1, x2, y2] and a simple object description. Do not include any reasoning process. Output Format: Return the result as a JSON array ONLY. Do not include any explanations or extra text: 
+
+27 [{"Question": "Your visual grounding question here", "Answer": [ {"bbox_2d": [x1, y1, x2, y2], "label": "object description"}, {"bbox_2d": [x1, y1, x2, y2], "label": "object description"} ]}, {"Question": "Your visual grounding question here", "Answer": [ {"bbox_2d": [x1, y1, x2, y2], "label": "object description"} ]}]Generate exactly 10 question-answer pairs. 
+
+## Prompt for Interaction Grounding 
+
+You are an AI assistant specializing in point-level visual grounding for robot arm camera images. Given the robot arm camera image and the task instruction: {task_text}. Generate diverse question-answer pairs focused on point-level visual grounding. Question Types: Type 1: FUNCTIONAL_INTERACTION_POINT. Locate a point on a functional part of an object that is suitable for an action such as grasping, pushing, pulling, balancing, or pressing. Example: Which point on the [object] should the robot gripper grasp to lift it securely? Example: Which point on the [object] is the optimal place to apply pressure to activate it? Type 2: PHYSICAL_CAUSAL_POINT. Locate the contact point where the gripper would first touch an object, or, if the object serves as a container or target, the point where another item would land or rest. Example: If the robot were to place the [object] down, which point would it first contact on the surface? Example: Which point indicates where the [object] should be placed to complete the task? Type 3: SPATIAL_EXTREME_POINT. Locate a point representing a spatial extreme among visible objects, such as highest, lowest, closest, farthest, leftmost, or rightmost. Example: Which point is on the part of the [object] that is furthest from the camera? Example: Which point marks the highest location on the [object] visible in the scene? Type 4: RELATIONAL_BETWEEN_POINT. Locate a point on an object or surface that lies spatially between two other visible objects, or at the midpoint of a spatial relationship. Example: Which point on the [object] is equidistant from [object A] and [object B]? Type 5: SURFACE_OR_PART_POINT. Locate a point explicitly on a specific surface or named part of an object, such as a handle, edge, base, tip, rim, corner, or center. Example: Which point is on the tip of the [object]’s [part]? Example: Which point lies on the upper edge of the [object]? Additional Rules: 1. Generate exactly 10 QA pairs: 2 questions for each type. 2. The questions should be diverse, covering different objects, viewpoints, and reasoning patterns. Do not simply copy the examples. 3. All questions must start with "Which point" or "If" while maintaining natural fluency and diverse expressions. 4. The answers should cover both single-point and multi-point cases. Some questions may return one coordinate, while others may return multiple coordinates when multiple contact points or 
+
+28 symmetrical parts exist. 5. Interpret spatial relations, including up/down, front/back, left/right, and near/far, according to the 3D space of the image. Front/back relations refer to depth, not vertical position. 6. Each answer should contain only coordinates in the specified format. Do not include any reasoning process. Output Format: Return the result as a JSON array ONLY. Do not include any explanations or extra text: [{"Question": "Your point grounding question here", "Answer": [ {"point_2d": [x, y]} ]}, {"Question": "Your point grounding question here", "Answer": [ {"point_2d": [x, y]}, {"point_2d": [x, y]} ]}]Generate exactly 10 question-answer pairs. 
+
+## Prompt for Spatial Reasoning 
+
+You are an AI assistant specializing in spatial intelligence analysis of robot gripper camera images and task instructions. Given the robot gripper camera image and the task instruction: {task_instruction}. The task instruction is human-annotated and may be incorrect, incomplete, or null; use it only as a reference. Generate natural question-answer pairs focused on spatial intelligence. Candidate Question Categories: 1. Object counting: How many [object A] are visible in the scene? 2. Spatial relationships: What is the relative position of [object A] compared to [object B]? 3. Distance estimation: How far apart are [object A] and [object B]? 4. Spatial orientation: In which direction is [object A] oriented relative to the robot gripper? 5. Depth perception: Which object appears closer or farther from the camera? 6. Geometric properties: What is the approximate shape or size of [object A] in the scene? 7. Spatial arrangement: How are the objects arranged in the workspace? 8. Accessibility analysis: Which objects are within the robot’s reach based on their positions? 9. Collision avoidance: What spatial constraints must the robot consider when moving toward [object A]? 10. 3D spatial understanding: What is the vertical or horizontal relationship between objects? Additional Rules: 1. Select 4 categories from the candidate categories and generate exactly 2 questions for each selected category, for a total of 8 QA pairs. 2. Each question must require image-based spatial information and manipulation-relevant physical reasoning, such as gravity, friction, stability, grasp safety, reachability, or collision constraints. Questions answerable by external knowledge alone are prohibited. 3. Questions should be contextually grounded, colloquial, and diverse in category, object combination, reasoning angle, and manipulation aspect, such as motion planning, safety, feasibility, manipulation difficulty, or environmental interaction. 4. Questions should include only minimal explicit information and require the model to infer 
+
+29 relevant details from the image. Use multiple distinct objects when possible, and avoid isolated focus on a single object. 5. Answer only the specific question asked, without task background, general advice, future steps, unrelated spatial observations, or expansion phrases such as "additionally", "furthermore", or "also note". 6. Keep each answer scoped to the requested attribute: if the question asks about distance, answer only about distance; if it asks about orientation, answer only about orientation. 7. Interpret front, back, left, right, up, and down according to the 3D space of the image. Quantity Constraint [STRICT]: Exactly 2 questions per selected category. Total: 8 question-answer pairs. No more, no less. Length Constraint [STRICT]: Question: < 50 words. Answer: < 150 words. Output Format: Return the result as a JSON array ONLY. Do not include any explanations or extra text: [{"Question": "Your spatial intelligence question here", "Answer": "Your detailed spatial analysis answer here - STRICTLY LIMITED to question scope" }, {"Question": "Your spatial intelligence question here", "Answer": "Your detailed spatial analysis answer here - STRICTLY LIMITED to question scope" }]Repeat for all 8 pairs. 
+
+C.2 RefSpatial-based Fisheye VQA Construction 
+
+For the spatial-diversity supplement, we start from RefSpatial images and their associated VQA annotations. Since the original images are captured from standard perspectives, we first convert them into fisheye-style images using FLUX.2-dev. The editing prompt asks the model to preserve the original scene content while applying fisheye-style radial distortion, so that the resulting images remain semantically consistent with the original RefSpatial scenes while better matching the wrist-fisheye visual regime. We then filter the original RefSpatial VQA annotations before adding them to UMI-VQA. In particular, we discard QA pairs whose answers contain explicit 2D pixel coordinates, because fisheye conversion changes pixel locations even when the scene content and viewing direction are approximately preserved. Keeping such coordinate-based annotations would make the answer inconsistent with the transformed image. Non-coordinate QA pairs are retained as the RefSpatial-based spatial-diversity supplement. 
+
+## FLUX.2 Fisheye-transform Prompt 
+
+Apply a fisheye-style transformation to the input image. Strict requirements: 1. Preserve the original scene semantics, object identities, and relative spatial relations, especially in the central region of the image. 2. Expand the field of view to create a wide-angle fisheye-style view of the same scene, with an approximate fov of 150 ◦.3. Keep the original camera direction and central viewing angle unchanged. Do not rotate the camera or alter the main viewpoint. 
+
+30 4. Apply fisheye-style radial distortion: distortion should be minimal near the image center and progressively stronger toward the edges. 5. When expanding beyond the original frame, generate only plausible peripheral scene content consistent with the original image. 6. Preserve the original lighting, scene structure, and overall composition as much as possible. 7. The result should look like the same scene captured by a fisheye lens with a wider field of view, not a different or newly imagined scene. 8. Do not add unrelated objects, remove key scene elements, or introduce stylized effects such as tiny-planet, spherical-world, or mirror-ball rendering. 
+
+## D Implementation Details and Experimental Results 
+
+RoboTwin and LIBERO wrist-view fisheye data generation. We generate the wrist-view fisheye data with a two-stage pipeline. For RoboTwin, we first collect demonstrations using wide-angle wrist cameras whose vertical field of view is 150 ◦ and whose rendered resolution is 680 × 680 . For the standard collection configuration, each task is collected with 50 successful episodes. For LIBERO, we use the same image-generation and post-processing pipeline, but remove the third-person view and keep only a single wrist camera. The retained LIBERO wrist camera uses a rendered resolution of 700 × 700 , while sharing the same fisheye distortion parameters as RoboTwin. After collecting the raw episodes, we convert the raw HDF5 files into LeRobot format and apply a fisheye-style image transform during this conversion. For each wrist image, we build a fixed remapping grid based on the image size. Let (cx, c y ) be the image center and R = min (W, H )/2. For an output pixel (u, v ), we define the normalized radius 
+
+ρ =
+
+s u − cx
+
+R
+
+2
+
++
+
+ v − cy
+
+R
+
+2
+
+.
+
+With fisheye strength s = 1 .8, the corresponding source radius is 
+
+ρsrc = tan ( ρ arctan( s)) 
+
+s .
+
+The source coordinate is then obtained by scaling the normalized ray from the image center by ρsrc /ρ . Pixels outside the unit circle ( ρ > 1) are mapped outside the image and filled with a constant black border. We apply the remapping with bilinear interpolation using OpenCV remap , and then resize the result to 224 × 224 
+
+with area interpolation. 
+
+Additional Experimental Details. During evaluation, VISTA and all baselines are trained and evaluated using the same datasets and the same number of training steps. For the simulation experiments on LIBERO and RoboTwin, we perform multi-task mixed training for 40k steps with a batch size of 32. On LIBERO, each task is evaluated over 50 trials, while on RoboTwin, each task is evaluated over 100 trials. For the real-world experiments, we perform single-task fine-tuning for 20k steps on each task, and report the success rate over 20 trials. The detailed experimental results are shown in Table 9, Table 10 and Table 11 31 Task LingBot-VLA π0.5 Wall-X VISTA beat_block_hammer 87.0 95.0 33.0 99.0 
+
+click_bell 12.0 81.0 41.0 91.0 
+
+grab_roller 78.0 77.0 28.0 84.0 
+
+lift_pot 75.0 73.0 15.0 91.0 
+
+move_can_pot 64.0 68.0 14.0 71.0 
+
+move_playingcard_away 34.0 50.0 4.0 58.0 
+
+open_microwave 23.0 40.0 15.0 62.0 
+
+pick_dual_bottles 48.0 64.0 8.0 84.0 
+
+pick_diverse_bottles 55.0 34.0 2.0 65.0 
+
+place_bread_basket 51.0 54.0 3.0 72.0 
+
+place_bread_skillet 60.0 61.0 5.0 67.0 
+
+place_can_basket 58.0 61.0 8.0 65.0 
+
+place_mouse_pad 13.0 14.0 8.0 25.0 
+
+place_object_scale 9.0 29.0 1.0 31.0 
+
+place_phone_stand 45.0 71.0 2.0 73.0 
+
+press_stapler 69.0 69.0 31.0 71.0 
+
+rotate_qrcode 44.0 56.0 14.0 58.0 
+
+stack_bowls_two 90.0 90.0 25.0 92.0 
+
+stamp_seal 39.0 53.0 43.0 57.0 
+
+turn_switch 44.0 48.0 4.0 49.0 
+
+Average 49.9 59.4 15.2 68.3 Table 9 Per-task success rates (%) on the umi-style RoboTwin benchmark. Policy LIBERO-10 Goal Spatial Object Average 
+
+π-0.5 87.0 87.6 95.4 98.8 92.2 LingBot-VLA 65.6 77.8 88.2 95.2 81.7 Wall-X 54.6 63.0 79.0 83.2 70.0 VISTA 88.8 91.6 97.8 98.8 94.3 Table 10 Success rates (%) on umi-style LIBERO benchmark suites. 
+
+32 Task LingBot-VLA π0.5 VISTA 
+
+Close Laptop and Place Mouse 0.20 0.30 0.55 
+
+Place Dolls into Box 0.45 0.25 0.55 
+
+Take Dolls out of Box 0.30 0.65 0.55 Place Stapler on Cabinet 0.65 0.85 0.85 
+
+Stack Side Cubes on Center Cube 0.00 0.45 0.50 
+
+Sort Cubes by Color into Tray 0.35 0.40 0.55 
+
+Retrieve Toast from Toaster 0.55 0.35 0.70 
+
+Pick Target Fruits from Bowl 0.35 0.35 0.25 Put Doll into Drawer and Close 0.45 0.90 0.80 Open Drawer 0.00 0.40 0.55 
+
+Organize Dolls 0.55 0.80 0.80 
+
+Place Bun into Rice Cooker and Close 0.35 0.60 0.65 
+
+Arrange Flowers 0.55 0.75 0.55 Place Drink into Box 0.00 0.25 0.40 
+
+Hang Mug on Rack 0.00 0.60 0.50 Stack Pen Holders 0.00 0.40 0.55 
+
+Pour Chips from Bowl to Plate 0.80 0.85 0.70 Pick Plum from Cluttered Fruits 0.00 0.65 0.85 
+
+Stack Paper Cups 0.10 0.35 0.45 
+
+Place Fruits 0.60 0.40 0.65 Overall 0.313 0.528 0.598 Table 11 Real-robot evaluation on 20 UMI-collected manipulation tasks. All methods are trained on the same validated UMI dataset and evaluated with 20 trials per task. Success rates are reported in [0 , 1] . LingBot-VLA tasks without a valid executable result are counted as zero. 
+
+33
