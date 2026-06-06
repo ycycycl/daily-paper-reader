@@ -1,0 +1,558 @@
+Title: Physical Object Understanding with a Physically Controllable World Model
+
+URL Source: https://arxiv.org/pdf/2606.00439v1
+
+Published Time: Tue, 02 Jun 2026 00:34:06 GMT
+
+Number of Pages: 29
+
+Markdown Content:
+# Physical Object Understanding with a Physically Controllable World Model 
+
+# Rahul Venkatesh 1,* , Klemen Kotar 1,* , Lilian Naing Chen 1,* , Wanhee Lee 1,* ,Gia Ancone 1, Seungwoo Kim 1, Luca Thomas Wheeler 1, Jared Watrous 1,Honglin Chen 2,† , Daniel Bear 3,† , Stefan Stojanov 4,† , Daniel LK Yamins 1 
+
+> 1
+
+Stanford University, 2 OpenAI, 3 Noetik Inc., 4 Google 
+
+# Abstract 
+
+A central challenge in visual intelligence is learning the physical structure of scenes from raw videos: how regions form objects and the laws that govern their interactions. Solving these tasks requires world models capable of in-ferring distributional states of the world from partial ob-servations – capabilities that current architectures do not provide. We introduce a new class of probabilistic world models that support estimation of the probability of any visual variable, such as appearance and dynamics, condi-tioned on any other variables. Here, we identify that these models can be trained efficiently with autoregressive se-quence modeling, yielding world models from which rich object understanding emerges. First, we demonstrate that our model captures the physical laws governing how ob-jects move by generating multiple plausible future states of the world through sequential inference. Then, by analyzing motion correlations across these futures, we extract objects and articulated object subparts. Having discovered these objects, we show that our world model can manipulate them in 3D. Finally, we demonstrate how physical relationships between objects can be computed from the world model, enabling applications such as Visual Jenga. Our project page and code is available at: https://neuroailab. github.io/psi-website/blog.html 
+
+# 1. Introduction 
+
+A central goal in visual intelligence is to build models that understand the physical structure of scenes – how things move if interacted with, how regions correspond to objects, how objects move in 3D, and the physical relationships among them, such as articulation, support, etc. Achieving this requires probabilistic reasoning that captures how one variable in the scene depends on another – e.g., how motion at one location influences motion elsewhere, or how forces applied to an object propagate through its structure. 
+
+> *equal contribution
+> †work done while at Stanford
+
+Bringing all these capabilities together within a uni-fied architecture remains a major challenge. Many exist-ing world-modeling approaches operate on prompts such as text [38], actions [5], or global scene embeddings [1, 35] – which do not provide a way to isolate or query how local scene variables (e.g., appearance, depth, motion) influence one another. Understanding these relationships is essential for reasoning about objects and their physical interactions. Here, we solve this problem by introducing a new class of world models, where we represent the state of the world with local variables and predict the probability distribu-tion of each such variable, given any other variables. We show that this model concept can be formulated as a GPT-style [31] next token prediction sequence model, allowing efficient and scalable model training. Under this frame-work, we build a Physically controllable World Model, with tokens describing visual scenes such as RGB tokens that encode appearance, flow tokens that encode dynamics, and camera tokens that encode viewpoint changes between frames. Our world model supports a wide range of inference pathways by treating different scene variables as probabilis-tic structures that can either be inferred from observations or used to condition future predictions. For example, opti-cal flow can be generated as an intermediate representation to model plausible scene dynamics conditioned on sparse pokes, or supplied as a conditioning signal to render future appearance states of the world. More generally, our frame-work can be used to integrate multiple structured represen-tations of a scene—such as appearance, motion, geometry, and actions—within a unified probabilistic framework. We therefore refer to this framework as a Probabilistic Struc-ture Integrator ( PSI ), emphasizing its ability to represent, predict, and compose diverse scene structures through prob-abilistic inference. We then use PSI to extract a wide range of physical ob-ject understanding. First, its predicted distributions provide motion statistics, highlighting which regions are likely to move and by how much. Next, sequential inference over flow and RGB tokens produces multiple plausible futures, 1
+
+> arXiv:2606.00439v1 [cs.CV] 30 May 2026
+
+capturing uncertainty and dynamics in the visual world. From these imagined futures, we derive object-like entities by using motion-correlation analysis to group pixels that move together, achieving state-of-the-art object segmenta-tion scores on SpelkeBench [27]. Further, we show how ar-ticulated subparts can be found, outperforming prior meth-ods on DragAMove [2]. These discovered objects can then be consistently manipulated in 3D, achieving state-of-the-art results on 3DEditBench [21]. Finally, we demonstrate how the world model reasons about physical relationships between objects to perform tasks like Visual Jenga [4]. 
+
+# 2. Related Works 
+
+Visual world models: Recent world models provide strong generative and perceptual abilities – they excel at producing long-form video [1, 5], performing instruction-conditioned generations [1, 24], and offering rich multimodal reason-ing [37]. Yet these systems fall short of the flexible con-ditional inference that deeper physical scene understanding requires [44]. They do not expose a mechanism for physi-cally grounded queries – such as how local scene variables change under specific physical interventions. PSI over-comes this by modeling the visual world as a probabilis-tic model over local variables, enabling fine-grained causal reasoning for a range of scene-understanding tasks. Fur-ther, while classical world models are typically defined as action-conditioned predictors [16], PSI is best viewed as a “poor man’s world model” [20], where expensive-to-obtain true action data is proxied by cheap visual data patches like optical flow and camera conditioning that encode approxi-mations to agent actions. 
+
+Specialized object understanding models: Several prior works target aspects of object and scene understand-ing, typically in specialized settings. For object discovery, supervised segmentation models such as SAM2 [33] rely on costly annotations, but capture appearance-based group-ings rather than physically coherent entities [17, 48]. Self-supervised methods like CutLER [41] and ProMerge [22] combine attention maps from pretrained encoders [28] to identify object regions, but remain brittle in complex natu-ral scenes. Object editing systems – including drag-based manipulation [2, 7, 13, 45] and depth-conditioned diffusion models [15, 29] – understand how objects move in 3D, but their performance degrades in cluttered scenes [7]. Methods like Visual Jenga [4] infer physical relationships between objects using a combination of off-the-shelf models. In con-trast, PSI is a unified, physically controllable world model that discovers objects, understands how they move in 3D, and infers physical relationships in a zero-shot way without requiring specialized architectures. 
+
+# 3. PSI architecture and training details 
+
+In this section, we first introduce the formulation of world models as probabilistic graphical models [20]. We then de-scribe how these models can be realized using a sequence prediction architecture. Finally, we present a physically controllable visual world model built under this framework. 
+
+Probabilistic World Models. Building models of the visual world involves learning distributions of future states of the world, conditioned on partial observations. To this end, we construct a probabilistic world model whose basic concept is to (1) partition the state of the world into a set of local variables and then (2) learn to predict the conditional probability distribution of each such variable, conditioned on any subset of these variables. Formally, we start with a data format that is described by a finite set of spatiotem-poral pointer locations P and a finite vocabulary V of con-tent values. A partial description of the world is specified as a datum X : S → V that maps a subset of spatiotem-poral indices S ⊂ P to content variables. The learned model Ψ accepts this datum, and an unobserved query lo-cation p / ∈ dom( X) and returns a probability distribution Pr [v | X, p ], capturing the model’s belief over what content could appear at p, given what is observed (see Figure 1a): 
+
+Ψ : ( X, p / ∈ dom( X)) 7 −→ Pr v | X, p  : v ∈ V . (1) Conceptually, this formulation is reminiscent of Probabilis-tic Graphical Models (PGMs), systems in which the distri-bution of any variable can be computed conditioned on any subset of other variables in the system [19]. 
+
+Implementing Ψ with Autoregressive Sequence Pre-diction. Because it has historically been difficult to learn PGM models [12] – one of the reasons they are not pop-ular in modern deep learning – a key question we face is: how exactly can we formulate a neural-network learning objective to efficiently learn Ψ. Our core insight is that the problem of learning arbitrary inter-variable conditional re-lationships can be reformulated as a GPT style next token prediction sequence model. Specifically, we serialize the datum, X, as a sequence of interleaved pointer and content tokens, [p0, v 0, ...p k, v k] (see Figure 1b). The PGM formu-lation in equation 1 reduces to the standard autoregressive framework, where probability distributions over content to-kens are obtained by appending a pointer at the end of the sequence (see Figure 1c): 
+
+Ψ( X, p ) = Ψ( X ◦ p) ≡ Pr [v | X ◦ p] (2) This equivalence of PGMs with sequence models allows us to leverage standard architectures that have proven highly effective in building powerful models in AI, in particular language modeling. The use of pointer tokens enables sequences to be con-structed in arbitrary spatiotemporal order. Each next-token 2Figure 1. PSI Architecture. Here, Figure A illustrates a probabilistic model of the visual world, which predicts distributions over visual variables such as appearance, motion, and depth. Figure B shows how this can be implemented by training a sequence model on a pointer–content representation of visual data. In Figure C , we show how the learnt sequence model can be queried to obtain distributional estimates over visual variables at specified locations. Building on this, Figure D shows how the model can also produce visual variables, either in parallel across the scene or sequentially. Finally, in Figure E we describe PSI , a physically controllable visual world model built under this framework, and its various inference pathways using RGB, optical flow and camera motion tokens. 
+
+prediction, conditioned on previously observed tokens in the sequence, corresponds to estimating a variable given a partial state – sampling the underlying PGM. Training across various orderings amortizes this process, allowing the model to learn the full PGM, i.e., the joint distribution over all variables. 
+
+Building a physically controllable visual world model. The model described above is a generic construc-tion that can in principle operate on variables from any modality. In this work, we use it to build a physically con-trollable visual world model, PSI (Figure 1e). We do this by constructing a content vocabulary V with tokens describ-ing visual scenes: RGB tokens ( V(rgb ) = {rk... }) that en-code appearance, flow tokens ( V(flow ) = {fk... }) that en-code dynamics, and camera tokens ( C = {ck... }) that en-code viewpoint changes between frames. The RGB and flow tokens are obtained by training shallow convolutional quantizers on spatial patch data (see Supplement Section 3 for details of quantizer construction), the camera tokens are obtained by binning 6DOF transforms. Additionally, the set of spatiotemporal pointer tokens P is partitioned into two sets ( P(rgb ) = {p(rgb)  
+
+> k
+
+.. } and P(flow ) = {p(flow)  
+
+> k
+
+... }), for the RGB and flow modalities, respectively. Using these tokens, we construct training sequences of the form: 
+
+X = r0 ◦ [c] ◦ f ◦ r1 (3) where, r0 = [ p(rgb)  
+
+> k
+
+, r k, .. ] and r1 = [ p(rgb)  
+
+> k
+
+, r k, .. ] are RGB pointer-content sequences of two frames of a video, f =[p(flow)  
+
+> k
+
+, f k, .. ] is a sequence of flow pointer-content tokens, 
+
+c is a camera motion token, and ◦ denotes concatenation. During training, r0, r1 and f are constructed in arbitrary spatial order, camera tokens are provided when available, and flow tokens are randomly masked with a mask ratio be-tween 0-1. This allows the model to learn to predict r1 given 
+
+r0 or conditioned on any amount of flow tokens. 
+
+Training details. We implement Ψ as a 7B-parameter GPT transformer, and train with next-token prediction cross 3Figure 2. Motion statistics computed in parallel. In Figure A , we show motion probability computed given the input image and camera stop conditioning. They clearly highlight the parts of the scene that are likely to move. In Figure B , we show probability of motion and expected motion maps for a scene with rigid object (top), and a scene with deformable object (bottom). While the rigid object shows uniform responses across the extent of the object, the deformable object correctly shows localized responses near the poke point. 
+
+entropy loss, supervising only the content token (and not the pointer token) sequence elements. The training dataset con-sisted of 3 million real-world RGB video clips, yielding a total of approximately 1.4 trillion tokens. Training used a batch size of 512 for 1.5M steps using a Warmup-Stable-Decay schedule [43]. More details on the model architec-ture and training process are in Supplement Section 3. 
+
+Inference pathways. As trained, Ψ supports a wide va-riety of inference pathways. For example, as shown in Fig-ure 1a, a few spatiotemporal patches of the camel are re-vealed in a future frame and Ψ predicts a spatial map of distributions over scene variables at other unrevealed loca-tions. Sampling from these yield multiple plausible com-pletions for the rest of the camel. More generally, at inference we roll out by iteratively choosing undecoded pointers and sampling their content. The type of pointer token we choose (i.e. from Vrgb or Vflow )decides the modality we decode. For instance, given r0, if we want to decode a flow token, we would append a pointer 
+
+p(flow)  
+
+> k
+
+to the end of the sequence: ˆf ∼ Ψ( r0 ◦ p(flow)  
+
+> k
+
+). Re-peating this sequentially gives us a complete set of pointer-flow tokens, ˆf seq 
+
+∼ Ψ( r0; flow ), seq 
+
+∼ indicates sequential sam-pling, and the flow argument provided to Ψ indicates that we are decoding flow tokens. These flow tokens can then be decoded into pixels using a quantizer decoder. A similar procedure can be followed for RGB tokens. Interleaving flow tokens between the RGB tokens of two frames enables the use of flow either as a prediction target (i.e. generating plausible scene dynamics) or as a condition-ing signal (i.e. rendering out future appearance states of the world, conditioned on dynamics). The camera motion to-ken allows us to specify changes in viewpoint. In Figure 1e we show various inference pathways of our model: • ˆr seq 
+
+∼ Ψ( r0; rgb ): generating future scene appearance. • ˆf seq 
+
+∼ Ψ( r0; flow ): generating future scene dynamics. • ˆf seq 
+
+∼ Ψ( r0 ◦ [c = 0] , flow ): generating plausible future object dynamics, with camera stop conditioning. • ˆf seq 
+
+∼ Ψ( r0 ◦ [c = 0] ◦ f sparse ; flow ): generating a plausible flow completion, given a sparse poke fsparse = [( p, f sp )] .• ˆr1 seq 
+
+∼ Ψ( r0 ◦ [c = 0] ◦ ˆf ; rgb ): generating appearance changes resulting from object dynamics, f .As our model predicts a distribution over visual vari-ables, we can sample multiple plausible generations for each inference pathway. In the next section, we describe how these inference pathways enable a wide range of scene understanding applications. 
+
+Parallel generation. The procedure we described above uses the standard sequential sampling used in sequence models like LLMs. However, in a variety of applications it can be advantageous to run Ψ in parallel mode, where inference on undecoded locations is performed by indepen-dently evaluating equation 2 for multiple pointers p simul-taneously. Sequential sampling maximizes quality, as each prediction conditions on all previously generated patches, capturing causal dependencies in complex settings where conditional independence between patches cannot be as-sumed (e.g., articulated objects such as horses). Parallel generation assumes conditional independence between un-decoded locations, trading off efficiency for quality. We il-lustrate this procedure in Figure 1d. 
+
+# 4. Applications 
+
+In this section, we present a wide range of object-understanding applications enabled by our world model. We begin by using the model’s predicted distributions to estimate motion statistics – highlighting which regions are likely to move and by how much (Section 4.1). We then 4Figure 3. Sequential generation of plausible object dynamics and appearance. We show that our model can generate multiple physically plausible scene motions and render them into future appearance states – capturing the true dynamics of the physical world for complex objects. In rows 1–2, the model infers plausible motion patterns directly from a single input image. In row 3, specifying a motion for a part of the object (such as the head of the bear) generates diverse, yet physically consistent responses for the rest of the body. 
+
+show multiple plausible future motions of an input scene, generated through sequential inference (Section B.2). From these imagined futures, we compute motion-correlation statistics to extract object-like entities as groupings of pix-els that move together (Sections 4.3, 4.4 and 4.5). We then demonstrate how these objects can be manipulated in 3D (Section 4.6). Additionally, we describe a procedure to uncover physical relationships across various objects in the scene (Section 4.7), enabling applications like Visual Jenga [4]. Finally, we analyze the statistical significance of our results in Section 7 of the Supplement. 
+
+## 4.1. Parallel estimation of motion statistics 
+
+Motion probability maps. For many practical applications, particularly in robotics, it is valuable to know which regions of the scene respond to physical interaction (e.g. movable objects) and those that do not (e.g. floors and walls). Our world model can be queried to produce an estimate of the 
+
+probability of motion at a pointer p, by summing probabil-ities, Pr (fj | X ◦ p) = Ψ( X ◦ p) over the token set Fmotion ,consisting of flow tokens corresponding to flows greater than a certain magnitude: 
+
+Pmotion [p] = X 
+
+> fj∈F motion
+
+Pr (fj | X ◦ p). (4) 
+
+Pmotion can be computed in parallel across all pointers, form-ing a 2D heatmap of regions likely to move. We append a zero camera motion token, ensuring that the predicted dy-namics reflect only the effects of physical interaction. Given the input image, the map reflects which regions would move if interacted with (Figure 2a) and when conditioned on a vir-tual poke, the resulting motion map highlights the regions that would respond to that intervention (Figure 2b). 
+
+Expected motion maps . While Pmotion tell us which parts of the scene will move, often we need to reason about the result of virtual interactions (i.e., where each point moves). To do so, we compute the expected motion at a location, 
+
+p as the probability-weighted average of flow vectors vj ,where each vj maps to token fj :
+
+Emotion [p] = X 
+
+> fj∈V (f low )
+
+Pr (fj | X ◦ p) · vj (5) 
+
+Emotion is computed in parallel across all pointers, and can be obtained for any number of virtual pokes (See Figure 2b). 
+
+## 4.2. Sequential generation of plausible future mo-tions of a scene 
+
+While the parallel motion statistics described above pro-vide useful estimates of how spatial locations are expected to move, they implicitly assume conditional independence across locations. To capture the rich dependencies present in complex, multi-part objects, PSI supports sequential generation, as discussed in Section 3. By sampling tokens one at a time, the model produces diverse motion fields that naturally respect spatial dependencies. We illustrate this ca-pability on multiple challenging objects in Figure 3, on both poke-conditioned and unconditional generation. 54.3. Point-prompted movable object segmentation using motion correlation statistics 
+
+The diverse motion samples produced through sequential generation allows us to probe the scene’s causal structure by analyzing motion-correlation statistics. We use this to identify movable objects – coherent groupings of pix-els that move in unison. To extract these given a point prompt p, we compute the motion correlation map , as the dot product between a poke vector vj that maps to a virtual poke fj , and the flow generation resulting from the poke: 
+
+ˆfj
+
+> seq
+
+∼ Ψ( r0 ◦ [c = 0] ◦ [p, f j ], flow ) – camera stop condition-ing is used ( c = 0 ) to discount camera motion. Computing the expected motion correlation, over N pokes, and thresh-olding it yields a movable object (see Figure 4a): 
+
+¯dot = 1
+
+N
+
+> N
+
+X
+
+> j=1
+
+vj · ˆfj (6) 
+
+Results. We use the SpelkeBench dataset [27] – a bench-mark with movable object annotations for evaluation. We test our model with N = 8 pokes and measure segment boundary precision using mean intersection over union (mIoU). We also report Average Recall (AR) which mea-sures detection accuracy as the fraction of segments with IoU ≥ τ ∈ [0 .5, 0.99] . PSI obtains state-of-the-art re-sults on SpelkeBench, as shown in Table 1a. Qualitative results in Figure 4b indicate that self-supervised methods leveraging DINO’s [28] features such as CutLER [41] and Promerge [22] tend to merge multiple instances of the same category and SAM2 [33] often segments object subparts based on texture that do not move independently. We test other world models such as CWM [40], which performs physical interactions through patch motion counterfactuals, and methods like Force Prompting [13], Flow poke trans-former (FPT) [2] and Perception-as-Control (PasC) [7], which do so with 2D drag vectors. While PasC general-izes poorly to the complex scenes in SpelkeBench, CWM and FPT perform reasonably well, emerging as the strongest self-supervised baselines. Models such as EISEN [6], which learn segments from motion, and Adaptive Slot At-tention [11], do not generalize beyond the simple datasets they were trained on. PSI ’s segments better align with the notion of objects as units that move together. See Supple-ment Section 1.5 for more qualitative results. 
+
+## 4.4. Unprompted movable object segmentation 
+
+In practical settings, where systems have to operate au-tonomously, we may not have a point prompt on the object to begin with. They can be computed from the world model by sampling locations that are likely to move, i.e. p such that Pmotion [p] > δ , and applying the motion correlation procedure described in equation 6. Repeating this multi-ple times and removing similar segments via non-maximum suppression yields a set of all movable entities in the scene. 
+
+Results. We evaluate on the SpelkeBench dataset and in-troduce two additional metrics for this task. Average Preci-sion (AP) measures the fraction of predicted segments that end up being matched and detected, and the F1-Score bal-ances AP and AR by computing their harmonic mean. A model that predicts only a few high quality segments may achieve high precision but low recall as it may miss many segments, while a model that over-segments may boost re-call at the cost of precision. We find that PSI outper-forms other self-supervised methods such as CutLER [41], ProMerge [22] and FPT [2] and supervised methods like SAM2 [33] (see Table 1b). Compared to supervised meth-ods like SAM2 [33], PSI achieves a higher F1-score. Qual-itative results shown in Figure 4c suggest that SAM often over-segments scenes based on texture similarity, produc-ing many non-physical segments which lead to poor preci-sion and reduced interpretability for downstream physical reasoning. More results are in Supplement Section 1.6. 
+
+## 4.5. Poke-prompted articulated part segmentation 
+
+Having discovered movable objects, a natural question to ask is whether there are any subparts of the object that move independently such as articulated regions. We show that given a poke on an object subpart (e.g. closing a lap-top), motion correlations using the procedure described in equation 6 can identify articulated subregions of the object. We compare to FPT [2] and MotionI2V [36] on the Drag-AMove [23] benchmark for articulated part discovery and find that PSI achieves state-of-the-art results on this task (see Table. 1c). Additionally we show qualitative examples on the DragAMove dataset and on real images in Figure 4d. 
+
+## 4.6. 3D object manipulation 
+
+A crucial next step is to understand how these discovered objects move in 3D – predicting not just what moves to-gether, but where and how things move in space. The stan-dard pipeline begins with an image, a point prompt and a de-sired 6DOF transformation as shown in Figure 5. PSI first extracts the movable object, and manipulation is achieved by specifying a dense flow field computed using the 3D transform (see Supplement Section 5.4 for more details), and generating the resulting RGB image. 
+
+Results. To evaluate performance of models, we use 3DEditBench [21]. For measuring performance, in addi-tion to standard metrics like PSNR, SSIM, and LPIPS that capture image quality, we include the Edit Adherence (EA) metric introduced in prior work [29] which measures geo-metric edit accuracy. PSI achieves state-of-the-art object manipulation performance (see Table 1d). Most existing methods fail on complex scenes in 3DEditBench as shown in Figure 5. More importantly, the segments extracted from PSI consistently outperform SAM, improving real-ism when used across diverse image editing models (Per-6(a) Movable object discovery using correlated motion statistics in poke conditioned sequential flow generations. 
+
+> (b) Point-prompted movable object segmentation.
+> (c) Unprompted movable object segmentation.
+> (d) Poke-prompted articulated part segmentation.
+
+Figure 4. Movable object segmentation tasks with PSI . In this figure, we show qualitative results on the segmentation tasks described in Sections 4.3, 4.4 and 4.5. PSI obtains segments that align better with the notion of what moves together in the physical world. 
+
+Figure 5. Manipulating discovered objects in 3D . On the top we show the pipeline of object manipulation: we extract a segment with a point prompt, and given a 3D Edit, we produce a dense flow map reflecting the transformation, and render out RGB appearance using 
+
+PSI . We show comparisons of scene edits using SAM segments versus PSI segments. PSI ’s movable object segments consistently lead to more plausible manipulation. On the bottom we compare different object manipulation techniques. 
+
+7Table 1. Quantitative evaluations across various object understanding tasks. 
+
+> (a) Point-prompted segmentation on SpelkeBench.
+
+MaskFormer SAM2 SlotAttn CutLER ProMerge ForcePrompt PasC EISEN CWM FPT PSI 
+
+AR 0.439 0.482 0.115 0.321 0.342 0.051 0.071 0.158 0.327 0.368 0.541 
+
+mIoU 0.506 0.623 0.253 0.423 0.431 0.107 0.119 0.334 0.481 0.566 0.681 
+
+> (b) Unprompted segmentation on SpelkeBench.
+
+SAM2 CutLER ProMerge FPT PSI 
+
+AP 0.11 0.41 0.42 0.26 0.35 AR 0.62 0.32 0.34 0.18 0.46 
+
+mIoU 0.68 0.42 0.43 0.27 0.57 
+
+F1 0.17 0.34 0.36 0.20 0.38 
+
+> (c) Articulated object understanding on DragAMove.
+
+MotionI2V FPT PSI 
+
+mIoU 0.073 0.287 0.410                                    
+
+> (d) Object manipulation quality on 3DEditBench.
+> Method Segment LPIPS ↓SSIM ↑EA ↑
+> PasC PSI 0.195 0.672 0.679
+> SAM2 0.241 0.658 0.536 DH PSI 0.364 0.555 0.576
+> SAM2 0.419 0.526 0.495 DasS PSI 0.194 0.707 0.640
+> SAM2 0.253 0.682 0.503
+> PSI PSI 0.161 0.736 0.776
+> SAM2 0.183 0.720 0.633
+
+Figure 6. Reasoning about physical relationships between objects. In Figure A , we show that when a virtual poke is applied to an object, the expected displacement includes not only the directly contacted object but also any objects it is physically supports. In Figure B, we show how probability of motion maps can be used to probe physical dependencies in scenes, enabling applications like visual jenga. 
+
+ceptionAsControl (PasC) [7], DiffusionHandles (DH) [29], Diffusion-as-Shader (DasS) [15] (see Table 1d). SAM-generated masks capture only sub-parts of objects, result-ing in fragmented or implausible edits (see Figure 5). Ad-ditional results in Supplement Section 1.7. 
+
+## 4.7. Reasoning about physical relationships 
+
+Understanding 3D motion tells us how individual objects behave, but many physical behaviors arise from interac-tions between objects. Here, we describe how PSI can be used to infer pairwise physical relationships between objects. As illustrated in Figure 10a, when an object at the base of a stacked configuration is virtually perturbed, the resulting expected motion maps reveal motion across all entities it supports, providing a direct estimate of the underlying support graph. Further, probability of motion maps predicted by our world model enable computation of an object-specific movability score , quantifying how freely an object can move without disturbing others. Formally, let the scene contain detected objects, O1, ...O N . We con-struct a directed graph G, where each node corresponds to an object, and each directed edge from Oi to Oj has a weight wij = Pmotion (Oj | Oi moves ), representing the probability that object Oj would move if object Oi were poked. For each object Oi, we compute its motion influ-ence score , I[Oi] = 1 
+
+> N−1
+
+P  
+
+> j̸=i
+
+wij , by averaging the out-going edge weights (Figure 10b). This enables tasks like Visual Jenga [4] where we iteratively select the object with the least influence score, apply a large virtual poke to re-move the object from the scene using the procedure in Sec-tion 4.6, and update the graph by pruning the corresponding node. We illustrate this procedure in Figure 10b. 85. Conclusion & Future Work 
+
+Our work demonstrates a recipe to build a generic self-supervised, physically promptable visual world model and defines simple procedures to extract various forms of rich object understanding in a zero-shot manner, laying the groundwork for general-purpose scene understanding. Though our focus in this paper has been on human-centric macroscopic physical scenes, the underlying philosophy of using predictive models to uncover causal and structural patterns through probing could open new avenues for data-driven structure discovery in other domains where humans have less direct intuition about the nature of objecthood, such as medical imaging, astrophysics, or materials science. 
+
+# Supplementary Materials A. Overview of the supplementary 
+
+• Section B: Additional qualitative results. – Illustrations of parallel motion statistics — probabil-ity of motion maps and expected motion maps (Sec-tion B.1). 
+
+– Illustrations of sequential generation of future world states (Section B.2). 
+
+– Visual Jenga examples (Section B.3). 
+
+– Illustrations of our movable object discovery algorithm (Section B.4). 
+
+– Point-prompted movable object segmentation results (Section B.5). 
+
+– Unprompted movable object discovery results (Sec-tion B.6) 
+
+– 3D object manipulation results (Section B.7). • Section C: Ablation Studies. – Various ablation studies: PSI hyperparameter choices and scaling behavior. • Section D: Additional PSI architecture & training de-tails – Details on PSI architecture, quantizer design, and training procedures. • Section E: SpelkeBench dataset details – Dataset collection procedure and more visual examples from the dataset. • Section F: Details about PSI ’s applications. – Further details on procedures that enable PSI ’s appli-cations like computation of parallel motion statistics, segment extraction and 3D object manipulation. • Section G: Baseline evaluation details, and additional qualitative comparisons. – Here we show the settings used for point-prompted movable object segmentation baseline evaluations, and present additional qualitative analysis showing failure modes. • Section H: Statistical significance of results – In this section, we present some analysis of statistical significance of the quantitative results on various object understanding applications in the main paper. 
+
+# B. Additional Qualitative Results 
+
+## B.1. Parallel motion statistics 
+
+In the main paper, we introduced the use of parallel motion statistics to summarize how different regions of a scene are likely to move under interaction, and we presented qualita-tive examples in Figure 2. Here, in Figure 8, we provide additional examples spanning a wider range of scenes and objects. These qualitative results further demonstrate the consistency of the predicted motion probabilities and the model’s ability to capture coherent motion statistics across diverse visual environments. 
+
+## B.2. Sequential generation of future world states 
+
+In the main paper (Figure 3), we demonstrated the model’s ability to generate multiple plausible future world states through sequential autoregressive rollouts. These exam-ples highlighted both the uncertainty in object trajectories and the physical coherence maintained across generations. Here, in Figure 9, we present additional qualitative results spanning a more diverse set of objects, interactions, and scene configurations. These further illustrate the robustness of the model’s temporal predictions and its capacity to syn-thesize physically consistent futures. 
+
+## B.3. Visual Jenga examples 
+
+In the main paper, we applied our world model to the Vi-sual Jenga task and presented qualitative examples in Figure 6b. These results demonstrated the model’s ability to iden-tify objects which can be freely moved without disturbing other objects in the scene. We showed that our world model can unstack a stacked structure iteratively while maintain-ing structural stability in each step. Here, in Figure 10, we provide additional Visual Jenga examples that cover a broader set of tower configurations and intervention types. These results further highlight the model’s capacity to rea-son about physical relationships in complex scenes. 
+
+## B.4. Illustrations of our movable object discovery algorithm 
+
+In Section 4.3 and Figure 4a of the main paper, we out-lined our algorithm for discovering movable object seg-ments by simulating virtual pokes and computing corre-lated motion statistics in the flow responses. Here, in Fig-ure 17, we provide additional examples that visualize the full process—from poke point sampling to segment extrac-tion. These visualizations further demonstrate the robust-ness and consistency of our flow-based grouping method across a diverse range of objects and scenes. 9Table 2. Ablation studies. We analyze the effect of modifying the parameters used in the segment discovery algorithm described in Section 4.3 of the main paper, impact of model scaling, SAM2’s mask selection strategy, and the importance of incorporating flow tokens for training PSI . These experiments are conducted on the point-promoted movable object segmentation task on SpelkeBench .                                                                   
+
+> (a) Parameters used in the object discovery algorithm
+> #seeds=1, #sequential steps=64 #pokes 1248AR 0.3793 0.3938 0.4673 0.5251
+> mIoU 0.5874 0.5964 0.6419 0.6786
+> #pokes=1, #sequential steps=64 #seeds 1248AR 0.3793 0.3987 0.4495 0.4822
+> mIoU 0.5874 0.5943 0.6266 0.6448
+> #seeds=1, #pokes=8 #sequential steps 064 128 256 AR 0.4622 0.5251 0.5314 0.5336
+> mIoU 0.6413 0.6715 0.6750 0.6774
+> (b) Scaling behavior
+> #pokes=8, #seeds=1, #sequential steps=64
+> PSI (100M) PSI (1B) PSI (7B) AR 0.4306 0.5251 0.5466
+> mIoU 0.6166 0.6715 0.6804
+> (c) SAM2 mask selection ablations
+> Most confident Random Least confident AR 0.4816 0.4070 0.3025 mIoU 0.6225 0.5900 0.5012
+> (d) Importance of using flow tokens
+> CWM PSI -RGB PSI
+> AR 0.158 0.412 0.541
+> mIoU 0.334 0.576 0.681
+
+## B.5. Point-prompted movable object segmentation results 
+
+In Section 4.3 of the main paper, we evaluated segmentation quality under point-prompted settings on SpelkeBench .Here, we present additional qualitative results comparing our method to several baselines. As shown in Figure 11, our method consistently produces cohesive and physically plau-sible segments, in contrast to alternative approaches that of-ten fragment objects or include extraneous background ele-ments. 
+
+## B.6. Unprompted movable object segmentation re-sults 
+
+Previously, in Figure 4c of the main paper, we evaluated un-prompted segmentation on the SpelkeBench benchmark. Here, we present in Figure 13 additional qualitative results comparing our method to baselines such as SAM2 [33], ProMerge [22], and CutLER [41], and FPT [2]. As shown, our method consistently discovers a set of physically plau-sible segments, whereas the baselines tend to over-segment or under-segment the scene. 
+
+## B.7. 3D object manipulation results 
+
+In Section 4.5 of the main paper, we demonstrated PSI ’s ability to manipulate objects in 3D, and the importance of physically grounded segmentation for object manipula-tion. Here, in Figure 14 we include further qualitative com-parisons of edits generated using our predicted segments versus those from SAM2 [33] and additional comparisons with SOTA 3D editing methods in Figure 15. As illus-trated, segments aligned with physical objecthood based on co-movement significantly improve edit realism, spatial coherence, and transformation consistency across multiple 
+
+3DEditBench [21] examples. 
+
+# C. Ablation studies 
+
+We conduct a series of ablations to assess the effect of various design choices. All experiments are done on the point-prompted movable object segmentation application described in Section 4.3 of the main paper. • Table 2a validates the segment extraction framework de-tailed in Section 4.3 of the main paper: averaging across multiple pokes and seeds improves and stabilizes perfor-mance. The table also compares parallel decoding (0 steps) with sequential decoding using varying numbers of autoregressive steps (64-256), a process described in detail at the end of Section 3 of the main paper. Results show that while sequential decoding improves upon par-allel mode, performance gains diminish beyond 64 steps, suggesting that most significant causal dependencies can be captured with relatively few steps. • Table 2b shows that scaling the model is beneficial up to the 7B parameter range. • Table 2c compares the mask selection strategies for run-ning SAM2 evaluations on SpelkeBench in multimask mode. Specifically, SAM2’s multimask mode outputs a set of masks and their associated confidence score. To give SAM2 the fairest chance on the benchmark, we per-form an ablation study on mask selection strategy, includ-ing most confident, random, and least confident. We find that choosing the most confident mask outperforms ran-10 dom or least confident selection strategies, but still falls short of our approach. • Table 2d shows the importance of using flow tokens by comparing PSI to models trained without flow tokens. We evaluate CWM[3], PSI , and PSI -RGB—a variant trained to operate in RGB space rather than flow space (following the same training methodology described in Section 3 of the main paper except without the flow to-kens). For PSI -RGB, we use the same RGB patch mo-tion counterfactual method proposed in CWM for extract-ing plausible flow fields. While PSI -RGB outperforms CWM due to its multimodal generative capabilities, PSI 
+
+with flow tokens substantially outperforms the RGB-only variant, as flow provides a more intuitive control surface for exercising virtual physical interventions in the scene. 
+
+# D. Additional PSI specifications 
+
+Pointer tokens enable random order sequence construc-tions, making probabilistic models tractable. PSI 
+
+adapts the causal autoregressive modeling paradigm for high-dimensional data. Traditional GPT-style transformers predict sequences in a preset, hard-coded order. While this is a natural fit for one-dimensional data such as language, it becomes an unnecessary, and potentially harmful induc-tive bias when modeling higher-dimensional data. Most au-toregressive image modeling approaches simply accept this bias, while we introduce a new token type—the pointer— which allows us to serialize the data in arbitrary order. Pointer tokens enable us to package random-access traversals over high-dimensional data structures (such as images) into one-dimensional sequences of tokens for ef-ficient causal pretraining, by interleaving pointer tokens among the content tokens, which represent the actual data, as illustrated in Figure 1b in the main paper. In addition to freeing us from the raster-order generation bias, pointer tokens allow us to condition our model on any subset of the image, learning complex multidirectional con-ditioning relationships in the data, essentially learning the underlying probabilistic model (PGM) of the world. They also allow for partial patch conditioning, and patch regener-ation during inference. All of this functionality can still be simply expressed as a causal autoregressive sequence of to-kens, and thus can be modeled and optimized as a standard LLM. The sequence model formulation transforms the chal-lenge of learning probabilistic models at scale. The key insight is that our sequences represent traversals through the probabilistic model—each pointer-content pair corre-sponds to visiting and observing a node in the graph. By modeling these traversals autoregressively, we approximate the full joint distribution through conditional factorization. The pointer mechanism ensures we can still query any con-ditional distribution at spatiotemporal locations, but now through tractable sequential prediction rather than expo-nentially complex full inference. This recasts the seem-ingly intractable problem of learning a complete probabilis-tic model over high-dimensional visual data as a standard GPT-style modeling problem. 
+
+Our learned local quantizer. Most visual autoregres-sive models utilize popular off-the-shelf quantizers such as VQ-GAN [10], VQ-VAE [39], or the Cosmos tokenizer [1]. While such standard quantizers achieve strong compression ratios, they do not preserve locality of the patches within the token space, but rather encode the image in its entirety as a global code. While some locality is certainly present in the token representation, swapping any given token can modify the representations associated with patches on the other side of the image. While it is naturally more efficient to compress information globally, this comes at a cost of a less interpretable and less controllable latent (token) space. Instead of compressing the whole frame into global codes, the PSI architecture uses a Hierarchical Local Quan-tizer (HLQ): a convolutional autoencoder whose recep-tive field never crosses patch boundaries during encoding. Each 16 × 16 RGB pixel patch is encoded into a sequence of four 16-bit codes using finite scalar quantization [26], yielding a 65,536-token vocabulary for RGB images. Asecond, similar quantizer is used to quantize optical-flow patches. No information from neighboring patches leaks into a code, preserving strict locality. This lets local down-stream interventions—masking, overwriting, or re-ordering individual patches—behave predictably. Additionally, it makes the autoregressive modeling objective better aligned with natural-language modeling assumptions of token inde-pendence. A decoder accepts local 16-bit codes at every spatial location, and decodes them jointly into the input im-age/flow map that produced them. 
+
+Dataset preparation. The world model is pre-trained on BVD (Big Video Dataset [21])—a 7,000 hour dataset of diverse Internet videos mixed with standard 3-D vision datasets such as ScanNet++ [47], CO3D [34], RealEstate-10K [49] and standard video datasets such as Kinetics [18], SomethingSomethingv2 [14] and OpenX embodiment [8]. Camera pose information is provided to the model when-ever available in the dataset, and optical flow for every frame pair is computed with the SeaRAFT [42] model and quantized. The BVD also consists of internet videos automatically crawled using search queries generated by LLaMA 3 [9]. The queries targeted videos containing rich physical dynamics, diverse environments, and varied ob-jects. Specifically, action categories from Kinetics400 [18] were expanded with additional sports, physical activities, and product review categories. To ensure training relevance, we filtered videos by requiring a minimum level of optical flow and by applying CLIP [32]-based keyword alignment. Positive keywords included action , activity , motion , and 11 Figure 7. Scaling laws that show our model obtaining lower loss when given more parameters. 
+
+place , while negative keywords included animation , car-toon , face , game menu , graphic , map , newscast , person , and 
+
+screenshot . Alignment was quantified by the dot product between CLIP embeddings of keywords and video frames. 
+
+Key Training Details. We train an 80M-parameter RGB HLQ on a combination of ImageNet and Open Images, and an 80M Flow HLQ on the BVD dataset. We quantize 512x512 RGB images and flow maps into tokens and train a 7B-parameter Φ model on a dataset of 3 million RGB video clips. This sums up to about 1.4 trillion tokens. We train Φ
+
+with causal sequences of 2 frames, spanning up to 1 second of video. Mixed-precision training on 64 H100 GPUs at 65% MFU yields 490 TFLOPS/device ( ∼31 PFLOPS total) sustained. All models were trained autoregressively using cross-entropy loss on next-token prediction with a batch size of 
+
+512 . We first train with only RGB and camera pose tokens for 5 × 10 5 steps under a Warmup-Stable-Decay ( WSD )schedule. The learning rate was linearly warmed up over 
+
+2,000 iterations to 3 × 10 −4, held constant until the final 
+
+1 × 10 4 steps, and then decayed linearly to zero. Train-ing was continued for an additional 2 × 10 5 steps with op-tical flow tokens, in addition to RGB and camera tokens, where the learning rate was re-warmed over 800 iterations to 3 × 10 −4, maintained at this value, and decayed linearly to zero during the last 1×10 4 steps. Each training step takes approximately 3.8s. It has been shown that WSD achieves similar or better performance than cosine schedules of the same length. The use of WSD is particularly important here not because of superior performance, however, but because it enables continual training in the flow tokens integration step we discussed above. 
+
+Scaling Properties of PSI . A critical advantage of the 
+
+PSI architecture is its predictable scaling behavior, inher-iting the well-established scaling laws of language models while extending them to visual domains. We trained PSI 
+
+models from 100M to 7B parameters and observed consis-tent improvements in validation loss across three orders of magnitude (Figure 7). The reliable scaling without satu-ration even at 7B parameters suggests that further scaling would yield continued benefits, validating that PSI suc-cessfully transfers the scaling properties of autoregressive language models to structured visual data. We also show scaling properties on downstream applications like point prompted segmentation in our ablation studies here in Sec-tion C. 
+
+# E. SpelkeBench dataset details 
+
+Here we provide more details on SpelkeBench [27] — the evaluation benchmark we use for movable object discovery in Sections 4.3 and 4.4 of the main paper. This benchmark is designed to assess whether segmentation algorithms can identify movable objects — defined as regions that move together — unlike existing datasets such as COCO [25], which emphasize semantic or instance labels. We expand on collection procedures and provide qualitative examples from the dataset. 
+
+## E.1. Collection procedure 
+
+SpelkeBench curates a dataset from two complementary sources: the EntitySeg benchmark [30] and the OpenX-Embodiment robotics dataset [8]. While EntitySeg is de-signed for high-resolution internet imagery with dense seg-mentation annotations, OpenX consists of real-world, ego-centric robot interactions. Since OpenX does not provide segment labels, they are manually annotated for a subset of 50 images. These annotations reflect the types of mov-able objects relevant for physical interaction and manipu-lation tasks that are central to robot learning. For Entity-Seg, a high-quality subset of 500 images is extracted using a three-stage filtering pipeline that filters out the annotated segments in the dataset which do not align with the defini-tion of movable objects: • Stage 1: Removal of amorphous background regions. 
+
+All regions labeled as “stuff”—such as sky, ground, or terrain—based on the standard stuff-vs-things taxon-omy [30] are excluded. These regions lack the individu-ated, cohesive properties associated with movable objects and are typically not physically manipulable entities. • Stage 2: Filtering non-movable object categories. De-spite being labeled as “things”, certain objects like kitchen sinks, traffic signs, or large fixtures are function-ally immovable in real-world settings. These are identi-fied and removed through manual inspection. • Stage 3: Final curation of diverse, high-quality scenes. 
+
+From the filtered pool, 500 images that contain only mov-able object-consistent annotations are selected. It is en-12 sured that this set is diverse in terms of object types, spa-tial arrangements, and scene complexity. 
+
+## E.2. SpelkeBench qualitative examples 
+
+In Figure 16, we present additional examples of images and associated ground-truth movable object annotations in SpelkeBench. These examples further show the failures of existing segmentation benchmarks such as EntitySeg [30] and SA-1B [33], which often contain segments that diverge from the movable object criteria, such as amorphous back-ground regions, or subregions of objects. SpelkeBench’s physically grounded segment annotations are therefore bet-ter candidates to evaluate the object discovery applications of PSI presented in the main paper. 
+
+# F. Details about PSI ’s applications 
+
+Here we provide additional details for the algorithms that enable various object understanding applications of PSI .
+
+## F.1. Parallel estimation of motion statistics 
+
+In Section 4.1 of the main text, we introduced the expected motion map as the probability weighted average of flow vectors that map to flow tokens. This flow token to flow vector mapping needs to be done as a necessary step be-fore the expectation can be computed. Here we describe the procedure used for doing that. 
+
+Flow token epigraphy. PSI uses a learnt local patch quantization to produce flow tokens, but relies on a global decoder to generate coherent, high-quality flow fields. As a result, tokens cannot be interpreted by decoding them in isolation—their meaning emerges only in the context of the full sequence. However, since the tokenizer is local, we can find which continuous flow vectors map to it by performing a kind of token space epigraphy—by assigning meaning to discrete flow tokens through statistical aggregation of typi-cal input flow fields that produced them: 
+
+fj 7 → vj = 1
+
+|Sj |
+
+X
+
+> u∈Sj
+
+u,
+
+where, Sj = u ∈ R2 | tokenizer (u) = fj .
+
+## F.2. Movable segment discovery procedure 
+
+As discussed in Section 4.3 of the main paper, we use 
+
+PSI for movable object discovery by computing the sta-tistical aggregate of pixel-to-pixel correlated motion statis-tics across a variety of applied virtual pokes and generation seeds. In this section, we explain the intuition behind the process and how it allows for a more expressive definition of movable objects. We build upon the idea of counterfactual probing intro-duced in CWM [3], where movable objects are discovered by simulating localized virtual pokes through local patch motion interventions and analyzing the outcome. However, due to its regression-based nature, CWM produces a single deterministic output, which in practice does not accurately represent the physical world where there are multiple phys-ically plausible outcomes for a poke. Consider a simple ex-ample of moving a person’s hand, the hand may move inde-pendently of the body or the entire body may move with the hand–both being valid outcomes. However, because of the aforementioned deterministic nature of CWM, it is forced to average over these distinct possibilities, leading to ambigu-ous or blurry motion completions that fail to reveal which parts of a scene tend to move together. In contrast, because of the generative nature of PSI 
+
+which generates multiple plausible future motions of a scene, we can operationalize movable objects with a more expressive definition as groups of pixels that consistently move together across multiple plausible outcomes of a world model, under different virtual pokes. This requires modeling the distribution of possible responses to external forces. As such, the algorithm defined in Section 4.3 of the main paper is a natural stochastic extension of the original CWM counterfactual procedure as instead of a single pre-diction, we use PSI to produce a diverse set of imagined flow completions for various virtual pokes at a candidate spatial location. Diversity arises from two sources of ran-domness: 1. Sampling flow tokens from the learned distribution Pr [v|X ◦ p] at a pointer p: we draw multiple flows 
+
+fk ∼ Pr [v|X◦p] to explore the local responses the model deems plausible (e.g. if an object is on a table, we would not sample pokes down into the table). 2. Varying the decoding order of spatial indices pk: Be-cause PSI is a sequence model, tokens decoded ear-lier condition those decoded later. Shuffling the order therefore changes how motion propagates through the object—e.g. decoding the torso before the leg yields a different global outcome than decoding the leg first. In our evaluations, we use 8 pokes, and also perform a refinement step by zooming into the object with the initial estimate of the segment, and repeating the extraction proce-dure. 
+
+## F.3. Unprompted segmentation procedure 
+
+Here we provide additional details about our unprompted segmentation algorithm described in Section 4.4 in the main paper. In many real-world settings, especially in robotics, it is advantageous to automatically discover every indepen-dently movable object in a scene without requiring manual point-prompting. For example, a household robot tasked with clearing a dining table must infer that a plate and its contents will move as a unit, while a napkin resting on the plate is an independent entity, so it can plan appropriate grasps and avoid unintended collisions. 13 We now describe a method to extract the full set of mov-able object segments in a scene automatically. Our ap-proach consists of two steps. First, as described in Section 4.4 we poke the scene at multiple locations sampled from the probability of motion map. Then from the model’s flow responses, we compute a dense pixel-to-pixel affinity matrix that captures the likelihood that a pair of pixels will move together. An iterative clustering algorithm is applied to this matrix to isolate a complete set of independently movable entities. 
+
+Computing the affinity matrix . We begin by sampling locations from the motion probability map. These points are where we “poke” to collect flows. 
+
+K = { p1, p 2, . . . , p N } ⊂ I , Pmotion [pi] > τ p.
+
+We then build a motion descriptor for each pixel using the following procedure: For each n = 1, . . . , N , choose R poke-directions 
+
+{f (r) 
+
+> n
+
+}Rr=1 . For each (n, r ) and each of t = 1 , . . . , T ran-dom seeds, compute the flow completion given the input image tokens r0,
+
+ˆft 
+
+> (n,r )seq
+
+∼ Φ( r0 ◦ [c = 0] ◦ [pn, f (r) 
+
+> n
+
+]; flow ; seed = t)
+
+Then for each u ∈ I , where I is the set of 2D pixel loca-tions, the motion descriptor, 
+
+φ[u] =  ˆf1(1 ,1) 
+
+, . . . , ˆft
+
+> (n,r )
+
+(u) ∈ R2 N R T .
+
+Finally, the affinity matrix can be described as the pairwise dot product of motion descriptors: 
+
+A[u, v ] = φ[u]⊤ φ[v], ∀ u, v ∈ I .
+
+For simplicity, we denote A[u] to be the affinity of the pixel 
+
+u with the rest of the image. 
+
+Clustering the affinity matrix to extract segments. Given the precomputed affinity matrix A, we extract segments in an iterative “select–threshold–refine” loop. At each step, we choose the most confident probe center ki∗ , defined as the one whose affinity-row A[ki∗ ] has the highest mean over all pixels—indicative of strong binding to the other pixels that make up the object. We apply Otsu’s method to threshold this row, yielding an initial mask M (0) . We then gather all remaining poke points kj that lie within M (0) and average their affinity-rows to form: 
+
+Aavg = 1
+
+|{ j : kj ∈ M (0) }| 
+
+X  
+
+> kj∈M(0)
+
+A[kj ]
+
+We threshold Aavg via Otsu’s method to obtain a refined mask M (t), for t = 0 . All centers contained in M (t) are then removed from consideration, and the loop repeats on the remaining set of poke points. Once no poke points re-main, the algorithm returns the complete set of extracted segments {M (1) , . . . , M (T )}. Non-maximum suppression is then used to remove duplicate segments. Figure 18 illus-trates this procedure using an example. 
+
+## F.4. 3D Object Manipulation Procedure 
+
+As discussed in Section 4.5 in the main paper, PSI achieves state-of-the-art object manipulation performance by lever-aging 2D optical flow fields that encode 3D transformations. Specifically, to perform 3D object manipulation, we create a flow field where the flow on the surface of the object char-acterizes the 3D transformation to be performed, with the flow of the background set to 0. We use this to condition the predictor to move the object, but keep the background fixed. To generate these flow fields, we perform the follow-ing procedure: • Step 1: Unproject the depth map of the input image, ob-tained using off-the-shelf supervised metric depth estima-tor Depth Anything V2 [46], to obtain a 3D point cloud. • Step 2: Apply the desired rigid transformation to the ob-ject’s point cloud while keeping background points un-changed. • Step 3: Re-project the transformed point cloud and com-pute the displacement relative to the original pixel posi-tions to generate the 2D flow field. • Step 4: Finally, PSI then generates the manipulated im-age given the computed object-masked flow map and the input image. 
+
+# G. Baseline evaluation details and additional qualitative comparisons 
+
+In Section 4.3 of the main paper, we evaluate various base-lines on SpelkeBench using point-prompted segmenta-tion, wherein each method receives a poke point and must output a binary segment. In this section, we expand on how baseline methods generate binary segments from single-point prompts for evaluation, and present additional qual-itative analysis showing failure modes of these methods. • SAM2 [33] : We use single-point prompting on SAM2 multimask mode and choose the most confident mask (see ablation in Table 2c). • DINOv2 [28] : We extract features using the ViT-G/14 backbone, compute affinity between the poke point’s feature and all spatial features, threshold using Otsu’s method, and apply Conditional Random Field refinement to obtain the final binary mask. • CutLER [41] & ProMerge [22] : Both methods generate multiple candidate segments. We select the segment (if any) containing the poke point. • ForcePrompting [13], PerceptionAsControl [7] : For these drag-based approaches, we use the poke point to ini-tialize a trajectory to generate the edited image. We then 14 Task Baseline Metric ∆ ± SE 95% CI p-value Point Segmentation PSI vs SAM2 
+
+Tab. 1a (col 12 vs col 3) 
+
+mIoU ↑ +0 .058 ± 0.010 [0 .038 , 0.077] < 0.001 
+
+AR ↑ +0 .059 ± 0.013 [0 .034 , 0.084] < 0.001 
+
+Automatic Segmentation PSI vs ProMerge 
+
+Tab. 1b (col 6 vs col 4) 
+
+mIoU ↑ +0 .14 ± 0.01 [0 .12 , 0.16] < 0.001 
+
+AP ↑ −0.07 ± 0.01 [−0.10 , −0.05] < 0.001 
+
+AR ↑ +0 .12 ± 0.01 [0 .09 , 0.14] < 0.001 
+
+F1 ↑ +0 .02 ± 0.01 [0 .00 , 0.04] 0.082 
+
+Object Manipulation 
+
+PSI vs PasC 
+
+Tab. 1d (row 8 vs row 2) 
+
+EA ↑ +0 .096 ± 0.030 [0 .044 , 0.150] < 0.001 
+
+LPIPS ↓ −0.035 ± 0.009 [−0.041 , −0.028] < 0.001 
+
+SSIM ↑ +0 .064 ± 0.006 [0 .049 , 0.081] < 0.001 
+
+PSI seg. vs SAM2 seg. 
+
+Tab. 1d (row 8 vs row 9) 
+
+EA ↑ +0 .143 ± 0.042 [0 .064 , 0.223] < 0.001 
+
+LPIPS ↓ −0.022 ± 0.007 [−0.028 , −0.017] < 0.001 
+
+SSIM ↑ +0 .016 ± 0.013 [−0.015 , 0.047] 0.355   
+
+> Table 3. Statistical analysis of relative improvement ( ∆) of PSI vs the second best model across three tasks.
+
+compute optical flow between original and edited image using RAFT and apply Otsu thresholding to the flow mag-nitude to extract the binary segment. Some failure modes of these models are illustrated in Figure 19 • FPT [2] : FPT produces a flow completion given a virtual poke, similar to our method. We can directly apply our algorithm in Section 4.3 of the main paper to this method. • CWM [40] : Similar to drag-based approaches, we ap-ply interventions at the poke point, compute RAFT flow between original image and intervention outcome, and threshold the flow magnitude to obtain the binary seg-ment. CWM merges nearby objects because the model often generates blurry reconstructions, as its RGB pixel regression objective during training does not account for uncertainty. As a result, the flow estimation may produce diffuse or extended motion fields, causing nearby objects to be grouped together, as illustrated in Figure 20 
+
+# H. Statistical significance of quantitative re-sults 
+
+To ensure that our improvements are not only numerically higher but also statistically reliable, we perform a compre-hensive significance analysis across all quantitative evalua-tions. In particular, we focus on the tasks reported in Table 1a, 1b, and 1d of the main paper. Specifically, we report the relative improvement ( ∆), along with standard errors (SE), confidence intervals (CIs), and paired t-tests. Across nearly all metrics in Table 3, we observe three consistent trends: (1) the standard errors are small, indicating low variance across samples; (2) the confidence intervals are tight and do not cross zero, suggesting that the observed improvements are consistently positive; and (3) paired t-tests confirm sta-tistical significance with p ≤ 0.001 . Taken together, these results demonstrate that our improvements reflect stable and statistically significant gains over prior methods. 15 Figure 8. Motion statistics computed in parallel. In Figure A , we show motion probability computed given the input image and camera stop conditioning. They clearly highlight the parts of the scene that are likely to move. In Figure B , we show probability of motion and expected motion maps conditioned on an input virtual poke. 
+
+16 Figure 9. Sequential generation of plausible object dynamics and appearance. We show that our model can generate multiple physically plausible scene motions and render them into future appearance states – capturing the true dynamics of the physical world for complex objects. In rows 1–4, the model infers plausible motion patterns directly from a single input image. In the last row, specifying a motion for a part of the object (such as the hand of the cat) generates diverse, yet physically consistent responses for the rest of the body. 
+
+17 Figure 10. Reasoning about physical relationships between objects. Here we demonstrate how probability of motion maps can be used to probe physical dependencies in scenes, enabling applications like visual jenga on three progressively challenging real world examples. 
+
+18 Figure 11. Additional qualitative results for point-promoted segmentation across models. PSI yields sharper segments which are more aligned with the notion of an object as a movable entity as compared to SAM2, DINO, CWM and FPT. 
+
+19 Figure 12. Illustration of unprompted movable object segment discovery using PSI . The corresponding discovered segments are highlighted, demonstrating the ability of PSI to automatically identify every movable object in the scene without manual prompts. 
+
+20 Figure 13. Additional qualitative results for automatic segmentation across models. PSI produces a set of physical object segments more consistent with physical co-movement as compared to SAM2, ProMerge, CutLER and FPT. Red regions denote predicted segments that are not matched to GT labels. 
+
+21 Figure 14. Additional qualitative comparisons of scene edits using SAM masks versus PSI segments. Each row shows the original image, the user click location, and the resulting edited image using different segmentation methods. 
+
+22 Figure 15. Additional qualitative comparisons of object manipulation comparisons with SOTA methods. We compare PSI to various object-centric image editing methods and show that PSI enables more physically plausible image edits. 
+
+23 Figure 16. Qualitative comparison of SpelkeBench vs other datasets. The visualization demonstrates characteristic differences across datasets: SAM’s dataset tends to oversegment objects into constituent parts (i.e., bottle labels, cup designs), EntitySeg frequently includes ill-defined background regions (i.e., ground, wall), whereas SpelkeBench contains segments that better align with the notion of movable objects as units that move together, serving as an appropriate benchmark for the object discovery applications of our world model. 
+
+24 Figure 17. More illustrations of our movable object discovery algorithm described in Section 4.3 of the main paper . To discover movable objects, we apply multiple virtual pokes at locations sampled from the Pmotion map (column 2). While the model consistently propagates flow across the poked object (column 3), it also generates unprompted flow on other objects. However, since this unprompted flow varies across pokes and typically diverges in direction from the input poke, it gets suppressed when averaging the dot product (column 4) and helps us isolate independently movable entities as shown in the last column. Note that we average across 8 pokes, but only show two rows here for brevity. 
+
+25 Figure 18. Unprompted discovery of movable object segments . We extract probability of motion maps from an image, and use it to sample candidate poke points (top left) . We apply a poke to the image at the sampled points and obtain dense flow fields conditioned on the poke (top right) which are used to compute affinity maps. As shown in the bottom panel, these maps enable the extraction of segments using iterative clustering (see Section F.3). 
+
+Figure 19. Perception-as-Control [7] failure modes in complex scenes. The first column shows the input image with prompt, the second column displays the motion-controlled prediction from the Perception-as-Control, and the third column shows the RAFT-predicted flow field between the input and predicted image. The final column presents the resulting segment obtained by thresholding the flow magnitude. Compared to PSI , Perception-as-Control often produces amorphous flow fields due to imprecise predictions based on the sparse motion control signals. 
+
+26 Figure 20. CWM segmentation failure modes in complex scenes. Each row shows a challenging example where CWM struggles. The first column shows the input image with the patch motion prompt (red arrow). The second column displays the counterfactual prediction generated by CWM. The third column shows the RAFT-predicted flow field between the input and counterfactual image. The final column presents the resulting segment obtained by thresholding the flow magnitude. Compared to PSI , CWM often produces diffuse motion fields due to blurry RGB reconstruction and inaccurate object boundaries. 
+
+27 References 
+
+[1] Niket Agarwal, Arslan Ali, Maciej Bala, Yogesh Balaji, Erik Barker, Tiffany Cai, Prithvijit Chattopadhyay, Yongxin Chen, Yin Cui, Yifan Ding, et al. Cosmos world foun-dation model platform for physical ai. arXiv preprint arXiv:2501.03575 , 2025. 1, 2, 11 [2] Stefan Andreas Baumann, Nick Stracke, Timy Phan, and Bj¨ orn Ommer. What if: Understanding motion through sparse interactions. In Proceedings of the IEEE/CVF In-ternational Conference on Computer Vision , pages 10286– 10296, 2025. 2, 6, 10, 15 [3] Daniel M. Bear, Kevin Feigelis, Honglin Chen, Wanhee Lee, Rahul Venkatesh, Klemen Kotar, Alex Durango, and Daniel L. K. Yamins. Unifying (machine) vision via counterfactual world modeling, 2023. 11, 13 [4] Anand Bhattad, Konpat Preechakul, and Alexei A Efros. Vi-sual jenga: Discovering object dependencies via counterfac-tual inpainting. arXiv preprint arXiv:2503.21770 , 2025. 2, 5, 8 [5] Jake Bruce, Michael D Dennis, Ashley Edwards, Jack Parker-Holder, Yuge Shi, Edward Hughes, Matthew Lai, Aditi Mavalankar, Richie Steigerwald, Chris Apps, et al. Ge-nie: Generative interactive environments. In Forty-first Inter-national Conference on Machine Learning , 2024. 1, 2 [6] Honglin Chen, Rahul Venkatesh, Yoni Friedman, Jiajun Wu, Joshua B Tenenbaum, Daniel LK Yamins, and Daniel M Bear. Unsupervised segmentation in real-world images via spelke object inference. In European Conference on Com-puter Vision , pages 719–735. Springer, 2022. 6 [7] Yingjie Chen, Yifang Men, Yuan Yao, Miaomiao Cui, and Liefeng Bo. Perception-as-control: Fine-grained control-lable image animation with 3d-aware motion representation. 
+
+arXiv preprint arXiv:2501.05020 , 2025. 2, 6, 8, 14, 26 [8] Open X-Embodiment Collaboration, Abby O’Neill, Abdul Rehman, Abhinav Gupta, Abhiram Maddukuri, Abhishek Gupta, Abhishek Padalkar, Abraham Lee, Acorn Pooley, Agrim Gupta, Ajay Mandlekar, Ajinkya Jain, and et al. Open X-Embodiment: Robotic learning datasets and RT-X models. 
+
+https://arxiv.org/abs/2310.08864 , 2023. 11, 12 [9] Abhimanyu Dubey, Abhinav Jauhri, and Abhinav Pandey et.al. The llama 3 herd of models. ArXiv , abs/2407.21783, 2024. 11 [10] Patrick Esser, Robin Rombach, and Bj¨ orn Ommer. Taming transformers for high-resolution image synthesis. In Pro-ceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 12873–12883, 2021. 11 [11] Ke Fan, Zechen Bai, Tianjun Xiao, Tong He, Max Horn, Yanwei Fu, Francesco Locatello, and Zheng Zhang. Adap-tive slot attention: Object discovery with dynamic slot num-ber. In Proceedings of the IEEE/CVF Conference on Com-puter Vision and Pattern Recognition , pages 23062–23071, 2024. 6 [12] Brendan J Frey and Nebojsa Jojic. Learning graphical mod-els of images, videos and their spatial transformations. arXiv preprint arXiv:1301.3854 , 2013. 2 [13] Nate Gillman, Charles Herrmann, Michael Freeman, Daksh Aggarwal, Evan Luo, Deqing Sun, and Chen Sun. Force prompting: Video generation models can learn and gen-eralize physics-based control signals. arXiv preprint arXiv:2505.19386 , 2025. 2, 6, 14 [14] Raghav Goyal, Samira Ebrahimi Kahou, Vincent Michal-ski, Joanna Materzynska, Susanne Westphal, Heuna Kim, Valentin Haenel, Ingo Fruend, Peter Yianilos, Moritz MuellerFreitag, Florian Hoppe, Christian Thurau, Ingo Bax, and Roland Memisevic. The “Something Something” Video Database for Learning and Evaluating Visual Common Sense. In Proceedings of the IEEE International Confer-ence on Computer Vision (ICCV) , pages 5843–5851, 2017. Dataset: 20BN–Something–Something V2. 11 [15] Zekai Gu, Rui Yan, Jiahao Lu, Peng Li, Zhiyang Dou, Chenyang Si, Zhen Dong, Qifeng Liu, Cheng Lin, Ziwei Liu, Wenping Wang, and Yuan Liu. Diffusion as shader: 3d-aware video diffusion for versatile video generation control, 2025. 2, 8 [16] David Ha and J¨ urgen Schmidhuber. World models. arXiv preprint arXiv:1803.10122 , 2(3):440, 2018. 2 [17] W Ji, J Li, Q Bi, W Li, and L Cheng. Segment any-thing is not always perfect: An investigation of sam on dif-ferent real-world applications. arxiv 2023. arXiv preprint arXiv:2304.05750 . 2 [18] Will Kay, Joao Carreira, Karen Simonyan, Brian Zhang, Chloe Hillier, Sudheendra Vijayanarasimhan, Fabio Viola, Tim Green, Trevor Back, Paul Natsev, Mustafa Suleyman, and Andrew Zisserman. The kinetics human action video dataset. arXiv preprint arXiv:1705.06950 , 2017. Dataset: Kinetics-400. 11 [19] Daphne Koller and Nir Friedman. Probabilistic graphical models: principles and techniques . MIT press, 2009. 2 [20] Klemen Kotar, Wanhee Lee, Rahul Venkatesh, Honglin Chen, Daniel Bear, Jared Watrous, Simon Kim, Khai Loong Aw, Lilian Naing Chen, Stefan Stojanov, Kevin Feigelis, Im-ran Thobani, Alex Durango, Khaled Jedoui, Atlas Kazemian, and Dan Yamins. World modeling with probabilistic struc-ture integration, 2025. 2 [21] Wanhee Lee, Klemen Kotar, Rahul Mysore Venkatesh, Jared Watrous, Honglin Chen, Khai Loong Aw, and Daniel LK Yamins. 3d scene understanding through local random ac-cess sequence modeling. arXiv preprint arXiv:2504.03875 ,2025. 2, 6, 10, 11 [22] Dylan Li and Gyungin Shin. Promerge: Prompt and merge for unsupervised instance segmentation. In European Con-ference on Computer Vision (ECCV) , 2024. 2, 6, 10, 14 [23] Ruining Li, Chuanxia Zheng, Christian Rupprecht, and An-drea Vedaldi. Dragapart: Learning a part-level motion prior for articulated objects. In European Conference on Com-puter Vision , pages 165–183. Springer, 2024. 6 [24] Bin Lin, Yang Ye, Bin Zhu, Jiaxi Cui, Munan Ning, Peng Jin, and Li Yuan. Video-llava: Learning united visual repre-sentation by alignment before projection. In Proceedings of the 2024 Conference on Empirical Methods in Natural Lan-guage Processing , pages 5971–5984, 2024. 2 [25] Tsung-Yi Lin, Michael Maire, Serge Belongie, Lubomir Bourdev, Ross Girshick, James Hays, Pietro Perona, Deva 
+
+28 Ramanan, C. Lawrence Zitnick, and Piotr Doll´ ar. Microsoft coco: Common objects in context, 2015. 12 [26] Fabian Mentzer, David Minnen, Eirikur Agustsson, and Michael Tschannen. Finite scalar quantization: Vq-vae made simple. arXiv preprint arXiv:2309.15505 , 2023. 11 [27] NeuroAILab. Spelkebench. https://github.com/ neuroailab/SpelkeBench , 2024. 2, 6, 12 [28] Maxime Oquab, Timoth´ ee Darcet, Theo Moutakanni, Huy V. Vo, Marc Szafraniec, Vasil Khalidov, Pierre Fernandez, Daniel Haziza, Francisco Massa, Alaaeldin El-Nouby, Rus-sell Howes, Po-Yao Huang, Hu Xu, Vasu Sharma, Shang-Wen Li, Wojciech Galuba, Mike Rabbat, Mido Assran, Nico-las Ballas, Gabriel Synnaeve, Ishan Misra, Herve Jegou, Julien Mairal, Patrick Labatut, Armand Joulin, and Piotr Bo-janowski. Dinov2: Learning robust visual features without supervision, 2023. 2, 6, 14 [29] Karran Pandey, Paul Guerrero, Matheus Gadelha, Yannick Hold-Geoffroy, Karan Singh, and Niloy J Mitra. Diffusion handles enabling 3d edits for diffusion models by lifting ac-tivations to 3d. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 7695– 7704, 2024. 2, 6, 8 [30] Lu Qi, Jason Kuen, Tiancheng Shen, Jiuxiang Gu, Weidong Guo, Jiaya Jia, Zhe Lin, and Ming-Hsuan Yang. High-quality entity segmentation. In International Conference on Com-puter Vision (ICCV) , 2023. 12, 13 [31] Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya Sutskever, et al. Improving language understanding by gen-erative pre-training. 2018. 1 [32] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever. Learning transferable visual models from natural language supervision, 2021. 11 [33] Nikhila Ravi, Valentin Gabeur, Yuan-Ting Hu, Ronghang Hu, Chaitanya Ryali, Tengyu Ma, Haitham Khedr, Roman R¨ adle, Chloe Rolland, Laura Gustafson, Eric Mintun, Junt-ing Pan, Kalyan Vasudev Alwala, Nicolas Carion, Chao-Yuan Wu, Ross Girshick, Piotr Doll´ ar, and Christoph Feicht-enhofer. Sam 2: Segment anything in images and videos. 
+
+arXiv preprint arXiv:2408.00714 , 2024. 2, 6, 10, 13, 14 [34] Jeremy Reizenstein, Roman Shapovalov, Philipp Henzler, Luca Sbordone, Patrick Labatut, and David Novotny. Com-mon objects in 3d: Large-scale learning and evaluation of real-life 3d category reconstruction. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2021. Dataset: CO3D. 11 [35] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj¨ orn Ommer. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 10684–10695, 2022. 1 [36] Xiaoyu Shi, Zhaoyang Huang, Fu-Yun Wang, Weikang Bian, Dasong Li, Yi Zhang, Manyuan Zhang, Ka Chun Cheung, Simon See, Hongwei Qin, et al. Motion-i2v: Consistent and controllable image-to-video generation with explicit motion modeling. In ACM SIGGRAPH 2024 Conference Papers ,pages 1–11, 2024. 6 [37] Gemma Team, Aishwarya Kamath, Johan Ferret, Shreya Pathak, Nino Vieillard, Ramona Merhej, Sarah Perrin, Ta-tiana Matejovicova, Alexandre Ram´ e, Morgane Rivi` ere, et al. Gemma 3 technical report. arXiv preprint arXiv:2503.19786 , 2025. 2 [38] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timoth´ ee Lacroix, Baptiste Rozi` ere, Naman Goyal, Eric Hambro, Faisal Azhar, Aure-lien Rodriguez, Armand Joulin, Edouard Grave, and Guil-laume Lample. Llama: Open and efficient foundation lan-guage models, 2023. 1 [39] Aaron Van Den Oord, Oriol Vinyals, et al. Neural discrete representation learning. In Advances in neural information processing systems , 2017. 11 [40] Rahul Venkatesh, Honglin Chen, Kevin Feigelis, Daniel M Bear, Khaled Jedoui, Klemen Kotar, Felix Binder, Wan-hee Lee, Sherry Liu, Kevin A Smith, et al. Understanding physical dynamics with counterfactual world modeling. In 
+
+European Conference on Computer Vision , pages 368–387. Springer, 2024. 6, 15 [41] Xudong Wang, Rohit Girdhar, Stella X Yu, and Ishan Misra. Cut and learn for unsupervised object detection and instance segmentation. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 3124– 3134, 2023. 2, 6, 10, 14 [42] Yihan Wang, Lahav Lipson, and Jia Deng. SEA-RAFT: Sim-ple, efficient, accurate raft for optical flow. In Proceedings of the European Conference on Computer Vision (ECCV) ,2024. 11 [43] Kaiyue Wen, Zhiyuan Li, Jason Wang, David Hall, Percy Liang, and Tengyu Ma. Understanding warmup-stable-decay learning rates: A river valley loss landscape perspective. 
+
+arXiv preprint arXiv:2410.05192 , 2024. 4 [44] Jiajun Wu. Physical scene understanding. AI Magazine , 45 (1):156–164, 2024. 2 [45] Weijia Wu, Zhuang Li, Yuchao Gu, Rui Zhao, Yefei He, David Junhao Zhang, Mike Zheng Shou, Yan Li, Tingting Gao, and Di Zhang. Draganything: Motion control for any-thing using entity representation, 2024. 2 [46] Lihe Yang, Bingyi Kang, Zilong Huang, Zhen Zhao, Xiao-gang Xu, Jiashi Feng, and Hengshuang Zhao. Depth any-thing v2, 2024. 14 [47] Chandan Yeshwanth, Yueh-Cheng Liu, Matthias Nießner, and Angela Dai. ScanNet++: A high-fidelity dataset of 3d in-door scenes. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , 2023. Dataset: ScanNet++. 11 [48] Chaoning Zhang, Yu Qiao, Shehbaz Tariq, Sheng Zheng, Chenshuang Zhang, Chenghao Li, Hyundong Shin, and Choong Seon Hong. Understanding segment anything model: Sam is biased towards texture rather than shape. 
+
+arXiv preprint arXiv:2311.11465 , 2023. 2 [49] Tinghui Zhou, Richard Tucker, John Flynn, Graham Fyffe, and Noah Snavely. Stereo magnification: Learning view syn-thesis using multiplane images. In ACM SIGGRAPH Confer-ence Proceedings , 2018. Dataset: RealEstate-10K. 11 
+
+29
