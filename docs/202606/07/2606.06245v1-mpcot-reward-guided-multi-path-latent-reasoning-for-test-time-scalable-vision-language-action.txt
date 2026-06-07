@@ -1,0 +1,573 @@
+Title: MPCoT: Reward-Guided Multi-Path Latent Reasoning for Test-Time Scalable Vision-Language-Action
+
+URL Source: https://arxiv.org/pdf/2606.06245v1
+
+Published Time: Fri, 05 Jun 2026 01:33:15 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# MPCoT: Reward-Guided Multi-Path Latent Reasoning for Test-Time Scalable Vision-Language-Action 
+
+Boyang Zhang 
+
+Department of Electrical and Computer Engineering Boston University Boston, MA 02215, USA 
+
+theostnc@bu.edu 
+
+Lianlei Shan 
+
+Department of Computer Science Tsinghua University Beijing 100084, China 
+
+shanlianlei18@ucas.edu.cn 
+
+Abstract: Vision-Language-Action (VLA) policies remain brittle in long-horizon and high-uncertainty control, where one-pass action decoding provides limited inference-time deliberation. Explicit chain-of-thought can increase reasoning depth, but introduces token latency and an indirect text-to-action interface. We propose MPCoT , a reward-guided multi-path latent reasoning framework that initializes M hypotheses, refines them for K weight-tied steps, and softly ag-gregates them before action decoding. A training-only path-preference objec-tive evaluates candidate action branches with expert-action consistency, world-model/VLM-based progress, and success feedback to align the latent path scorer with downstream execution quality. MPCoT preserves the original 8-step action interface, generates zero reasoning tokens, and exposes configurable inference controls (K, M ). Under matched protocols on LIBERO and CALVIN, MPCoT improves long-horizon performance, with ablations confirming depth-width ef-fects, confidence-weighted aggregation, and reward-guided path supervision. 
+
+Keywords: vision-language-action, latent reasoning, test-time scaling 
+
+Code and videos: https://github.com/EDGSCOUT/MPCoT 
+
+## 1 INTRODUCTION 
+
+Vision-Language-Action (VLA) policies unify perception, language grounding, and action genera-tion for robot manipulation [1, 2, 3], while open frameworks such as OpenVLA and OpenVLA-OFT make this paradigm reproducible on benchmarks such as LIBERO [4, 5, 6]. Yet long-horizon exe-cution, compositional instructions, and uncertainty remain brittle: a fixed one-pass action decoder provides little inference-time deliberation, and small early errors can compound across later action chunks. This exposes a tension between reasoning depth and control efficiency. Explicit CoT can improve multi-step reasoning in language models and VLA control [7, 8], but textual or visual traces add latency, memory overhead, and an indirect interface to continuous actions. Purely implicit policies are efficient but often reduce difficult decisions to one-pass mappings. Here, we use “latent rea-soning” to mean iterative refinement and selection of continuous latent control hypotheses, rather than explicit symbolic reasoning or decoded rationales. Latent reasoning offers a middle ground: continuous CoT, latent compression, SoftCoT, and recurrent-depth VLA show that deliberation can occur without decoding intermediate text and can benefit robotic policies [9, 10, 11, 12]. This mo-tivates an internal VLA compute mechanism with depth/width controls and an unchanged action interface, making gains attributable to repeated correction, hypothesis coverage, or learned path selection rather than an opaque backbone change. 
+
+> arXiv:2606.06245v1 [cs.RO] 4 Jun 2026
+
+Standard VLA 
+
+> Observation
+> Instruction
+
+Explicit CoT VLA  
+
+> Intermediate reasoning tokens
+> (CoT steps)
+
+MPCoT (Ours)     
+
+> Context
+> latent
+> ⋮
+> Latent Reasoning Module
+> Step 1 Step 2 Step K
+> Path 1 ...
+> Path 2 ...
+> Path M
+
+⋮ ... 
+
+> Soft
+> Aggregation
+
++   
+
+> ⋮⋮⋮
+> Multimodal
+> Encoder
+> Policy
+> Head
+> t1
+> Locate
+> blue
+> cup
+> t2
+> Plan
+> path to
+> cup
+> tn
+> Place
+> cup on
+> block
+> Policy
+> Head
+> …
+> ………
+> Multimodal
+> Encoder
+> Policy
+> Head
+> Action
+> Action
+> Action
+> Iterative
+> refinement
+> Hypothesis
+> diversity
+> Observation
+> Instruction
+
++
+
+> Observation
+> Instruction
+
++Figure 1: Conceptual comparison between standard VLA, explicit CoT VLA, and MPCoT. MP-CoT keeps deliberation in continuous latent space, enabling multi-step/multi-path reasoning without changing the action interface or generating reasoning tokens. We propose MPCoT , a multi-path latent reasoning module for VLA decision making. Given an ob-servation and instruction, MPCoT instantiates multiple latent hypotheses from the same grounded state, refines each branch with a weight-tied operator for depth K, and softly aggregates M branches before action decoding. Beyond single-trajectory latent refinement, MPCoT preserves parallel la-tent hypotheses and learns execution-aware preferences. At deployment, a chosen configuration spends compute through refinement steps or active hypotheses without changing the policy inter-face. A training-only reward-guided objective aligns the scorer with downstream execution quality while preserving reward-free action decoding. At inference, MPCoT is reward-free, token-free, and interface-preserving: an internal deliberation layer before the unchanged action head, not a back-bone replacement. Fig. 1 contrasts standard VLA, explicit CoT VLA, and MPCoT. 
+
+Contributions. The main contributions are fourfold: • We frame VLA reasoning as an embodied test-time compute allocation problem between high-cost explicit reasoning and shallow one-pass control. • We introduce MPCoT, a recurrent multi-path latent reasoning module with explicit depth/width controls (K, M ), zero reasoning tokens, and an unchanged action interface. • We introduce reward-guided path preference learning to align latent branch scores with downstream execution quality using action consistency, VLM progress, and success feed-back. • We validate MPCoT on LIBERO/CALVIN, showing benchmark gains, depth/width com-plementarity, efficient scaling, and reward-supervised path preference learning. 
+
+## 2 RELATED WORK 
+
+Open VLA policies and benchmarks. VLA research has progressed from language-grounded af-fordance selection and robot transformers to open VLA backbones and efficient fine-tuning frame-works [13, 1, 2, 3, 4, 5]. OpenVLA-OFT is our reference backbone because it provides a strong reproducible 8-step action-chunk interface. Recent methods such as π0, UnifiedVLA, FLOWER, VLA-Adapter, and AVA-VLA improve VLA policies through stronger action modeling, architec-ture design, or adaptation strategies [14, 15, 16, 17, 18]. MPCoT is orthogonal to these advances: it inserts lightweight latent deliberation before the unchanged action head and evaluates this internal compute mechanism on LIBERO and CALVIN, acting as an internal reasoning layer rather than a backbone replacement. 2Inputs                            
+
+> Observation
+> Instruction
+> Multimodal
+> encoder
+> Visual
+> Language
+> Fusion
+> z(0)
+> Latent reasoning
+> step 0 step 1 step 2 step K
+> Path 1𝑧 1
+> 0𝑧 1
+> 1𝑧 1
+> 2𝑧 1
+> KS1
+> Shared F𝜽
+> Softmax /
+> weights
+> Policy
+> head
+> Action output
+> inference
+> Candidate actions
+> (one per path)
+> Trajectory 1Action
+> Progress
+> Success
+> reward signals
+> Path return
+> Rm
+> Path scorer
+> p𝜽 (m)
+> training only
+> learns better path
+> preferences
+> ...
+> Path 2𝑧 2
+> 0𝑧 2
+> 1𝑧 2
+> 2𝑧 2
+> KS2
+> ...
+> Path M𝑧 M
+> 0𝑧 M
+> 1𝑧 M
+> 2𝑧 M
+> KSM
+> ...
+> ...
+> ...
+> ...
+> ...
+> Trajectory 2
+> Trajectory M
+
+Figure 2: MPCoT architecture with training-time path supervision. Multiple latent branches are refined for K shared steps, scored, and softly aggregated before action decoding. During training only, candidate action branches receive action, world-model/VLM progress, and success feedback to supervise the scorer; this reward branch is removed at inference. 
+
+Reasoning-augmented VLA and latent test-time compute. Explicit reasoning methods such as CoT-VLA, TraceVLA, and WorldVLA make intermediate deliberation visible, but textual, visual, or trace-based steps can introduce token/intermediate-prediction overhead and do not always align nat-urally with continuous closed-loop control [8, 19, 20]. Continuous and compressed reasoning meth-ods instead show that deliberation can occur in hidden space without decoding intermediate text [9, 10, 21, 22, 23], and SoftCoT motivates soft hypothesis preservation and confidence-weighted selection under uncertainty [11]. Closest to MPCoT, recurrent-depth VLA studies how repeated latent updates improve a single refinement trajectory [12], while broader test-time-compute work analyzes accuracy–latency trade-offs [24]. MPCoT treats latent inference compute as depth–width allocation. Depth K repeatedly corrects each hypothesis with shared weights, whereas width M
+
+maintains grounded latent hypotheses before one unchanged policy head. The scorer selects among execution-aware hypotheses, so width is not an ensemble, extra action heads, action-token expan-sion, inference-time rollout, or an external evaluator. Reward feedback trains only this scorer and is removed at inference. 
+
+## 3 METHOD 
+
+Overview. Fig. 2 details the MPCoT architecture and its training-time path supervision. At each control step, MPCoT initializes M latent hypotheses, applies K shared refinement steps, and ag-gregates the refined branches with confidence-aware soft weights before action decoding [11]. MPCoT is neither a multi-policy ensemble nor inference-time search: it runs one policy head with lightweight latent refinement. All intermediate reasoning remains in continuous latent space [9, 10, 21, 22, 23], avoiding rationale tokens. During training only, candidate branches receive reward feedback that supervises the scorer used later for reward-free inference. This modular place-ment attributes improvements to latent reasoning before the same action head, with inference over-head captured by reported latency rather than hidden in reward search. 
+
+3.1 Problem Setup and Design Targets 
+
+At each control step t, the policy receives observation ot and instruction l and predicts action chunk 
+
+at. We apply a latent reasoning module Rθ before the policy decoder π0:
+
+¯zt = Rθ (ot, l ; K, M ), at ∼ π0(a | ¯zt), (1) 
+
+Rθ refines the same perception-language evidence before policy decoding. We instantiate π0 with OpenVLA-OFT [5] and enforce an unchanged action interface, explicit compute control, and small 3overhead through weight tying. Here K controls how many times the same recurrent refiner is applied, and M controls how many hypotheses are instantiated from the same context; (K, M ) = (0 , 1) recovers direct decoding and M = 1 reduces MPCoT to single-path latent iterative reasoning. This separation tests whether gains come from depth, width, or their combination before the same decoder. 
+
+3.2 Backbone Interface and Latent Hypothesis Initialization 
+
+Let fv (·), fl(·), and fmm (·) denote the visual encoder, language encoder, and multimodal fusion block. The fused latent context is 
+
+ct = fmm 
+
+ fv (ot), f l(l), ct ∈ Rd. (2) Here d follows the OpenVLA-OFT latent width. All paths start from the same grounded context, so differences reflect latent control-hypothesis specialization rather than perceptual changes. To create 
+
+M parallel reasoning hypotheses, we initialize 
+
+z(0)  
+
+> t,m
+
+= ct + em + ϵt,m , m = 1 , . . . , M, (3) where em ∈ Rd is a learnable hypothesis code from a fixed maximum path pool and ϵt,m is a small training-time perturbation (zero for deterministic inference). The active width M selects hypotheses from this pool without new policy heads or inference-only parameters; em encourages specialization, while ϵt,m discourages collapse during training. 
+
+3.3 Weight-Tied Multi-Step Latent Refinement 
+
+For each path, we unroll a shared refinement operator Fθ for K steps: 
+
+r(k) 
+
+> t,m
+
+= Fθ
+
+
+
+[LN( z(k−1)  
+
+> t,m
+
+); ct]
+
+
+
+, (4) 
+
+z(k) 
+
+> t,m
+
+= z(k−1)  
+
+> t,m
+
++ r(k)
+
+> t,m
+
+, k = 1 , . . . , K. (5) Eq. (4) predicts a correction direction, and Eq. (5) applies it as a residual update. All paths are pro-cessed in parallel, while the same Fθ is reused across steps. Thus changing K increases computation but not parameter count. Conditioning each update on context ct prevents instruction drift and keeps refinement aligned with current perception-language evidence. 
+
+3.4 Reward-Guided Path Preference Learning 
+
+After K refinement steps, MPCoT obtains M candidate latent branches z(K) 
+
+> t,m
+
+. A lightweight scorer assigns path logits and soft selection probabilities: 
+
+st,m = hω
+
+
+
+z(K)
+
+> t,m
+
+
+
+, pω (m | ot, l ) = exp( st,m /τ )
+
+PMj=1 exp( st,j /τ ) . (6) The same probabilities serve as aggregation weights: 
+
+¯z(K) 
+
+> t
+
+=
+
+> M
+
+X
+
+> m=1
+
+pω (m | ot, l ) z(K) 
+
+> t,m
+
+. (7) To make the scorer execution-aware, MPCoT uses a training-only path-preference signal. Each refined branch is decoded into a candidate action chunk by the unchanged policy head. During training, candidate branches are independently scored by a fixed world-model/VLM progress eval-uator, or equivalent branch evaluator, on predicted or evaluated after-action progress. Together with expert-action consistency and success labels, this yields the composite branch reward: 
+
+rt,m = βaract  
+
+> t,m
+
++ βprprog  
+
+> t,m
+
++ βsrsucc  
+
+> t,m
+
+. (8) These rewards are converted into detached path advantages and used to train hω with an advantage-weighted path-selection objective. The objective supervises which latent hypothesis should be 4trusted under the observation and instruction, rather than replacing behavior cloning or injecting re-ward search. For this reward-preference term, gradients pass only through the differentiable scorer logits, not through the evaluator, reward computation, or returns. The learned scorer therefore be-comes a reward-free proxy for execution quality at deployment rather than a test-time reward search. At inference, MPCoT never rolls out candidate branches, queries the world-model/VLM evaluator, or accesses rewards and success labels; it only uses the learned scorer and Eq. (7). Appendix B gives the full reward definitions, return/baseline objective, and training-side evaluation protocol. 
+
+3.5 Action Decoding and Training Objective 
+
+The aggregated latent is decoded by the unchanged policy head into the same 8-step action chunk: 
+
+at ∼ π0(a | ¯z(K) 
+
+> t
+
+). (9) MPCoT is trained end-to-end with behavior cloning, reward-guided path preference, and a diversity regularizer that discourages path collapse: 
+
+L = LBC + λRL LRL + λdiv Ldiv . (10) During optimization, K and M define the training configuration used to form branch rewards and aggregation. It supervises the refiner and scorer only; it is not a train-to-test budget schedule. With compute dropout, we sample sub-configurations ˆK ≤ K and ˆM ≤ M within this configuration. At deployment, MPCoT uses the reported inference configuration without reward evaluation, rollout, or VLM/world-model queries. Appendix B provides the loss terms. 
+
+3.6 Architecture and Complexity 
+
+All quantitative results use fixed configurations to isolate latent depth and width; the adaptive budget controller is described in Appendix A and is not used in the reported numbers. Fθ is a lightweight weight-tied residual MLP, hω is a two-layer path scorer, and hypothesis codes are learned jointly. MPCoT adds about 2.7% parameters relative to the backbone, while inference cost scales approx-imately linearly with K × M because refinement weights are shared across steps. This cost is measured in Table 4; no VLM/world-model evaluator is used at inference. Appendix C gives de-tails. 
+
+## 4 EXPERIMENTS 
+
+4.1 Experimental Setup, Metrics, and Protocol 
+
+We insert MPCoT into OpenVLA-OFT and use official evaluation code and splits. Unless noted, training/evaluation follow OpenVLA-OFT defaults [5]; MPCoT preserves same 8-step action inter-face. Main results use fixed inference (K, M ) = (5 , 4) ; other settings appear in depth K/width M
+
+ablations. They change latent steps and hypotheses only, not backbone, decoder, action horizon, splits, or observations. Training-side candidate evaluation supervises path preference, not train-to-test scheduling. Settings are in Appendix A. LIBERO is a near-ceiling compatibility benchmark, while CALVIN ABC →D and mechanism ablations provide primary evidence for sequential robust-ness, depth/width scaling, and reward-guided path supervision. 
+
+Metrics. For LIBERO, we report suite-level and average success rates (SR). For CALVIN ABC →D, we report 1–5-step SR and average successful sequence length, reflecting error accumu-lation over longer instruction chains. For reward-supervision analysis, Path Consistency measures agreement between the scorer-preferred path and the highest-return path; Appendix B gives the definition. Mechanism ablations additionally report path similarity and stability. 
+
+Protocol and comparability. In all tables, MPCoT (Ours) denotes OpenVLA-OFT + MPCoT .At inference, MPCoT receives only observation/language inputs, outputs the same fixed 8-step ac-tion chunk, and never accesses rewards, VLM-progress evaluators, or success labels. Reward signals 5Table 1: Comparison on LIBERO. (a) One policy for all 4 suites. (b) One policy per suite.                                                                                                                
+
+> (a) One policy for all 4 suites. Method Spatial SR (%) Object SR (%) Goal SR (%) Long SR (%) Average SR (%) TraceVLA [19] 84.6 85.2 75.1 54.1 74.8 WorldVLA [20] 87.6 96.2 83.4 60.0 81.8
+> π0[14] 96.8 98.8 95.8 85.2 94.2
+> π0-FAST [25] 96.4 96.8 88.6 60.2 85.5 UnifiedVLA [15] 95.4 98.8 93.6 94.0 95.5 OpenVLA-OFT [5] 97.7 98.0 96.1 95.3 96.8 AVA-VLA [18] 97.4 99.4 97.4 97.6 98.0
+> MPCoT (Ours) 98.2 99.7 98.6 98.9 98.9
+> (b) One policy per suite. Method Spatial SR (%) Object SR (%) Goal SR (%) Long SR (%) Average SR (%) OpenVLA [4] 84.7 88.4 79.2 53.7 76.5 SpatialVLA [26] 88.2 89.9 78.6 55.5 78.1 CoT-VLA [8] 87.5 91.6 87.6 69.0 83.9 NORA [27] 92.2 95.4 89.4 74.6 87.9 PD-VLA [28] 95.5 96.7 94.9 91.7 94.7 UniVLA [29] 96.5 96.8 95.6 92.0 95.2 OpenVLA-OFT [5] 97.6 98.4 97.9 94.5 97.1 FLOWER [16] 97.5 99.1 96.1 94.9 96.9 VLA-Adapter [17] 97.8 99.2 97.2 95.0 97.3 RIPT-VLA [30] 99.0 98.6 98.6 93.8 97.5 AVA-VLA [18] 99.2 99.6 98.2 96.2 98.3
+> MPCoT (Ours) 99.5 99.8 99.0 97.8 99.0
+
+are auxiliary training-side supervision for the path scorer; otherwise, training/evaluation settings and benchmark splits follow OpenVLA-OFT. The “Textual CoT + Policy” row in Table 4 uses the same OpenVLA-OFT backbone and evaluation protocol, replacing MPCoT’s latent deliberation with a standard explicit textual CoT step; it serves as a matched reasoning-form baseline for comparing explicit-token and latent-token-free deliberation. 
+
+4.2 Main Benchmark Results on LIBERO 
+
+Table 1 evaluates MPCoT on LIBERO under both all-suite and suite-specific protocols. MPCoT improves OpenVLA-OFT from 96.8 to 98.9 average SR and from 95.3 to 98.9 Long SR in the all-suite setting, and reaches 99.0 average SR and 97.8 Long SR in the suite-specific setting. Because recent LIBERO systems are near ceiling, we interpret these gains mainly as compatibility evidence rather than the sole long-horizon claim. 
+
+4.3 Long-Horizon Generalization on CALVIN ABC →D
+
+Table 2 evaluates CALVIN ABC →D, where policies train on A/B/C and test on held-out D, stressing sequential decision stability and cross-environment generalization. MPCoT leads from 1-step through 5-step, with the largest gains appearing at longer horizons. At 4/5-step SR, MPCoT reaches 93.7/89.4, outperforming AVA-VLA by 3.8/5.3 points and OpenVLA-OFT by 13.3/16.5 points. This horizon-dependent improvement suggests that MPCoT does more than improve local action prediction: latent refinement and multi-path aggregation help maintain stable execution as early errors propagate. These results provide the main evidence that test-time latent reasoning is most beneficial under long-horizon uncertainty. 6Table 2: Comparison on CALVIN ABC →D benchmark. Columns 1-step to 5-step report success rate (SR, %), and Avg. len reports average successful sequence length.                                                             
+
+> Method 1-step SR (%) 2-step SR (%) 3-step SR (%) 4-step SR (%) 5-step SR (%) Avg. len OpenVLA [4] 91.3 77.8 62.0 52.1 43.5 3.27 UniVLA [29] 95.5 85.8 75.4 66.9 56.5 3.80 UnifiedVLA [15] 98.9 94.8 89.0 82.8 75.1 4.41 OpenVLA-OFT [5] 96.9 92.0 85.7 80.4 72.9 4.28 FLOWER [16] 99.4 95.8 90.7 84.9 77.8 4.53 VLA-Adapter [17] 99.1 94.6 88.8 82.8 76.5 4.42 Seer [31] 96.3 91.6 86.1 80.3 74.0 4.28 AVA-VLA [18] 99.6 97.6 94.1 89.9 84.1 4.65
+> MPCoT (Ours) 99.8 98.9 96.8 93.7 89.4 4.92
+
+Table 3: Effect of latent reasoning depth ( K) and width ( M ). The CALVIN column reports 3-step success rate.                                                 
+
+> Variant KMAgg. LIBERO Avg LIBERO Long CALVIN 3-step SR (%) OpenVLA-OFT (Direct) 01–96.8 95.3 85.7 Latent CoT 11–98.2 97.9 94.8 Latent CoT 31–98.4 98.1 95.6 Latent CoT 51–98.6 98.4 96.3 Multi-path Latent CoT 32Soft 98.5 98.3 95.9 Multi-path Latent CoT 34Soft 98.7 98.6 96.5 Multi-path Latent CoT 54Soft 98.9 98.9 96.8
+
+4.4 Latent Reasoning Structure Ablations 
+
+We next isolate MPCoT’s structural components: Table 3 varies reasoning depth K and width M ,while Table A.3 studies aggregation and diversity. Table 3 shows complementary effects of depth and width. With M = 1 , increasing K from 1 to 5 improves LIBERO average/Long SR from 98.2/97.9 to 98.6/98.4, indicating that repeated latent correction improves a single control hypothesis. At fixed K = 3 , increasing M to 4 further improves Long SR to 98.6, suggesting that parallel paths provide alternative hypotheses. The best (K, M ) = (5 , 4) reaches 98.9 average SR, 98.9 Long SR, and 96.8 CALVIN 3-step SR. Appendix E further shows that soft aggregation with diversity regularization reduces path similarity from 0.91 to 0.66 and stability std from 0.41 to 0.18, indicating non-duplicated branches. 
+
+4.5 Test-Time Scaling and Reasoning Efficiency 
+
+Table 4 tests whether MPCoT scales test-time compute through latent depth and width while avoid-ing explicit-CoT token overhead. Comparing fixed inference configurations, (K, M ) = (5 , 4) improves LIBERO Long from 98.3 to 98.9 over (3 , 2) , while increasing measured latency from 31ms to 38ms and preserving zero reasoning-token overhead. The matched textual CoT baseline reaches 98.2 Long SR but incurs 110– 160ms latency, supporting the efficiency advantage of keeping deliberation in latent space. Thus MPCoT adds only the reported latent-refinement cost at inference, not a reward/world-model/VLM evaluation loop, while improving long-horizon control. 
+
+4.6 Reward-Guided Path Preference Supervision 
+
+Table 5 evaluates whether reward-guided path preference makes multi-path reasoning execution-aware. Removing reward supervision still yields a strong multi-path model but lowers Path 7Table 4: Inference-configuration (K, M ) scaling and reasoning-type comparison under the main reported evaluation protocol. “Latency” reports wall-clock milliseconds measured under the same runtime stack for comparison. 
+
+Reasoning Type Inference (K, M ) Token Overhead Latency LIBERO Long (%) OpenVLA-OFT (Direct) – 0 24ms 95.3 Latent CoT (3,1) 0 29ms 98.1 Latent CoT (5,1) 0 33ms 98.4 Multi-path Latent CoT (3,2) 0 31ms 98.3 Multi-path Latent CoT (5,4) 0 38ms 98.9 
+
+Textual CoT + Policy – High 110–160ms 98.2 
+
+Table 5: Main reward-guided path preference ablation. Avg and Long denote LIBERO success rates. The table keeps all single reward components in the main text and reports the strongest pairwise setting; full pairwise results are in Appendix D.                                                 
+
+> Variant Rewards Avg Long CALVIN 3-step CALVIN 4-step Path Cons. (%) w/o Reward BC only 98.4 97.6 94.7 90.8 68.5 Action Only ract 98.6 98.0 95.3 91.7 73.2 Progress Only rprog 98.6 98.2 95.6 92.1 74.8 Success Only rsucc 98.5 98.1 95.1 91.5 72.4 Best Pair rprog +rsucc 98.8 98.6 96.3 93.1 81.2
+> Full Reward (Ours) ract +rprog +rsucc 98.9 98.9 96.8 93.7 84.3
+
+Consistency; individual rewards help, the strongest pair improves further, and the full ac-tion+progress+success design performs best. The full reward design raises Path Consistency from 68.5 to 84.3 and improves horizon metrics. Path Consistency is a training-side alignment diagnostic, and its increase indicates that the scorer is not merely learning a generic confidence prior but becomes aligned with higher-return branches. The trend from single rewards to the strongest pair and full reward suggests that action consis-tency, progress feedback, and episode success provide complementary path-scoring supervision. Appendix D reports all pairwise reward combinations. 
+
+## 5 CONCLUSION 
+
+We introduced MPCoT, a reward-guided multi-path latent reasoning module that supports VLA in-ference compute through repeated latent refinement depth K and active hypothesis width M while preserving the original action interface and generating zero reasoning tokens. On LIBERO and CALVIN, two standardized and widely used VLA benchmarks, MPCoT improves long-horizon per-formance over strong baselines; the ablations further support the roles of depth/width scaling, soft diverse aggregation, and training-only path preference learning. 
+
+## 6 LIMITATIONS 
+
+Our results are obtained on controlled benchmark environments, which are appropriate for isolating the latent reasoning mechanism and comparing against prior VLA methods under reproducible pro-tocols. However, benchmarks do not fully capture embodiment variation, sensing noise, hardware latency, and contact-rich failures in real robots. At the same time, isolated real-robot demonstrations can also be task- and platform-specific, and are not automatically more representative than standard-ized benchmarks. The next step is therefore controlled hardware validation that preserves the same protocol discipline while testing robustness under real deployment conditions. MPCoT also relies on a training-side world-model/VLM evaluator for path preference supervision, although this eval-uator is never queried at inference. We will release code, reward-evaluation details, configurations, latency scripts, and evaluation commands to support independent verification. 8References 
+
+[1] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, J. Dabis, C. Finn, K. Gopalakrishnan, K. Haus-man, A. Herzog, J. Hsu, J. Ibarz, B. Ichter, A. Irpan, T. Jackson, S. Jesmonth, N. J. Joshi, R. Julian, D. Kalashnikov, Y. Kuang, I. Leal, K.-H. Lee, S. Levine, Y. Lu, U. Malla, D. Manju-nath, I. Mordatch, O. Nachum, C. Parada, J. Peralta, E. Perez, K. Pertsch, J. Quiambao, K. Rao, M. Ryoo, G. Salazar, P. Sanketi, K. Sayed, J. Singh, S. Sontakke, A. Stone, C. Tan, H. Tran, V. Vanhoucke, S. Vega, Q. Vuong, F. Xia, T. Xiao, P. Xu, S. Xu, T. Yu, and B. Zitkovich. RT-1: Robotics transformer for real-world control at scale. In Proc. Robot.: Sci. Syst. (RSS) , 2023. [2] D. Driess, F. Xia, M. S. M. Sajjadi, C. Lynch, A. Chowdhery, B. Ichter, A. Wahid, J. Tompson, Q. Vuong, T. Yu, W. Huang, Y. Chebotar, P. Sermanet, D. Duckworth, S. Levine, V. Vanhoucke, K. Hausman, M. Toussaint, K. Greff, A. Zeng, I. Mordatch, and P. Florence. PaLM-E: An embodied multimodal language model. In Proc. Int. Conf. Mach. Learn. (ICML) , 2023. [3] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, X. Chen, K. Choromanski, T. Ding, D. Driess, A. Dubey, C. Finn, P. Florence, C. Fu, M. G. Arenas, K. Gopalakrishnan, K. Han, K. Hausman, A. Herzog, J. Hsu, B. Ichter, A. Irpan, N. Joshi, R. Julian, D. Kalashnikov, Y. Kuang, I. Leal, L. Lee, T.-W. E. Lee, S. Levine, Y. Lu, H. Michalewski, I. Mordatch, K. Pertsch, K. Rao, K. Reymann, M. Ryoo, G. Salazar, P. Sanketi, P. Sermanet, J. Singh, A. Singh, R. Soricut, H. Tran, V. Vanhoucke, Q. Vuong, A. Wahid, S. Welker, P. Wohlhart, J. Wu, F. Xia, T. Xiao, P. Xu, S. Xu, T. Yu, and B. Zitkovich. RT-2: Vision-language-action models transfer web knowledge to robotic control. In Proc. Conf. Robot Learn. (CoRL) , 2023. [4] M. J. Kim, K. Pertsch, S. Karamcheti, T. Xiao, A. Balakrishna, S. Nair, R. Rafailov, E. Foster, G. Lam, P. Sanketi, Q. Vuong, T. Kollar, B. Burchfiel, R. Tedrake, D. Sadigh, S. Levine, P. Liang, and C. Finn. OpenVLA: An open-source vision-language-action model. In Proc. Conf. Robot Learn. (CoRL) , 2024. [5] M. J. Kim, C. Finn, and P. Liang. Fine-tuning vision-language-action models: Optimizing speed and success. In Proc. Robot.: Sci. Syst. (RSS) , 2025. [6] B. Liu, Y. Zhu, C. Gao, Y. Feng, Q. Liu, Y. Zhu, and P. Stone. LIBERO: Benchmarking knowl-edge transfer for lifelong robot learning. In Proc. Adv. Neural Inf. Process. Syst. (NeurIPS) ,2023. [7] J. Wei, X. Wang, D. Schuurmans, M. Bosma, B. Ichter, F. Xia, E. Chi, Q. Le, and D. Zhou. Chain-of-thought prompting elicits reasoning in large language models. In Proc. Adv. Neural Inf. Process. Syst. (NeurIPS) , 2022. [8] Q. Zhao, Y. Lu, M. J. Kim, Z. Fu, Z. Zhang, Y. Wu, Z. Li, Q. Ma, S. Han, C. Finn, A. Handa, M.-Y. Liu, D. Xiang, G. Wetzstein, and T.-Y. Lin. CoT-VLA: Visual chain-of-thought rea-soning for vision-language-action models. In Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR) , 2025. [9] Y. Hao and S. Sukbaatar. Training large language models to reason in a continuous latent space, 2024. arXiv:2412.06769. [10] Z. Shen, H. Yan, L. Zhang, Z. Hu, Y. Du, and Y. He. CODI: Compressing chain-of-thought into continuous space via self-distillation. In Proc. Conf. Empir. Methods Nat. Lang. Process. (EMNLP) , 2025. [11] Y. Xu, X. Guo, Z. Zeng, and C. Miao. SoftCoT: Soft chain-of-thought for efficient reasoning with LLMs. In Proc. Annu. Meeting Assoc. Comput. Linguist. (ACL) , 2025. [12] Y. Tur, J. Naghiyev, H. Fang, W.-C. Tsai, J. Duan, D. Fox, and R. Krishna. Recurrent-depth VLA: Implicit test-time compute scaling of vision-language-action models via latent iterative reasoning, 2026. arXiv:2602.07845. 9[13] M. Ahn, A. Brohan, N. Brown, Y. Chebotar, O. Cortes, B. David, C. Finn, C. Fu, K. Gopalakr-ishnan, K. Hausman, A. Herzog, D. Ho, J. Hsu, J. Ibarz, B. Ichter, A. Irpan, E. Jang, R. J. Ruano, K. Jeffrey, S. Jesmonth, N. J. Joshi, R. Julian, D. Kalashnikov, Y. Kuang, K.-H. Lee, S. Levine, Y. Lu, L. Luu, C. Parada, P. Pastor, J. Quiambao, K. Rao, J. Rettinghouse, D. Reyes, P. Sermanet, N. Sievers, C. Tan, A. Toshev, V. Vanhoucke, F. Xia, T. Xiao, P. Xu, S. Xu, M. Yan, and A. Zeng. Do as I can, not as I say: Grounding language in robotic affordances. In 
+
+Proc. Conf. Robot Learn. (CoRL) , 2022. [14] K. Black, N. Brown, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, L. Groom, K. Haus-man, B. Ichter, S. Jakubczak, T. Jones, L. Ke, S. Levine, A. Li-Bell, M. Mothukuri, S. Nair, K. Pertsch, L. X. Shi, J. Tanner, Q. Vuong, A. Walling, H. Wang, and U. Zhilinsky. π0: A vision-language-action flow model for general robot control, 2024. arXiv:2410.24164. [15] Y. Wang, X. Li, W. Wang, J. Zhang, Y. Li, Y. Chen, X. Wang, and Z. Zhang. Unified vision-language-action model, 2025. arXiv:2506.19850. [16] M. Reuss, H. Zhou, M. Ruhle, O. E. Yagmurlu, F. Otto, and R. Lioutikov. FLOWER: De-mocratizing generalist robot policies with efficient vision-language-action flow policies, 2025. arXiv:2509.04996. [17] Y. Wang, P. Ding, L. Li, C. Cui, Z. Ge, X. Tong, W. Song, H. Zhao, W. Zhao, P. Hou, S. Huang, Y. Tang, W. Wang, R. Zhang, J. Liu, and D. Wang. VLA-Adapter: An effective paradigm for tiny-scale vision-language-action model, 2025. arXiv:2509.09372. [18] L. Xiao, J. Li, J. Gao, F. Ye, Y. Jin, J. Qian, J. Zhang, Y. Wu, and X. Yu. AVA-VLA: Improving vision-language-action models with active visual attention, 2025. arXiv:2511.18960. [19] R. Zheng, Y. Liang, S. Huang, J. Gao, H. Daume, A. Kolobov, F. Huang, and J. Yang. TraceVLA: Visual trace prompting enhances spatial-temporal awareness for generalist robotic policies. In Proc. Int. Conf. Learn. Represent. (ICLR) , 2025. [20] J. Cen, C. Yu, H. Yuan, Y. Jiang, S. Huang, J. Guo, X. Li, Y. Song, H. Luo, F. Wang, D. Zhao, and H. Chen. WorldVLA: Towards autoregressive action world model, 2025. arXiv:2506.21539. [21] J. Cheng and B. V. Durme. Compressed chain of thought: Efficient reasoning through dense representations, 2024. arXiv:2412.13171. [22] X. Shen, Y. Wang, X. Shi, Y. Wang, P. Zhao, and J. Gu. Efficient reasoning with hidden thinking, 2025. arXiv:2501.19201. [23] D. Su, H. Zhu, Y. Xu, J. Jiao, Y. Tian, and Q. Zheng. Token assorted: Mixing latent and text tokens for improved language model reasoning. In Proc. Int. Conf. Mach. Learn. (ICML) ,2025. [24] Z. Lin, Z. Fu, Z. Chen, C. Chen, L. Xie, W. Wang, D. Cai, Z. Wang, and J. Ye. Controlling thinking speed in reasoning models, 2025. arXiv:2507.03704. [25] K. Pertsch, K. Stachowicz, B. Ichter, D. Driess, S. Nair, Q. Vuong, O. Mees, C. Finn, and S. Levine. FAST: Efficient action tokenization for vision-language-action models, 2025. arXiv:2501.09747. [26] D. Qu, H. Song, Q. Chen, Y. Yao, X. Ye, Y. Ding, Z. Wang, J. Gu, B. Zhao, D. Wang, and X. Li. SpatialVLA: Exploring spatial representations for visual-language-action models. In 
+
+Proc. Robot.: Sci. Syst. (RSS) , 2025. [27] C.-Y. Hung, Q. Sun, P. Hong, A. Zadeh, C. Li, U.-X. Tan, N. Majumder, and S. Poria. NORA: A small open-sourced generalist vision language action model for embodied tasks, 2025. arXiv:2504.19854. 10 [28] W. Song, J. Chen, P. Ding, H. Zhao, W. Zhao, Z. Zhong, Z. Ge, Z. Li, D. Wang, J. Ma, L. Wang, and H. Li. PD-VLA: Accelerating vision-language-action model integrated with action chunking via parallel decoding. In Proc. IEEE/RSJ Int. Conf. Intell. Robots Syst. (IROS) ,2025. [29] Q. Bu, Y. Yang, J. Cai, S. Gao, G. Ren, M. Yao, P. Luo, and H. Li. UniVLA: Learning to act anywhere with task-centric latent actions, 2025. arXiv:2505.06111. [30] S. Tan, K. Dou, Y. Zhao, and P. Krahenbuhl. Interactive post-training for vision-language-action models, 2025. arXiv:2505.17016. [31] Y. Tian, S. Yang, J. Zeng, P. Wang, D. Lin, H. Dong, and J. Pang. Predictive inverse dynamics models are scalable learners for robotic manipulation. In Proc. Int. Conf. Learn. Represent. (ICLR) , 2025. 11 Appendix A Implementation and Experimental Settings 
+
+We summarize implementation and training settings in Table A.1, followed by reward evaluation and optional adaptive budgeting details. Table A.1: OpenVLA-OFT and MPCoT settings. 
+
+Item Value Backbone OpenVLA-OFT (7B) Fine-tuning LoRA r=32; parallel decoding; L1 continuous action Inputs 2 views + lang + proprio, 224 ×224 Inference 8-step chunk (predict 8, exec 8 open-loop) Optim LR 5×10 −4; decay to 5×10 −5 @100K; BS=64 Train steps 150K (S/O/L); 50K (Goal) Training-side candidate-evaluation config K = 3 , M = 2 for auxiliary path-preference supervision Main inference reasoning config K = 5 , M = 4 for the main reported MPCoT results Max hypothesis pool Mmax = 4 
+
+τ ; λdiv , γ 0.7; 0.05, d/ 4
+
+Reward evaluator World-model/VLM progress evaluator (training only; fixed across reward ablations) Reward weights (Full) βa = βp = βs = 1 
+
+λRL ; RL baseline 1.0; path-average baseline 
+
+βK , βM 4, 3 
+
+Clarification of training-side and inference-side configurations. The training-side candidate-evaluation configuration and the inference reasoning configuration serve different purposes. The former controls how many candidate branches are used to compute auxiliary path-preference super-vision during optimization, while the latter controls how many latent refinement steps and active hypotheses are used by the deployed policy during evaluation. They are reported separately for reproducibility and should not be interpreted as a progressive train-to-test budget schedule. 
+
+Training-side reward evaluation. The progress evaluator is an auxiliary world-model/VLM mod-ule used only during training. Given the current scene, instruction, and a candidate action branch, it predicts or scores the after-action scene and returns a scalar progress signal. Its role is to provide detached relative preference supervision for the path scorer; it is not the deployed policy, is not queried at inference, and is kept fixed across reward ablations. 
+
+Optional adaptive budget rule. Although all quantitative results use fixed inference (K, M ) con-figurations, MPCoT can optionally allocate compute using previous-step uncertainty: 
+
+Kt = min( Kmax , K min + ⌊βK ut−1⌋) , (A.1) 
+
+Mt = min( Mmax , M min + ⌊βM ut−1⌋) , (A.2) where u0 is initialized by a default budget. This optional controller is a deployment extension and is not used in reported results. 
+
+## B Reward-Objective Details 
+
+Path consistency metric. For reward-supervision analysis, we report 
+
+PathConsistency = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+1
+
+
+
+arg max 
+
+> m
+
+si,m = arg max 
+
+> m
+
+Ri,m 
+
+
+
+. (A.3) 12 Path-conditioned candidate evaluation. During training, each refined branch z(K) 
+
+> t,m
+
+is decoded into a candidate action chunk using the unchanged policy head: 
+
+at,m ∼ π0(a | z(K) 
+
+> t,m
+
+). (A.4) Candidate action branches are then evaluated independently by the training-only world-model/VLM evaluator or branch rollout. Thus reward differences reflect the decoded action induced by each latent branch rather than the final action chosen at inference. 
+
+Reward components. The action reward provides local expert-action consistency, 
+
+ract  
+
+> t,m
+
+= − ∥ at,m − a∗ 
+
+> t
+
+∥22 . (A.5) The progress reward is estimated by the auxiliary world-model/VLM evaluator. Let ˆξt+1 ,m =
+
+Wϕ(ξt, g, a t,m ) denote the predicted or evaluated after-action scene for branch m; then 
+
+rprog  
+
+> t,m
+
+= Pϕ( ˆξt+1 ,m , g ) − Pϕ(ξt, g ), (A.6) where Pϕ maps a scene and task goal to a scalar progress score. The sparse success reward uses the branch-level success label, 
+
+rsucc  
+
+> t,m
+
+= I[branch m is labeled successful ] . (A.7) All reward components train only the path scorer and are removed at inference. 
+
+Path return and scorer objective. We define the discounted path return, path-average baseline, and advantage as 
+
+Rt,m =
+
+> T
+
+X
+
+> ℓ=t
+
+γℓ−trℓ,m , (A.8) 
+
+bt = 1
+
+M
+
+> M
+
+X
+
+> j=1
+
+Rt,j , (A.9) 
+
+At,m = Rt,m − bt. (A.10) The reward-guided path-preference loss is 
+
+LRL = −Em∼pω [sg( At,m ) log pω (m | ot, l )] , (A.11) where sg( ·) denotes stop-gradient. Gradients are stopped through reward, return, baseline, and advantage computation; the objective updates only the differentiable path-selection logits. 
+
+Behavior cloning and diversity regularization. The behavior-cloning term is 
+
+LBC = E(ot,l,a ∗ 
+
+> t)
+
+h
+
+ℓ
+
+
+
+π0(· | ¯z(K) 
+
+> t
+
+), a ∗
+
+> t
+
+i 
+
+. (A.12) To reduce path collapse, we use 
+
+Ldiv = 1
+
+M (M − 1) 
+
+X
+
+> m̸=j
+
+exp − ∥z(K) 
+
+> t,m
+
+− z(K) 
+
+> t,j
+
+∥22
+
+γ
+
+!
+
+. (A.13) 
+
+## C Architecture and Complexity Details 
+
+The refinement operator Fθ is a lightweight weight-tied residual MLP with LayerNorm, expansion ratio 4, GELU, and dropout 0.1. The path scorer hω is a two-layer MLP over final path states, and hypothesis codes are learned jointly to encourage specialization. Let Cbase denote backbone cost, 
+
+Cref per-step refinement cost, and Cscore per-path scoring cost. For fixed (K, M ),
+
+Ctest ≈ Cbase + KM C ref + M C score . (A.14) Thus inference compute scales approximately linearly with K ×M , while parameter growth remains small because refinement weights are shared across steps and memory overhead is dominated by storing M latent states, O(M d ).13 D Full Reward-Guided Path Preference Ablation 
+
+Table A.2: Ablation of reward-guided path preference supervision under the same protocol as the main results. Avg and Long denote LIBERO success rates. In all reward ablations, (βa, β p, β s)
+
+are switched on/off according to the selected reward components; the full setting uses βa = βp =
+
+βs = 1 , with all other training and evaluation settings fixed. Path Consistency measures agreement between the path preferred by the learned scorer and the path with the highest reward-defined return.                                                                 
+
+> Variant Rewards Avg Long CALVIN 3-step CALVIN 4-step Path Cons. (%) w/o Reward BC only 98.4 97.6 94.7 90.8 68.5 Action Reward Only ract 98.6 98.0 95.3 91.7 73.2 Progress Reward Only rprog 98.6 98.2 95.6 92.1 74.8 Success Reward Only rsucc 98.5 98.1 95.1 91.5 72.4 Action + Progress ract +rprog 98.7 98.5 96.1 92.8 79.6 Action + Success ract +rsucc 98.7 98.4 95.9 92.6 78.9 Progress + Success rprog +rsucc 98.8 98.6 96.3 93.1 81.2
+> Full Reward (Ours) ract +rprog +rsucc 98.9 98.9 96.8 93.7 84.3
+
+## E Additional Mechanism Ablations 
+
+Table A.3: Multi-path reasoning mechanism ablation. Lower similarity indicates more diverse hy-potheses. 
+
+Variant Soft Div. Sim. ↓ Avg. (%) Long (%) Std ↓
+
+Single-path Latent CoT ( K=3 , M =1 ) No No – 98.4 98.1 0.52 Multi-path (Hard argmax) No No 0.90 98.5 98.2 0.84 Multi-path (Uniform avg) Yes No 0.83 98.6 98.4 0.53 Multi-path (Soft, no reg) Yes No 0.91 98.7 98.6 0.41 Multi-path (Ours, K=3 , M =4 ) Yes Yes 0.66 98.7 98.6 0.18 
+
+14

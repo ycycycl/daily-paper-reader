@@ -6,79 +6,85 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-06-06
-- 运行时间：2026-06-06 21:00:46 UTC
+- 最新运行日期：2026-06-07
+- 运行时间：2026-06-07 20:13:06 UTC
 - 运行状态：成功
-- 本次总论文数：19
-- 精读区：7
+- 本次总论文数：21
+- 精读区：9
 - 速读区：12
 
 ### 今日简报（AI）
-今天共筛选 19 篇论文，精读 7 篇、速读 12 篇，重点聚焦具身强化学习、接触式机器人操作与自动驾驶决策规划。
-最值得关注的是 Feat2Go 的视觉特征价值估计，以及 PaCo-VLA 将被动性安全约束引入接触丰富的视觉-语言-动作操作。
-建议普通读者先看两篇 9 分精读论文建立主线，再速读视频扩散物理先验、自动驾驶专家建议与 Hybrid A* 增量规划三篇拓展视野。
-- 详情：[/202606/06/README](/202606/06/README)
+1) 2026-06-07 日报已完成 21 篇推荐筛选：9 篇精读、12 篇速读，重点集中在具身智能、VLA 策略与强化学习安全监测。
+2) 最值得看的是两篇 9.0 分精读：物理 grounded 的因果推理器，以及用切空间 score matching 修正 VLA 中“欧氏假设”的方法。
+3) 普通读者建议先读高分精读建立主线，再用速读关注车内机器人操作、离线到在线强化学习和 VLA 运行时失效监测这三个应用方向。
+- 详情：[/202606/07/README](/202606/07/README)
 
 ### 精读区论文标签
-1. [Feat2Go: Visual Feature-Grounded Value Estimation for Embodied Reinforcement Learning](/202606/06/2605.30795v1-feat2go-visual-feature-grounded-value-estimation-for-embodied-reinforcement-learning)  
+1. [Token Predictors Are Not Planners: Building Physically Grounded Causal Reasoners](/202606/07/2606.01810v1-token-predictors-are-not-planners-building-physically-grounded-causal-reasoners)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：VLA具身强化学习与视觉世界模型价值估计
-2. [PaCo-VLA: Passivity-Shielded Compliance Prior for Contact-Rich Vision-Language-Action Manipulation](/202606/06/2606.00515v1-paco-vla-passivity-shielded-compliance-prior-for-contact-rich-vision-language-action-manipulation)  
+   evidence：具身视觉语言规划与物理因果推理
+2. [The Lie We Tell: Correcting the Euclidean Fallacy in Vision Language Action Policies via Score Matching on Tangent Space](/202606/07/2606.01847v1-the-lie-we-tell-correcting-the-euclidean-fallacy-in-vision-language-action-policies-via-score-matching-on-tangent-space)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：用于机器人动作控制的VLA
-3. [SafeVLA-Bench: A Benchmark for the Success-Safety Gap in Vision-Language-Action Models](/202606/06/2606.00773v1-safevla-bench-a-benchmark-for-the-success-safety-gap-in-vision-language-action-models)  
+   evidence：面向SE3轨迹的扩散VLA策略
+3. [Cosmos 3: Omnimodal World Models for Physical AI](/202606/07/2606.02800v1-cosmos-3-omnimodal-world-models-for-physical-ai)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：VLA轨迹安全评测
-4. [Co-training with Ego-centric Video and Demonstration for Robot Navigation Task](/202606/06/2606.01951v1-co-training-with-ego-centric-video-and-demonstration-for-robot-navigation-task)  
+   evidence：融合视频语言动作的物理AI世界模型
+4. [TTT-VLA: Test-Time Latent Prompt Optimization for Vision-Language-Action Models](/202606/07/2606.03127v1-ttt-vla-test-time-latent-prompt-optimization-for-vision-language-action-models)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：用于移动机器人导航动作的VLA训练
-5. [FATE-VLA:Failue-aware test generation for vision-language-action models](/202606/06/2606.02307v1-fate-vlafailue-aware-test-generation-for-vision-language-action-models)  
+   evidence：视觉语言动作模型策略适应
+5. [Dive into the Scene: Breaking the Perceptual Bottleneck in Vision-Language Decision Making via Focus Plan Generation](/202606/07/2606.04046v1-dive-into-the-scene-breaking-the-perceptual-bottleneck-in-vision-language-decision-making-via-focus-plan-generation)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：VLA机器人策略失效测试
-6. [Geometry-Aware Implicit Memory for Video World Models](/202606/06/2606.02436v1-geometry-aware-implicit-memory-for-video-world-models)  
+   evidence：VLA具身决策与焦点规划
+6. [OSCAR: Omni-Embodiment Action-Conditioned World Model for Robotics](/202606/07/2606.04463v2-oscar-omni-embodiment-action-conditioned-world-model-for-robotics)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：带记忆的视频世界模型支持长时预测
-7. [See Less, Specify More: Visual Evidence Budgets for Generalizable VLAs](/202606/06/2606.02735v1-see-less-specify-more-visual-evidence-budgets-for-generalizable-vlas)  
+   evidence：机器人动作条件视频世界模型
+7. [Flash-WAM: Modality-Aware Distillation for World Action Models](/202606/07/2606.05254v1-flash-wam-modality-aware-distillation-for-world-action-models)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：可泛化视觉语言动作模型
+   evidence：扩散世界动作模型的低延迟蒸馏
+8. [World-Language-Action Model for Unified World Modeling, Language Reasoning, and Action Synthesis](/202606/07/2606.05979v1-world-language-action-model-for-unified-world-modeling-language-reasoning-and-action-synthesis)  
+   标签：评分：9.0/10、query:upstream-ad-planning-idea
+   evidence：世界语言动作模型预测机器人动作与子目标
+9. [MPCoT: Reward-Guided Multi-Path Latent Reasoning for Test-Time Scalable Vision-Language-Action](/202606/07/2606.06245v1-mpcot-reward-guided-multi-path-latent-reasoning-for-test-time-scalable-vision-language-action)  
+   标签：评分：9.0/10、query:upstream-ad-planning-idea
+   evidence：VLA动作规划与多路径推理
 
 ### 速读区论文标签
-1. [The Invisible Hand of Physics: When Video Diffusion Models Know More Than They Show](/202606/06/2606.05328v1-the-invisible-hand-of-physics-when-video-diffusion-models-know-more-than-they-show)  
+1. [L-SDPPO: Policy Optimization of Spiking Diffusion Policy for Intra-vehicular Robotic Manipulation](/202606/07/2606.06049v1-l-sdppo-policy-optimization-of-spiking-diffusion-policy-for-intra-vehicular-robotic-manipulation)  
    标签：评分：8.5/10、query:upstream-ad-planning-idea
-   evidence：视频扩散作为世界模拟器
-2. [Uncertainty-Aware and Temporally Regulated Expert Advice in Reinforcement Learning for Autonomous Driving](/202606/06/2605.30576v1-uncertainty-aware-and-temporally-regulated-expert-advice-in-reinforcement-learning-for-autonomous-driving)  
-   标签：评分：8.0/10、query:q2
-   evidence：自动驾驶强化学习决策
-3. [Bidirectional Incremental Generalized Hybrid A*](/202606/06/2605.30647v1-bidirectional-incremental-generalized-hybrid-a)  
+   evidence：低能耗脉冲扩散策略用于机器人控制
+2. [Efficient and Uncertainty-Aware Diffusion Framework for Offline-to-Online Reinforcement Learning](/202606/07/2605.30776v1-efficient-and-uncertainty-aware-diffusion-framework-for-offline-to-online-reinforcement-learning)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：复杂系统的Anytime动力学规划
-4. [FLAG: Flow Policy MaxEnt-RL by Latent Augmented Guidance](/202606/06/2605.30749v1-flag-flow-policy-maxent-rl-by-latent-augmented-guidance)  
+   evidence：快速采样扩散动作策略与转移模型
+3. [Hide-and-Seek in Trajectories: Discovering Failure Signals for VLA Runtime Monitoring](/202606/07/2605.30834v1-hide-and-seek-in-trajectories-discovering-failure-signals-for-vla-runtime-monitoring)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：面向高维动作的流策略生成强化学习
-5. [Trajectory Planning for Non-Communicating Mobile Robots using Inverse Optimal Control](/202606/06/2605.30906v1-trajectory-planning-for-non-communicating-mobile-robots-using-inverse-optimal-control)  
-   标签：评分：7.0/10、query:q2
-   evidence：碰撞避让中的轨迹规划与预测
-6. [LVSA: Training-Free Sparse Attention for Long Video Diffusion](/202606/06/2605.31057v1-lvsa-training-free-sparse-attention-for-long-video-diffusion)  
+   evidence：VLA轨迹失败监测与闭环可靠性
+4. [EMBGuard: Constructing Hazard-Aware Guardrails for Safe Planning in Embodied Agents](/202606/07/2605.30924v1-embguard-constructing-hazard-aware-guardrails-for-safe-planning-in-embodied-agents)  
+   标签：评分：8.0/10、query:upstream-ad-planning-idea
+   evidence：具身智能的危险感知安全规划
+5. [PerceptTwin: Semantic Scene Reconstruction for Iterative LLM Planning and Verification](/202606/07/2606.04226v1-percepttwin-semantic-scene-reconstruction-for-iterative-llm-planning-and-verification)  
+   标签：评分：7.5/10、query:upstream-ad-planning-idea
+   evidence：面向机器人规划验证的交互场景仿真
+6. [Collaborative Few-Step Distillation and Low-Bit Quantization for Wan2.2 Dual-Expert Video Diffusion Models](/202606/07/2606.00658v1-collaborative-few-step-distillation-and-low-bit-quantization-for-wan22-dual-expert-video-diffusion-models)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：高效长视频扩散与时序伪影缓解
-7. [Physical Object Understanding with a Physically Controllable World Model](/202606/06/2606.00439v1-physical-object-understanding-with-a-physically-controllable-world-model)  
-   标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：物理可控视觉世界模型
-8. [A Framework for Motion Planning with Temporal Logic Precedence Specifications via Augmented Graphs of Convex Sets](/202606/06/2606.00842v1-a-framework-for-motion-planning-with-temporal-logic-precedence-specifications-via-augmented-graphs-of-convex-sets)  
+   evidence：视频扩散少步蒸馏降延迟
+7. [Beyond Pure Sampling: Hybrid Optimization Mechanisms for Non-Convex Model Predictive Control](/202606/07/2606.00737v1-beyond-pure-sampling-hybrid-optimization-mechanisms-for-non-convex-model-predictive-control)  
    标签：评分：7.0/10、query:q2
-   evidence：带逻辑约束的轨迹运动规划
-9. [When are LLMs Sufficient Policy Optimizers for Sequential RL Tasks?](/202606/06/2605.30719v1-when-are-llms-sufficient-policy-optimizers-for-sequential-rl-tasks)  
+   evidence：含障碍机器人运动规划的非凸MPC
+8. [From Cues to Horizons: Dynamic Risk Horizon Profiling for Trajectory Prediction](/202606/07/2606.00857v1-from-cues-to-horizons-dynamic-risk-horizon-profiling-for-trajectory-prediction)  
+   标签：评分：7.0/10、query:q2
+   evidence：自动驾驶风险感知轨迹预测
+9. [MUSCLE-NET: Predicted-Multiscale-Aware Network for Pedestrian Trajectory Forecasting](/202606/07/2606.00471v1-muscle-net-predicted-multiscale-aware-network-for-pedestrian-trajectory-forecasting)  
+   标签：评分：6.0/10、query:q2
+   evidence：面向安全自主导航的行人轨迹预测
+10. [CoMIC: Collaborative Memory and Insights Circulation for Long-Horizon LLM Agents in Cloud-Edge Systems](/202606/07/2606.00756v1-comic-collaborative-memory-and-insights-circulation-for-long-horizon-llm-agents-in-cloud-edge-systems)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：面向机器人序列任务的LLM策略优化
-10. [CameraNoise: Enabling Faithful Camera Control in Video Diffusion through Geometry-Flow-Guided Noise Warping](/202606/06/2605.30774v1-cameranoise-enabling-faithful-camera-control-in-video-diffusion-through-geometry-flow-guided-noise-warping)  
+   evidence：长时程智能体的持久记忆与子目标跟踪
+11. [DASH: Dual-Branch Score Distillation for Guidance-Calibrated Compact Diffusion Models](/202606/07/2606.00798v1-dash-dual-branch-score-distillation-for-guidance-calibrated-compact-diffusion-models)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：相机条件视频扩散与轨迹动态
-11. [Unsupervised Diffusion Solver for Combinatorial Optimization via Combinatorial Adjoint Matching](/202606/06/2605.30920v1-unsupervised-diffusion-solver-for-combinatorial-optimization-via-combinatorial-adjoint-matching)  
-   标签：评分：6.0/10、query:q3
-   evidence：扩散式轨迹级优化方法
-12. [LiftNav: Path Planning via Semantic Lifting in TSDF-Guided Gaussian Splatting](/202606/06/2605.31376v1-liftnav-path-planning-via-semantic-lifting-in-tsdf-guided-gaussian-splatting)  
+   evidence：高效引导采样的紧凑扩散蒸馏
+12. [Towards 3D-Aware Video Diffusion Models: Render-Free Human Motion Control with Mesh Tokenization](/202606/07/2606.02000v1-towards-3d-aware-video-diffusion-models-render-free-human-motion-control-with-mesh-tokenization)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：语义机器人路径规划与轨迹优化
+   evidence：面向运动控制的3D感知视频扩散
 
 
 <div class="dpr-home-promo-card">
