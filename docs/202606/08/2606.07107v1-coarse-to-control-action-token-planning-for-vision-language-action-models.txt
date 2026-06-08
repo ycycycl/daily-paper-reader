@@ -1,0 +1,463 @@
+Title: Coarse-to-Control: Action-Token Planning for Vision-Language-Action Models
+
+URL Source: https://arxiv.org/pdf/2606.07107v1
+
+Published Time: Mon, 08 Jun 2026 00:43:23 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# Coarse-to-Control: Action-Token Planning for Vision-Language-Action Models 
+
+Jinhao Wu 1,2 Shiduo Zhang 2,3 Yicheng Liu 4 Xiaopeng Yu 2,3 Sixian Li 2,3
+
+Siyin Wang 2,3 Hang Zhao 4 Jing Huo 1 Yang Gao 1 Jingjing Gong 2,∗
+
+Xipeng Qiu 2,3 Yu-Gang Jiang 3,∗
+
+> 1
+
+Nanjing University 2Shanghai Innovation Institute 3Fudan University 
+
+> 4
+
+Tsinghua University 
+
+Abstract: Most vision-language-action (VLA) models map observations directly to actions without explicit intermediate planning, which limits performance on long-horizon tasks where early mistakes compound. We propose Coarse-to-Control , a plan-execute VLA that introduces planning natively in the action-token space. The key idea is to let the policy first predict a compact sequence of coarse action tokens that summarize the intended future trajectory, and then generate executable action tokens conditioned on this plan. Because both planning and execution share a unified discrete action vocabulary, the plan stays close to the control manifold and provides directly actionable guidance rather than an abstract hint that must be translated back to motor commands. Experiments on LIBERO, SimplerEnv-WidowX, and real-world manipulation tasks show that action-token planning consistently improves over direct action generation, with the largest gains on long-horizon multi-stage tasks. 
+
+Keywords: Vision-Language-Action Models, Robot Learning 
+
+# 1 Introduction 
+
+Vision-language-action (VLA) models have made rapid progress by learning to map visual ob-servations and language instructions directly to robot actions [1, 2, 3, 4, 5]. Yet this direct-generation paradigm faces a fundamental representational tension: language instructions specify 
+
+what to accomplish—“pick up the cup,” “place the carrot on the plate”—but say nothing about how 
+
+to move. To generate precise motor commands, the policy must silently resolve approach direction, wrist orientation, grasp pose, and waypoint sequence from a high-level goal description. Without an explicit intermediate layer that bridges semantic intent and motor detail, all of this resolution is com-pressed into a single forward pass, asking the policy to operate at two disparate levels of abstraction simultaneously. Humans avoid this problem because the brain maintains distinct levels of motor representation. Re-search on skilled movement suggests that action is organized hierarchically: the nervous system first specifies a high-level plan (goal, movement direction, and grasp configuration), then refines execu-tion through lower-level motor commands under continuous sensory feedback [6, 7, 8]. Crucially, this intermediate representation is not a language description. The instruction place the carrot on the plate conveys the semantic goal but encodes nothing about arm trajectory, wrist orientation, or gripper timing. A coarse motor plan carries spatial and temporal structure that language abstracts 
+
+> *
+
+Corresponding authors. 
+
+> arXiv:2606.07107v1 [cs.RO] 5 Jun 2026
+
+away; providing this structure explicitly, rather than leaving it implicit in the goal description, is what enables more consistent and precise execution. Recent reasoning-augmented VLAs address this gap by inserting intermediate representations be-fore action generation: textual rationales [9, 10], predicted visual subgoals [11, 12], or spatial and structured reasoning representations [13, 14, 15]. Each improves task understanding, but none fully bridges the underlying mismatch: text and images operate at a semantic or perceptual level rather than the level of motor intent, leaving the policy to still infer the spatial and temporal structure that precise execution requires. This motivates a planning medium that is more control-aligned than text or images yet more struc-tured than direct action prediction: one that lives in the action space itself. We propose Coarse-to-Control , a plan-execute VLA that first predicts coarse planning tokens summarizing the intended fu-ture trajectory and then generates executable action tokens conditioned on this plan. The key enabler is a joint plan-execute tokenizer that maps both planning and execution into a shared residual-VQ action vocabulary, so the plan remains close to the control manifold and provides more actionable guidance than an abstract hint that must be translated back to motor commands. The policy is trained end-to-end from demonstrations with the same autoregressive objective used for action prediction: planning tokens are generated as an internal prefix, and executable tokens are generated conditioned on that prefix. At inference, only executable tokens are decoded into robot actions, keeping planning as lightweight latent guidance without a separate planner-controller inter-face. Coarse-to-Control reaches 97.90% average success on LIBERO and 83.3% on SimplerEnv-WidowX, and improves robustness across four real-world manipulation tasks. Our contributions are: • We identify that generating precise motor commands benefits from an intermediate motor-level intent, and argue that the action space is a more natural medium for this representation than text or images. • We propose Coarse-to-Control , a plan-execute VLA with a joint tokenizer that places coarse planning tokens and executable action tokens in a shared discrete vocabulary, so the plan stays close to the control manifold and provides more actionable guidance than text or image intermediates. • We demonstrate on LIBERO, SimplerEnv-WidowX, and real-world manipulation tasks that action-token planning consistently improves over direct action generation and outperforms textual, visual, and spatial CoT baselines. 
+
+# 2 Related Work 
+
+Vision-Language-Action Models. VLA models adapt pretrained vision-language backbones to robot control by learning to output actions from multimodal observations and language instructions [1, 2, 3, 4]. Recent systems such as π0, π0-FAST, and OpenVLA-OFT improve generality, action-token efficiency, and speed-success trade-offs [5, 16, 17]. We build on these action-generation back-bones and add explicit planning before execution. 
+
+Intermediate Reasoning for VLAs. Recent VLAs introduce intermediate reasoning before con-trol, including textual [9, 18, 10], visual-linguistic [11, 19], 3D-aware spatial [13, 15], and trajectory-based reasoning [20, 21], as summarized in Figure 1. Action CoT is closest to ours in moving rea-soning toward motor outputs [22]. We instead represent reasoning as a coarse future trajectory in the same executable action-token space used for control, directly unifying planning and execution. 
+
+Action Tokenization. Discrete action representations make continuous robot control compatible with sequence models. Existing methods primarily treat action tokens as compact representations for policy execution, using per-dimension binning [2, 4], DCT-based compression [16], or neural tokenization [23, 24, 25] to balance reconstruction fidelity, compression efficiency, and structural 2expressiveness. Our contribution is complementary: through a joint tokenizer shared across both stages, we use action tokens not only for low-level execution, but also as an interface for high-level planning. 
+
+# 3 Coarse-Action Planning as Chain-of-Thought 
+
+Given visual observations ot, a language instruction l, and robot state st, our goal is to generate a short sequence of executable robot actions. Standard VLAs model this as direct action genera-tion. Figure 1 summarizes the main reasoning paradigms for VLA control, contrasting direct ac-tion generation with textual CoT, visual CoT, and our action-token CoT. In Coarse-to-Control, this action-token CoT is implemented as a planning stage followed by executable action generation: 
+
+zplan  
+
+> t
+
+∼ pθ (zplan | ot, l, s t), (1) 
+
+zexec  
+
+> t
+
+∼ pθ (zexec | ot, l, s t, z plan  
+
+> t
+
+), (2) where zplan  
+
+> t
+
+denotes coarse action planning tokens and zexec  
+
+> t
+
+denotes executable action tokens. Dur-ing inference only zexec  
+
+> t
+
+is decoded and executed by the robot. In our formulation, chain-of-thought takes the form of a coarse action trajectory that guides subsequent execution. 
+
+Figure 1: Comparison of reasoning paradigms for VLA control: No CoT, textual CoT, visual CoT, and our action-token CoT. Our method uses a compact action-level planning prefix before executable action generation. 
+
+3.1 Coarse-Fine Action Joint Tokenization Action Sub-resolution to Obtain Coarse Action To represent a coarse action plan, we summarize long-horizon future behavior into a shorter trajectory that captures stage-level motion intent rather than high-frequency executable control. Concretely, for each time step t we take a long-horizon future action sequence At:t+Hp−1 and compress it into a coarse planning trajectory ¯At with K plan steps. Here Hp is the number of source action timesteps, K is the number of coarse plan chunks, and c = Hp/K is the chunk size. For the relative action representation used by our joint-mode tokenizer, this compression is implemented as 
+
+¯amotion  
+
+> t+i
+
+=
+
+> c−1
+
+X
+
+> j=0
+
+amotion  
+
+> t+ic +j
+
+, ∀i ∈ { i = 0 , . . . , K − 1}, (3) 
+
+¯agripper  
+
+> t+i
+
+= agripper 
+
+> t+( i+1) c−1
+
+, ∀i ∈ { i = 0 , . . . , K − 1}. (4) Each coarse plan step stores the net relative motion over one chunk and the final gripper state of that chunk. The resulting ¯At preserves the direction and stage-level intent of the future trajectory while discarding high-frequency details; concrete settings are given in the implementation details. 3Dual-granularity Action Tokenizer We train a joint-mode residual-VQ action tokenizer with two modes: an execution mode m = 0 and a planning mode m = 1 . The execution mode tokenizes short-horizon action chunks At:t+He−1, while the planning mode tokenizes the coarse long-horizon trajectory ¯At. Both modes share the same discrete action vocabulary, which encourages planning and execution tokens to remain in the same space. Let Q(·, m ) and D(·, m ) be the mode-conditioned tokenizer and decoder. The target tokens are 
+
+zplan  
+
+> t
+
+= Q( ¯At, m = 1) , (5) 
+
+zexec  
+
+> t
+
+= Q(At:t+He−1, m = 0) . (6) The tokenizer is trained jointly across the two modes with an action reconstruction objective and a residual-VQ regularization term that includes both codebook and commitment losses: 
+
+Ltok = Lm 
+
+> rec
+
++ Lm
+
+> vq
+
+, (7) This objective encourages the planning branch to encode low-frequency long-horizon intent while keeping planning and execution in the same control-aligned vocabulary. Here Hp and He denote the planning and executable horizons, respectively. Additional tokenizer details and hyperparameters are provided in Appendix B.4. 
+
+3.2 Plan-Execute Autoregressive VLA 
+
+After tokenization, the VLA is trained to predict the concatenated action suffix zt = [ zplan  
+
+> t
+
+, z exec  
+
+> t
+
+]
+
+conditioned on image tokens, language tokens, and proprioceptive state. The autoregressive factor-ization is 
+
+p(zt | ot, l, s t) = Y
+
+> i
+
+p(zplan  
+
+> t,i
+
+| xt, z plan  
+
+> t,<i
+
+) Y
+
+> j
+
+p(zexec  
+
+> t,j
+
+| xt, z plan  
+
+> t
+
+, z exec  
+
+> t,<j
+
+), (8) where xt = ( ot, l, s t) is the multimodal context. The policy is trained with teacher-forced next-token prediction: 
+
+LVLA = − X
+
+> k
+
+log pθ (zt,k | xt, z t,<k ). (9) At inference time, the model follows the same ordering: it first generates planning tokens and then executable tokens conditioned on the generated plan. Only the executable tokens are decoded into robot actions, so planning remains an internal context inside the autoregressive policy rather than a separate planner-controller interface. Figure 2 shows the corresponding plan-then-execute flow. 
+
+Figure 2: Plan-execute VLA framework. The policy conditions on observations, language, and proprioception, predicts coarse planning action tokens before executable action tokens, and decodes only the executable branch into continuous robot actions. 
+
+# 4 Experiments 
+
+We evaluate Coarse-to-Control on simulation benchmarks and real-world robot manipulation tasks. Our experiments are designed to address the following questions: 4• How effective is Coarse-to-Control compared with state-of-the-art methods on simulation benchmarks? (§4.1) • How well does Coarse-to-Control perform on long-horizon real-world manipulation tasks? (§4.2) • What additional advantages does action-token planning offer, and which design choices matter most? (§4.3) Implementation details and extended ablations are provided in Appendix B and Appendix A. 
+
+4.1 Simulation Experiments Benchmarks and Datasets. We evaluate on LIBERO [26] and SimplerEnv-WidowX [27]. LIBERO contains four suites (Spatial, Object, Goal, and Long), and we report per-suite and av-erage success over 50 rollouts per task. SimplerEnv-WidowX evaluates real-to-sim generalization on four WidowX manipulation tasks, and we report per-task and average success over 24 rollouts per task. Dataset composition and training details are provided in Appendix B. 
+
+Baselines. We compare against recent VLA baselines spanning four reasoning styles: No-CoT, textual CoT, visual CoT, and Action CoT. The full method lists for LIBERO and SimplerEnv-WidowX are reported in Tables 1 and 2. For SimplerEnv-WidowX, we follow the standard eval-uation protocol. Implementation details and training hyperparameters are provided in Appendix B. 
+
+Results. Tables 1 and 2 show that Coarse-to-Control achieves the best overall performance on both benchmarks. These results support the central claim of this paper: reasoning directly in the action-token space provides more control-aligned guidance than explicit textual or visual CoT. Table 1: Performance comparisons with state-of-the-art methods on LIBERO, grouped by different CoT paradigms.                                                                                             
+
+> CoT Type Method Spatial ↑Object ↑Goal ↑Long ↑Overall ↑
+> No CoT π0-FAST [16] 96.4 96.8 88.6 60.2 85.5 SmolVLA [28] 93.0 94.0 91.0 77.0 88.8 GR00T-N1 [29] 94.4 97.6 93.0 90.6 93.9
+> π0[5] 96.8 98.8 95.8 85.2 94.2 OpenVLA-OFT [17] 97.6 98.4 97.9 94.5 97.1 Textual CoT ThinkAct [10] 88.3 91.4 87.1 70.9 84.4
+> π0.5[18] 98.8 98.2 98.0 92.4 96.8 Visual CoT CoT-VLA-7B [11] 87.5 91.6 87.6 69.0 81.1 WorldVLA [30] 87.6 96.2 83.4 60.0 81.8 DreamVLA [12] 97.5 94.0 89.5 89.5 92.6 UniVLA [31] 95.4 98.8 93.6 94.0 95.5 F1 [32] 98.2 97.8 95.4 91.3 95.7 UD-VLA [33] 94.1 95.7 91.2 89.6 92.7 Action CoT MolmoAct-7B-D [20] 87.0 95.4 87.6 77.2 86.6
+> Coarse-to-Control (ours) 98.8 100.0 97.8 95.0 97.9
+
+4.2 Real-World Experiments Real-World Setup. We evaluate Coarse-to-Control on four physical manipulation tasks: putting the carrot on the plate, putting the carrot on the plate and pressing the button, moving carrots from the plate into the basket, and clearing fruits and vegetables from the table into the plate placed in the basket. All methods are trained on the same 50-demonstration-per-task budget, evaluated over 20 rollout trials under identical scene setups and success criteria. We compare the plan-based policy with faster, π0, and π0-fast variants. 
+
+Results. As shown in Figure 3, the plan-based policy achieves the highest average success rate among all compared methods, reaching 62.5% over four real-world tasks. It obtains the best per-formance on three out of four tasks. Although π0 performs best on the shortest single-stage carrot 5Table 2: Performance comparisons with state-of-the-art methods on SimplerEnv-WidowX, grouped by different CoT paradigms.                                                              
+
+> CoT Type Method Put Spoon Put Carrot Stack Block Put Eggplant Overall ↑
+> No CoT OpenVLA [4] 0.0 0.0 0.0 4.1 1.0 Octo [3] 47.2 9.7 4.2 56.9 29.5
+> π0[5] 29.1 0.0 16.7 62.5 40.1 CogACT [34] 71.7 50.8 15.0 67.5 51.3 Textual CoT ThinkAct [10] 58.3 37.5 8.7 70.8 43.8 Visual CoT F1 [32] 50.0 70.8 50.0 66.7 59.4 UD-VLA [33] 58.3 62.5 54.1 75.0 62.5 Action CoT Coarse-to-Control (ours) 100.0 95.8 79.2 58.3 83.3 Task 1Task 2Task 3Task 4Average
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Success  Rate  (%)
+> 80
+> 50
+> 40
+> 30
+> 50
+> 60
+> 50
+> 35
+> 25
+> 43
+> 60
+> 35 35
+> 20
+> 38
+> 75 70
+> 60
+> 45
+> 63
+> PI0 Faster Fast Coarse-to-Control
+
+Figure 3: Real-world task success rates (%). We report final task success for each task and the average success rate across four tasks. Carrot: put the carrot on the plate; Carrot+Button: put the carrot on the plate and press the button; Plate →Basket: move carrots from the plate into the basket; Cleanup: clear fruits and vegetables from the table into the plate placed in the basket. placement task, its advantage does not transfer to the longer multi-stage settings. These results suggest that action-token planning improves robustness to error accumulation and helps preserve temporal coordination over long-horizon physical manipulation. Subtask-level progress rates are reported in Appendix A.2. 
+
+4.3 Analysis 
+
+We organize the analysis around four questions that explain the main results: how planning horizon affects performance, why action-token plans are effective, whether planning and execution should share the same token space, and whether planning improves real-world long-horizon performance. 
+
+How Does Planning Horizon Matter? Table 3 uses a fixed joint action tokenizer and varies only the planning horizon. First, planning itself is beneficial: increasing the planning horizon from 0 to 160 improves the LIBERO average success rate from 96.45% to 97.90%. This interpretation is also consistent with Table 4, where the Separate variant, which uses explicit planning tokens with two independent VQ tokenizers for planning and execution rather than a shared tokenizer vocabulary, still improves overall success from 95.40% to 96.60% relative to the no-plan Faster-AR baseline, which uses a single VQ tokenizer for execution only. This suggests that the gain does not come merely from the shared discrete action vocabulary. If shared tokenization were the sole driver, the 
+
+Hp = 0 variant would already recover most of the benefit. Instead, the gap shows that explicit plan supervision helps the policy encode future task structure before action decoding, reducing the burden on the executable branch to infer long-horizon intent from only the current observation. Second, once planning is introduced, the amount of future context also matters. Increasing the 6planning source horizon from 40 to 160 improves the overall LIBERO score and gives a consistent gain on the Long suite, showing that planning quality depends on access to sufficiently long future context. The 40-step variant already shows that a short plan is better than no plan, but the 160-step variant performs better still, indicating that a short plan can encode the next local maneuver whereas a longer source horizon better captures stage transitions such as approach, grasp, transport, and placement. This is especially important when the policy must choose actions that are locally valid yet only make sense in the context of a later subgoal. 
+
+Why Are Action-Token Plans Effective? Prior work suggests that chain-of-thought is effective not merely because it produces longer outputs, but because it introduces explicit intermediate states that transform difficult one-shot prediction into structured sequential computation [35, 36, 37]. In embodied control, however, the benefit of CoT also depends on the representation medium. Textual CoT can provide high-level semantic decomposition but remains weakly constrained with respect to low-level motor behavior [9], while visual CoT offers intuitive spatial structure yet requires generat-ing long non-executable visual prefixes before action prediction [11]. By contrast, our method uses coarse action tokens as the intermediate state, so the reasoning trace lies closer to the control mani-fold and can align more directly with downstream executable actions. This coarse-to-fine design is also inspired by visual autoregressive modeling such as VAR, which first predicts global structure and then progressively refines local detail [38].                               
+
+> Table 3. LIBERO planning-horizon Hpablation using joint-mode action-token planning.
+> HpSpatial ↑Object ↑Goal ↑Long ↑Overall ↑
+> 097.00 99.60 95.00 94.20 96.45 40 98.60 99.60 97.80 94.20 97.55 160 98.80 100.00 97.80 95.00 97.90
+> (a) Attention: plan vs. w/o plan. (b) Plan visualization.
+> Figure 5. Qualitative analysis of joint-mode action-token planning.
+
+To qualitatively inspect this mechanism, we use two diagnostics: attention over image tokens and a decoded coarse trajectory from the predicted planning tokens. Figure 5a compares the first-frame attention map produced with planning tokens against the no-plan baseline. With planning, attention concentrates more strongly on task-relevant regions around the target object, gripper, and target area, whereas the no-plan baseline is less anchored to the target-object interaction region. Figure 5b shows that the decoded coarse plan already points toward the target before any executable actions are generated. Together, these diagnostics suggest that the planning tokens carry object-target relations and future motion direction in a form that can guide subsequent control. In other words, the plan branch appears to establish a grounded coarse intent before the execution branch predicts detailed motor commands, which may help explain why action-space CoT can provide a more direct control signal for low-level control than higher-level textual or visual intermediates. 
+
+Should Planning and Execution Share Tokens? Table 4 isolates the tokenizer design. Faster-AR provides the no-plan reference, where the policy directly predicts executable action tokens without an explicit planning prefix. Separate uses two independent VQ action tokenizers for planning and execution, so the policy still predicts plan tokens before execution tokens but the two branches no longer share a vocabulary. Joint-mode improves overall success from 96.60% to 97.90% and raises the Long-suite score from 91.60% to 95.00%, supporting the hypothesis that plan tokens should live on the same action-semantic manifold as executable tokens. When the two branches use separate tokenizers, the execution policy must implicitly translate from a planning vocabulary into an execution vocabulary, which weakens the conditioning signal. A shared token space reduces this interface mismatch and makes the predicted plan easier to reuse as actionable guidance rather than as an abstract hint. 
+
+Does Planning Improve Real-World Long-Horizon Performance? Figure 6 summarizes av-erage full-task success on the three multi-stage real-world tasks. Coarse-to-Control achieves 7Table 4: Tokenizer-sharing ablation. Faster-AR is the no-plan baseline. Separate uses two indepen-dent VQ tokenizers for planning and execution, while Joint-mode shares the vocabulary across the two branches.                          
+
+> Tokenizer Spatial ↑Object ↑Goal ↑Long ↑Overall ↑
+> Faster-AR 99.40 98.80 94.80 88.60 95.40 Separate 97.40 99.60 97.80 91.60 96.60 Joint-mode (ours) 98.80 100.00 97.80 95.00 97.90
+
+the highest long-horizon average and outperforms all baselines. This suggests that the ben-efit of planning is especially pronounced when the robot must preserve task progress across multiple stages instead of solving only a short single-step placement. The subtask analysis in 
+
+Figure 6: Average success on the multi-stage real-world tasks. Table 6 further explains where this gain comes from. The plan-based policy preserves more in-termediate progress before final completion, sug-gesting that action-token plans help maintain the full task trajectory under real-world perturbations, where a short-term action policy can complete early subtasks but fail to finish the entire sequence. This effect is also consistent with the transfer probe in Table 7, where plan-based execution reduces the average successful rollout length from 436 to 239 control steps. Fewer steps among successful tri-als suggest not only improved completion on long-horizon tasks but also improved execution ef-ficiency among successful rollouts. This pattern is consistent with fewer local corrections, repeated re-approach behaviors, or inefficient detours before reaching the goal. 
+
+# 5 Limitations 
+
+Although Coarse-to-Control shows strong performance in both simulation and real-world robot ma-nipulation, it represents only one point in the broader design space of action-space reasoning. In particular, our current formulation realizes action-token chain-of-thought by predicting coarse fu-ture actions before execution, but how to construct more expressive and adaptive action-space rea-soning schemes remains an open direction for future work. Moreover, while our results show that a joint action tokenizer can effectively align coarse planning actions and executable actions within a shared token space, how to more organically unify these two granularities and better capture shared structure in the action space remains to be explored. 
+
+# 6 Conclusion 
+
+We presented Coarse-to-Control, a plan-execute framework for Vision-Language- Action models that internalizes chain-of-thought reasoning into the action-token space. Rather than generating ex-plicit textual rationales or visual subgoals, the policy first predicts a compact coarse action plan and then conditions executable action generation on this plan. A joint plan-execute tokenizer aligns long-horizon planning tokens and short-horizon executable tokens within a shared discrete action vocabulary, keeping planning close to the control manifold. Experiments on LIBERO, SimplerEnv-WidowX, and real-world robot manipulation tasks show that action-token reasoning improves benchmark performance, strengthens long-horizon robustness, and is especially effective on multi-stage tasks where intermediate progress must be preserved. More broadly, these results suggest that action-token planning provides a compact and promising alternative to explicit CoT generation for embodied policy learning without introducing a separate planner-controller interface. 8References 
+
+[1] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, et al. Rt-1: Robotics transformer for real-world control at scale. arXiv preprint arXiv:2212.06817 , 2022. doi:10.48550/arXiv.2212.06817. URL https://arxiv.org/abs/2212.06817 .[2] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, X. Chen, et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. arXiv preprint arXiv:2307.15818 , 2023. doi:10.48550/arXiv.2307.15818. URL https://arxiv.org/abs/2307.15818 .[3] Octo Model Team, D. Ghosh, H. Walke, K. Pertsch, K. Black, et al. Octo: An open-source generalist robot policy. arXiv preprint arXiv:2405.12213 , 2024. doi:10.48550/arXiv.2405. 12213. URL https://arxiv.org/abs/2405.12213 .[4] M. J. Kim, K. Pertsch, S. Karamcheti, T. Xiao, A. Balakrishna, et al. Openvla: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 , 2024. doi:10.48550/arXiv. 2406.09246. URL https://arxiv.org/abs/2406.09246 .[5] K. Black, N. Brown, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, L. Groom, K. Haus-man, B. Ichter, S. Jakubczak, T. Jones, L. Ke, S. Levine, A. Li-Bell, M. Mothukuri, S. Nair, K. Pertsch, L. X. Shi, J. Tanner, Q. Vuong, A. Walling, H. Wang, and U. Zhilinsky. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 ,2024. doi:10.48550/arXiv.2410.24164. URL https://arxiv.org/abs/2410.24164 .[6] D. A. Rosenbaum. Human motor control . Academic press, 2009. [7] N. A. Bernstein. The Co-ordination and Regulation of Movements . Pergamon Press, Oxford, 1967. [8] K. S. Lashley. The problem of serial order in behavior. In L. A. Jeffress, editor, Cerebral Mechanisms in Behavior , pages 112–136. Wiley, New York, 1951. [9] M. Zawalski, W. Chen, K. Pertsch, O. Mees, C. Finn, and S. Levine. Robotic control via embodied chain-of-thought reasoning. arXiv preprint arXiv:2407.08693 , 2024. doi:10.48550/ arXiv.2407.08693. URL https://arxiv.org/abs/2407.08693 .[10] C.-P. Huang, Y.-H. Wu, M.-H. Chen, Y.-C. F. Wang, and F.-E. Yang. Thinkact: Vision-language-action reasoning via reinforced visual latent planning. arXiv preprint arXiv:2507.16815 , 2025. doi:10.48550/arXiv.2507.16815. URL https://arxiv.org/abs/ 2507.16815 .[11] Q. Zhao, Y. Lu, M. J. Kim, Z. Fu, Z. Zhang, Y. Wu, Z. Li, Q. Ma, S. Han, C. Finn, A. Handa, M.-Y. Liu, D. Xiang, G. Wetzstein, and T.-Y. Lin. Cot-vla: Visual chain-of-thought reasoning for vision-language-action models. arXiv preprint arXiv:2503.22020 , 2025. doi:10.48550/ arXiv.2503.22020. URL https://arxiv.org/abs/2503.22020 .[12] W. Zhang, H. Liu, Z. Qi, Y. Wang, X. Yu, J. Zhang, R. Dong, J. He, F. Lu, H. Wang, Z. Zhang, L. Yi, W. Zeng, and X. Jin. Dreamvla: A vision-language-action model dreamed with compre-hensive world knowledge. arXiv preprint arXiv:2507.04447 , 2025. doi:10.48550/arXiv.2507. 04447. URL https://arxiv.org/abs/2507.04447 .[13] D. Qu, H. Song, Q. Chen, Y. Yao, X. Ye, Y. Ding, Z. Wang, J. Gu, B. Zhao, D. Wang, and X. Li. Spatialvla: Exploring spatial representations for visual-language-action model. arXiv preprint arXiv:2501.15830 , 2025. doi:10.48550/arXiv.2501.15830. URL https://arxiv. org/abs/2501.15830 .[14] C. Gao, Z. Liu, Z. Chi, J. Huang, X. Fei, Y. Hou, Y. Zhang, Y. Lin, Z. Fang, Z. Jiang, and L. Shao. Vla-os: Structuring and dissecting planning representations and paradigms in vision-language-action models. arXiv preprint arXiv:2506.17561 , 2025. doi:10.48550/arXiv.2506. 17561. URL https://arxiv.org/abs/2506.17561 .9[15] H. Huang, M. Cen, K. Tan, X. Quan, G. Huang, and H. Zhang. Graphcot-vla: A 3d spatial-aware reasoning vision-language-action model for robotic manipulation with ambiguous in-structions. arXiv preprint arXiv:2508.07650 , 2025. doi:10.48550/arXiv.2508.07650. URL 
+
+https://arxiv.org/abs/2508.07650 .[16] K. Pertsch, K. Stachowicz, B. Ichter, D. Driess, S. Nair, Q. Vuong, O. Mees, C. Finn, and S. Levine. Fast: Efficient action tokenization for vision-language-action models. arXiv preprint arXiv:2501.09747 , 2025. doi:10.48550/arXiv.2501.09747. URL https://arxiv.org/abs/ 2501.09747 .[17] M. J. Kim, C. Finn, and P. Liang. Fine-tuning vision-language-action models: Optimizing speed and success. arXiv preprint arXiv:2502.19645 , 2025. doi:10.48550/arXiv.2502.19645. URL https://arxiv.org/abs/2502.19645 .[18] K. Black, N. Brown, J. Darpinian, K. Dhabalia, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fu-sai, M. Y. Galliker, D. Ghosh, L. Groom, K. Hausman, B. Ichter, S. Jakubczak, T. Jones, L. Ke, D. LeBlanc, S. Levine, A. Li-Bell, M. Mothukuri, et al. π0.5: a vision-language-action model with open-world generalization. arXiv preprint arXiv:2504.16054 , 2025. doi: 10.48550/arXiv.2504.16054. URL https://arxiv.org/abs/2504.16054 .[19] Z. Zhong, J. Li, J. He, H. Yan, X. Gong, G. Zhao, Y. Cai, J. Gao, X. Yan, B. Liu, Y. Chen, L. Yang, and H. Li. Dualcot-vla: Visual-linguistic chain of thought via parallel reasoning for vision-language-action models. arXiv preprint arXiv:2603.22280 , 2026. doi:10.48550/arXiv. 2603.22280. URL https://arxiv.org/abs/2603.22280 .[20] J. Lee, J. Duan, H. Fang, Y. Deng, S. Liu, B. Li, B. Fang, J. Zhang, Y. R. Wang, S. Lee, W. Han, W. Pumacay, A. Wu, R. Hendrix, K. Farley, E. VanderBilt, A. Farhadi, D. Fox, and R. Krishna. Molmoact: Action reasoning models that can reason in space. arXiv preprint arXiv:2508.07917 , 2025. doi:10.48550/arXiv.2508.07917. URL https://arxiv.org/abs/ 2508.07917 .[21] H. Fang, J. Duan, D. Clay, S. Wang, S. Liu, W. Huang, X. Fan, W.-C. Tsai, S. Chen, Y. R. Wang, S. Xing, J. Cho, J. S. Park, A. Eftekhar, P. Sushko, K. Farley, A. Wadhwa, C. Harrison, W. Han, Y.-C. Lee, E. VanderBilt, R. Hendrix, S. Ellawela, L. Ngoo, J. Chai, Z. Ren, A. Farhadi, D. Fox, and R. Krishna. Molmoact2: Action reasoning models for real-world deployment. arXiv preprint arXiv:2605.02881 , 2026. doi:10.48550/arXiv.2605.02881. URL https://arxiv. org/abs/2605.02881 .[22] L. Zhong, Y. Liu, Y. Wei, Z. Xiong, M. Yao, S. Liu, and G. Ren. Acot-vla: Action chain-of-thought for vision-language-action models. arXiv preprint arXiv:2601.11404 , 2026. doi: 10.48550/arXiv.2601.11404. URL https://arxiv.org/abs/2601.11404 .[23] Y. Liu, S. Zhang, Z. Dong, B. Ye, T. Yuan, X. Yu, L. Yin, C. Lu, J. Shi, L. J.-T. Yu, L. Zheng, T. Jiang, J. Gong, X. Qiu, and H. Zhao. Faster: Toward efficient autoregressive vision language action modeling via neural action tokenization. arXiv preprint arXiv:2512.04952 , 2025. doi: 10.48550/arXiv.2512.04952. URL https://arxiv.org/abs/2512.04952 .[24] Z. Dong, Y. Liu, S. Zhang, B. Ye, Y. Yuan, F. Ni, J. Gong, X. Qiu, H. Zhao, Y. Li, et al. Actioncodec: What makes for good action tokenizers. arXiv preprint arXiv:2602.15397 , 2026. [25] Y. Wang, H. Zhu, M. Liu, J. Yang, H.-S. Fang, and T. He. Vq-vla: Improving vision-language-action models via scaling vector-quantized action tokenizers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 11089–11099, 2025. [26] B. Liu, Y. Zhu, C. Gao, Y. Feng, Q. Liu, Y. Zhu, and P. Stone. Libero: Benchmarking knowledge transfer for lifelong robot learning. In Advances in Neural Information Processing Systems , volume 36, 2023. URL https://proceedings.neurips.cc/paper_files/ paper/2023/hash/8c3c666820ea055a77726d66fc7d447f-Abstract-Datasets_and_ Benchmarks.html .10 [27] X. Li, K. Hsu, J. Gu, K. Pertsch, O. Mees, H. R. Walke, C. Fu, I. Lunawat, I. Sieh, S. Kir-mani, S. Levine, J. Wu, C. Finn, H. Su, Q. Vuong, and T. Xiao. Evaluating real-world robot manipulation policies in simulation. arXiv preprint arXiv:2405.05941 , 2024. [28] M. Shukor, D. Aubakirova, F. Capuano, P. Kooijmans, S. Palma, A. Zouitine, M. Ar-actingi, C. Pascal, M. Russi, A. Marafioti, S. Alibert, M. Cord, T. Wolf, and R. Cadene. Smolvla: A vision-language-action model for affordable and efficient robotics. arXiv preprint arXiv:2506.01844 , 2025. doi:10.48550/arXiv.2506.01844. URL https://arxiv.org/abs/ 2506.01844 .[29] NVIDIA, J. Bjorck, F. Casta˜ neda, N. Cherniadev, X. Da, R. Ding, L. J. Fan, Y. Fang, D. Fox, F. Hu, S. Huang, J. Jang, Z. Jiang, J. Kautz, K. Kundalia, L. Lao, Z. Li, Z. Lin, K. Lin, G. Liu, E. Llontop, L. Magne, A. Mandlekar, A. Narayan, S. Nasiriany, S. Reed, Y. L. Tan, G. Wang, Z. Wang, J. Wang, Q. Wang, J. Xiang, Y. Xie, Y. Xu, Z. Xu, S. Ye, Z. Yu, A. Zhang, H. Zhang, Y. Zhao, R. Zheng, and Y. Zhu. Gr00t n1: An open foundation model for generalist humanoid robots. arXiv preprint arXiv:2503.14734 , 2025. doi:10.48550/arXiv.2503.14734. URL https://arxiv.org/abs/2503.14734 .[30] J. Cen, C. Yu, H. Yuan, Y. Jiang, S. Huang, J. Guo, X. Li, Y. Song, H. Luo, F. Wang, D. Zhao, and H. Chen. Worldvla: Towards autoregressive action world model. arXiv preprint arXiv:2506.21539 , 2025. doi:10.48550/arXiv.2506.21539. URL https://arxiv.org/abs/ 2506.21539 .[31] Y. Wang, X. Li, W. Wang, J. Zhang, Y. Li, Y. Chen, X. Wang, and Z. Zhang. Unified vision-language-action model. arXiv preprint arXiv:2506.19850 , 2025. doi:10.48550/arXiv.2506. 19850. URL https://arxiv.org/abs/2506.19850 .[32] Q. Lv, W. Kong, H. Li, J. Zeng, Z. Qiu, D. Qu, H. Song, Q. Chen, X. Deng, and J. Pang. F1: A vision-language-action model bridging understanding and generation to actions. arXiv preprint arXiv:2509.06951 , 2025. doi:10.48550/arXiv.2509.06951. URL https://arxiv. org/abs/2509.06951 .[33] J. Chen, W. Song, P. Ding, Z. Zhou, H. Zhao, F. Tang, D. Wang, and H. Li. Unified diffusion vla: Vision-language-action model via joint discrete denoising diffusion process. 
+
+arXiv preprint arXiv:2511.01718 , 2025. doi:10.48550/arXiv.2511.01718. URL https: //arxiv.org/abs/2511.01718 .[34] Q. Li, Y. Liang, Z. Wang, L. Luo, X. Chen, M. Liao, F. Wei, Y. Deng, S. Xu, Y. Zhang, X. Wang, B. Liu, J. Fu, J. Bao, D. Chen, Y. Shi, J. Yang, and B. Guo. Cogact: A foundational vision-language-action model for synergizing cognition and action in robotic manipulation. 
+
+arXiv preprint arXiv:2411.19650 , 2024. doi:10.48550/arXiv.2411.19650. URL https:// arxiv.org/abs/2411.19650 .[35] K. Li, L. Clouatre, R. Pathak, and S. Ermon. Chain of thought empowers transformers to solve inherently serial problems. arXiv preprint arXiv:2402.12875 , 2024. doi:10.48550/arXiv.2402. 12875. URL https://arxiv.org/abs/2402.12875 .[36] M. Nye, A. J. Andreassen, G. Gur-Ari, H. Michalewski, J. Austin, D. Bieber, D. Do-han, A. Lewkowycz, M. Bosma, D. Luan, C. Sutton, L. Soares, Y. Hu, D. Chen, and O. Habryka. Show your work: Scratchpads for intermediate computation with language models. arXiv preprint arXiv:2112.00114 , 2021. doi:10.48550/arXiv.2112.00114. URL 
+
+https://arxiv.org/abs/2112.00114 .[37] X. Wang, J. Wei, D. Schuurmans, Q. V. Le, E. H. Chi, and S. Narang. Self-consistency im-proves chain of thought reasoning in language models. arXiv preprint arXiv:2203.11171 , 2023. doi:10.48550/arXiv.2203.11171. URL https://arxiv.org/abs/2203.11171 .11 [38] K. Tian, Y. Jiang, Z. Yuan, B. Peng, and L. Wang. Visual autoregressive modeling: Scalable image generation via next-scale prediction. arXiv preprint arXiv:2404.02905 , 2024. doi:10. 48550/arXiv.2404.02905. URL https://arxiv.org/abs/2404.02905 .[39] H. Walke, K. Black, A. Lee, M. J. Kim, M. Du, C. Zheng, T. Zhao, P. Hansen-Estruch, Q. Vuong, A. He, V. Myers, K. Fang, C. Finn, and S. Levine. Bridgedata v2: A dataset for robot learning at scale. arXiv preprint arXiv:2308.12952 , 2023. doi:10.48550/arXiv.2308.12952. URL https://arxiv.org/abs/2308.12952 .[40] D. Kalashnikov, A. Irpan, P. Pastor, J. Ibarz, A. Herzog, E. Jang, D. Quillen, E. Holly, M. Kalakrishnan, V. Vanhoucke, and S. Levine. Qt-opt: Scalable deep reinforcement learn-ing for vision-based robotic manipulation. arXiv preprint arXiv:1806.10293 , 2018. doi: 10.48550/arXiv.1806.10293. URL https://arxiv.org/abs/1806.10293 .[41] A. Khazatsky, K. Pertsch, S. Nair, A. Balakrishna, S. Dasari, S. Karamcheti, S. Nasiriany, et al. Droid: A large-scale in-the-wild robot manipulation dataset. arXiv preprint arXiv:2403.12945 ,2024. doi:10.48550/arXiv.2403.12945. URL https://arxiv.org/abs/2403.12945 .12 Appendix A Additional Ablations 
+
+The main paper reports the core simulation, real-world, and design-ablation results. Here we provide additional diagnostic breakdowns and implementation details that support the design choices. 
+
+A.1 LIBERO Design Ablations Planning Horizon. Table 3 reports completed LIBERO joint-mode runs for different planning source horizons. Plan horizon 0 corresponds to the exec-only setting with no plan tokens, while 40 and 160 use increasingly longer coarse plans. Increasing the planning source horizon from 40 to 160 improves average success and gives a gain on libero long , indicating that a longer coarse plan helps on the LIBERO Long benchmark. 
+
+Joint Tokenizer versus Separate Tokenizers. Table 4 compares our joint-mode tokenizer with a non-joint variant that uses separate tokenizers for coarse planning and executable actions. In the separate-tokenizer variant, long-horizon coarse plans and short-horizon execution chunks are quan-tized by two independently trained codecs. The policy still predicts plan tokens before execution tokens, but the two token streams no longer share a common codebook or token geometry. As a result, a planning token is only an auxiliary latent hint: its token identity is not guaranteed to cor-respond to an executable action pattern under the execution tokenizer. The autoregressive policy must therefore learn an additional cross-tokenizer translation from the planning vocabulary to the execution vocabulary, which weakens the conditioning signal and makes planning errors harder for the execution branch to interpret. By contrast, the joint-mode tokenizer uses a shared action-token vocabulary with mode condition-ing. This forces coarse plans and executable chunks to live on the same action-semantic manifold, so a predicted planning token can more directly bias the subsequent executable token distribution. The joint tokenizer improves average success from 96.60% to 97.90%, with gains on LIBERO Long and the overall score. A codebook-overlap diagnostic on re-encoded saved joint-mode reconstruc-tion samples further shows partial but nontrivial overlap between plan and execution token usage. Here the support-overlap mass is defined as P 
+
+> i
+
+min( pplan  
+
+> i
+
+, p exec  
+
+> i
+
+) over the marginal plan-token and execution-token code distributions, and is around 0.16 in our analysis, indicating shared token usage without collapse into the same distribution. 
+
+Runtime Comparison Across Reasoning Media. For completeness, Table 5 reports a controlled LIBERO runtime comparison between a CoT-VLA-style visual reasoning baseline and our action-token planning setup under the same rollout pipeline.      
+
+> Table 5. Controlled LIBERO runtime comparison between CoT-VLA-style visual reasoning and Coarse-to-Control. Time is the average evaluation time per task. Method Time (s) ↓
+> Visual CoT (CoT-VLA-style, 256 tok) 3884.27 Coarse-to-Control (42 tok) 1325.53
+
+The runtime gap is consistent with differences in autoregressive prefix length and reasoning medium. Our local CoT-VLA-style baseline predicts a visual reasoning prefix before action tokens under the same rollout pipeline, so the comparison keeps the evaluation procedure matched while varying the form of intermediate reasoning. In this setting, the visual baseline uses a 256-token visual pre-fix, which substantially increases decoding cost before action generation. By contrast, Coarse-to-Control uses 42 action-space guidance tokens in the LIBERO setting. This shorter control-aligned prefix reduces decoding cost before action execution and avoids a separate image-to-action transla-tion step. 13 A.2 Real-World Subtask Progress 
+
+Table 6 reports subtask-level progress rates for the multi-stage real-world tasks. Final success is upper-bounded by earlier subtask completion, so the table diagnoses where failures enter the execu-tion chain. Plan-based execution preserves more progress from early subtasks to final completion, especially on the three multi-stage tasks. Figure 7 provides representative keyframes for the four physical tasks used in our real-world evaluation. Table 6: Subtask progress rates (%) in multi-stage real-world tasks. Final and subtask columns report the percentage of rollouts that complete each corresponding stage.                                                                  
+
+> Method Task Final Subtask 1 Subtask 2 Subtask 3 plan Carrot+Button 70.0 85.0 70.0 –plan Plate →Basket 60.0 70.0 60.0 –plan Cleanup 45.0 70.0 55.0 45.0 faster Carrot+Button 50.0 75.0 50.0 –faster Plate →Basket 35.0 50.0 35.0 –faster Cleanup 25.0 55.0 35.0 25.0
+> π0Carrot+Button 50.0 80.0 50.0 –
+> π0Plate →Basket 40.0 60.0 40.0 –
+> π0Cleanup 30.0 55.0 40.0 30.0
+> π0-fast Carrot+Button 35.0 40.0 35.0 –
+> π0-fast Plate →Basket 35.0 45.0 35.0 –
+> π0-fast Cleanup 20.0 40.0 25.0 20.0
+
+A.3 Libero-Bridge Tokenizer Real-World Transfer 
+
+To disentangle the effect of action-token planning from tokenizer pretraining coverage, we addition-ally evaluate the first two real-world tasks with tokenizers pretrained only on the LIBERO-Bridge mixture. This setting is not our main real-world tokenizer setting: the main real-world experiments already compare plan and faster under the same downstream real-world policy data, while using the broader real-world tokenizer described in Table 8. The LIBERO-Bridge tokenizer is narrower and more simulation/Bridge-oriented, so it creates a stronger domain mismatch to our physical robot setup. We therefore use this setting as a controlled transfer probe rather than as a recipe for maximiz-ing absolute real-world performance. Under this probe, both plan and faster variants use tokenizers pretrained on the same LIBERO-Bridge data mixture, while sharing the same downstream policy data, robot platform, and evaluation protocol. The remaining comparison tests whether adding action-token plans still helps when tokenizer pretraining coverage is matched but transfer to the physical robot remains imperfect. Table 7 reports success rates as percentages over 20 trials per task, together with the average number of rollout steps over successful trials. Under the same LIBERO-Bridge tokenizer, plan-based execution improves success from 40.0% to 70.0% on Carrot and from 20.0% to 35.0% on Carrot+Button, while reducing the average success-ful rollout length from 436 to 239 control steps. This result is more consistent with a planning-mechanism gain than with a tokenizer-scaling gain. Even with a domain-mismatched tokenizer, the improvement suggests that plan tokens can still provide temporally extended guidance for real-world execution, rather than relying only on local action-only corrections. The reduction in successful rollout length is also consistent with more efficient successful trajectories, with fewer unnecessary corrective motions after success remains feasible. 14 Figure 7: Real-world setup and representative keyframes from the four physical manipulation tasks used in the real-world evaluation. Table 7: Real-world transfer analysis using a tokenizer pretrained on the LIBERO-Bridge mixture. Success rates are reported as percentages over 20 trials per task. Success Steps reports the average number of rollout steps over successful trials only, rounded to the nearest control step.                 
+
+> Method Carrot Success ↑Carrot+Button Success ↑Avg. Success ↑Success Steps ↓
+> faster 40.0 20.0 30.0 436 plan 70.0 35.0 52.5 239
+
+# B Implementation Details 
+
+B.1 Dataset Composition 
+
+Table 8 summarizes the data used for action-tokenizer pretraining. For simulation experiments, we use a compact mixture of LIBERO and Bridge. For real-world experiments, we use a broader real-world-oriented mixture, following the same tokenizer-pretraining protocol but increasing the coverage of real robot trajectories. Real-world task demonstrations are used for downstream policy training, while the pretrained action tokenizer is kept fixed. For policy training, the input consists of primary and wrist camera views, language instructions, and proprioceptive state. All datasets are stored in RLDS format. 
+
+Training setup. Table 9 summarizes the downstream policy training setup. The LIBERO setting uses LIBERO demonstrations, the SimplerEnv-WidowX setting uses Bridge demonstrations, and the 15 Table 8: Action-tokenizer pretraining data mixtures. The simulation tokenizer uses Libero and Bridge; the real-world tokenizer uses a broader mixture of real-robot and robot-learning datasets.                         
+
+> Setting Dataset Weight Usage Simulation Libero [26] 5.0 Simulation tokenizer Simulation Bridge [39] 1.0 Simulation tokenizer Real world Fractal [2] 1.0 Real-world tokenizer Real world Kuka [40] 1.0 Real-world tokenizer Real world Bridge [39] 1.0 Real-world tokenizer Real world Droid(EEF) [41] 1.0 Real-world tokenizer Real world Libero [26] 5.0 Real-world tokenizer
+
+Table 9: Downstream policy training setup. All policies use AdamW with learning rate 2.5 × 10 −5,1k warmup steps, cosine decay, and weight decay 1 × 10 −10 .           
+
+> Setting Training data Action-token horizon Policy training LIBERO LIBERO demonstrations 20-step exec / 160-step plan batch size 4, 60k steps SimplerEnv-WidowX Bridge demonstrations 10-step exec / 80-step plan batch size 16, 4 epochs Real world Physical robot demonstrations 20-step exec / 160-step plan batch size 8, 30k steps
+
+real-world setting uses physical robot demonstrations collected for each task. The action tokenizers are pretrained separately on 8 ×H200 GPUs and kept fixed during downstream VLA optimization. 
+
+B.2 Data Preprocessing 
+
+For LIBERO policy training, we use a context window size equal to the policy condition length and a future action window of horizon minus one. Images are resized to 224 px, and the camera set contains the primary and wrist views. Action and proprioceptive values are normalized with q99 .The shuffle buffer size is 100k, and the datasets are sampled with equal mixture weights. For tokenizer pretraining, actions are normalized with q99 . LIBERO and real-world policies use a 20-step executable action horizon, while SimplerEnv-WidowX uses a 10-step executable horizon. The real-world tokenizer is trained on the broader real-world-oriented mixture and then reused un-changed for downstream physical-robot policy training. 
+
+B.3 Action Representation 
+
+All LIBERO policies use 7-DoF end-effector actions. The executable action horizon is He = 20 
+
+timesteps. For Coarse-to-Control, the planning source horizon is Hp = 160 timesteps in the main model, and the tokenizer compresses this source window into K = 20 coarse plan steps. This corresponds to a planning chunk size of 8. The 40-step ablation uses the same 20-step executable horizon and K = 20 plan steps, but compresses a 40-step source window with chunk size 2. For the planning branch, motion dimensions are reduced with chunk-level summation, while the gripper dimension keeps the last action in each chunk. 
+
+B.4 Joint-Mode Action Tokenizer 
+
+The main model uses a joint-mode residual-VQ action tokenizer with two modes: execution mode and planning mode. Both modes share the same discrete action vocabulary, and a learned mode condition specifies whether the tokenizer is encoding short-horizon executable actions or coarse long-horizon planning actions. The tokenizer uses three residual VQ codebooks with 4096 entries each. With a 20-step action horizon, two temporal patches, seven action dimensions, and three residual codebooks, each branch is represented by 2 × 7 × 3 = 42 action tokens in the LIBERO setting. The codec latent dimension is 64, the action dimension is 7, and the mode-conditioning 16 dimension is 64. The tokenizer reconstruction objective is an action-space ℓ1 loss plus residual-VQ codebook and commitment losses, with commitment weight 0.25. For completeness, the full tokenizer formulation used in the main model is as follows. Let 
+
+g0(At) = At:t+He−1, (10) 
+
+g1(At) = ¯At, (11) denote the mode-specific action preparation, where g1 performs the planning-specific action sub-resolution by chunking the Hp-step source trajectory and reducing each chunk into one coarse plan step, yielding the He-step coarse plan representation. Let P (·) denote the shared codec prepro-cessing applied after mode-specific preparation. In our implementation, P (·) corresponds to the patch-based pretransform used by the residual-VQ autoencoder. Let Q(·, m ) and D(·, m ) be the mode-conditioned tokenizer and decoder. The target tokens are 
+
+zplan  
+
+> t
+
+= Q( ¯At, m = 1) , (12) 
+
+zexec  
+
+> t
+
+= Q(At:t+He−1, m = 0) . (13) 
+
+Joint Tokenizer Schematic. Figure 8 visualizes the two-mode tokenizer and the shared token space that aligns planning and execution. 
+
+Figure 8: Joint plan-execute action tokenizer. Execution mode represents short-horizon executable actions, planning mode represents coarse long-horizon action-space guidance, and both modes share a discrete token vocabulary. We define the preprocessed targets as 
+
+Xmt = P (gm(At)) , (14) 
+
+ˆXmt = D(Q(Xmt , m ), m ). (15) The reconstruction term is 
+
+Lm 
+
+> rec
+
+= ∥Xmt − ˆXmt ∥1. (16) Let em,r t be the encoder residual entering the r-th codebook and qm,r t be its selected code vector. With Rm the number of residual codebooks used in mode m, and sg( ·) denoting stop-gradient, the residual-VQ terms are 
+
+Lm 
+
+> commit
+
+= 1
+
+RmRmX
+
+> r=1
+
+∥em,r t − sg( qm,r t )∥22 , (17) 
+
+Lm 
+
+> codebook
+
+= 1
+
+RmRmX
+
+> r=1
+
+∥sg( em,r t ) − qm,r t ∥22 . (18) 17 For a training sample from mode m, the tokenizer objective is 
+
+Ltok = Lm 
+
+> rec
+
++ Lm 
+
+> codebook
+
++ βLm
+
+> commit
+
+, (19) where β = 0 .25 in our implementation. The tokenizer is trained on both execution and planning samples, with equal mode sampling in our implementation. 
+
+B.5 Separate-Tokenizer Ablation 
+
+For the non-joint ablation in Table 4, coarse planning and executable actions are encoded by two independently trained VQ action tokenizers. The policy still generates planning tokens before exe-cution tokens, but the plan-token vocabulary and execution-token vocabulary are not shared. This setting tests whether the gain comes merely from adding an action-level planning prefix, or from aligning planning and execution inside a common token space. 
+
+# C Training and Evaluation Details 
+
+C.1 VLA Policy Training 
+
+The policy uses a local PaliGemma-3B-based VLA backbone with a SigLIP visual encoder and the PaliGemma multimodal projector. The multimodal prefix consists of image tokens, language tokens, and proprioceptive state. The autoregressive action suffix is ordered as planning tokens followed by executable tokens. The policy is trained with teacher forcing over the full plan-execute suffix. At inference time, planning tokens are generated first and used only as internal conditioning; only executable tokens are decoded into continuous robot actions. 
+
+C.2 Optimization 
+
+Unless stated otherwise, policy training uses AdamW with cosine learning-rate decay, learning rate 
+
+2.5 × 10 −5, warmup of 1,000 steps, weight decay 10 −10 , and maximum training length of 60k steps for LIBERO experiments. The real-world experiments use the same optimizer family with the cor-responding task-specific batch size and maximum step budget defined in the training configuration. 
+
+C.3 Model Configuration 
+
+All locally trained policy variants use the same PaliGemma-based action-token VLA backbone. In our experiments, these models are initialized from π0-FAST checkpoints. The VLA is a unified multimodal model with separate VLM, proprioception, and action streams. In the evaluated config-uration, the VLM stream has hidden size 2048, the proprioception and action streams have hidden size 1024, the model uses 18 hidden layers, 8 attention heads, 1 key-value head, head dimension 256, and maximum position length 8192. LoRA is disabled in these evaluations. EMA weights are loaded for evaluation. 
+
+C.4 LIBERO Evaluation 
+
+We evaluate on libero spatial , libero object , libero goal , and libero long . The evalua-tion uses 50 trials per task for the full benchmark summaries. We report suite-level success rate and suite-level total evaluation time for all controlled comparisons in this work. 
+
+C.5 SimplerEnv-WidowX Evaluation 
+
+For SimplerEnv-WidowX, we fine-tune on Bridge data with a single primary camera view, q99 
+
+action normalization, and image augmentation enabled. The policy uses a joint tokenizer with a 10-step executable horizon and an 80-step planning horizon compressed into 10 coarse plan steps. We train for 4 epochs with batch size 16, AdamW, learning rate 2.5 × 10 −5, 1k warmup steps, cosine decay, and weight decay 1 × 10 −10 . Evaluation uses 24 trials per task, loads EMA weights, and replans every 10 control steps. 18 D Real-World Evaluation Protocol 
+
+The real-world benchmark contains four physical manipulation tasks: (1) putting the carrot on the plate, (2) putting the carrot on the plate and pressing the button, (3) moving carrots from the plate into the basket, and (4) clearing fruits and vegetables from the table into the plate placed in the basket. Each task is trained with 50 demonstrations and each method is evaluated for 20 trials per task under the same scene setup and success criteria. The latter three tasks require multi-stage progress; for these tasks we additionally report intermediate subtask completion rates in Table 6. 
+
+Success criteria. A rollout is treated as a final-task success only when the full language goal is completed. For multi-stage tasks, a subtask is treated as completed when the corresponding intermediate object placement or interaction is completed before timeout, even if a later stage fails. We report all real-world final and subtask results as percentages. 19

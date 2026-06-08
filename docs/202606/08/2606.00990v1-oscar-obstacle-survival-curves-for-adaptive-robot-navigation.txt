@@ -1,0 +1,712 @@
+Title: OSCAR: Obstacle Survival Curves for Adaptive Robot Navigation
+
+URL Source: https://arxiv.org/pdf/2606.00990v1
+
+Published Time: Tue, 02 Jun 2026 01:29:22 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# OSCAR: Obstacle Survival Curves for Adaptive Robot Navigation 
+
+Hshmat Sahak Aoran Jiao Nicholas Rhinehart Timothy D. Barfoot 
+
+University of Toronto, Canada 
+
+{hshmat.sahak, aoran.jiao }@mail.utoronto.ca 
+
+{nick.rhinehart, tim.barfoot }@utoronto.ca 
+
+Abstract: A mobile robot following a graph of known routes can make costly nav-igation errors when a temporary obstacle blocks a critical edge: waiting too long behind a parked cart wastes time, but immediately rerouting around a person who would move in a few seconds is also inefficient. Standard reactive obstacle avoid-ance addresses local motion around obstacles, while fixed wait-or-reroute rules ignore how long different obstacle types tend to persist. We propose OSCAR: an adaptive survival-modeling framework for graph-based navigation with temporary blockages. Assuming obstacle class labels are available at encounter time, the robot learns class-conditioned residual clearance-time distributions from online experience, including right-censored observations when it reroutes before observ-ing clearance. These survival models are integrated into a time-dependent graph planner that maintains obstacle memory and computes a patience threshold at each blocked edge: how long to wait before taking an alternate route. The method con-tinuously updates its clearance estimates across episodes and uses them to balance waiting against rerouting. We evaluate the approach in simulation and on a real mobile robot in a university atrium with obstacles including people, chairs, bins, and tubes. In simulation, the learned policy’s time-to-goal converges to within 1% 
+
+of an oracle with access to ground-truth clearance distributions after fewer than 20 observations per obstacle class, outperforming all heuristic baselines. Real-world deployment confirms that the policy improves online, adapting its patience thresholds from experience across 50 navigation episodes. 
+
+Keywords: Robot Navigation; Dynamic Obstacle Avoidance; Survival Analysis; Adaptive Planning; Online Learning 
+
+# 1 Introduction 
+
+Robots often navigate using a graph of previously traversed or predefined routes, where vertices represent poses and edges represent traversable path segments [1, 2, 3]. This graph-based view is common in settings where the robot should follow known routes instead of improvising around obstacles, such as indoor service robots operating in hospitals or office buildings, warehouse robots moving through designated aisles and campus delivery robots following mapped sidewalks [4, 5, 6]. In these settings, an obstacle may block an edge of the graph: a person standing in a narrow hallway, a cart left in an aisle, a chair obstructing a corridor, or a closed door along a planned route. The relevant global decision is then not simply how to avoid the obstacle locally, but whether the robot should wait for the blocked edge to become traversable again or take an alternate path through the graph. This decision depends on the type of obstacle and its persistence. A person may move within seconds, while a cart, chair, or closed door may remain for much longer. Fixed rules such as “always wait,” “always reroute,” or obstacle-type heuristics ignore this temporal structure and can lead to unnecessary detours or excessive waiting [7, 3, 8]. Figure 1 illustrates this setting. We formulate this problem as time-to-event prediction, where the event is obstacle clearance [9, 10, 11] . For each obstacle class, the robot learns a survival model describing the probability that an 
+
+> arXiv:2606.00990v1 [cs.RO] 31 May 2026
+
+Figure 1: Motivating example showing a robot navigating on a graph where it might be blocked by different objects and must decide whether to wait or reroute based on its learned survival model. obstacle remains blocked as a function of time. At each encounter, the robot uses this model to compute a patience threshold: how long it should wait before rerouting. The decision compares the expected time-to-goal if the obstacle clears during the waiting period against the expected time-to-goal if the robot waits and then replans with the edge unavailable. Importantly, the planner maintains memory of previously observed blocked edges, including their class and how long they have already been blocked. This memory makes downstream planning time-dependent: the expected wait on a future edge depends not only on its obstacle class, but also the time at which the robot expects to arrive there and the elapsed blockage duration already observed [12, 13, 14]. As the robot operates, it updates its survival estimates from both cleared obstacles and right-censored 
+
+cases (when the robot reroutes before observing clearance) [9, 15, 16]. We assume semantic obstacle labels are available from a perception system, for example VLMs applied to LiDAR images. The resulting planner improves online while making decisions under uncertainty. Together, these compo-nents form OSCAR (Obstacle Survival Curves for Adaptive Robot navigation), a navigation policy that improves as the robot accumulates experience across episodes. Specifically, we contribute: (i) A survival-analysis formulation of obstacle persistence for graph-based robot naviga-tion, to our knowledge the first, which enables principled handling of right-censored obser-vations that arise naturally when the robot reroutes before an obstacle clears; (ii) A local wait-or-reroute decision rule that selects a patience threshold at a blocked edge by minimizing expected time-to-goal under the current survival estimate, validated in sim-ulation where the learned policy’s mean time-to-goal across 100 random seeds converges to within 1% of an oracle with access to ground-truth clearance distributions; and (iii) A time-dependent global planner with obstacle memory that incorporates survival esti-mates as arrival-time-dependent edge costs across the full route graph, with FIFO edge-arrival functions that preserve the applicability of Dijkstra’s algorithm despite history-dependent edge costs, validated on a robot navigating a campus atrium across 50 episodes. 
+
+# 2 Related Work 
+
+Dynamic Obstacle Avoidance and Social Navigation. A large body of work on robot navigation in dynamic environments focuses on local obstacle avoidance, where decisions are made reactively over short time horizons using current sensor observations [17, 18, 19, 20]. These methods are effective for short-horizon motion control, but they typically operate at the trajectory or control level rather than at the level of global route choice. In contrast, our work addresses a complementary 2decision problem: when a robot encounters a blockage along a graph-based route, how long should it wait for the obstacle to clear before abandoning that edge to take a different path? 
+
+Planning under Uncertainty and the Canadian Traveller Problem. Global navigation is com-monly formulated as graph search, with methods such as Dijkstra’s algorithm and A* computing shortest paths over vertices and traversable edges [21, 22]. Extensions to uncertain settings include stochastic shortest-path formulations, Markov decision processes, and variants of the Canadian Trav-eller Problem (CTP), where edge costs or traversability may be unknown [23, 24, 25, 26]. CTP is especially close to our setting because edge blockages are revealed online as the robot traverses the graph, rather than being known before planning. However, standard CTP-style formulations typi-cally treat blockages as static hidden variables or one-time realizations of traversability. In contrast, our setting requires reasoning about persistence: once a robot observes a blockage, it must reason about the likelihood that it will clear within a useful time horizon. 
+
+Time-Dependent Routing. Time-dependent shortest-path methods allow edge costs to depend on the time at which an edge is reached [27, 28, 29, 13]. When the resulting edge arrival functions satisfy the FIFO property, meaning that departing later cannot lead to arriving earlier on the same edge, variants of Dijkstra’s algorithm can still be applied [27, 29, 12]. This structure is relevant to our setting because obstacle memory makes edge costs time-dependent: the expected future wait on edges we previously observed blocked and decided to reroute depends on the robot’s planned arrival time [3, 13, 14]. Arriving later may reduce the expected remaining blockage time, but the induced arrival-time function remains FIFO. We therefore incorporate learned obstacle-persistence estimates into graph search by inflating edge costs with planned-arrival-dependent expected waits. 
+
+Survival Modeling for Obstacle Persistence. Survival analysis models the time until an event occurs while naturally handling censored observations [9, 10, 11]. In our setting, the event is an obstacle clearing, and we fit a non-parametric Kaplan–Meier (KM) survival model for each obstacle class. These class-conditioned clearance distributions support planning in two ways: for the cur-rently encountered obstacle, they estimate the probability of clearance within a candidate patience threshold; for previously observed obstacles elsewhere in the graph, they inform the expected wait at the robot’s planned arrival time. 
+
+# 3 OSCAR: Survival-Guided Wait-or-Reroute Planning 
+
+We consider a robot navigating on a graph G = ( V, E ), where vertices represent robot poses and edges represent feasible motions with deterministic traversal times w(e) ≥ 0. Given start and goal vertices s, g ∈ V , each episode consists of one traversal from s to g. Edges may be temporarily blocked by dynamic obstacles that appear randomly. Class labels are provided at encounter time. 
+
+Figure 2: Our proposed pipeline. The robot follows the planned path till a blockage is detected. The reflectivity image and segmentation mask are used to determine the object type. The planner then uses the corresponding survival model to compute a patience threshold W ⋆, waits up to that thresh-old, and either resumes the original path if the obstacle clears or replans if the blockage persists. Our objective is to learn a navigation policy that minimizes expected time-to-goal over repeated episodes. At each blocked-edge encounter, the policy selects a patience threshold W ⋆ using its current estimates of obstacle statistics. The robot waits up to W ⋆, and if the obstacle remains blocked after that, takes another path. Since we do not assume access to an obstacle association 3module, repeated observations of a blocked edge at different times are treated as separate encounters. With more experience, the learned policy should approach an oracle with access to the ground-truth clearance distributions, blockage probability pblock , and object type probabilities given blocked, pk.Figure 2 shows the full pipeline. In this section, we focus on the decision-making module. The module needs three quantities: a survival model that predicts how long each obstacle class tends to remain, an edge cost that converts these predictions into expected navigation delay, and a local wait-or-reroute rule that chooses the patience threshold W ⋆ when the robot reaches a blocked edge. 
+
+3.1 Learning Class-Conditioned Obstacle Persistence 
+
+For each obstacle class k ∈ K , we model how long a blockage remains after the robot observes it. When the robot reaches an edge and detects a class-k blockage, let R(k) be the remaining time until that blockage clears. The class-conditioned survival function is Sk(τ ) = P(R(k) > τ ), which gives the probability that a newly observed class-k blockage is still present after waiting τ seconds. We estimate one survival curve per obstacle class using the Kaplan–Meier (KM) estimator [9, 11], which supports learning from both clearance and “right-censored” observations . A right-censored observation occurs when the robot reroutes before observing the obstacle clear, so it only observes that the clearance time exceeded the observed waiting time, rather than the true clearance time . For class k, let 0 < τ 1 < τ 2 < · · · < τ J be the distinct observed clearance times. If dj is the number of clearances at time τj and nj is the number of samples still under observation immediately before τj ,then bSk(τ ) = Q 
+
+> τj≤τ
+
+
+
+1 − dj
+
+> nj
+
+
+
+. The fitted survival curve is piecewise constant, with probability mass bpk,j = bSk(τj−1) − bSk(τj ) assigned to event time τj . Figure 3 includes an example KM fit. 
+
+3.2 Arrival-Time-Dependent Edge Costs 
+
+Figure 3: Example wait-or-reroute decision at a blocked edge. After identifying a chair, the planner uses the learned survival model to compute 
+
+Aclear (c), Aavoid (W ), and J(W ). The minimizer W ⋆ gives the patience threshold; here the obstacle persists, so the robot reroutes. 
+
+During planning, the robot must estimate how costly each edge will be if reached at a fu-ture time t. We write this cost as bc(e, t ) = w(e) + b∆( e, t ),
+
+where w(e) is the nominal traversal time and b∆( e, t ) is the expected extra delay caused by obstacles. We first consider an edge with no remembered blockage. In this case, the robot only accounts for the possibil-ity that a new obstacle will be discovered when it arrives. Let 
+
+bpblock = # blocked-edge encounters   
+
+> #edge traversal attempts
+
+,
+
+bpk = # observations of class k  
+
+> #total obstacle observations
+
+,
+
+and let bμk = R ∞ 
+
+> 0
+
+bSk(u) du be the estimated mean remaining clearance time for a newly observed class-k obstacle. This follows from the survival identity 
+
+E[R] = R ∞ 
+
+> 0
+
+P(R > u ) du . Therefore, the expected delay from a possible new blockage is b∆new =
+
+bpblock 
+
+P 
+
+> k∈K
+
+bpk bμk. Thus, if edge e has no remembered obstacle state, we use b∆( e, t ) = b∆new .
+
+Edges with remembered obstacle state: If edge e was previously observed to be blocked, the robot has more information than the prior blockage rate. It stores M (e) = ( ke, t first (e), t last (e)) , where ke
+
+is the observed class, tfirst is the first observation time, and tlast is the most recent time the obstacle was confirmed to still be present. Suppose the planner expects to reach this edge at time t ≥ tlast (e).The obstacle was already known to survive until age ae = tlast (e) − tfirst (e), and would have age 4be(t) = t − tfirst (e) at the planned arrival time. The probability that the same obstacle is still present when the robot arrives is therefore qe(t) = P(R(ke) > b e(t) | R(ke) > a e) = bSke (be(t))   
+
+> bSke (ae)
+
+.
+
+If it is still present at arrival, the expected additional wait is the mean residual life after already lasting be(t) seconds: bμold  
+
+> e
+
+(t) = R ∞   
+
+> 0
+> bSke (be(t)+ u)
+> bSke (be(t))
+
+du. Thus the edge delay is a mixture of two cases: with probability qe(t), the old obstacle is still present and causes residual delay; otherwise, the old obstacle has cleared and the edge is treated like an ordinary edge that may contain a new blockage: 
+
+b∆( e, t ) = qe(t) bμold  
+
+> e
+
+(t) +  1 − qe(t) b∆new .
+
+3.3 Wait-or-Reroute Decision at a Blocked Edge 
+
+When the robot actually reaches a blocked edge, it must choose how long to wait before abandoning that edge. A patience threshold W means: wait up to W seconds; if the obstacle clears before then, replan with the edge available; otherwise, replan with the blocked edge forbidden. Define Aclear (c)
+
+as the remaining time-to-goal if the obstacle clears after waiting c seconds. Define Aavoid (W ) as the remaining time-to-goal if the robot waits until W , the obstacle is still present, and the robot reroutes with that edge forbidden. In both cases, remaining time is measured from encounter time. The expected remaining time-to-goal under threshold W is J(W ) = R W 
+
+> 0
+
+Aclear (c) dF k(c) + 
+
+Sk(W ) Aavoid (W ), where Fk(c) = 1 − Sk(c). The first term averages over all ways the obsta-cle might clear before the deadline W . The second term handles the event that the obstacle survives past W , in which case the robot gives up and reroutes. We choose W ⋆ = arg min W ∈[0 ,W max ] J(W ).
+
+This decision-making process is illustrated in Figure 3. In the learned method, we replace Sk with the KM estimate bSk. Since the fitted curve is piecewise constant, the integral becomes a finite sum over observed clearance times: bJ(W ) = P  
+
+> τj≤W
+
+bpk,j Aclear (τj ) + bSk(W ) Aavoid (W ).
+
+3.3.1 Computing Aclear and Aavoid 
+
+Both quantities are shortest-path costs under different assumptions about the blocked edge. For 
+
+Aclear (c), the edge becomes available after c seconds, although the planner is not forced to use it. For Aavoid (W ), the robot waits until W and then plans with the blocked edge removed. Be-cause other edges may also have arrival-time-dependent delays, these are time-dependent shortest-path problems. In Appendix A, we describe a functional Bellman–Ford procedure that propagates earliest-arrival functions over the graph. In the main algorithm, we use the fact that KM survival curves are piecewise constant and the edge costs satisfy FIFO: probability terms only change at KM event times, and waiting cannot improve arrival time except through those event changes. Thus, it suffices to evaluate bJ(W ) on the finite candidate set of observed event times, 0, and Wmax . For each candidate, we compute Aclear and Aavoid using Dijkstra with the time-dependent edge costs bc(e, t ).
+
+3.4 Online Adaptation 
+
+After each blocked-edge encounter, the robot records {t = min( R(k), W ⋆), δ = 1[R(k) ≤ W ⋆]},where t is the amount of time actually observed and δ indicates whether the obstacle cleared before the robot rerouted. This sample updates the KM curve bSk for the observed class. The robot also updates bpblock from edge traversal attempts and bpk from observed obstacle classes. 
+
+# 4 Experimental Evaluation of Survival-Guided Navigation 
+
+In simulation, we verify our approach under controlled obstacle-generation and per-class clearance distributions. Real-world experiments serve as hardware validation on an indoor navigation task. 
+
+4.1 Simulation Experiments 
+
+We evaluate the method in simulation under controlled obstacle dynamics. Obstacles are generated independently of the robot according to a Poisson process: each spawn time is sampled from the process, an edge is selected uniformly at random, an obstacle class k ∈ { person , chair , bin , tube }
+
+5is sampled with probabilities 55%, 30%, 10% and 5%, respectively, and a lifetime is sampled from the corresponding class-conditioned clearance-time distribution that we define. The Poisson rate is chosen to obtain a desired steady-state edge blockage probability, 5% . Full details in Appendix B. 
+
+Figure 4: Race to 200. Oracle comes first place. Our method is best amongst alternatives (198). We compare the proposed learned KM policy against four baselines: Always Wait , Always Reroute ,
+
+Rule-Based (wait for people, reroute for rest), and Greedy CTP . The latter is a greedy CTP-style baseline that immediately replans when a blockage is observed and permanently forbids the blocked edge for the remainder of the episode. We also include an Oracle version of our method that uses the true clearance distributions, pblock , and pk. The oracle is evaluated using the exact time-dependent formulation with Bellman–Ford, while the learned policy uses the KM discretization and evaluates the finite candidate set by running Dijkstra for both Aclear and Aavoid at each candidate time. An episode is counted as successful if the robot reaches the goal within 1 hr . The simulation visualiza-tion, as well as scores in a race till one reaches 200 successful episodes are shown in Figure 4.  
+
+> (a) Mean time-to-goal across episodes. (b) Effect of limiting Kaplan–Meier samples.
+
+Figure 5: Simulation performance and data-efficiency results. (a) The learned policy improves with experience, outperforms the heuristic baselines, and approaches the oracle policy. (b) Performance improves sharply with a small number of clearance samples and then saturates near the oracle policy. For each method, we run repeated navigation episodes on the same graph and obstacle process and record relevant statistics. Table 1 shows mean statistics over 1000 episodes averaged over 100 ran-dom seeds. Figure 5a shows the mean time-to-goal as learning progresses. The proposed method improves rapidly with experience, approaches the oracle policy, and outperforms the heuristic base-lines. The no-memory ablation falls between the heuristic baselines and the full learned method, isolating the benefit of survival learning while showing that obstacle memory is needed for near-oracle performance. Always waiting performs poorly when persistent obstacles block edges on the planned path, while always rerouting incurs unnecessary detours when obstacles would have cleared quickly. The rule-based baseline cannot adapt to the actual persistence statistics of the environment. Greedy CTP performs especially poorly because it permanently removes each observed blocked edge for the remainder of the episode. As edges are removed, the planner can become trapped with no available path to the goal; these failed episodes are assigned the 1 hr timeout as their time-to-goal. We also evaluate how performance depends on the amount of data available to the Kaplan–Meier fit. For each cap value, we limit the survival estimator to at most that many samples per obstacle class, then report the mean time-to-goal after convergence (200 episodes). Figure 5b shows that performance improves sharply with a small number of samples and then saturates near the oracle policy, indicating that the learned policy does not require a large amount of clearance data. 6Figure 6 evaluates a grid-based graph where the rule-based baseline is expected to perform well. Our policy remains competitive while producing meaningful patience thresholds: waits for people, often waits for chairs and bins to avoid risky detours, and reroutes immediately for tubes. Table 1: Summary of simulation over 100 runs (each run 1000 episodes). Our method achieves lowest mean time to goal amongst alternatives, striking a balance between waiting and rerouting. Method Time-to-goal (s) ↓ Success rate ↑ Reroutes Waiting time Blocked edges Always Wait 218.2 100.0% 0.0 186.2 2.8 Always Reroute 264.7 100.0% 24.2 0.0 24.2 Rule-Based 210.5 100.0% 11.9 29.0 16.1 Greedy CTP 3135.7 13.1% 3.4 0.0 2.5 OSCAR w/o Memory 185.9 100.0% 1.8 149.8 4.5 OSCAR (Ours) 160.7 100.0% 0.5 121.9 3.4 Oracle 159.3 100.0% 0.5 121.7 3.3  
+
+> (a) Strategy comparison (b) Learned patience thresholds
+
+Figure 6: Simulation analysis of the learned KM policy. Left: comparison of navigation strategies across 300 episodes. Right: distribution of selected patience thresholds W ⋆.
+
+4.2 Real-World Experiments 
+
+We evaluate the method on a physical robot in a university atrium. The obstacle classes are person, chair, bin, and tube. Figure 7 shows the atrium graph, obstacle spawning locations, and a representa-tive obstacle encounter sequence. We use the teach-and-repeat [30] navigation system: in the teach phase, we record a graph network with multiple branches, and during the repeat phase the robot au-tonomously navigates this graph using our policy. When the robot detects a blockage, it extracts the LiDAR reflectivity image, generates an obstacle mask, and queries ChatGPT [31] with the mask and obstacle-class labels to select the corresponding survival model. The prompt to ChatGPT is shown in Appendix C. Unorchestrated results in a person/chair-only setting appear in Appendix D.  
+
+> (a) Atrium graph (b) Example obstacle encounter sequence
+
+Figure 7: Real-world deployment setup. (a) Graph and allowable obstacle spawn locations used in the atrium. (b) Representative obstacle encounter sequence illustrating wait and reroute decisions. We navigate inside an atrium for 50 episodes, creating dynamic scenes using our Poisson spawning process and ground-truth clearance-time distributions. For every episode, we record time-to-goal, 7and the learned method updates its survival estimates online from the resulting censored or un-censored observations. Figure 8 summarizes the real-world deployment results. In Fig. 8(a), the time-to-goal decreases over repeated episodes, outperforms the always-wait baseline, and converges to approximately 200 s , indicating that the learned survival estimates improve with experience. Fig-ure 8(b) shows that the policy waits for people, uses a more balanced wait-reroute strategy for chairs and bins, and mostly reroutes for tubes. This behavior is reflected in Fig. 8(c): people are assigned 
+
+W ⋆ = Wmax , chairs and bins receive a mixture of immediate reroutes, finite nonzero waits, and long waits, while tubes are often assigned W ⋆ = 0 . We set the class-specific Wmax values empir-ically by inspecting J(W ) curves and choosing a horizon after which the objective was effectively flat. Cases with W ⋆ = ∞ correspond to encounters where no alternate path is available.   
+
+> (a) Time-to-goal (b) Wait vs. reroute decisions (c) Selected patience thresholds
+
+Figure 8: Real-world experiment results. (a) Time-to-goal over 50 navigation episodes, showing how performance improves with online experience. (b) Frequency of wait and reroute decisions made by the learned policy during deployment. (c) Distribution of selected patience thresholds W ⋆.
+
+# 5 Limitations and Future Work 
+
+Decision Module: First, the current wait-or-reroute decision estimates the cost of committing to a different path, not accounting for the fact that the robot may later encounter another obstacle and replan again. As a result, the cost of rerouting can be overestimated, causing the policy to reroute less often than desired. Second, the KM estimation assumes independent censoring, where the censoring time is independent of the event time [11]. In our setting, however, the censoring time is the selected patience threshold W ⋆, which is computed from the current survival estimate. This feedback can violate the standard independence assumption and may bias the learned survival curves, especially early in training. In practice, the simulation results in Fig. 5a show that the learned policy still converges near the oracle. However, a more rigorous treatment of outcome-adaptive censoring, or theoretical guarantees for this feedback setting, is an important direction for future work. 
+
+Environment and perception assumptions: The planner uses a single learned blockage probabil-ity for each obstacle type shared across all edges, whereas some edges are more likely to be blocked than others due to spatial layout, human activity, etc. Each encounter is also treated as a new obsta-cle observation, even when a later observation may correspond to the same physical obstacle; dis-tinguishing persistent obstacles from new ones would improve the survival estimates. Finally, our experiments assume reliable obstacle classification. In the real-world experiments this was achiev-able because the obstacle set is small and visually distinct, but broader deployments would require an open-vocabulary perception system that is robust to richer semantic scenarios. 
+
+# 6 Conclusion 
+
+We presented a planning framework leveraging obstacle survival models for graph-based robot nav-igation in dynamic scenes. By learning class-conditioned obstacle-clearance models from online observations, the robot can adaptively decide how long to wait before rerouting. More broadly, these results suggest that modeling obstacle persistence is a useful direction for long-horizon navigation. 8References 
+
+[1] B. Lacerda, F. Faruq, D. Parker, and N. Hawes. Probabilistic planning with formal performance guarantees for mobile service robots. The International Journal of Robotics Research , 38 (9):1098–1123, 2019. doi:10.1177/0278364919856695. URL https://doi.org/10.1177/ 0278364919856695 .[2] L. Nardi and C. Stachniss. Long-term robot navigation in indoor environments estimating patterns in traversability changes. 2020 IEEE International Conference on Robotics and Automation (ICRA) , pages 300–306, 2019. URL https://api.semanticscholar.org/ CorpusID:203591939 .[3] B. Marthi. Navigation in partially observed dynamic roadmaps. 2010. URL https://api. semanticscholar.org/CorpusID:12577833 .[4] P. Wurman, R. D’Andrea, and M. Mountz. Coordinating hundreds of cooperative, autonomous vehicles in warehouses. AI Magazine , 29:9–20, 03 2008. [5] G. Fragapane, H.-H. Hvolby, F. Sgarbossa, and J. O. Strandhagen. Autonomous mobile robots in hospital logistics. In Advances in Production Management Systems. The Path to Digital Transformation and Innovation of Production Management Systems , pages 672–679, Cham, 2020. Springer International Publishing. [6] N. Hawes, C. Burbridge, F. Jovan, L. Kunze, B. Lacerda, L. Mudrova, J. Young, J. Wyatt, D. Hebesberger, T. Kortner, et al. The strands project: Long-term autonomy in everyday environments. IEEE Robotics & Automation Magazine , 24(3):146–156, 2017. [7] A. R. Di´ eguez, R. Sanz, and J. L. Fern´ andez. Integrating time performance in global path planning for autonomous mobile robots. In X.-J. Jing, editor, Motion Planning , chapter 24. IntechOpen, London, 2008. doi:10.5772/5999. URL https://doi.org/10.5772/5999 .[8] S. Bing. Online canadian traveler problem with stochastic blockages recovery time. Sys-tems Engineering - Theory & Practice , 2005. URL https://api.semanticscholar.org/ CorpusID:156857270 .[9] E. L. Kaplan and P. Meier. Nonparametric estimation from incomplete observations. Jour-nal of the American Statistical Association , 53:457–481, 1958. URL https://api. semanticscholar.org/CorpusID:18549513 .[10] D. R. Cox. Regression models and life tables (with discussion. 1972. URL https://api. semanticscholar.org/CorpusID:116197768 .[11] J. P. Klein and M. L. Moeschberger. Survival Analysis: Techniques for Censored and Truncated Data . Statistics for Biology and Health. Springer, New York, 2 edition, 2003. ISBN 978-0-387-95399-1. [12] K. Fujimura. Time-minimum routes in time-dependent networks. IEEE Transactions on Robotics and Automation , 11(3):343–351, 1995. doi:10.1109/70.388776. [13] M. P. Wellman, M. Ford, and K. Larson. Path planning under time-dependent uncer-tainty. In Conference on Uncertainty in Artificial Intelligence , 1995. URL https://api. semanticscholar.org/CorpusID:12281821 .[14] S. Gao and I. Chabini. Optimal routing policy problems in stochastic time-dependent net-works. Transportation Research Part B-methodological , 40:93–122, 2006. URL https: //api.semanticscholar.org/CorpusID:121870726 .[15] D. M. Rosen, J. Mason, and J. J. Leonard. Towards lifelong feature-based mapping in semi-static environments. In 2016 IEEE International Conference on Robotics and Automation (ICRA) , pages 1063–1070, 2016. doi:10.1109/ICRA.2016.7487237. 9[16] G. Tsamis, I. Kostavelis, D. Giakoumis, and D. Tzovaras. Towards life-long mapping of dynamic environments using temporal persistence modeling. 2020 25th International Con-ference on Pattern Recognition (ICPR) , pages 10480–10485, 2021. URL https://api. semanticscholar.org/CorpusID:233877760 .[17] D. Fox, W. Burgard, and S. Thrun. The dynamic window approach to collision avoidance. 
+
+IEEE Robotics & Automation Magazine , 4(1):23–33, 1997. [18] T. Kruse, A. K. Pandey, R. Alami, and A. Kirsch. Human-aware robot navigation: A survey. 
+
+Robotics and Autonomous Systems , 61(12):1726–1743, 2013. ISSN 0921-8890. doi:https:// doi.org/10.1016/j.robot.2013.05.007. URL https://www.sciencedirect.com/science/ article/pii/S0921889013001048 .[19] P. Trautman, J. Ma, R. M. Murray, and A. Krause. Robot navigation in dense human crowds: Statistical models and experimental studies of human–robot cooperation. The International Journal of Robotics Research , 34(3):335–356, 2015. doi:10.1177/0278364914557874. URL 
+
+https://doi.org/10.1177/0278364914557874 .[20] J. Han, M. Vanniasinghe, H. Sahak, N. Rhinehart, and T. Barfoot. Ratatouille: Imitation learning ingredients for real-world social robot navigation, 09 2025. [21] E. W. Dijkstra. A note on two problems in connexion with graphs. Numerische Mathematik ,1:269–271, 1959. doi:10.1007/BF01386390. [22] P. E. Hart, N. J. Nilsson, and B. Raphael. A formal basis for the heuristic determination of minimum cost paths. IEEE Transactions on Systems Science and Cybernetics , 4(2):100–107, 1968. doi:10.1109/TSSC.1968.300136. [23] C. Papadimitriou and M. Yannakakis. Shortest paths without a map. pages 610–620, 01 1989. ISBN 978-3-540-51371-1. doi:10.1007/BFb0035787. [24] E. Nikolova. Exact algorithms for the canadian traveller problem on paths and trees. 01 2008. [25] P. Eyerich, T. Keller, and M. Helmert. High-quality policies for the canadian traveler’s prob-lem. Proceedings of the AAAI Conference on Artificial Intelligence , 24(1):51–58, Jul. 2010. doi:10.1609/aaai.v24i1.7542. URL https://ojs.aaai.org/index.php/AAAI/article/ view/7542 .[26] H. Guo and T. D. Barfoot. The robust canadian traveler problem applied to robot routing. In 
+
+2019 International Conference on Robotics and Automation (ICRA) , page 5523–5529. IEEE Press, 2019. doi:10.1109/ICRA.2019.8794252. URL https://doi.org/10.1109/ICRA. 2019.8794252 .[27] J. Halpern. Shortest route with time dependent length of edges and limited delay possi-bilities in nodes. Zeitschrift f¨ ur Operations Research , 21:117–124, 1977. URL https: //api.semanticscholar.org/CorpusID:12304537 .[28] R. W. Hall. The fastest path through a network with random time-dependent travel times. 
+
+Transp. Sci. , 20:182–188, 1986. URL https://api.semanticscholar.org/CorpusID: 207246327 .[29] A. Orda and R. Rom. Minimum weight paths in time-dependent networks. Networks , 21: 295–319, 1991. URL https://api.semanticscholar.org/CorpusID:15025216 .[30] P. Furgale and T. Barfoot. Visual teach and repeat for long-range rover autonomy. J. Field Robotics , 27:534–560, 09 2010. doi:10.1002/rob.20342. [31] OpenAI. Gpt-5.3 instant: Smoother, more useful everyday conversations. https://openai. com/index/gpt-5-3-instant/ , 2026. Accessed: 2026-05-27. 10 Appendix A Functional Time-Dependent Planner and Proofs 
+
+This appendix gives the functional planner used to compute Aclear and Aavoid , and proves the prop-erties claimed in Sec. 3. Throughout, times are measured relative to the blocked-edge encounter time t0. Let v0 denote the vertex at which the robot encounters the blocked edge eb, and let g denote the goal. 
+
+Appendix A.1 FIFO Edge Arrival Functions 
+
+For an edge e = ( u, v ), define the edge-arrival function 
+
+Φe(t) = t + w(e) + b∆( e, t ),
+
+where t is the planned arrival time at the tail u. The edge is FIFO if 
+
+t1 ≤ t2 =⇒ Φe(t1) ≤ Φe(t2).
+
+Equivalently, departing later from the tail of an edge cannot lead to arriving earlier at its head. If edge e has no remembered obstacle state, then 
+
+b∆( e, t ) = b∆new ,
+
+so 
+
+Φe(t) = t + w(e) + b∆new , dΦe
+
+dt = 1 ≥ 0.
+
+Thus, edges without remembered obstacle state are FIFO. Now consider an edge with remembered obstacle state M (e) = ( ke, t first (e), t last (e)) . Let 
+
+ae = tlast (e) − tfirst (e), be(t) = t − tfirst (e),
+
+where ae is the obstacle age when it was last confirmed present and be(t) is the obstacle age at planned arrival time t. For readability, write S(·) = Ske (·). The remembered-obstacle delay term is 
+
+b∆( e, t ) = qe(t)bμold  
+
+> e
+
+(t) + (1 − qe(t)) b∆new ,
+
+where 
+
+qe(t) = S(be(t)) 
+
+S(ae)
+
+and 
+
+bμold  
+
+> e
+
+(t) = 
+
+Z ∞
+
+> 0
+
+S(be(t) + r)
+
+S(be(t)) dr. 
+
+Multiplying the first two terms gives 
+
+qe(t)bμold  
+
+> e
+
+(t) = 1
+
+S(ae)
+
+Z ∞
+
+> 0
+
+S(be(t) + r) dr = 1
+
+S(ae)
+
+Z ∞
+
+> be(t)
+
+S(r) dr. 
+
+Therefore, 
+
+Φe(t) = t + w(e) + 1
+
+S(ae)
+
+Z ∞
+
+> be(t)
+
+S(r) dr +
+
+
+
+1 − S(be(t)) 
+
+S(ae)
+
+b∆new .
+
+Since db e(t)/dt = 1 , differentiating gives 
+
+dΦe
+
+dt = 1 − S(be(t)) 
+
+S(ae) − S′(be(t)) 
+
+S(ae) b∆new .
+
+Because S is a survival function, it is non-increasing, so 
+
+S′(be(t)) ≤ 0.
+
+Also, since be(t) ≥ ae for planned arrivals after the last confirmed observation and S is non-increasing, 
+
+S(be(t)) ≤ S(ae).
+
+11 Hence, 
+
+1 − S(be(t)) 
+
+S(ae) ≥ 0,
+
+and 
+
+− S′(be(t)) 
+
+S(ae) b∆new ≥ 0.
+
+Therefore, dΦe
+
+dt ≥ 0.
+
+Thus, Φe(t) is non-decreasing, and the remembered-obstacle edge relaxation is FIFO. For the Kaplan–Meier estimator, S is piecewise constant rather than everywhere differentiable. The same argument holds piecewise: between KM event times, S′(t) = 0 , so 
+
+dΦe
+
+dt = 1 − S(be(t)) 
+
+S(ae) ≥ 0.
+
+At a KM event time, S jumps downward. The integral term remains continuous, while 
+
+
+
+1 − S(be(t)) 
+
+S(ae)
+
+b∆new 
+
+jumps upward or stays constant. Therefore, Φe has nonnegative slope between breakpoints and no downward jumps at breakpoints. Hence, the KM edge arrival function is also non-decreasing and FIFO. 
+
+Appendix A.2 Functional Bellman–Ford Computation 
+
+We compute arrival-time functions by propagating functions instead of scalar arrival times. Let 
+
+Bv (z) denote the earliest arrival time at vertex v, measured relative to t0, as a function of the scalar parameter z. The parameter z is either the clearance time c for Aclear , or the patience threshold W
+
+for Aavoid .For a candidate function Bu(z) at the tail of edge e = ( u, v ), the functional edge relaxation is 
+
+Bv (z) ← min {Bv (z), Φe(Bu(z)) } .
+
+The minimum is taken pointwise over the function domain. Since Φe is FIFO and Bu(z) is non-decreasing, the composed function Φe(Bu(z)) is non-decreasing. A pointwise minimum of non-decreasing functions is also non-decreasing. Therefore, every Bellman–Ford relaxation preserves monotonicity. With Kaplan–Meier survival estimates, the functions involved are piecewise-affine, with breakpoints at clearance-time observations and at breakpoints introduced by edge relaxations. Thus, the same Bellman–Ford procedure can be applied directly to function representations. In practice, the learned implementation evaluates the finite KM candidate set using time-dependent Dijkstra, while the func-tional Bellman–Ford view gives the underlying continuous-time construction. 
+
+Clear case. For Aclear (c), the obstacle on eb clears after elapsed time c. The robot is still at v0 at time c, so the initial function is 
+
+Bclear  
+
+> v0
+
+(c) = c, 
+
+and all other vertices are initialized as 
+
+Bclear  
+
+> v
+
+(c) = + ∞, v̸ = v0.
+
+The blocked edge eb is treated as available after time c, since the condition defining Aclear (c) is that the encountered obstacle has cleared. Functional Bellman–Ford then performs the relaxation 
+
+Bclear  
+
+> v
+
+(c) ← min Bclear  
+
+> v
+
+(c), Φe(Bclear  
+
+> u
+
+(c)) 
+
+for each edge e = ( u, v ), repeated for at most |V | − 1 passes. The resulting clearance-conditioned time-to-goal is 
+
+Aclear (c) = Bclear  
+
+> g
+
+(c).
+
+12 Avoid case. For Aavoid (W ), the robot waits until elapsed time W , the obstacle has not cleared, and then replans with eb forbidden. The initial function is 
+
+Bavoid  
+
+> v0
+
+(W ) = W, 
+
+and all other vertices are initialized as 
+
+Bavoid  
+
+> v
+
+(W ) = + ∞, v̸ = v0.
+
+The functional Bellman–Ford relaxation is then applied on the graph (V, E \ { eb}):
+
+Bavoid  
+
+> v
+
+(W ) ← min Bavoid  
+
+> v
+
+(W ), Φe(Bavoid  
+
+> u
+
+(W )) , e = ( u, v )̸ = eb.
+
+After at most |V | − 1 passes, the avoid-conditioned time-to-goal is 
+
+Aavoid (W ) = Bavoid  
+
+> g
+
+(W ).
+
+Appendix A.3 Monotonicity of Aclear and Aavoid 
+
+We prove that both Aclear and Aavoid are non-decreasing in their arguments. First consider Aclear . At the start vertex v0,
+
+Bclear  
+
+> v0
+
+(c) = c, 
+
+which is non-decreasing in c. All other initial functions are +∞, which are also non-decreasing. Each edge relaxation composes the current tail-arrival function with a FIFO edge-arrival function and then takes a pointwise minimum with the previous function. As shown above, both opera-tions preserve non-decreasing functions. Therefore, after all Bellman–Ford passes, Bclear  
+
+> g
+
+(c) is non-decreasing. Hence, 
+
+Aclear (c) = Bclear  
+
+> g
+
+(c)
+
+is non-decreasing. The same argument applies to Aavoid . The initialization 
+
+Bavoid  
+
+> v0
+
+(W ) = W
+
+is non-decreasing in W , and all other vertices are initialized to +∞. The relaxations are performed over E \ { eb}, but each remaining edge is still FIFO. Therefore, every relaxation preserves non-decreasing functions, and the final goal-arrival function Bavoid  
+
+> g
+
+(W ) is non-decreasing. Hence, 
+
+Aavoid (W ) = Bavoid  
+
+> g
+
+(W )
+
+is non-decreasing. Intuitively, both quantities are measured from the original encounter time t0. If the robot waits longer before the obstacle clears, then Aclear (c) = c + x(c), where x(c) is the additional time needed to reach the goal after clearance. Similarly, if the robot waits longer before giving up, then 
+
+Aavoid (W ) = W + x(W ). Although the downstream remaining travel time x(·) may decrease be-cause later arrival can reduce expected obstacle delay elsewhere, FIFO guarantees that this decrease cannot more than cancel the additional elapsed waiting time. 
+
+Appendix A.4 Finite Candidate Set for the KM Objective 
+
+For a fixed obstacle class k, let the fitted Kaplan–Meier distribution have event times 
+
+0 < τ 1 < τ 2 < · · · < τ J .
+
+The learned wait-or-reroute objective is 
+
+bJ(W ) = X 
+
+> τj≤W
+
+bpk,j Aclear (τj ) + bSk(W )Aavoid (W ),
+
+13 where 
+
+bpk,j = bSk(τj−1) − bSk(τj ).
+
+Between consecutive KM event times, the survival estimate is constant and no new clearance proba-bility mass is added to the summation. Therefore, for any interval [τj , τ j+1 ), the first term in bJ(W )
+
+is constant and bSk(W ) is constant. On that interval, 
+
+bJ(W ) = Cj + bSk(τj )Aavoid (W ),
+
+for some constant Cj . Since Aavoid (W ) is non-decreasing and bSk(τj ) ≥ 0, bJ(W ) is non-decreasing on [τj , τ j+1 ). Hence, the minimum over that interval occurs at its left endpoint, τj . The same argument applies to [0 , τ 1), where the minimum occurs at W = 0 .It follows that the global minimizer over a bounded horizon [0 , W max ] is attained at a finite candidate time: 
+
+W ⋆ = arg min  
+
+> W∈C
+
+bJ(W ), C = {0} ∪ { τj : τj ≤ Wmax }.
+
+Including Wmax in the implementation is harmless and convenient: 
+
+Cimpl = {0, W max } ∪ { τj : τj ≤ Wmax }.
+
+Thus, under the KM survival estimate, the patience-threshold search reduces to evaluating bJ(W ) on a finite set of survival event times, together with the horizon endpoints. 14 Appendix B Simulation Details 
+
+This appendix describes the simulation setup used for the results in Sec. 4. The simulator operates on a graph-based route network whose vertices represent robot poses and whose edges represent feasible motions. The graph contains multiple alternate routes between the start and goal, allowing the policies to make meaningful wait-or-reroute decisions when an edge becomes blocked. The robot travels along graph edges at a fixed speed of 0.95 m /s. The start vertex is fixed, and the goal vertex is selected as the vertex farthest from the start in the graph. A visualization of the simulation graph is shown in Fig. 9. 
+
+Figure 9: Graph used for simulation experiments. The graph contains multiple alternate routes, allowing policies to trade off waiting against rerouting when obstacles temporarily block edges. 
+
+Appendix B.1 Ground-Truth Obstacle Distributions 
+
+Each obstacle class is assigned a ground-truth lifetime distribution. Let C(k) denote the clearance time of an obstacle of class k, measured from the time the obstacle is spawned. We use lognormal distributions, 
+
+C(k) ∼ LogNormal( μk, σ k),
+
+with parameters chosen to produce different obstacle-persistence regimes. People clear quickly, chairs and bins persist for intermediate durations, and tubes persist the longest. The simulator uses four obstacle classes: person, chair, bin, and tube. Figure 10 shows the ground-truth obstacle distributions used in simulation. The top row shows the clearance-time density fC (t) for each obstacle class, where clearance time is measured from the obstacle spawn time. The bottom row compares the clearance survival function 
+
+S(k) 
+
+> C
+
+(t) = P(C(k) > t )
+
+15 with the residual survival function 
+
+S(k) 
+
+> R
+
+(t) = P(R(k) > t ),
+
+where R(k) is the remaining lifetime observed by the robot when it encounters an obstacle in steady state. These two curves differ because longer-lasting obstacles are more likely to be present when the robot arrives. Therefore, the robot learns and plans using residual clearance times, not raw clearance times from obstacle spawn. For a renewal process, the residual survival function is 
+
+S(k) 
+
+> R
+
+(t) = 1
+
+E[C(k)]
+
+Z ∞
+
+> t
+
+S(k) 
+
+> C
+
+(u) du. 
+
+Figure 10: Ground-truth obstacle clearance distributions used in simulation. Top: clearance-time densities from obstacle spawn time. Bottom: clearance survival SC (t) and residual survival SR(t)
+
+at obstacle encounter. The residual distribution is the distribution relevant to the robot’s wait-or-reroute decision. 
+
+Appendix B.2 Poisson Obstacle Spawning 
+
+Obstacles are spawned independently of the robot according to a global Poisson process. At each spawn event, the simulator samples an edge uniformly from the set of blockable graph locations, samples an obstacle class, and then samples an obstacle lifetime from the corresponding class-conditioned distribution. If the selected edge is already occupied, the spawn is ignored, so each edge has at most one active obstacle at a time. The global spawn rate is chosen to achieve a desired steady-state blocked-edge probability. Let m
+
+be the number of blockable undirected edges or spawn locations, and let λ be the global obstacle spawn rate. Since edges are selected uniformly, the per-edge spawn rate is 
+
+α = λm .
+
+Let ¯C be the mean obstacle duration averaged over the spawn distribution, 
+
+¯C = X
+
+> k∈K
+
+qk E[C(k)],
+
+16 where qk is the probability that a newly spawned obstacle has class k. Under the at-most-one-obstacle-per-edge model, each edge alternates between a free period with mean 1/α and a blocked period with mean ¯C. Thus, the long-run blocked fraction is 
+
+pblock = ¯C
+
+1/α + ¯C = α ¯C
+
+1 + α ¯C .
+
+Solving for α gives 
+
+α = pblock 
+
+¯C(1 − pblock ) ,
+
+and therefore 
+
+λ = mα = mp block 
+
+¯C(1 − pblock ) .
+
+In the reported experiments, we set 
+
+pblock = 0 .05 ,
+
+so that approximately 5% of blockable edges are occupied in steady state. The simulator is initialized with a warm-up period of 1500 s before the robot begins navigating, so that the obstacle field is close to its steady-state distribution rather than starting from an empty environment. 
+
+Appendix B.3 Class Spawn Weights 
+
+The probability that an encountered obstacle has class k is not equal to the probability that a newly spawned obstacle has class k. Longer-lasting obstacles remain in the environment for more time and are therefore encountered more often. If qk is the spawn probability and rk is the desired encounter probability, then 
+
+rk = qkE[C(k)]
+
+P 
+
+> j
+
+qj E[C(j)] .
+
+To obtain a desired encounter distribution rk, we choose spawn probabilities proportional to 
+
+qk ∝ rk
+
+E[C(k)] ,
+
+and then normalize. In simulation, the desired encounter mix is approximately 
+
+rperson = 0 .55 , rchair = 0 .30 , rbin = 0 .10 , rtube = 0 .05 .
+
+The unnormalized spawn weights are 
+
+2626 , 119 , 28 , 8
+
+for person, chair, bin, and tube, respectively. After normalization, these correspond to spawn proba-bilities of approximately 
+
+94 .4% , 4.3% , 1.0% , 0.3% .
+
+Thus, people are spawned most frequently and tubes are spawned rarely, but because tubes persist much longer, the encountered-obstacle distribution matches the desired class mix. 
+
+Appendix B.4 Learning and Planning Settings 
+
+The learned policy begins without seeded censored or uncensored clearance observations. Kaplan– Meier estimates are updated once per episode using all observations collected during that episode. Thus, the survival model remains fixed within an episode and is updated only after the episode terminates. This matches the online learning setting in which the robot improves across repeated navigation attempts. For the wait-or-reroute decision, we evaluate candidate patience thresholds on a grid. Both the patience-threshold grid and the downstream time grid use 300 points. The global maximum patience threshold is 
+
+Wmax = 2000 s .
+
+We also impose class-specific maximum patience thresholds: 
+
+W person max = 300 s , W chair max = 1000 s , W bin max = 1000 s , W tube  
+
+> max
+
+= 1000 s .
+
+No explicit exploration is used in the reported experiments. 17 Appendix B.5 Episodes, Timeouts, and Baselines 
+
+Each simulated episode consists of one traversal from the start vertex to the goal vertex. We use an episode timeout of 3600s. If a policy fails to reach the goal before this timeout, the episode is treated as unsuccessful and incurs the timeout duration in the time-to-goal statistics. This convention is especially important for Greedy CTP. Since Greedy CTP permanently removes blocked edges after observing them, it can eliminate useful routes and sometimes make the remaining graph effectively disconnected or highly inefficient. The large timeout therefore explains the poor mean time-to-goal reported for Greedy CTP. For the reported simulation results, we run 100 independent random seeds, with 1000 episodes per run. 
+
+Appendix B.6 Scenario Manifests for Real-World Experiments 
+
+The simulator also supports a sim-to-real mode used to generate real-world experimental scenarios. In this mode, a simulation invocation writes a scenario manifest for a future episode, including obstacle classes, spawn locations, and timing information. These saved manifests allow the same obstacle scenario to be recreated during physical robot experiments. After each real-world episode, the field logs can be used to update the Kaplan–Meier survival estimates before generating the next scenario. 18 Appendix C Obstacle Classification Prompt 
+
+In the real-world experiments, obstacle classes are obtained by querying a vision–language model (VLM) with a LiDAR reflectivity image and an aligned binary mask. The model is used for labeling only ; the navigation stack (not the VLM) decides whether to wait or reroute. The prompt is designed to be constrained to a fixed label set, focused on the masked obstacle region, and parsed from a deterministic output format. The implementation settings are: • model: gpt-5.3-chat-latest ,• API: OpenAI responses.create (Responses API), • developer message: deterministic classification instructions (see below), • max output tokens : 200 ,• store : true ,• mask mode: binary (default; white = obstacle, black = background), • reflectivity topic: /ouster/reflec image ,• duration estimation: disabled ( use vlm duration=false ); output is the obstacle label only. The VLM is queried only when the active strategy requires classification (R ULE BASED or LEARNED ); other strategies do not call the model. At runtime, if no mask is available, the im-plementation may omit the mask image and provide only the reflectivity image while keeping the same text instructions. The exact messages used in our implementation are reproduced below. 
+
+Developer: You are a deterministic robotics assistant for obstacle classification. Follow instructions exactly and be consistent. User: You are an expert in indoor mobile robot navigation (Clearpath Jackal). You are given a LiDAR intensity image (reflectivity/signal) and a separate mask image highlighting the obstacle region. Focus ONLY on the masked obstacle region(s). If there is both a person and another obstacle like a chair or door, the other obstacle (chair/door) is the dominant obstacle. Second image is a binary mask aligned with the LiDAR image, where white pixels mark the obstacle region and black is background. Focus ONLY on the object in the white region. Classify the dominant obstacle in the masked region by choosing EXACTLY ONE label: {person, chair, sonotube, bin}. A sonotube is a portable upright cardboard cylindrical column (a movable fake pillar) on the floor. Output EXACTLY: Obstacle: <label>. 
+
+This prompt follows three design principles. First, it explicitly restricts attention to the masked region so that irrelevant scene content does not influence the classification. Second, it constrains the output to a small closed vocabulary matching the four obstacle types used in simulation and planning (person, chair, bin, and sonotube). Third, it enforces a fixed parseable output format ( Obstacle: 
+
+19 <label> ), making the classifier easy to integrate into the navigation stack. An example query log is shown in Fig. 11, including the reflectivity image, the aligned obstacle mask, and the parsed ChatGPT output used by the navigation stack. 
+
+Figure 11: Example obstacle-classification log. The VLM receives a LiDAR reflectivity image and an aligned binary obstacle mask, and returns a deterministic class label in the required parseable format. 20 Appendix D Person/Chair-Only Real-World Results 
+
+The real-world experiments in Sec. 4.2 use orchestrated obstacle scenarios generated from the sim-ulator, where obstacle placement and removal times are specified in advance. We also evaluate the learned policy in a more natural person–chair setting, where obstacles are not placed or removed according to a timer. Instead, people and chairs appear and clear according to the normal flow of activity in the environment. This provides a less controlled but more natural test of whether the learned wait-or-reroute behavior remains sensible outside the orchestrated scenario protocol. Figure 12 summarizes the results. The time-to-goal initially varies substantially, but stabilizes after several episodes as the policy accumulates experience. Note that the increase at the end of Fig-ure 12(a) can be credited to an increase in the number of obstacles in our scene as episode count increases. The encounter outcomes show that the robot usually waits for people, which are typically transient, while chairs lead to a more reroute-heavy response. This behavior is also reflected in the selected patience thresholds: person encounters are usually assigned W ⋆ = Wmax , while chair en-counters more often receive either immediate reroutes or finite patience thresholds. Although the environment only contains people and chairs, a small number of detections are labeled as bin or sonotube; these are misclassifications made by ChatGPT during obstacle labeling, not additional obstacle classes present in the experiment.   
+
+> (a) Time-to-goal (b) Encounter outcomes (c) Patience thresholds
+
+Figure 12: Unorchestrated person–chair real-world experiment. Unlike the orchestrated real-world scenarios, obstacles are not introduced or removed according to a prescribed timer. The learned policy usually waits for people, more often reroutes around chairs, and selects patience thresholds consistent with these behaviors. Bin and sonotube entries correspond to ChatGPT obstacle-labeling misclassifications in an environment containing only people and chairs. 21

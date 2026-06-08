@@ -6,85 +6,91 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-06-07
-- 运行时间：2026-06-07 20:13:06 UTC
+- 最新运行日期：2026-06-08
+- 运行时间：2026-06-08 22:10:54 UTC
 - 运行状态：成功
-- 本次总论文数：21
-- 精读区：9
+- 本次总论文数：23
+- 精读区：11
 - 速读区：12
 
 ### 今日简报（AI）
-1) 2026-06-07 日报已完成 21 篇推荐筛选：9 篇精读、12 篇速读，重点集中在具身智能、VLA 策略与强化学习安全监测。
-2) 最值得看的是两篇 9.0 分精读：物理 grounded 的因果推理器，以及用切空间 score matching 修正 VLA 中“欧氏假设”的方法。
-3) 普通读者建议先读高分精读建立主线，再用速读关注车内机器人操作、离线到在线强化学习和 VLA 运行时失效监测这三个应用方向。
-- 详情：[/202606/07/README](/202606/07/README)
+今日完成 23 篇论文推荐筛选，精读 11 篇、速读 12 篇，重点聚焦自动驾驶规划、长上下文压缩与具身/导航推理能力。
+最值得看的是两篇满分精读：测试时轨迹优化用于自动驾驶，以及面向规划对齐的长上下文自动驾驶 Token 压缩。
+建议普通读者先读满分精读建立主线，再用 8 分速读补充户外 VLN、长尾驾驶推理和移动操作模型微调等应用视角。
+- 详情：[/202606/08/README](/202606/08/README)
 
 ### 精读区论文标签
-1. [Token Predictors Are Not Planners: Building Physically Grounded Causal Reasoners](/202606/07/2606.01810v1-token-predictors-are-not-planners-building-physically-grounded-causal-reasoners)  
+1. [Test-Time Trajectory Optimization for Autonomous Driving](/202606/08/2606.07170v1-test-time-trajectory-optimization-for-autonomous-driving)  
+   标签：评分：10.0/10、query:q5
+   evidence：端到端自动驾驶轨迹测试时优化
+2. [Planning-aligned Token Compression for Long-Context Autonomous Driving](/202606/08/2606.07464v1-planning-aligned-token-compression-for-long-context-autonomous-driving)  
+   标签：评分：10.0/10、query:profile-1
+   evidence：自动驾驶视觉动作模型的规划对齐记忆
+3. [Expanding Spatial and Temporal Context for Robotic Imitation Learning With Scene Graphs](/202606/08/2606.01072v2-expanding-spatial-and-temporal-context-for-robotic-imitation-learning-with-scene-graphs)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：具身视觉语言规划与物理因果推理
-2. [The Lie We Tell: Correcting the Euclidean Fallacy in Vision Language Action Policies via Score Matching on Tangent Space](/202606/07/2606.01847v1-the-lie-we-tell-correcting-the-euclidean-fallacy-in-vision-language-action-policies-via-score-matching-on-tangent-space)  
+   evidence：面向长时序机器人策略的场景图记忆
+4. [Lane Change Trajectory Planning for Personalized Driving Comfort and Mobility Efficiency](/202606/08/2606.06805v1-lane-change-trajectory-planning-for-personalized-driving-comfort-and-mobility-efficiency)  
+   标签：评分：9.0/10、query:q2
+   evidence：自动驾驶换道轨迹规划
+5. [ActionMap: Robot Policy Learning via Voxel Action Heatmap](/202606/08/2606.06904v1-actionmap-robot-policy-learning-via-voxel-action-heatmap)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：面向SE3轨迹的扩散VLA策略
-3. [Cosmos 3: Omnimodal World Models for Physical AI](/202606/07/2606.02800v1-cosmos-3-omnimodal-world-models-for-physical-ai)  
+   evidence：机器人VLA动作解码器
+6. [LARA: Latent Action Representation Alignment for Vision-Language-Action Models](/202606/08/2606.07100v1-lara-latent-action-representation-alignment-for-vision-language-action-models)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：融合视频语言动作的物理AI世界模型
-4. [TTT-VLA: Test-Time Latent Prompt Optimization for Vision-Language-Action Models](/202606/07/2606.03127v1-ttt-vla-test-time-latent-prompt-optimization-for-vision-language-action-models)  
+   evidence：VLA模型预测机器人动作
+7. [Coarse-to-Control: Action-Token Planning for Vision-Language-Action Models](/202606/08/2606.07107v1-coarse-to-control-action-token-planning-for-vision-language-action-models)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：视觉语言动作模型策略适应
-5. [Dive into the Scene: Breaking the Perceptual Bottleneck in Vision-Language Decision Making via Focus Plan Generation](/202606/07/2606.04046v1-dive-into-the-scene-breaking-the-perceptual-bottleneck-in-vision-language-decision-making-via-focus-plan-generation)  
+   evidence：VLA动作token轨迹规划
+8. [Robotic Policy Adaptation via Weight-Space Meta-Learning](/202606/08/2606.07217v1-robotic-policy-adaptation-via-weight-space-meta-learning)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：VLA具身决策与焦点规划
-6. [OSCAR: Omni-Embodiment Action-Conditioned World Model for Robotics](/202606/07/2606.04463v2-oscar-omni-embodiment-action-conditioned-world-model-for-robotics)  
+   evidence：机器人动作的VLA策略适配
+9. [CAPE: Contrastive Action-conditioned Parallel Encoding for Embodied Planning](/202606/08/2606.07304v1-cape-contrastive-action-conditioned-parallel-encoding-for-embodied-planning)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：机器人动作条件视频世界模型
-7. [Flash-WAM: Modality-Aware Distillation for World Action Models](/202606/07/2606.05254v1-flash-wam-modality-aware-distillation-for-world-action-models)  
+   evidence：动作条件具身规划动力学
+10. [VeriDrive: Verifiable Counterfactual Supervision for Cost-Efficient Vision-Language Planning](/202606/08/2606.07338v1-veridrive-verifiable-counterfactual-supervision-for-cost-efficient-vision-language-planning)  
+   标签：评分：9.0/10、query:q2
+   evidence：视觉语言驾驶规划与自车轨迹
+11. [RhinoVLA Technical Report](/202606/08/2606.07383v1-rhinovla-technical-report)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：扩散世界动作模型的低延迟蒸馏
-8. [World-Language-Action Model for Unified World Modeling, Language Reasoning, and Action Synthesis](/202606/07/2606.05979v1-world-language-action-model-for-unified-world-modeling-language-reasoning-and-action-synthesis)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：世界语言动作模型预测机器人动作与子目标
-9. [MPCoT: Reward-Guided Multi-Path Latent Reasoning for Test-Time Scalable Vision-Language-Action](/202606/07/2606.06245v1-mpcot-reward-guided-multi-path-latent-reasoning-for-test-time-scalable-vision-language-action)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：VLA动作规划与多路径推理
+   evidence：低延迟机器人VLA连续动作
 
 ### 速读区论文标签
-1. [L-SDPPO: Policy Optimization of Spiking Diffusion Policy for Intra-vehicular Robotic Manipulation](/202606/07/2606.06049v1-l-sdppo-policy-optimization-of-spiking-diffusion-policy-for-intra-vehicular-robotic-manipulation)  
-   标签：评分：8.5/10、query:upstream-ad-planning-idea
-   evidence：低能耗脉冲扩散策略用于机器人控制
-2. [Efficient and Uncertainty-Aware Diffusion Framework for Offline-to-Online Reinforcement Learning](/202606/07/2605.30776v1-efficient-and-uncertainty-aware-diffusion-framework-for-offline-to-online-reinforcement-learning)  
+1. [TARIC: Memory-Augmented Traversability-Aware Outdoor VLN under Interrupted Semantic Cues](/202606/08/2605.31121v1-taric-memory-augmented-traversability-aware-outdoor-vln-under-interrupted-semantic-cues)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：快速采样扩散动作策略与转移模型
-3. [Hide-and-Seek in Trajectories: Discovering Failure Signals for VLA Runtime Monitoring](/202606/07/2605.30834v1-hide-and-seek-in-trajectories-discovering-failure-signals-for-vla-runtime-monitoring)  
+   evidence：记忆增强机器人导航与时序线索一致性
+2. [nuReasoning: A Reasoning-Centric Dataset and Benchmark for Long-Tail Autonomous Driving](/202606/08/2605.31572v1-nureasoning-a-reasoning-centric-dataset-and-benchmark-for-long-tail-autonomous-driving)  
+   标签：评分：8.0/10、query:q2
+   evidence：自动驾驶决策推理基准
+3. [Per-Group Error, Not Total MSE: Fine-Tuning Vision-Language-Action Models for 11-DoF Mobile Manipulation](/202606/08/2606.00253v1-per-group-error-not-total-mse-fine-tuning-vision-language-action-models-for-11-dof-mobile-manipulation)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：VLA轨迹失败监测与闭环可靠性
-4. [EMBGuard: Constructing Hazard-Aware Guardrails for Safe Planning in Embodied Agents](/202606/07/2605.30924v1-embguard-constructing-hazard-aware-guardrails-for-safe-planning-in-embodied-agents)  
+   evidence：微调机器人动作VLA模型
+4. [Drift Q-Learning](/202606/08/2606.00350v1-drift-q-learning)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：具身智能的危险感知安全规划
-5. [PerceptTwin: Semantic Scene Reconstruction for Iterative LLM Planning and Verification](/202606/07/2606.04226v1-percepttwin-semantic-scene-reconstruction-for-iterative-llm-planning-and-verification)  
-   标签：评分：7.5/10、query:upstream-ad-planning-idea
-   evidence：面向机器人规划验证的交互场景仿真
-6. [Collaborative Few-Step Distillation and Low-Bit Quantization for Wan2.2 Dual-Expert Video Diffusion Models](/202606/07/2606.00658v1-collaborative-few-step-distillation-and-low-bit-quantization-for-wan22-dual-expert-video-diffusion-models)  
+   evidence：替代迭代扩散和流策略的单网络方法
+5. [OSCAR: Obstacle Survival Curves for Adaptive Robot Navigation](/202606/08/2606.00990v1-oscar-obstacle-survival-curves-for-adaptive-robot-navigation)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：视频扩散少步蒸馏降延迟
-7. [Beyond Pure Sampling: Hybrid Optimization Mechanisms for Non-Convex Model Predictive Control](/202606/07/2606.00737v1-beyond-pure-sampling-hybrid-optimization-mechanisms-for-non-convex-model-predictive-control)  
+   evidence：临时障碍下的自适应机器人导航规划
+6. [DeepIPCv3: Event-Aware Multi-Modal Sensor Fusion for Sudden Pedestrian Crossing Avoidance](/202606/08/2606.01277v1-deepipcv3-event-aware-multi-modal-sensor-fusion-for-sudden-pedestrian-crossing-avoidance)  
    标签：评分：7.0/10、query:q2
-   evidence：含障碍机器人运动规划的非凸MPC
-8. [From Cues to Horizons: Dynamic Risk Horizon Profiling for Trajectory Prediction](/202606/07/2606.00857v1-from-cues-to-horizons-dynamic-risk-horizon-profiling-for-trajectory-prediction)  
-   标签：评分：7.0/10、query:q2
-   evidence：自动驾驶风险感知轨迹预测
-9. [MUSCLE-NET: Predicted-Multiscale-Aware Network for Pedestrian Trajectory Forecasting](/202606/07/2606.00471v1-muscle-net-predicted-multiscale-aware-network-for-pedestrian-trajectory-forecasting)  
-   标签：评分：6.0/10、query:q2
-   evidence：面向安全自主导航的行人轨迹预测
-10. [CoMIC: Collaborative Memory and Insights Circulation for Long-Horizon LLM Agents in Cloud-Edge Systems](/202606/07/2606.00756v1-comic-collaborative-memory-and-insights-circulation-for-long-horizon-llm-agents-in-cloud-edge-systems)  
+   evidence：端到端自动驾驶避障
+7. [Goal2Pixel: Grounding Goals to Pixels for Vision-Language Navigation](/202606/08/2606.01621v1-goal2pixel-grounding-goals-to-pixels-for-vision-language-navigation)  
+   标签：评分：7.0/10、query:upstream-ad-planning-idea
+   evidence：VLM导航预测机器人3D路点
+8. [PHASOR: Phase-Anchored Universal Action Representations for Humanoid Embodiments](/202606/08/2606.01851v1-phasor-phase-anchored-universal-action-representations-for-humanoid-embodiments)  
+   标签：评分：7.0/10、query:upstream-ad-planning-idea
+   evidence：用于策略学习的通用机器人动作表征
+9. [GraspGen-X: Cross-Embodiment 6-DOF Diffusion-based Grasping](/202606/08/2606.00998v1-graspgen-x-cross-embodiment-6-dof-diffusion-based-grasping)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：长时程智能体的持久记忆与子目标跟踪
-11. [DASH: Dual-Branch Score Distillation for Guidance-Calibrated Compact Diffusion Models](/202606/07/2606.00798v1-dash-dual-branch-score-distillation-for-guidance-calibrated-compact-diffusion-models)  
+   evidence：扩散式机器人动作生成
+10. [Position: Good Embodied Reward Models Need Bad Behavior Data](/202606/08/2606.01036v1-position-good-embodied-reward-models-need-bad-behavior-data)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：高效引导采样的紧凑扩散蒸馏
-12. [Towards 3D-Aware Video Diffusion Models: Render-Free Human Motion Control with Mesh Tokenization](/202606/07/2606.02000v1-towards-3d-aware-video-diffusion-models-render-free-human-motion-control-with-mesh-tokenization)  
+   evidence：具身机器人奖励模型
+11. [ExpWeaver: LLM Agents Learn from Experience via Latent RAG](/202606/08/2606.01041v1-expweaver-llm-agents-learn-from-experience-via-latent-rag)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：面向运动控制的3D感知视频扩散
+   evidence：面向智能体规划的潜在经验记忆
+12. [Strong Stochastic Flow Maps](/202606/08/2606.01086v1-strong-stochastic-flow-maps)  
+   标签：评分：6.0/10、query:upstream-ad-planning-idea
+   evidence：少步随机流映射支持低延迟生成采样
 
 
 <div class="dpr-home-promo-card">

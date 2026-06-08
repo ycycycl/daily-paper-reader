@@ -1,0 +1,2187 @@
+Title: Strong Stochastic Flow Maps
+
+URL Source: https://arxiv.org/pdf/2606.01086v1
+
+Published Time: Tue, 02 Jun 2026 01:39:04 GMT
+
+Number of Pages: 34
+
+Markdown Content:
+# Strong Stochastic Flow Maps 
+
+Sam McCallum * 1 Zander W. Blasingame * 2 Timothy Herschell 1 Niklas Rindtorff 2
+
+Alexander Tong † 2 James Foster † 1
+
+> 1
+
+University of Bath 2AITHYRA 
+
+Flow and diffusion models generate high-quality samples in many modalities; however, many network evaluations are required during inference due to numerical integration of an underlying differential equation. Flow maps alleviate this problem by learning the solution map of the differential equation directly, enabling few-step sampling. Yet, current methods are restricted to approximating the solution map of ODEs. These methods can be used to learn the transition kernel of an SDE, thereby obtaining a solution map that recovers the marginal distributions of the process (weak convergence) rather than the solution path (strong convergence). We propose 
+
+STRONG STOCHASTIC FLOW MAPS (SSFMs) as a novel framework for learning the strong solution map of additive-noise SDEs, directly generalizing deterministic flow maps to the stochastic setting. Further, a polynomial approximation to Brownian motion is introduced and shown to converge pathwise. These results enable a simulation-free training objective for the solution map of diffusion models. We demonstrate that SSFMs outperform previous stochastic flow map methods on image generation and enable few-step sampling of molecular systems. 
+
+Code: https://github.com/sammccallum/ssfm 
+
+Correspondence: sm2942@bath.ac.uk and zblasingame@aithyra.at 
+
+Date: 31 May, 2026 
+
+> *
+
+Equal contribution †Equal supervision 
+
+# 1 Introduction 
+
+Deep generative models based on neural differential equations (R. T. Q. Chen et al. 2018; Kidger 2022) have become one of the most successful model classes for solving a variety of problems such as generative modeling (Song, Sohl-Dickstein, et al. 2021; X. Liu et al. 2023) and time-series data (Oh et al. 2024; Walker et al. 2024). The application of neural differential equations to generative modeling— diffusion models (Sohl-Dickstein et al. 2015; Ho et al. 2020; Song, Sohl-Dickstein, et al. 2021) and flow matching models (Peluchetti 2021; Lipman, R. T. Q. Chen, et al. 2023; X. Liu et al. 2023)—have become state-of-the-art for many different tasks including image (Rombach et al. 2022) and video (Blattmann et al. 2023) generation, protein design (Watson et al. 2023; Rector-Brooks et al. 2026), and Boltzmann sampling (Rehman et al. 2026). While quite expressive generative models, neural differential equations often require a large number of function evaluations (NFEs) of the learned vector fields to integrate the underlying differential equation. As such there has been great interest in learning how to improve the computational efficiency of these models, e.g ., proposing better numerical schemes to reduce the number of NFEs whilst maintaining similar performance (C. Lu et al. 2022; Gonzalez et al. 2023; Zhang et al. 2023). Recently, another direction has looked at how to learn the solution, or flow, map associated with a neural ordinary differential equation (ODE) (X. Liu et al. 2023; Song, Dhariwal, et al. 2023; Boffi et al. 2024; Heek et al. 2024; Kim et al. 2024; Geng, Deng, et al. 2025; Sabour et al. 2025). These methods, which learn a neural 
+
+1                   
+
+> arXiv:2606.01086v1 [cs.LG] 31 May 2026 t
+> Strong SFM (Ours)
+> Weak SFM (Diamond / MFM)
+> Ψs,u (xs, ω )Ψu,t (xu, ω )
+> Ψs,t (xs, ω )same ω⇒same xt✓
+> xsxu
+> xt
+> ¯Ψs,u (xs,ϵ1)¯Ψu,t ( ¯ xu,ϵ2)
+> ¯Ψs,t (xs,ϵ3)
+> xs
+> ¯xu
+> ¯x(2)
+> t
+> ¯x(1)
+> t
+> ¯x(1)
+> t̸= ¯ x(2)
+> tin general
+> Xt(ω)other realizations strong (ours) weak
+
+Figure 1: Strong vs . weak stochastic flow maps. Top : The strong stochastic flow map solution is consistent pathwise for a given realization of the Brownian motion Wt(ω). Bottom : The weak stochastic flow map samples independently from the marginal distribution at each time. 
+
+flow map , have obtained state-of-the-art performance with low NFEs in image generation (Geng, Deng, et al. 2025; Geng, Y. Lu, et al. 2025) and Boltzmann sampling (Rehman et al. 2026) compared to the 100s of steps required with diffusion models. Previous work has focused on learning a deterministic map from the source noise to the target distri-bution. Recent work has extended these deterministic maps to the stochastic setting by approximating the transition distributions of a stochastic process (Holderrieth, D. Chen, et al. 2026; Passaro et al. 2026; Potaptchik et al. 2026). However, such approaches do not allow for the estimation of pathwise observables as they are fundamentally decoupled from the underlying stochastic differential equation (SDE) and are only capable of computing weak (convergence in distribution) solutions of the stochastic process (Øksendal 2003). We introduce STRONG STOCHASTIC FLOW MAPS (SSFMs), a novel framework which obtains the strong 
+
+(convergence in path) solution map to additive-noise SDEs. This naturally extends ODE-based flow maps, which are pathwise solution maps, to the stochastic setting. Specifically, given a realization of the Brownian path and an initial condition, we learn the pathwise solution map of the additive-noise SDE. To efficiently implement such a model we require a novel set of tools which we construct in this work. Our main contributions are summarized as follows: 
+
+• We develop a novel framework for learning the strong solution to additive-noise SDEs in contrast with prior works which consider weak approximations. 
+
+• We formalize a training objective for learning this map which admits a simulation-free algorithm for obtaining the strong solution map of diffusion models. 
+
+• We introduce a polynomial approximation of the Brownian motion and prove that it converges in 
+
+α-Hölder distance, has tractable coefficients, and admits closed form Chen relations. 
+
+• We demonstrate this formulation achieves state-of-the-art performance on few-step stochastic image generation and enables sampling of equilibrium molecular conformations with as few as 1-2 NFEs. 22 Background and related work 
+
+Neural SDEs. Neural SDEs are the stochastic extension of neural ODEs (R. T. Q. Chen et al. 2018), independently proposed by Li et al. (2020) and Kidger et al. (2021) which aim to learn the drift and diffusion coefficients for an arbitrary SDE. In this work we will focus specifically on the case of additive-noise SDEs with known diffusion coefficients, given by 
+
+dXt = f θ (t, Xt) d t + g(t) d Wt, (1) where f θ is the drift coefficient we aim to learn. Previous work has focused on learning these coeffi-cients by integrating the SDE numerically and then performing backpropagation through the numerical solution. However, for many SDEs studied in generative modelling we can learn the drift coefficient via simulation-free training which has underpinned the popularity of different matching objectives such as score matching and flow matching. In this work, we focus on diffusion SDEs; however, our results hold for any additive-noise SDE. Table 1: Comparison of flow-based models.                   
+
+> Method Few-step Pathwise Stochastic Flow models ✗✓✗
+> Diffusion models ✗✓✓
+> GLASS flows ✗✗✓
+> Flow maps ✓✓✗
+> Weak SFMs ✓✗✓
+> SSFM (ours) ✓✓✓
+
+Flow matching and diffusion. In this section we introduce the necessary background on flow/d-iffusion models (Peluchetti 2021; Lipman, R. T. Q. Chen, et al. 2023; X. Liu et al. 2023; Tong et al. 2024; Albergo et al. 2025). We denote data samples as 
+
+X1 ∈ Rd drawn from the data distribution with density p1 ≡ q(x). We take the source distribu-tion to be a unit Gaussian with density p0 ≡ p(x)
+
+with X0 ∼ p0. Following Lipman, Havasi, et al. (2024) we consider the scenario of affine Gaus-sian probability paths where we define a random variable Xt := αtX1 +σtX0 with noise schedule 
+
+(αt, σ t), where αt, σ t ≥ 0 with α0 = σ1 = 0 , α1 = σ0 = 1 , and αt (σt resp.) is strictly monotonically increasing (decreasing resp.) and continuously differentiable. In the flow matching framework we learn the marginal vector field as 
+
+ut(X) = 
+
+Z
+
+> Rd
+
+ut|1(X|X1)p1|t(X1|X) d X1, p1|t(X1|X) = pt|1(X|X1)p1(X1)
+
+pt(X) , (2) where ut|1(·| X1) is the vector field conditioned on a data sample X1. This vector field can be shown to satisfy, 
+
+X0 ∼ p0, X0 +
+
+Z t
+
+> 0
+
+us(Xs) d s = Xt ∼ pt, (3) such that the solution to (3) at time t = 1 yields samples from the data distribution q ≡ p1.The ODE in Equation (3) is referred to as the probability flow ODE (Song, Sohl-Dickstein, et al. 2021) and can be written as an SDE with the same marginal distributions, given by 
+
+dXt =
+
+
+
+2ut(Xt) − ˙αt
+
+αt
+
+Xt
+
+
+
+dt + νt dWt, ν2 
+
+> t
+
+= 2 ˙αt
+
+αt
+
+σ2 
+
+> t
+
+− 2σt ˙σt, (4) where Wt is the standard Brownian motion. This derivation follows straightforwardly from Anderson (1982) and has been discussed more recently in the context of diffusion models (Maoutsa et al. 2020; Song, Sohl-Dickstein, et al. 2021; Holderrieth, Singer, et al. 2026). The implications for model perfor-mance when sampling from either the SDE or ODE formulation with equivalent marginals is discussed in (Nie et al. 2024; Albergo et al. 2025). 3Flow maps. Since integrating the generative models in (3) or (4) requires many function evaluations, recent work has proposed to instead learn the integral, or solution map, directly at training time. These works include consistency models (Song, Dhariwal, et al. 2023; Heek et al. 2024; Kim et al. 2024), shortcut models (Frans et al. 2025), mean flows (Geng, Deng, et al. 2025), and flow maps (Boffi et al. 2024, 2025; Sabour et al. 2025). There exists a variety of techniques for training such models. However, training can largely be broken down into two loss components: one term learns the instantaneous behaviour at s = t and another learns the flow map t > s . Training via such an objective is referred to as self-distillation (Boffi et al. 2025). 
+
+Weak stochastic flow maps. Recently, several works have explored a stochastic extension of determin-istic flow maps (Kiyohara et al. 2025; Holderrieth, D. Chen, et al. 2026; Passaro et al. 2026; Potaptchik et al. 2026), which can be characterized as learning the transition kernel pt|s(Xt|Xs) of some under-lying SDE. Specifically, most of these methods (Holderrieth, D. Chen, et al. 2026; Passaro et al. 2026; Potaptchik et al. 2026) proceed by defining a deterministic ODE flow map where each step of the map is defined by an inner flow model, 1 given by 
+
+Xs +
+
+Z ts
+
+¯uτ ( ¯Xτ |Xs, s ) d τ = ¯Xt ∼ pt|s(·| Xs). (5) Since these methods learn the transition kernel pt|s they are described as exhibiting weak (in distribu-tion) convergence (Øksendal 2003). This is in contrast to the pathwise solution map of the underlying additive-noise SDE which generates Xt given an initial condition Xs and a realization of the Brownian motion {Wu}s≤u≤t. We summarize the relationship between SSFMs and prior methods in Table 1. 
+
+# 3 Strong Stochastic Flow Maps 
+
+In this section we describe the transition from deterministic flow maps to strong stochastic flow maps. We present a natural extension of deterministic flow maps by learning the solution map from both an initial condition and a realization of the Brownian path. We then show how this solution map can be obtained by minimization of an appropriate self-distillation objective. 
+
+3.1 The Itô map 
+
+Consider the following additive-noise Itô SDE, 
+
+dXt = f (t, Xt) d t + g(t) d Wt, (6) where Xt ∈ Rd is a continuous-valued stochastic process with initial condition X0, f : R × Rd → Rd
+
+is the drift function, g : R → Rd×w is the diffusion coefficient and Wt ∈ Rw is Brownian motion. It is assumed that f and g are suitably regular such that a unique strong solution Xt exists (see Assumption A.1). It is natural to consider the solution map of this SDE, Ψs,t : ( Xs, W[s,t ]) 7 → Xt, where the Brownian path is written as W[s,t ] = {Wu}s≤u≤t. This map Ψs,t is known as the Itô map. 2 For an SDE with additive noise and suitably regular coefficients, the Itô map is well-posed and continuous (Friz et al. 2010). It is this map that we aim to approximate with a neural network, Ψθs,t .  
+
+> 1In contrast, Kiyohara et al. (2025) propose a variational objective.
+> 2Note that for a general SDE with state-dependent diffusion, g(t, Xt), the Itô map is not a well-defined continuous function. This is solved by rough path theory and the Itô-Lyons map (Lyons 1998).
+
+4Since the Itô map is defined with respect to both an initial condition, X0, and a realization of W[s,t ],the convergence to the solution Xt is pathwise. In stochastic analysis, a process approximating such a pathwise solution is called strongly convergent (Øksendal 2003). We therefore refer to our method as 
+
+Strong Stochastic Flow Maps .
+
+3.1.1 Constructing the Itô map 
+
+Analogously to the deterministic flow map, we can derive a tangent condition that the Itô map satisfies. This result will allow us to associate the vector fields of an SDE with the Itô map. 
+
+Lemma 3.1 (Tangent Condition) . Let Ψs,t (Xs, W[s,t ]) denote the Itô map for (6) . Then, 
+
+lim  
+
+> s→t
+
+dΨs,t (Xs, W[s,t ]) = f (t, Xt) d t + g(t) d Wt. (7) To construct the Itô map we therefore propose an Euler-Maruyama step-like object that satisfies the tangent condition. We will show that such a parameterization attains the Itô map when trained according to the objective in (14). 
+
+Proposition 3.2 (Strong Stochastic Flow Map) . Consider an Euler-Maruyama parameterization of the Itô map, 
+
+Ψs,t (Xs, W[s,t ]) = Xs + fs,t (Xs, W[s,t ])( t − s) + gs,t (W[s,t ])( Wt − Ws), (8) 
+
+where f , g are twice continuously differentiable, Lipschitz in both time arguments, satisfy the conditions that ft,t (Xt, W[s,t ]) = ft,t (Xt), and gt,t (W[s,t ]) = gt,t (i.e. the coefficients are independent of W[s,t ] for s = t). Then, Ψs,t satisfies the tangent condition (7) if and only if 
+
+ft,t (xt) = f (t, x t), gt,t = g(t).
+
+The proposed stochastic flow map in Proposition 3.2 introduces a drift fs,t and a diffusion gs,t . The intuition behind these functions is that they act as the normalized drift and diffusion integrals, respec-tively. Therefore, they must depend on the underlying driving path W[s,t ].We see from Proposition 3.2 that for the stochastic flow map to satisfy the tangent condition, the drift integral must collapse to the drift function, ft,t (xt) = f (t, x t), and the diffusion integral must collapse to the diffusion coefficient, gt,t = g(t), as s → t. This indicates that ft,t (xt) and gt,t can be estimated by the matching objective in (14). Next, we must establish an objective that constrains the finite-time, t > s , behaviour of the stochastic flow map. Consider the semigroup condition, 
+
+Ψs,t (Xs, W[s,t ]) = Ψu,t (Ψs,u (Xs, W[s,u ]), W[u,t ]), (9) for s < u < t . Note this condition is satisfied by the Itô map (see the proof of Proposition 3.3). It is possible to show that if the strong stochastic flow map construction from Proposition 3.2 satisfies the tangent condition (7) and the semigroup property, then this map is the Itô map. This is given by Proposition 3.3. 
+
+Proposition 3.3 (Semigroup condition) . Let Ψs,t (Xs, W[s,t ]) denote the strong stochastic flow map satisfying (7) and (8) . Then Ψs,t (Xs, W[s,t ]) is the Itô map if and only if the semigroup property (9) holds. 
+
+53.1.2 Constructing the Brownian motion 
+
+Since the Itô map requires a realization of the Brownian path W[s,t ], so too do the drift and diffusion integral functions fs,t , gs,t . These functions will ultimately be parameterized as neural networks. We therefore require an efficient characterization of W[s,t ] that we can pass as input. A naïve approach is to simply pass a piecewise linear approximation to W[s,t ] over N intervals. However, to obtain any reasonable approximation to the path, too many intervals would be required. We instead look to pass the coefficients of a polynomial expansion of W[s,t ]. Specifically, we consider a piecewise polynomial expansion to Brownian motion in terms of shifted Legendre polynomials (Foster et al. 2020; Habermann 2021). This polynomial expansion has a number of desirable properties: (1) the coefficients of this expansion appear in the stochastic Taylor expansion of the SDE in (6) enabling larger time-step approximation; (2) the coefficients are independently and normally distributed allowing for tractable and exact sampling; (3) the coefficients admit closed-form Chen relations (K. - T. Chen 1954, 1957) such that two coefficients over the sub-intervals [s, u ], [u, t ] combine into a single coefficient over [s, t ]. This property enables the semigroup objective to be implemented. These results are shown in Theorem 3.4. The following results are theoretically dense, relying on elements of rough path theory (Lyons 1998). However, the polynomial expansion of Brownian motion is visually intuitive; see Figure 3. 
+
+Definition 3.1 (Polynomial approximation for Brownian motion) . Let ePn : [0 , 1] → R denote the n-th shifted Legendre polynomial on [0 , 1] . We define the n-th coefficient of the polynomial expansion as, 
+
+I(n) 
+
+> s,t
+
+=
+
+Z ts
+
+ePn
+
+ u − st − s
+
+
+
+dWu. (10) As introduced in (Foster et al. 2020; Habermann 2021), the degree-N polynomial approximation of the Brownian motion on [s, t ] takes the form, 
+
+W (N ) 
+
+> u,v
+
+= 
+
+> N−1
+
+X
+
+> n=0
+
+2n + 1 
+
+t − s I(n)
+
+> s,t
+
+Z vu
+
+ePn
+
+ r − st − s
+
+
+
+dr, (11) for each increment [u, v ] ⊆ [s, t ].
+
+Theorem 3.4 (Properties of W (N ) 
+
+> u,v
+
+). The polynomial approximation of the Brownian motion in Definition 3.1 has the following properties: 1. Converges to Brownian motion in the α-Hölder distance, with α ∈ [0 , 12 ),2. The coefficients I(n) 
+
+> s,t
+
+are independently and normally distributed with 
+
+I(n) 
+
+> s,t
+
+∼ N 
+
+
+
+0, (t − s)2n + 1 I
+
+
+
+, (12) 
+
+3. The coefficients I(n) 
+
+> s,t
+
+admit closed form Chen relations. 
+
+63.2 Training 
+
+Given the polynomial approximation in Definition 3.1, we can write the Strong Stochastic Flow Map as 
+
+Ψθs,t (Xs, I(N ) 
+
+> s,t
+
+) = Xs + f θs,t (Xs, I(N ) 
+
+> s,t
+
+)( t − s) + gθs,t (I(N ) 
+
+> s,t
+
+)( Wt − Ws), (13) where the coefficients up to degree N , given by I(N ) 
+
+> s,t
+
+= {I(n) 
+
+> s,t
+
+}n≤N , are passed to the neural network terms f θs,t , gθs,t . Note that Wt − Ws = I(0)  
+
+> s,t
+
+.
+
+3.2.1 Self-distillation objective 
+
+We have seen that the stochastic flow map in (8) is the Itô map if and only if the diagonal integrals are equal to the SDE coefficients, ft,t (xt) = f (t, x t), gt,t = g(t), and the semigroup condition is satisfied. These two properties allow us to write down an objective for the Itô map. This is shown by Theorem 3.5. 
+
+Theorem 3.5 (Self-distillation Objective) . Let Ψs,t (Xs, W[s,t ]) denote the Itô map for (6) . Then, this map is given by the strong stochastic flow map in (8) where vs,t = [ fs,t , gs,t ] is the unique global minimizer over ˆv of 
+
+LSD (ˆ v) = Lf ,g (ˆ v) + LD(ˆ v), (14) 
+
+where 
+
+Lf ,g (ˆ v) = Et, Xt
+
+h
+
+∥f (t, Xt) − ˆft,t (Xt)∥22 + ∥g(t) − ˆgt,t ∥22
+
+i
+
+, (15) 
+
+LD(ˆ v) = Es,u,t, Xs,W[s,t ]
+
+h
+
+∥ ˆΨs,t (Xs, W[s,t ]) − ˆΨu,t ( ˆΨs,u (Xs, W[s,u ]), W[u,t ])∥22
+
+i
+
+. (16) The objective in (14) is written in terms of the drift and diffusion coefficients of the SDE for which we wish to learn the Itô map. In the case of flow models (flow matching, diffusion, stochastic interpolants) the drift coefficient is known conditioned on an end-point sample, X1 (and/or X0), obtained from the marginal at t = 1 (and/or t = 0 ). The results presented in this section are proved in Appendix A. 
+
+Algorithm 1 Strong Stochastic Flow Map Training               
+
+> Require: Batch size M, split η∈(0 ,1) , polynomial degree N, threshold ∆t, EMA decay β∈(0 ,1)
+
+1: repeat 
+
+2: Sample s ∼ U [0 , 1] , Xs ∼ ps ▷ Simulate or interpolate    
+
+> ▷Matching objective (batch size ⌊ηM ⌋)
+
+3: Sample t ∼ U [s, s +∆ t] and I(N )  
+
+> s,t ∼(12)
+
+4: ˆXt ← Xs + f (s, Xs)( t−s) + g(s)( Wt−Ws)
+
+5: Lf ,g ← (t−s)−1 ˆXt − Ψθs,t (Xs, I(N )      
+
+> s,t )2
+> ▷Distillation objective (batch size M− ⌊ ηM ⌋)
+
+6: Sample t ∼ U [s+∆ t, 1] and set u ← 12 (s+t)
+
+7: Sample I(N )        
+
+> s,u ,I(N)
+> u,t ∼(12) and compute I(N)
+> s,t via (22)
+
+8: Xtgt ← stopgrad  Ψθs,t (Xs, I(N ) 
+
+> s,t )
+
+9: Xpred ← Ψθu,t      
+
+>  Ψθs,u (Xs,I(N)
+> s,u ),I(N)
+> u,t
+> 
+
+10: LD ← (t−s)−1 Xtgt − Xpred 2 
+
+> ▷Update
+
+11: θ ← θ − λ ∇θ (Lf ,g + LD)
+
+12: ˆθ ← β ˆθ + (1 −β) θ
+
+13: until θ converges 
+
+73.2.2 General training method 
+
+By Theorems 3.5 and 3.4, this parameterization trained according to (14) converges to the Itô map as 
+
+N → ∞ . In practice, as the variance of the coefficient terms decay with 1/n , we can obtain a sufficient approximation using a finite number of coefficients. Note that Lf ,g provides a training signal for s = t (i.e . f θt,t , gθt,t ), but LD evaluates the model at t > s .This forces the network to generalize from s = t to t > s via continuity. To alleviate this, we instead match a small Euler-Maruyama step (with t > s ) of the ground truth SDE rather than matching coefficients. This can be shown to result in a weighted coefficient matching objective (see Lemma B.1). The general training algorithm is given in Algorithm 1. This requires a ground truth for f and g which can be constructed based on the task; for diffusion this is obtained by the reverse SDE with f (t, Xt)
+
+derived from the conditional score – resulting in a simulation-free objective (see Appendix B.2). 
+
+# 4 Experiments 
+
+We consider three experiments that demonstrate the properties and performance of the SSFM model. Firstly, we ablate the algorithmic properties on a non-linear SDE and verify the effectiveness of the polynomial approximation to Brownian motion. Second, we apply the model to CIFAR-10 and CelebA-64 image generation and show that SSFMs outperform previous deterministic and stochastic flow maps. Third, we consider generation of equilibrium molecular conformations on the Alanine-Dipeptide dataset, where the SSFM model is capable of generating accurate samples in as few as two network evaluations. 
+
+4.1 Non-linear SDE 
+
+We first investigate the performance of the SSFM model on a toy system: a non-linear drift, additive-noise SDE, given by 
+
+dXt = [ Xt − X3 
+
+> t
+
+] d t + pβt dWt, (17) where βt is a linear interpolation between βmin = 0 .1 and βmax = 20 . This system is intended to mimic the variance preserving reverse diffusion SDE. The SSFM is learned via Algorithm 1 with the ground truth constructed from (17). 1 2 4 8 16     
+
+> Steps
+> 10 −3
+> 10 −2
+> 10 −1
+> Strong Error,  E‖Xt − Xθt ‖2
+> W(1)
+> t
+> W(2)
+> t
+> W(3)
+> t
+> W(4)
+> t
+
+Figure 2: Strong error of the SSFM as a function of the polynomial degree. In Figure 2, we ablate the SSFM accuracy as a function of the polynomial degree. As the num-ber of coefficients passed to the model increases, the strong convergence error decreases; this is most pronounced at larger step sizes. It can also been seen that the accuracy gained by each ad-ditional coefficient added diminishes, but is far from saturated at N = 4 .In Figure 3, we show the underlying 4-th degree polynomial expansion of Brownian motion and the learned flow map evaluated at 16-steps. We see that the SSFM is capable of accurately coars-ening the SDE dynamics. We include additional plots for this system in Appendix D.1. 8Time Brownian Path      
+
+> WtW(4)
+> t
+> Time Solution
+> Ground truth XtFlow Map Xθt
+
+Figure 3: Left : Ground-truth Brownian path Wt and 4-th degree polynomial approximation W (4)  
+
+> t
+
+over 16 intervals. Right : Ground-truth SDE solution driven by Wt and learned 16-step flow map driven by 
+
+W (4)  
+
+> t
+
+.
+
+4.2 Image generation 
+
+We demonstrate the strong stochastic flow map construction for image generation on the CIFAR-10 and CelebA-64 datasets (Krizhevsky et al. 2009; Z. Liu et al. 2015). The training procedure follows Algorithm 1, where the ground truth SDE is obtained via the reverse time variance preserving diffusion SDE (Song, Sohl-Dickstein, et al. 2021). See Appendix B.2 for a description of this SDE. The f θ , gθ
+
+networks are independently parameterized with the EDM2 architecture (Karras et al. 2024). The number of polynomial coefficients was chosen to be N = 3 .Same  Wt         
+
+> n= 2 n= 4 n= 8 n= 16 n= 32
+> Different  Wt
+
+Figure 4: Top : SSFM with fixed X0 and same Wt
+
+across step counts. Bottom : SSFM with fixed X0,different Wt across step counts. The results can be seen in Table 2. The strong stochastic flow map models outperform the weak formulations across all step sizes considered. Ad-ditionally, under the strong construction we find that stochastic flow maps become competitive with deterministic flow maps and often outper-form. We verify the strong convergence property of the SSFM in Figure 4. Here, we see that for a fixed initial condition X0 and the same Brownian path 
+
+Wt, the resulting sample is the same for all step counts. Further, the stochasticity of the flow map is retained; for the same X0 with different Wt,we obtain different generated samples. 
+
+4.3 Molecular systems 
+
+We demonstrate the strong stochastic flow map on the molecular system Alanine Dipeptide (ALDP) (Plainer et al. 2025) and all-atom Chignolin. See Appendix D.3 for full details. We compare SSFM to regular diffusion baselines established in (Plainer et al. 2025) for ALDP. For all-atom Chignolin, we compare SSFM to a de novo denoising diffusion model with comparable parameter count. The results can be seen in Table 3 and Table 4. For ALDP, as expected, the SSFM enables markedly more efficient sampling than the diffusion baselines for step counts < 1000 . As Steps → 1000 , the methods converge to achieving comparable performance. 9Table 2: FID ( ↓) on CIFAR-10 and CelebA-64 across different NFE values. We provide deterministic flow maps as a reference, but compare to other stochastic methods. 
+
+NFE Dataset Method 2 4 8 16 CIFAR-10 
+
+Deterministic flows 
+
+Consistency training (Song, Dhariwal, et al. 2023) 5.83 — — —Flow map (LSD) (Boffi et al. 2025) 4.37 3.34 3.33 3.57 Flow map (PSD-M) (Boffi et al. 2025) 8.43 5.96 5.07 4.64 Flow map (PSD-U) (Boffi et al. 2025) 7.95 6.03 5.32 5.16 Flow map (Holderrieth, D. Chen, et al. 2026) 4.60 4.18 4.88 —
+
+Weak stochastic flows 
+
+GLASS (Holderrieth, Singer, et al. 2026) 157.55 39.47 11.60 —Diamond Map (Holderrieth, D. Chen, et al. 2026) 5.80 5.80 6.73 —
+
+Strong stochastic flows 
+
+SSFM (Ours) 4.93 3.49 3.29 3.35 
+
+> CelebA-64
+
+Deterministic flows 
+
+Flow map (LSD) (Boffi et al. 2025) 5.74 3.18 2.18 1.96 Flow map (PSD-M) (Boffi et al. 2025) 11.75 7.89 6.06 5.09 Flow map (PSD-U) (Boffi et al. 2025) 11.02 7.47 6.00 5.63 Flow map (Holderrieth, D. Chen, et al. 2026) 4.05 3.08 3.15 —
+
+Weak stochastic flows 
+
+GLASS (Holderrieth, Singer, et al. 2026) 95.25 51.80 26.33 —Diamond Map (Holderrieth, D. Chen, et al. 2026) 9.16 6.74 5.78 —
+
+Strong stochastic flows 
+
+SSFM (Ours) 5.65 3.89 3.60 3.79 
+
+Table 3: PMF squared error ( ↓) and JS divergence ( ↓) on Alanine-Dipeptide across step counts. 
+
+NFE 2 4 10 20 100 1000 PMF Error Two-for-One 16.682 15.714 11.410 3.564 0.087 0.068 Diffusion 16.728 15.667 11.347 3.400 0.084 0.066 Mixture 22.070 17.266 11.556 3.394 0.078 0.058 
+
+Fokker-Planck 15.475 15.709 11.345 3.498 0.092 0.069 Both 21.830 17.094 11.571 3.393 0.087 0.065 
+
+SSFM 0.235 0.168 0.101 0.089 0.067 0.062 JS ( ×10 −2)Two-for-One 48.188 48.569 38.476 16.783 0.813 0.665 Diffusion 48.735 48.377 38.309 16.293 0.787 0.618 Mixture 52.432 49.500 38.709 16.279 0.770 0.609 Fokker-Planck 47.157 48.250 38.307 16.569 0.836 0.638 Both 52.340 49.270 38.660 16.370 0.830 0.640 
+
+SSFM 1.990 1.480 0.950 0.860 0.640 0.590 
+
+10 −π −π/ 2 0 π/ 2 π     
+
+> ϕ
+> −π
+> −π/ 2
+> 0
+> π/ 2
+> π
+> ψ
+> Ground truth
+> Diffusion
+> n= 100 n= 10 n= 2
+> SSFM
+
+Figure 5: Ramachandran plots for Alanine-Dipeptide showing ground truth data, diffusion mixture baseline and SSFM prediction across step counts. Table 4: Chignolin Wasserstein metrics ( ↓) across step counts.                                          
+
+> NFE Metric Method 124816 32 64 100
+> T-W 2
+> Diffusion 4.737 5.882 5.587 2.716 1.793 1.714 1.699 1.735
+> SSFM 2.439 2.060 1.824 1.764 1.733 1.707 1.694 1.670
+> tICA-W 2
+> Diffusion 1.976 19.147 3.236 0.712 0.323 0.262 0.266 0.330
+> SSFM 0.758 0.530 0.414 0.368 0.335 0.316 0.290 0.304
+
+Notably, the SSFM at 100 steps is competitive with the diffusion baselines at 1000 steps, a factor 10 
+
+reduction in NFEs. For all-atom Chignolin, the SSFM achieves lower error relative to the diffusion baseline across all step counts for the projected backbone torus, and for low step counts in the tICA projection. As expected, the methods converge to achieve comparable performance in the many-step limit. Notably, the SSFM is able to sample accurate configurations in the 1-4 NFE regime. Pooled Ramachandran and tICA plots are shown in Appendix D. 
+
+# 5 Conclusion 
+
+In this work, we have introduced a novel theoretical framework for learning the Itô map to any additive-noise SDE. This framework was used to construct a class of flow maps, termed STRONG STOCHASTIC FLOW MAPS (SSFMs), that approximate the Itô map to compute a strong solution to additive-noise SDEs. On image generation experiments, this parameterization was shown to outperform previous stochastic flow map models. When applied to sampling molecular conformations, SSFMs obtained accurate results in as few as 1-2 network evaluations and matched the performance of current diffusion based generative models in the many-step regime. We expect this work to open up further improvements in reward alignment of generative models via pathwise estimators, and to accelerate molecular simulation and generative modeling tasks. 11 References 
+
+Albergo, M., Boffi, N. M., and Vanden-Eijnden, E. (2025). “Stochastic interpolants: A unifying framework for flows and diffusions”. In: Journal of Machine Learning Research 26.209, pp. 1–80 (cit. on p. 3). Anderson, B. D. (1982). “Reverse-time diffusion equation models”. In: Stochastic Processes and their Applications 12.3, pp. 313–326 (cit. on p. 3). Blasingame, Z. W. and Liu, C. (2026). “Rex: A Family of Reversible Exponential (Stochastic) Runge-Kutta Solvers”. In: Forty-third International Conference on Machine Learning . URL : https://openreview. net/forum?id=7pQIzVNctu (cit. on p. 27). Blattmann, A., Rombach, R., Ling, H., Dockhorn, T., Kim, S. W., Fidler, S., and Kreis, K. (2023). “Align your latents: High-resolution video synthesis with latent diffusion models”. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 22563–22575 (cit. on p. 1). Boffi, N. M., Albergo, M. S., and Vanden-Eijnden, E. (2024). “Flow map matching”. In: arXiv preprint arXiv:2406.07507 (cit. on pp. 1, 4). – (2025). “How to build a consistency model: Learning flow maps via self-distillation”. In: arXiv preprint arXiv:2505.18825 (cit. on pp. 4, 10, 27, 28). Chen, K. - T. (1954). “Iterated integrals and exponential homomorphisms”. In: Proceedings of the London Mathematical Society 3.1, pp. 502–512 (cit. on p. 6). – (1957). “Integration of paths, geometric invariants and a generalized Baker-Hausdorff formula”. In: 
+
+Annals of Mathematics 65.1, pp. 163–178 (cit. on p. 6). Chen, R. T. Q., Rubanova, Y., Bettencourt, J., and Duvenaud, D. K. (2018). “Neural Ordinary Differential Equations”. In: Advances in Neural Information Processing Systems . Ed. by S. Bengio, H. Wallach, H. Larochelle, K. Grauman, N. Cesa-Bianchi, and R. Garnett. Vol. 31. Curran Associates, Inc. URL : https: //proceedings.neurips.cc/paper_files/paper/2018/file/69386f6bb1dfed68692a24c8686939b9-Paper.pdf (cit. on pp. 1, 3). Foster, J., Lyons, T., and Oberhauser, H. (2020). “An optimal polynomial approximation of Brownian motion”. In: SIAM Journal on Numerical Analysis 58.3, pp. 1393–1421 (cit. on pp. 6, 23). Frans, K., Hafner, D., Levine, S., and Abbeel, P. (2025). “One Step Diffusion via Shortcut Models”. In: 
+
+The Thirteenth International Conference on Learning Representations . URL : https://openreview. net/forum?id=OlzB6LnXcS (cit. on pp. 4, 27). Friz, P. K. and Victoir, N. B. (2010). Multidimensional stochastic processes as rough paths: theory and applications . Vol. 120. Cambridge University Press (cit. on pp. 4, 23). Garsia, A. M., Rodemich, E., Rumsey, H., and Rosenblatt, M. (1970). “A Real Variable Lemma and the Continuity of Paths of Some Gaussian Processes”. In: Indiana University Mathematics Journal 20.6, pp. 565–578. ISSN : 00222518, 19435258. URL : http://www.jstor.org/stable/24890119 (visited on 05/06/2026) (cit. on p. 23). Geng, Z., Deng, M., Bai, X., Kolter, J. Z., and He, K. (2025). “Mean Flows for One-step Generative Modeling”. In: The Thirty-ninth Annual Conference on Neural Information Processing Systems . URL :
+
+https://openreview.net/forum?id=uWj4s7rMnR (cit. on pp. 1, 2, 4, 27). Geng, Z., Lu, Y., Wu, Z., Shechtman, E., Kolter, J. Z., and He, K. (2025). “Improved mean flows: On the challenges of fastforward generative models”. In: arXiv preprint arXiv:2512.02012 (cit. on pp. 2, 27, 28). 12 Gonzalez, M., Fernandez, N., Tran, T. V. D., Gherbi, E., Hajri, H., and Masmoudi, N. (2023). “SEEDS: Exponential SDE Solvers for Fast High-Quality Sampling from Diffusion Models”. In: Thirty-seventh Conference on Neural Information Processing Systems . URL : https://openreview.net/forum?id= V6IgkYKD8P (cit. on pp. 1, 27). Habermann, K. (2021). “A semicircle law and decorrelation phenomena for iterated Kolmogorov loops”. In: Journal of the London Mathematical Society 103.2, pp. 558–586. ISSN : 1469-7750. DOI : 10.1112/ jlms.12384 . URL : http://dx.doi.org/10.1112/jlms.12384 (cit. on p. 6). Heek, J., Hoogeboom, E., and Salimans, T. (2024). Multistep Consistency Models . URL : https : / / openreview.net/forum?id=d7DZRNe2xG (cit. on pp. 1, 4). Ho, J., Jain, A., and Abbeel, P. (2020). “Denoising Diffusion Probabilistic Models”. In: Advances in Neural Information Processing Systems . Ed. by H. Larochelle, M. Ranzato, R. Hadsell, M. Balcan, and H. Lin. Vol. 33. Curran Associates, Inc., pp. 6840–6851. URL : https://proceedings.neurips.cc/paper_ files/paper/2020/file/4c5bcfec8584af0d967f1ab10179ca4b-Paper.pdf (cit. on p. 1). Holderrieth, P., Chen, D., Eyring, L., Shah, I., Anantharaman, G., He, Y., Akata, Z., Jaakkola, T., Boffi, N. M., and Simchowitz, M. (2026). “Diamond Maps: Efficient Reward Alignment via Stochastic Flow Maps”. In: arXiv preprint arXiv:2602.05993 (cit. on pp. 2, 4, 10, 28). Holderrieth, P., Havasi, M., Yim, J., Shaul, N., Gat, I., Jaakkola, T., Karrer, B., Chen, R. T. Q., and Lipman, Y. (2025). “Generator Matching: Generative modeling with arbitrary Markov processes”. In: The Thirteenth International Conference on Learning Representations . URL : https://openreview.net/ forum?id=RuP17cJtZo (cit. on p. 27). Holderrieth, P., Singer, U., Jaakkola, T., Chen, R. T. Q., Lipman, Y., and Karrer, B. (2026). “GLASS Flows: Efficient Inference for Reward Alignment of Flow and Diffusion Models”. In: The Fourteenth In-ternational Conference on Learning Representations . URL : https://openreview.net/forum?id= vH7OAPZ2dR (cit. on pp. 3, 10). Jelinčič, A., Foster, J., and Kidger, P. (2024). “Single-seed generation of Brownian paths and integrals for adaptive and high order SDE solvers”. In: arXiv preprint arXiv:2405.06464 (cit. on p. 28). Jiang, L., Ge, W., Cariou-Kotlarek, N., Yi, M., Chen, P. - Y., Yang, L., Buet-Golfouse, F., Mittal, G., and Ni, H. (2025). “Sig-DEG for Distillation: Making Diffusion Models Faster and Lighter”. In: arXiv preprint arXiv:2508.16939 (cit. on p. 27). Karras, T., Aittala, M., Lehtinen, J., Hellsten, J., Aila, T., and Laine, S. (2024). “Analyzing and improving the training dynamics of diffusion models”. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 24174–24184 (cit. on pp. 9, 29). Kidger, P. (2022). “On Neural Differential Equations”. Available at https://arxiv.org/abs/2202.02435 .Ph.D. thesis. Oxford University (cit. on pp. 1, 28). Kidger, P., Foster, J., Li, X., and Lyons, T. (2021). “Efficient and Accurate Gradients for Neural SDEs”. In: 
+
+Advances in Neural Information Processing Systems . Ed. by A. Beygelzimer, Y. Dauphin, P. Liang, and J. W. Vaughan. URL : https://openreview.net/forum?id=b2bkE0Qq8Ya (cit. on pp. 3, 28). Kim, D., Lai, C. - H., Liao, W. - H., Murata, N., Takida, Y., Uesaka, T., He, Y., Mitsufuji, Y., and Ermon, S. (2024). “Consistency Trajectory Models: Learning Probability Flow ODE Trajectory of Diffusion”. In: 
+
+The Twelfth International Conference on Learning Representations . URL : https://openreview.net/ forum?id=ymjI8feDTD (cit. on pp. 1, 4). 13 Kiyohara, N., Johns, E., and Li, Y. (2025). “Neural Stochastic Flows: Solver-Free Modelling and Inference for SDE Solutions”. In: The Thirty-ninth Annual Conference on Neural Information Processing Systems .
+
+URL : https://openreview.net/forum?id=PrYDDxphym (cit. on pp. 4, 28). Köhler, J., Krämer, A., and Noé, F. (2021). “Smooth normalizing flows”. In: Advances in Neural Informa-tion Processing Systems 34, pp. 2796–2809 (cit. on p. 29). Krizhevsky, A., Hinton, G., et al. (2009). “Learning multiple layers of features from tiny images”. In: (cit. on p. 9). Kullback, S. and Leibler, R. A. (1951). “On information and sufficiency”. In: The annals of mathematical statistics 22.1, pp. 79–86 (cit. on p. 28). Li, X., Wong, T. - K. L., Chen, R. T. Q., and Duvenaud, D. K. (Aug. 2020). “Scalable Gradients and Variational Inference for Stochastic Differential Equations”. In: Proceedings of The 2nd Symposium on Advances in Approximate Bayesian Inference . Ed. by C. Zhang, F. Ruiz, T. Bui, A. B. Dieng, and D. Liang. Vol. 118. Proceedings of Machine Learning Research. PMLR, pp. 1–28. URL : https : / / proceedings . mlr . press/v118/li20a.html (cit. on pp. 3, 28). Lipman, Y., Chen, R. T. Q., Ben-Hamu, H., Nickel, M., and Le, M. (2023). “Flow Matching for Generative Modeling”. In: The Eleventh International Conference on Learning Representations . URL : https : //openreview.net/forum?id=PqvMRDCJT9t (cit. on pp. 1, 3). Lipman, Y., Havasi, M., Holderrieth, P., Shaul, N., Le, M., Karrer, B., Chen, R. T., Lopez-Paz, D., Ben-Hamu, H., and Gat, I. (2024). Flow Matching Guide and Code (cit. on p. 3). Liu, X., Gong, C., and Liu, Q. (2023). “Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow”. In: The Eleventh International Conference on Learning Representations . URL :
+
+https://openreview.net/forum?id=XVjTT1nw5z (cit. on pp. 1, 3). Liu, Z., Luo, P., Wang, X., and Tang, X. (Dec. 2015). “Deep Learning Face Attributes in the Wild”. In: 
+
+Proceedings of International Conference on Computer Vision (ICCV) (cit. on p. 9). Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., and Zhu, J. (2022). “DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps”. In: Advances in Neural Information Processing Systems . Ed. by A. H. Oh, A. Agarwal, D. Belgrave, and K. Cho. URL : https://openreview.net/ forum?id=2uAaGwlP_V (cit. on p. 1). Lyons, T. J. (1998). “Differential equations driven by rough signals”. In: Revista Matemática Iberoameri-cana 14.2, pp. 215–310 (cit. on pp. 4, 6). Maoutsa, D., Reich, S., and Opper, M. (2020). “Interacting particle solutions of fokker–planck equations through gradient–log–density estimation”. In: Entropy 22.8, p. 802 (cit. on p. 3). Nie, S., Guo, H. A., Lu, C., Zhou, Y., Zheng, C., and Li, C. (2024). “The Blessing of Randomness: SDE Beats ODE in General Diffusion-based Image Editing”. In: The Twelfth International Conference on Learning Representations . URL : https://openreview.net/forum?id=DesYwmUG00 (cit. on p. 3). Oh, Y., Lim, D., and Kim, S. (2024). “Stable Neural Stochastic Differential Equations in Analyzing Irregular Time Series Data”. In: The Twelfth International Conference on Learning Representations .
+
+URL : https://openreview.net/forum?id=4VIgNuQ1pY (cit. on p. 1). Øksendal, B. (July 2003). Stochastic Differential Equations: An Introduction with Applications . Universi-text. Berlin, Germany: Springer Berlin Heidelberg. ISBN : 9783662036204. DOI : 10.1007/978-3-642-14394-6 (cit. on pp. 2, 4, 5, 17, 20). 14 Passaro, R., Blasingame, Z. W., Bronstein, M. M., and Tong, A. (2026). “Stochastic Few-step Models”. In: ICLR 2026 2nd Workshop on Deep Generative Model in Machine Learning: Theory, Principle and Efficacy . URL : https://openreview.net/forum?id=nmczKNW73P (cit. on pp. 2, 4, 28). Peluchetti, S. (2021). Non-Denoising Forward-Time Diffusions (cit. on pp. 1, 3). Plainer, M., Wu, H., Klein, L., Günnemann, S., and Noe, F. (2025). “Consistent Sampling and Simulation: Molecular Dynamics with Energy-Based Diffusion Models”. In: The Thirty-ninth Annual Conference on Neural Information Processing Systems (cit. on pp. 9, 29). Poli, M., Massaroli, S., Yamashita, A., Asama, H., and Park, J. (2020). “Hypersolvers: Toward Fast Continuous-Depth Models”. In: Advances in Neural Information Processing Systems . Ed. by H. Larochelle, M. Ranzato, R. Hadsell, M. Balcan, and H. Lin. Vol. 33. Curran Associates, Inc., pp. 21105–21117. URL :
+
+https://proceedings.neurips.cc/paper_files/paper/2020/file/f1686b4badcf28d33ed632036c7ab0b8-Paper.pdf (cit. on p. 27). Potaptchik, P., Saravanan, A., Mammadov, A., Prat, A., Albergo, M. S., and Teh, Y. W. (2026). “Meta Flow Maps enable scalable reward alignment”. In: arXiv preprint arXiv:2601.14430 (cit. on pp. 2, 4, 28). Rector-Brooks, J., Lambert, T., Skreta, M., Roth, D., Long, Y., Li, Z. - Q., Zhang, X., Cretu, M., Li, F. - Z., Ganapathy, T., Jin, E., Bose, A. J., Yang, J., Neklyudov, K., Bengio, Y., Tong, A., Arnold, F. H., and Liu, C. - H. (2026). “General Multimodal Protein Design Enables DNA-Encoding of Chemistry”. In: arXiv: 
+
+2604.05181 [cs.LG] . URL : https://arxiv.org/abs/2604.05181 (cit. on p. 1). Rehman, D., Akhound-Sadegh, T., Gazizov, A., Bengio, Y., and Tong, A. (2026). “FALCON: Few-step Accurate Likelihoods for Continuous Flows”. In: The Fourteenth International Conference on Learning Representations . URL : https://openreview.net/forum?id=FbssShlI4N (cit. on pp. 1, 2). Rezende, D. and Mohamed, S. (July 2015). “Variational Inference with Normalizing Flows”. In: Pro-ceedings of the 32nd International Conference on Machine Learning . Ed. by F. Bach and D. Blei. Vol. 37. Proceedings of Machine Learning Research. Lille, France: PMLR, pp. 1530–1538. URL : https: //proceedings.mlr.press/v37/rezende15.html (cit. on p. 28). Rombach, R., Blattmann, A., Lorenz, D., Esser, P., and Ommer, B. (2022). “High-resolution image syn-thesis with latent diffusion models”. In: Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pp. 10684–10695 (cit. on p. 1). Sabour, A., Fidler, S., and Kreis, K. (2025). “Align Your Flow: Scaling Continuous-Time Flow Map Dis-tillation”. In: The Thirty-ninth Annual Conference on Neural Information Processing Systems . URL :
+
+https://openreview.net/forum?id=pzHuesCvcO (cit. on pp. 1, 4). Sohl-Dickstein, J., Weiss, E., Maheswaranathan, N., and Ganguli, S. (2015). “Deep unsupervised learning using nonequilibrium thermodynamics”. In: International conference on machine learning . pmlr, pp. 2256–2265 (cit. on p. 1). Song, Y. and Dhariwal, P. (2024). “Improved Techniques for Training Consistency Models”. In: The Twelfth International Conference on Learning Representations . URL : https://openreview.net/ forum?id=WNzy9bRDvG (cit. on p. 27). Song, Y., Dhariwal, P., Chen, M., and Sutskever, I. (23–29 Jul 2023). “Consistency Models”. In: Proceedings of the 40th International Conference on Machine Learning . Ed. by A. Krause, E. Brunskill, K. Cho, B. Engelhardt, S. Sabato, and J. Scarlett. Vol. 202. Proceedings of Machine Learning Research. PMLR, pp. 32211–32252. URL : https://proceedings.mlr.press/v202/song23a.html (cit. on pp. 1, 4, 10, 27). 15 Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., and Poole, B. (2021). “Score-Based Generative Modeling through Stochastic Differential Equations”. In: International Conference on Learning Representations . URL : https://openreview.net/forum?id=PxTIG12RRHS (cit. on pp. 1, 3, 9). Tong, A., FATRAS, K., Malkin, N., Huguet, G., Zhang, Y., Rector-Brooks, J., Wolf, G., and Bengio, Y. (2024). “Improving and generalizing flow-based generative models with minibatch optimal transport”. In: Transactions on Machine Learning Research . Expert Certification. ISSN : 2835-8856. URL : https: //openreview.net/forum?id=CD9Snc73AW (cit. on p. 3). Walker, B., McLeod, A. D., Qin, T., Cheng, Y., Li, H., and Lyons, T. (2024). “Log Neural Controlled Differential Equations: The Lie Brackets Make A Difference”. In: Forty-first International Conference on Machine Learning . URL : https://openreview.net/forum?id=0tYrMtQyPT (cit. on p. 1). Watson, J. L., Juergens, D., Bennett, N. R., Trippe, B. L., Yim, J., Eisenach, H. E., Ahern, W., Borst, A. J., Ragotte, R. J., Milles, L. F., et al. (2023). “De novo design of protein structure and function with RFdiffusion”. In: Nature 620.7976, pp. 1089–1100 (cit. on p. 1). Zhang, Q. and Chen, Y. (2023). “Fast Sampling of Diffusion Models with Exponential Integrator”. In: 
+
+The Eleventh International Conference on Learning Representations . URL : https://openreview.net/ forum?id=Loek7hfb46P (cit. on pp. 1, 27). 16 Appendices 
+
+A Proofs . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 A.1 Constructing the Itô map. . . . . . . . . . . . . . . . . . . . . 18       
+
+> Proof of Lemma 3.1 •Proof of Proposition 3.2 •Proof of Proposition 3.3 •Proof of Theorem 3.5
+
+A.2 Constructing the Brownian motion. . . . . . . . . . . . . . . . . . 21   
+
+> Primer on rough path theory •Proof of Theorem 3.4
+
+B Training. . . . . . . . . . . . . . . . . . . . . . . . . . . . 26 B.1 Euler-Maruyama step objective . . . . . . . . . . . . . . . . . . . 26 B.2 Diffusion SDEs . . . . . . . . . . . . . . . . . . . . . . . . 27 C Extended related work . . . . . . . . . . . . . . . . . . . . . . . 27 D Experimental details . . . . . . . . . . . . . . . . . . . . . . . . 28 D.1 Non-linear SDE . . . . . . . . . . . . . . . . . . . . . . . 29 D.2 Image generation . . . . . . . . . . . . . . . . . . . . . . . 29 D.3 Molecular systems: ALDP. . . . . . . . . . . . . . . . . . . . . 29 D.4 Molecular systems: Chignolin . . . . . . . . . . . . . . . . . . . 30 D.5 Hardware . . . . . . . . . . . . . . . . . . . . . . . . . 32 D.6 Repositories . . . . . . . . . . . . . . . . . . . . . . . . . 32 E Discussions . . . . . . . . . . . . . . . . . . . . . . . . . . . 33 E.1 Contribution statement . . . . . . . . . . . . . . . . . . . . . 33 E.2 Broader impacts . . . . . . . . . . . . . . . . . . . . . . . 33 E.3 Limitations . . . . . . . . . . . . . . . . . . . . . . . . . 33 
+
+# A Proofs 
+
+In this section we prove the results provided in the main text. Throughout, we assume that the stochastic differential equations studied satisfy the following assumption. 
+
+Assumption A.1 (Unique strong solution) . We assume that the additive-noise stochastic differential equation given by 
+
+dXt = f (t, Xt) d t + g(t) d Wt,
+
+where f : R × Rd → Rd, g : R → Rd×w with Wt ∈ Rw and initial condition X0 with finite second moment, has the following properties such that a unique continuous solution Xt exists. Let f , g be measurable functions satisfying 
+
+|f (t, x)| + |g(t)| ≤ C(1 + |x|)
+
+|f (t, x) − f (t, y)| ≤ D|x − y|
+
+for constants C, D . See Øksendal (2003) for a full discussion on the existence and unique of strong solutions to SDEs. 
+
+17 A.1 Constructing the Itô map 
+
+A.1.1 Proof of Lemma 3.1 
+
+We first prove a simple lemma that relates the Itô map to the SDE. 
+
+Lemma A.1 (Stochastic Lagrangian equation) . Let Ψs,t (Xs, W[s,t ]) denote the Itô map for (6) .Then, 
+
+dΨs,t (Xs, W[s,t ]) = f (t, Ψs,t (Xs, W[s,t ]))d t + g(t)d Wt. (18) 
+
+Proof. Consider the derivative of the stochastic flow map, 
+
+dΨs,t (Xs, W[s,t ]) = d Xt,
+
+= f (t, Xt)d t + g(t)d Wt,
+
+= f (t, Ψs,t (Xs, W[s,t ]))d t + g(t)d Wt.
+
+Now, we are able to prove Lemma 3.1 which we restate here. 
+
+Lemma 3.1 (Tangent Condition) . Let Ψs,t (Xs, W[s,t ]) denote the Itô map for (6) . Then, 
+
+lim  
+
+> s→t
+
+dΨs,t (Xs, W[s,t ]) = f (t, Xt) d t + g(t) d Wt. (7) 
+
+Proof. By Lemma A.1 we have that the Itô map satisfies the stochastic Lagrangian equation. Taking the limit as s → t, then given the continuity of the Itô map we have 
+
+lim  
+
+> s→t
+
+dΨs,t (Xs, W[s,t ]) = lim  
+
+> s→t
+
+f (t, Ψs,t (Xs, W[s,t ]))d t + g(t)d Wt
+
+= f (t, Ψt,t (Xt, W[t,t ]))d t + g(t)d Wt
+
+= f (t, Xt)d t + g(t)d Wt
+
+A.1.2 Proof of Proposition 3.2 
+
+Next, we prove Proposition 3.2. 
+
+Proposition 3.2 (Strong Stochastic Flow Map) . Consider an Euler-Maruyama parameterization of the Itô map, 
+
+Ψs,t (Xs, W[s,t ]) = Xs + fs,t (Xs, W[s,t ])( t − s) + gs,t (W[s,t ])( Wt − Ws), (8) 
+
+where f , g are twice continuously differentiable, Lipschitz in both time arguments, satisfy the conditions that ft,t (Xt, W[s,t ]) = ft,t (Xt), and gt,t (W[s,t ]) = gt,t (i.e. the coefficients are independent of W[s,t ] for s = t). Then, Ψs,t satisfies the tangent condition (7) if and only if 
+
+ft,t (xt) = f (t, x t), gt,t = g(t).
+
+18 Proof. Consider the application of Itô’s lemma to Ψs,t (Xs, W[s,t ]), given by 
+
+dΨs,t (Xs, W[s,t ]) = 
+
+
+
+∂tΨs,t (Xs, W[s,t ]) + 12 ∂2 
+
+> Wt
+
+Ψs,t (Xs, W[s,t ])
+
+
+
+dt + ∂Wt Ψs,t (Xs, W[s,t ])d Wt,
+
+=
+
+
+
+fs,t (Xs, W[s,t ]) + ( t − s)∂tfs,t (Xs, W[s,t ]) + ( Wt − Ws)∂tgs,t (W[s,t ])+ 12 (t − s)∂2 
+
+> Wt
+
+fs,t (Xs, W[s,t ]) + 12 (Wt − Ws)∂2 
+
+> Wt
+
+gs,t (W[s,t ]) + ∂Wt gs,t (W[s,t ])
+
+
+
+dt
+
++
+
+
+
+(t − s)∂Wt fs,t (Xs, W[s,t ]) + gs,t (W[s,t ]) + ( Wt − Ws)∂Wt gs,t (W[s,t ])
+
+
+
+dWt.
+
+Now, taking the limit s → t, we obtain 
+
+lim  
+
+> s→t
+
+dΨs,t (Xs, W[s,t ]) = 
+
+
+
+ft,t (Xt, W[t,t ]) + ∂Wt gt,t (W[t,t ])
+
+
+
+dt + gt,t dWt.
+
+Finally, using the conditions that ft,t (Xt, W[t,t ]) = ft,t (Xt) and gt,t (W[t,t ]) = gt,t , this reduces to 
+
+lim  
+
+> s→t
+
+dΨs,t (Xs, W[s,t ]) = ft,t (Xt)d t + gt,t dWt.
+
+To satisfy the tangent condition (7) we must have ft,t (Xt) = f (t, Xt) and gt,t = g(t). Conversely, substituting ft,t (Xt) = f (t, Xt), gt,t = g(t) recovers the tangent condition. 
+
+A.1.3 Proof of Proposition 3.3 
+
+Now onto the proof that the strong stochastic flow map attains the Itô map when satisfying the tangent and semigroup conditions. 
+
+Proposition 3.3 (Semigroup condition) . Let Ψs,t (Xs, W[s,t ]) denote the strong stochastic flow map satisfying (7) and (8) . Then Ψs,t (Xs, W[s,t ]) is the Itô map if and only if the semigroup property (9) holds. 
+
+Proof. First observe that the Itô map satisfies the semigroup condition, 
+
+Ψs,t (Xs, W[s,t ]) = Ψu,t (Ψs,u (Xs, W[s,u ]), W[u,t ])= Ψu,t (Xu, W[u,t ])= Xt
+
+Next, we want to show the inverse implication. Let Ψs,t (Xs, W[s,t ]) denote the strong stochastic flow map satisfying (7) , (8) and (9) . We show that this map is the Itô map for (6) . This follows by considering the semigroup condition, 
+
+Ψs,t +h(Xs, W[s,t +h]) = Ψt,t +h(Ψs,t (Xs, W[s,t ]), W[t,t +h])= Ψs,t (Xs, W[s,t ]) + hft,t +h(Ψs,t (Xs, W[s,t ]), W[t,t +h])+ ( Wt+h − Wt)gt,t +h(W[t,t +h])
+
+Define ˆXt = Ψs,t (Xs, W[s,t ]) and re-arrange to get 
+
+ˆXt+h − ˆXt = hft,t +h( ˆXt, W[t,t +h]) + ( Wt+h − Wt)gt,t +h(W[t,t +h]).
+
+19 Next consider taking the following sum over a partition t = u0 < u 1 < · · · < u n = t + h,
+
+X
+
+> i
+
+ˆXui+1 − ˆXui = X
+
+> i
+
+(ui+1 − ui)fui,u i+1 ( ˆXui , W[ui,u i+1 ]) + X
+
+> i
+
+(Wui+1 − Wui )gui,u i+1 (W[ui,u i+1 ])
+
+The LHS of this sum telescopes to ˆXt+h − ˆXt. We now take the limit of this partition with max i(ui+1 −
+
+ui) → 0.Since we have fu,u ( ˆXu, W[u,u ]) = fu,u ( ˆXu) and gu,u (W[u,u ]) = gu,u by the independence assump-tion on (8) , consider the following equivalent expression obtained by adding and subtracting the diagonal coefficients, 
+
+ˆXt+h − ˆXt = X
+
+> i
+
+(ui+1 − ui)fui,u i ( ˆXui ) + X
+
+> i
+
+(ui+1 − ui)
+
+
+
+fui,u i+1 ( ˆXui , W[ui,u i+1 ]) − fui,u i ( ˆXui )
+
+
+
++ X
+
+> i
+
+(Wui+1 − Wui )gui,u i + X
+
+> i
+
+(Wui+1 − Wui )
+
+
+
+gui,u i+1 (W[ui,u i+1 ]) − gui,u i
+
+
+
+The two difference terms (in both f and g) decay to zero as max i(ui+1 − ui) → 0. This follows from the Lipschitz-in-time assumption on f , g. Specifically, for the f residual we have 
+
+X
+
+> i
+
+(ui+1 − ui)
+
+
+
+fui,u i+1 ( ˆXui , W[ui,u i+1 ]) − fui,u i ( ˆXui )
+
+
+
+≤ Lf
+
+X
+
+> i
+
+|ui+1 − ui|| ui+1 − ui|,
+
+≤ Lf max  
+
+> i
+
+(|ui+1 − ui|) X
+
+> i
+
+|ui+1 − ui|,
+
+≤ Lf h max  
+
+> i
+
+(|ui+1 − ui|),
+
+which tends to zero as max i(ui+1 − ui) → 0. For the g residual, we have 
+
+X
+
+> i
+
+(Wui+1 − Wui )
+
+
+
+gui,u i+1 (W[ui,u i+1 ]) − gui,u i
+
+
+
+≤ Lg
+
+X
+
+> i
+
+|(Wui+1 − Wui )|| ui+1 − ui|≤ Lg max  
+
+> i
+
+(|Wui+1 − Wui |) X
+
+> i
+
+|ui+1 − ui|,
+
+= hL g max  
+
+> i
+
+(|Wui+1 − Wui |),
+
+which tends to zero as max i(ui+1 − ui) → 0 by the uniform continuity of Wt. We are left with 
+
+ˆXt+h − ˆXt = lim 
+
+> max i(ui+1 −ui)→0
+
+X
+
+> i
+
+(ui+1 − ui)fui,u i ( ˆXui ) + X
+
+> i
+
+(Wui+1 − Wui )gui,u i .
+
+Therefore, both Riemann and Itô (Stratonovich, equivalently) converge (Øksendal 2003) to give 
+
+ˆXt+h = ˆXt +
+
+Z t+ht
+
+fu,u ( ˆXu)d u +
+
+Z t+ht
+
+gu,u dWu
+
+= ˆXt +
+
+Z t+ht
+
+f (u, ˆXu)d u +
+
+Z t+ht
+
+g(u)d Wu,
+
+where ft,t (Xt) = f (t, Xt) and gt,t = g(t) follows from Proposition 3.2. Since this holds for any t ≥ s
+
+and h ≥ 0, ˆXt is a strong solution to the SDE with coefficients f (t, Xt), g(t). By uniqueness, this implies that Ψs,t (Xs, W[s,t ]) is the Itô map for (6). 
+
+A.1.4 Proof of Theorem 3.5 
+
+Given the results above, we are able to prove Theorem 3.5. 20 Theorem 3.5 (Self-distillation Objective) . Let Ψs,t (Xs, W[s,t ]) denote the Itô map for (6) . Then, this map is given by the strong stochastic flow map in (8) where vs,t = [ fs,t , gs,t ] is the unique global minimizer over ˆv of 
+
+LSD (ˆ v) = Lf ,g (ˆ v) + LD(ˆ v), (14) 
+
+where 
+
+Lf ,g (ˆ v) = Et, Xt
+
+h
+
+∥f (t, Xt) − ˆft,t (Xt)∥22 + ∥g(t) − ˆgt,t ∥22
+
+i
+
+, (15) 
+
+LD(ˆ v) = Es,u,t, Xs,W[s,t ]
+
+h
+
+∥ ˆΨs,t (Xs, W[s,t ]) − ˆΨu,t ( ˆΨs,u (Xs, W[s,u ]), W[u,t ])∥22
+
+i
+
+. (16) 
+
+Proof. We have that for any ˆv,
+
+Lf ,g (ˆ vt,t ) ≥ L f ,g (vt,t ) = 0 ,
+
+LD(ˆ v) ≥ 0.
+
+This follows since Lf ,g is convex in ˆvt,t with unique global minimizer vt,t . Note that the Itô map satisfies LD(v) = 0 . This implies that for the Itô map we obtain the minimum of the objective, given by 
+
+LSD (v) = 0 .
+
+To show that the minimizer is unique, consider any ˆv (and associated ˆΨ) that obtains the minimum, 
+
+LSD (ˆ v) = 0 
+
+Then we must have 
+
+ˆvt,t = vt,t 
+
+LD(ˆ v) = 0 .
+
+By Propositions 3.2 (since ˆvt,t = vt,t , the tangent condition holds) and 3.3 (since LD = 0 , the semigroup condition holds), this implies ˆΨ is the Itô map for (6). 
+
+A.2 Constructing the Brownian motion 
+
+A.2.1 Primer on rough path theory 
+
+A (step-2) rough path is an element of G2(Rd) = Rd ⊕ Rd×d. We define a metric on X = ( X(1) , X(2) ) ∈
+
+G2(Rd) by, 
+
+d(Xs, Xt) := |X(1)  
+
+> s,t
+
+| + |X(2)  
+
+> s,t
+
+| 12 ,
+
+where we have used | · | to indicate the Euclidean norm on R⊗k for the appropriate choice of k ∈ { 1, 2}.To measure the “difference” between two rough paths X, Y ∈ G2(R2) we define a pathwise metric, for each α ∈ [0 , 12 ), the α-Hölder metric by, 
+
+dα-Höl (X, Y) := sup 
+
+> 0≤s<t ≤1
+
+ |X(1)  
+
+> s,t
+
+− Y(1)  
+
+> s,t
+
+| + |X(2)  
+
+> s,t
+
+− Y(2)  
+
+> s,t
+
+| 12
+
+|t − s|α
+
+
+
+.
+
+To avoid ambiguity of indices being used to represent both the level of a rough path, and in Definition 3.1 the order of our approximation, we will sometimes use the projection operator, πk : G2(Rd) → (Rd)⊗k
+
+21 for k = 1 , 2, to explicitly distinguish the first and second levels of the rough path respectively, i.e. 
+
+πk(X) = X(k).For both Brownian motion Wt and the polynomial approximation W (N ) 
+
+> t
+
+from Definition 3.1, we lift the paths to rough paths W and W(N ) respectively by defining the canonical Stratonovich lifts, 
+
+π2(Ws,t ) := 
+
+Z ts
+
+Ws,u ⊗ dWu,π2(W(N ) 
+
+> s,t
+
+) := 
+
+Z ts
+
+W (N ) 
+
+> s,u
+
+⊗ dW (N ) 
+
+> u
+
+.
+
+A.2.2 Proof of Theorem 3.4 
+
+Theorem 3.4 (Properties of W (N ) 
+
+> u,v
+
+). The polynomial approximation of the Brownian motion in Definition 3.1 has the following properties: 1. Converges to Brownian motion in the α-Hölder distance, with α ∈ [0 , 12 ),2. The coefficients I(n) 
+
+> s,t
+
+are independently and normally distributed with 
+
+I(n) 
+
+> s,t
+
+∼ N 
+
+
+
+0, (t − s)2n + 1 I
+
+
+
+, (12) 
+
+3. The coefficients I(n) 
+
+> s,t
+
+admit closed form Chen relations. 
+
+Proof. Property 2 is simply an application of Itô’s isometry, using the fact that the nth (shifted) Legendre polynomial has a normalisation constant of 12n+1 ,
+
+I(n) 
+
+> s,t
+
+=
+
+Z ts
+
+ePn
+
+ r − st − s
+
+
+
+dWr ∼ N  0, K (s, t ),
+
+where, 
+
+K(s, t ) = E
+
+h Z ts
+
+ePn
+
+ r − st − s
+
+
+
+dWr ⊗
+
+Z ts
+
+ePn
+
+ r − st − s
+
+
+
+dWr
+
+i
+
+= I
+
+Z ts
+
+ePn
+
+ r − st − s
+
+2
+
+dr
+
+= t − s
+
+2n + 1 I.
+
+Property 1 and 3 require slightly more work, so are proven individually as Proposition A.3 and Proposi-tion A.5 respectively. The following lemma will be required to establish rough-path convergence of the polynomial approxi-mation Wt.
+
+Lemma A.2 (Uniform bounds on W). For α ∈ [0 , 12 ), there exists Cα ∈ L2(P) such that for all 
+
+[u, v ] ⊆ [s, t ],
+
+∥Wu,v ∥ ≤ Cα|v − u|α (19) 22 where ∥ · ∥ : G2(Rd) → R denotes the norm, 
+
+∥Xu,v ∥ = max 
+
+
+
+X(1)   
+
+> u,v L2
+
+, X(2) 
+
+> u,v
+> 12
+> L2
+
+
+
+.
+
+Proof. This is a standard application of the Garsia–Rodemich–Rumsey lemma (Garsia et al. 1970, Lemma 1.1), which can be generalised to any metric as seen in (Friz et al. 2010, Proposition A.8). Choosing 
+
+p(u) = |u|1/2, Ψ( u) = uq for some q ≥ 41−2α and B = R 10
+
+R 10 Ψ  ∥Wu,v ∥
+
+> p(v−u)
+
+ du dv, we obtain, 
+
+∥Wu,v ∥ ≤ Cα|v − u|1/2−2/q ≤ Cα|v − u|α,
+
+where Cα := 8q(4 B)1/q  
+
+> q−4
+
+. To verify Cα ∈ L2(P) we use ∥Wu,v ∥L2(P) = |v − u|1/2
+
+E[C2
+
+> α
+
+] ≲ E[B2/q ]
+
+≤
+
+Z 10
+
+Z 10
+
+∥Wu,v ∥2
+
+> L2(P)
+
+|v − u|2α du dv
+
+=
+
+Z 10
+
+Z 10
+
+|v − u|1−2α du dv< ∞.
+
+Proposition A.3 (Rough path convergence of the polynomial approximation) . The polynomial expansion of Brownian motion given in Definition 3.1 converges in the rough-path sense, i.e. for any α ∈ [0 , 12 ),
+
+dα−Höl (W, WN ) a.s. 
+
+−→ 0,
+
+as N → ∞ .
+
+Proof. As shown in (Foster et al. 2020, Theorem 2.4), we can define the following filtration, 
+
+FN := σ({I(n) 
+
+> s,t
+
+: n = 0 , 1, · · · , N }) N ≥0,
+
+so that the polynomial approximation admits the representation, 
+
+W(N ) 
+
+> u,v
+
+= E[Wu,v | FN ],
+
+for any [u, v ] ⊆ [s, t ]. Thus, by taking expectations with respect to FN in Lemma A.2, 
+
+∥W(N ) 
+
+> u,v
+
+∥ ≤ eCα|v − u|α, (20) where eCα := sup n≥0 E[Cα | Fn] and where we continue to use ∥ · ∥ as defined in Lemma A.2. By Doob’s maximal inequality eCα is finite a.s. since E[Cα | Fn] is a (discrete) martingale. Combining Equation (19) and Equation (20), the sequence {Wu,v − W(N ) 
+
+> u,v
+
+}N ≥0 is uniformly bounded and uniformly equicontinuous. Thus, invoking the Arzelà-Ascoli theorem, we conclude that there exists a uniformly convergent subsequence and since pointwise convergence is proven in (Foster et al. 2020), we know that this limit is zero, so, 
+
+W(N )
+
+> u,v a.s.
+
+−→ Wu,v uniformly as N → ∞ .
+
+23 Finally, defining C∗ = max( Cβ , eCβ ) αβ , use the following inequality, 
+
+∥πk(Wu,v − W(N ) 
+
+> u,v
+
+)∥L2
+
+|v − u|kα ≤
+
+ ∥πk(Wu,v − W(N ) 
+
+> u,v
+
+)∥L2
+
+|v − u|β
+
+ αβ 
+
+sup 
+
+> 0≤s<t ≤1
+
+∥πk(Wu,v − W(N ) 
+
+> u,v
+
+)∥L2
+
+1− αβ
+
+≤ C∗
+
+sup 
+
+> 0≤u<v ≤1
+
+∥πk(Wu,v − W(N ) 
+
+> u,v
+
+)∥L2
+
+1− αβ
+
+> a.s.
+
+−→ 0 uniformly as N → ∞ .
+
+Thus, dα−Höl (W, W(N )) a.s. 
+
+−→ 0 as N → ∞ .Finally, we move to deriving the explicit Chen relations for the integrals I(n) 
+
+> s,t
+
+To achieve this, we first establish the following related dilation rules for the (shifted) Legendre polynomials. 
+
+Lemma A.4 (Dilation rule for shifted Legendre polynomials) . Let ePn(x) denote the nth shifted Legendre polynomial on [0 , 1] . Then, 
+
+ePn(x) = 
+
+> n
+
+X
+
+> m=0
+
+cn,m ePm(2 x) = 
+
+> n
+
+X
+
+> m=0
+
+(−1) n+mcn,m ePm(2 x − 1) , (21) 
+
+where, 
+
+cn,m := ( −1) n(2 m + 1) 
+
+> n
+
+X
+
+> k=m
+
+
+
+− 12
+
+k (n + k)! (n − k)!( k − m)!( k + m + 1)! .
+
+Proof. Using the orthogonality relations for Legendre polynomials, we derive the following integral expression for cn,m ,
+
+(2 m + 1) 
+
+Z 10
+
+ePn
+
+ u
+
+2
+
+ ePm(u) du = (2 m + 1) 
+
+> n
+
+X
+
+> m=0
+
+cn,m 
+
+Z 10
+
+ePn(u) ePk(u) du = cn,m .
+
+We can evaluate the integral explicitly. By substituting Rodrigues’ formula for ePm(u), before applying integration by parts m-times (noting that the boundary terms always vanish), 
+
+Z 10
+
+ePn
+
+ u
+
+2
+
+
+
+Pm(u) du = 1
+
+m!
+
+Z 10
+
+ePn
+
+ u
+
+2
+
+ dm
+
+dum [xm(x − 1) m] du
+
+= 1
+
+m!
+
+Z 10
+
+xm(1 − x)m dm
+
+dum ePn
+
+ u
+
+2
+
+
+
+du. 
+
+Next, substituting the explicit form for the shifted Legendre polynomial, 
+
+ePn
+
+ u
+
+2
+
+
+
+= ( −1) nnX
+
+> k=0
+
+nk
+
+ n + kk
+
+
+
+− x
+
+2
+
+k
+
+,
+
+24 we obtain, 
+
+Z 10
+
+ePn
+
+ u
+
+2
+
+
+
+Pm(u) du = 1
+
+m!
+
+Z 10
+
+xm(1 − x)m dm
+
+dum
+
+h
+
+(−1) nnX
+
+> k=0
+
+nk
+
+ n + kk
+
+
+
+− x
+
+2
+
+k i
+
+du
+
+= (−1) n
+
+m!
+
+> n
+
+X
+
+> k=m
+
+
+
+− 12
+
+knk
+
+ n + kk
+
+ Z 10
+
+xm(1 − x)m dm
+
+dum [xk ] du
+
+= (−1) n
+
+m!
+
+> n
+
+X
+
+> k=m
+
+
+
+− 12
+
+k k!(k − m)! 
+
+nk
+
+ n + kk
+
+ Z 10
+
+xk(1 − x)m du
+
+= (−1) n
+
+m!
+
+> n
+
+X
+
+> k=m
+
+
+
+− 12
+
+k k!(k − m)! 
+
+nk
+
+ n + kk
+
+ k! m!(k + m + 1)! = ( −1) nnX
+
+> k=m
+
+
+
+− 12
+
+k (n + k)! (n − k)!( k − m)!( k + m + 1)! .
+
+For the second equation, use the symmetry of the Legendre polynomial, 
+
+ePn(x) = ( −1) n ePn(1 − x)= ( −1) nnX
+
+> m=0
+
+cn,m ePm
+
+ 2(1 − x)
+
+= ( −1) nnX
+
+> m=0
+
+cn,m ePm
+
+ 1 − (2 x − 1) 
+
+=
+
+> n
+
+X
+
+> m=0
+
+(−1) n+mcn,m ePm(2 x − 1) .
+
+The proof of Proposition A.5 now follows naturally, by splitting the domain of the integral I(n) 
+
+> s,t
+
+into two and applying the relations we have just derived. 
+
+Proposition A.5 (Chen relations for I(n)). Let u = s + t
+
+2 be the midpoint of times s ≤ t. Then, 
+
+I(n) 
+
+> s,t
+
+=
+
+> n
+
+X
+
+> m=0
+
+cn,m 
+
+
+
+I(m) 
+
+> s,u
+
++ ( −1) n+mI(m)
+
+> u,t
+
+
+
+, (22) 
+
+where cn,m are defined as in Lemma A.4. 
+
+Proof. By splitting [s, t ] into the two half-domains [s, u ] and [u, t ], we can apply the dilation rules for the Legendre polynomials given in Lemma A.4. We use the identities, 
+
+2
+
+ r − st − s
+
+
+
+= r − su − s ,
+
+2
+
+ r − st − s
+
+
+
+− 1 = r − ut − u ,
+
+25 so that, 
+
+I(n) 
+
+> s,t
+
+=
+
+Z ts
+
+ePn
+
+ r − st − s
+
+
+
+dWr
+
+=
+
+> n
+
+X
+
+> m=0
+
+cn,m 
+
+ Z us
+
+ePm
+
+ r − su − s
+
+
+
+dWr + ( −1) n+m
+
+Z tu
+
+ePm
+
+ r − ut − u
+
+
+
+dWr
+
+
+
+=
+
+> n
+
+X
+
+> m=0
+
+cn,m 
+
+
+
+I(m) 
+
+> s,u
+
++ ( −1) n+mI(m)
+
+> u,t
+
+
+
+,
+
+as required. 
+
+# B Training 
+
+B.1 Euler-Maruyama step objective 
+
+Here we show that matching an Euler-Maruyama step with the strong stochastic flow map model is equivalent to a weighted coefficient loss. 
+
+Lemma B.1 (Euler-Maruyama objective) . Consider the following objective 
+
+LEM = Xt − ˆXt
+
+> 2
+
+,
+
+where ˆXt = Ψs,t (Xs, W[s,t ]) via (8) and 
+
+Xt = Xs + f (s, Xs)( t − s) + g(s)( Wt − Ws).
+
+Since the true coefficients f (s, Xs), g(s) depend only on s, it suffices to restrict the model to coefficients fs,t (Xs) and gs,t that are independent of W[s,t ]. Then 
+
+E[LEM | Xs] = ( t − s)2Lf + ( t − s)Lg ,
+
+where Lf = ( f (s, Xs) − fs,t (Xs)) 2 and Lg = ( g(s) − gs,t )2.
+
+Proof. Under the independence assumption, fs,t (Xs) and gs,t are independent of W[s,t ], so 
+
+Xt − ˆXt = ( f (s, Xs) − fs,t (Xs)) ( t − s) + ( g(s) − gs,t ) ( Wt − Ws).
+
+Expanding the square, 
+
+LEM = ( t − s)2 (f (s, Xs) − fs,t (Xs)) 2
+
++ 2( t − s) ( f (s, Xs) − fs,t (Xs)) ( g(s) − gs,t ) ( Wt − Ws)+ ( g(s) − gs,t )2 (Wt − Ws)2.
+
+Taking E[ · | Xs] and using E[Wt − Ws | Xs] = 0 and E[( Wt − Ws)2 | Xs] = t − s,
+
+E[LEM | Xs] = ( t − s)2 (f (s, Xs) − fs,t (Xs)) 2 + ( t − s) ( g(s) − gs,t )2 .
+
+Substituting for Lf , Lg gives the result. 26 B.2 Diffusion SDEs 
+
+To apply Algorithm 1 to diffusion SDEs, we must derive the ground truth reverse diffusion SDE. Consider the variance preserving formulation, 
+
+dXt = − 12 βtXt dt + pβt dWt.
+
+The reverse diffusion SDE is given by 
+
+dXt = [ − 12 βtXt − βt∇Xt log p(t, Xt)] d t + pβt dWt,
+
+where ∇Xt log p(t, Xt) is the score. Given a data sample X1, an expression for the score can be obtained. Specifically, we sample the forward process via Xt = αtX1 + σtϵ, ϵ ∼ N (0, I), where 
+
+αt = exp 
+
+
+
+− 12
+
+Z t
+
+> 0
+
+βs ds 
+
+
+
+, σ2 
+
+> t
+
+= 1 − α2 
+
+> t
+
+.
+
+Then, the score is given by 
+
+∇Xt log p(t, Xt) = − ϵσt
+
+.
+
+We are therefore able to build the ground truth SDE required for training the stochastic flow map by 
+
+dXt = [ − 12 βtXt + βt
+
+ϵσt
+
+] d t + pβt dWt.
+
+# C Extended related work 
+
+Few-step models. The training objectives for SSFMs with small step sizes are related to generator matching, i.e ., matching the drift and diffusion coefficients (Holderrieth, Havasi, et al. 2025). The semigroup loss is the stochastic analogue to the one used in deterministic flow maps studied by (Boffi et al. 2025; Frans et al. 2025). Consistency models (Song and Dhariwal 2024; Song, Dhariwal, et al. 2023) use a small Euler step which is related to our small stochastic Euler-Maruyama step; however, the actual loss itself is quite different as we predict the small jump rather than using consistency. Other methods (Boffi et al. 2025; Geng, Deng, et al. 2025; Geng, Y. Lu, et al. 2025) train with losses which require time derivatives of the flow map, a requirement that does not extend naturally to the stochastic setting, as the Brownian motion is nowhere differentiable w.r.t. time. 
+
+Few-step sampling of SDEs. An active area of research has been accelerating inference with diffusion SDEs via more efficient numerical schemes (Blasingame et al. 2026; Gonzalez et al. 2023; Zhang et al. 2023), thereby decreasing the NFE to use these models; however, all these techniques are at inference time and use the same models. Recent work by Jiang et al. (2025) looks at using partial signatures of the Brownian motion to distill pre-trained diffusion SDEs into taking larger step sizes by learning a hyper-solver (Poli et al. 2020). This is significantly different from our work as it requires numerically integrating the entire SDE, i.e ., it does not have a simulation-free manner of training even for flow/diffusion models and relies on a pre-trained diffusion model teacher. SSFMs on the other hand enable scalable training of stochastic flow maps and can be trained without a pre-trained teacher model. 27 Stochastic few-step models. Recent work by Holderrieth, D. Chen, et al. (2026), Kiyohara et al. (2025), Passaro et al. (2026), and Potaptchik et al. (2026) have looked at weak approximations to the diffusion SDE. The later three works Holderrieth, D. Chen, et al. (2026), Passaro et al. (2026), and Potaptchik et al. (2026) learn an “inner” flow map to learn the transition kernel as we detail in the main paper. 3 Beyond providing a strong solution, SSFMs also work for arbitrary additive-noise SDEs, whereas existing weak approaches are typically formulated for specific diffusion model SDEs. The work of Kiyohara et al. (2025) also adopts an Euler-Maruyama type parametrization for each layer within the context discrete normalizing flow (Rezende et al. 2015) framework, i.e ., for a flow map Υθs,t (x) = ( f θL ◦f θL−1 ◦· · ·◦ f θ 
+
+> 1
+
+)( x),each layer fℓ is given as 
+
+fℓ(x; s, t ) = x + ( t − s)μθℓ (x; s, t ) + √t − sσθℓ (x; s, t ) ⊙ ε, ε ∼ N (0, I). (23) This map based on the normalizing flow above is then trained to learn the transition kernel of an SDE 
+
+pt|s(xt|xs) by minimizing both the forward and reverse Kullback-Leibler divergence (Kullback et al. 1951). This work is different from the other stream of weak stochastic flow maps as they learn via a parameterized normalizing flow instead of the standard flow map losses (Boffi et al. 2025; Geng, Y. Lu, et al. 2025); the paper focuses on learning the solution maps for latent neural SDEs (Kidger et al. 2021; Li et al. 2020). 
+
+# D Experimental details 
+
+In the image and molecule generation experiments we take the number of polynomial coefficients 
+
+N = 3 . We use the Virtual Brownian Tree (VBT) implementation in Diffrax to generate the coefficients 
+
+I(3)  
+
+> s,t
+
+(Jelinčič et al. 2024; Kidger 2022). It should be noted that the VBT implementation introduces a constant scaling factor on each coefficient. Brownian Path  Wt    
+
+> W(1)
+> t
+> Wt
+> W(2)
+> t
+> Time Brownian Path  Wt
+> W(3)
+> t
+> Time
+> Wt
+> W(4)
+> t
+
+Figure 6: Brownian path Wt and associated polynomial approximations W (N ) 
+
+> t
+
+over 16-steps. 
+
+> 3Passaro et al. (2026) discusses the nuances between these works in more detail.
+
+28 Solution            
+
+> n= 2 n= 4 n= 8 Time Solution
+> n= 16 Time
+> n= 32 Time
+> n= 64
+> Ground truth XtFlow Map Xθt
+
+Figure 7: Ground truth SDE and SSFM prediction for many step counts. 
+
+D.1 Non-linear SDE 
+
+We include additional informative plots for the non-linear SDE experiment that would not fit in the main text. In Figure 6 we show the polynomial approximation of Brownian motion for varying degree polynomials. In Figure 7 we show the SSFM predictions for many step sizes when trained with the 
+
+N = 4 degree polynomial. 
+
+D.2 Image generation 
+
+For the image generation experiments we setup the variance preserving SDE (see Appendix B.2) as the ground truth and follow Algorithm 1 to train the SSFM. The drift and diffusion networks are parameterized with the EDM2 architecture (Config C) (Karras et al. 2024) with hyperparameters given in Table 5. For evaluation, we generate 50k samples with the SSFM and compute FID against the CIFAR-10 / CelebA datasets. Uniform step placement is used so that for n steps, the step size is given by (1 − tϵ)/N , where 
+
+tϵ = 10 −5.
+
+D.3 Molecular systems: ALDP 
+
+The alanine dipeptide dataset follows (Plainer et al. 2025) with 50k samples from a molecular dynamics simulation in implicit solvent (Köhler et al. 2021), coarse grained to five atoms [C, N, CA, C, N]. It is available from the ScoreMD repository accompanying (Plainer et al. 2025). The evaluation metrics calculated are the potential of mean force (PMF) squared error and the Jensen-Shannon (JS) divergence. These metrics both compare the difference in the equilibrium free energy surfaces of the ground truth system and the model prediction. 29 Table 5: Image generation hyperparameters. Hyperparameter CIFAR-10 CelebA-64 
+
+Drift network (EDM2 U-Net) 
+
+Base channels 128 128 Channel multipliers (2 , 2, 2) (1 , 2, 3, 4) 
+
+Attention resolutions 16 × 16 16 × 16 , 8 × 8
+
+Attention head dimension 64 64 GroupNorm groups 8 8Dropout 0.13 0.13 
+
+Diffusion network (EDM2 U-Net) 
+
+Base channels 64 64 Channel multipliers (2 , 2, 2) (1 , 2, 3, 4) 
+
+Attention resolutions 16 × 16 16 × 16 , 8 × 8
+
+Attention head dimension 64 64 GroupNorm groups 8 8Dropout 0 0
+
+Loss 
+
+Step size split ∆t 0.01 0.01 Max distillation step hmax 0.52 0.52 Batch split η 0.75 0.75 
+
+Optimization 
+
+Optimizer Adam ( β2 = 0 .99 ) Adam ( β2 = 0 .99 )Peak learning rate 10 −3 10 −3
+
+Min learning rate 10 −5 10 −5
+
+LR schedule warmup + cosine decay warmup + cosine decay Warmup steps 5,000 5,000 Gradient clip (global norm) 1.0 1.0 Batch size 512 256 Training steps 400,000 800,000 EMA decay 0.999 0.999 A graph transformer architecture is used with hyperparameters listed in Table 6. The variance preserving SDE is used as the ground truth to construct the SSFM following Algorithm 1. The diffusion baseline models were obtained from the ScoreMD repository and results collected via the evaluation code provided. The SSFM model evaluation was also computed from the ScoreMD code to ensure a fair comparison. 
+
+D.4 Molecular systems: Chignolin 
+
+Chignolin, a 10 -residue mini-protein with sequence GYDPETGTWG , was modelled in full atomic detail (138 atoms, all hydrogens included). The reference ensemble is drawn from a still-internal addendum of the many-peptides molecular-dynamics dataset: long all-atom MD trajectories that have been subsampled to N = 10 ,000 approximately decorrelated conformers, which constitute the entire reference set used below. Coordinates are stored in nanometres and are used without re-centering. We report two complementary Wasserstein distances, both estimated against the reference set with 30 Table 6: ALDP generation hyperparameters. Hyperparameter ALDP 
+
+Drift/Diffusion network (graph-transformer) 
+
+Hidden dim 96 Transformer blocks 3/2 Attention heads 8Head dim 64 Feed-forward multiplier 4Time-embedding dim 64 Uncertainty MLP Fourier dim 64 
+
+Loss 
+
+Step size split ∆t 10 −3
+
+Max distillation step hmax 0.52 Batch split η 0.75 
+
+Optimization 
+
+Optimizer AdamW Peak learning rate 10 −3
+
+Min learning rate 10 −5
+
+LR schedule warmup + cosine decay Warmup steps 1,000 Gradient clip (global norm) 10 Batch size 1,024 Training steps 400,000 EMA decay 0.999 
+
+10 ,000 samples. The first is the backbone torsion torus-Wasserstein distance T-W 2. For each conformer we extract the 9 backbone (ϕ, ψ ) torsion pairs. The second metric is a tICA- W2. We project conformers into the dataset’s precomputed 2-dimensional time-lagged independent component (tICA) coordinates – built from C/N/S pairwise distances to-gether with backbone ϕ/ψ/ω sine/cosine features ( 1765 features reduced to the two slowest compo-nents) – and compute the exact 2D W 2 between generated and reference tICA densities. We compare a strong stochastic flow map (SSFM) against a diffusion baseline, both trained on identical data with matched optimization. The SSFM instantiates Algorithm 1 over a variance-preserving (VP) SDE. The drift and diffusion networks are parameterised as Diffusion Transformer (DiT) networks (see Table 7 for hyperparameters). The Brownian polynomial degree is N = 3 .The baseline is an x-prediction diffusion model: a single DiT trained to denoise under the same VP SDE and sampled with ancestral VP reverse steps. All transformer backbones are DiTs with adaLN-zero modulation, sinusoidal time embeddings, and per-atom learned positional embeddings. Additional plotted results showing the pooled Ramachandran and tICA projection are given in Figures 8 and 9. 31 Table 7: Chignolin generation hyperparameters. SSFM Diffusion 
+
+Data 
+
+Sequence GYDPETGTWG 
+
+Atoms 138 
+
+Reference frames 10 ,000 
+
+Drift/Diffusion network (DiT) 
+
+Hidden size 192 192 
+
+Transformer blocks 6/2 6
+
+Attention heads 6 6
+
+MLP ratio 4 4
+
+Time Fourier dim 256 256 
+
+Input channels 12 3
+
+Dropout 0.0 0.0
+
+Loss 
+
+Step size split ∆t 10 −3 —Max distillation step hmax 1.0 —Batch split η 0.75 —
+
+Optimization 
+
+Optimizer AdamW AdamW Peak learning rate 2 × 10 −4 2 × 10 −4
+
+Min learning rate 10 −5 10 −5
+
+LR schedule warmup + cosine decay Warmup steps 5000 5000 
+
+Weight decay 10 −4 10 −4
+
+Gradient clip (global norm) 1.0 1.0
+
+Batch size 64 64 
+
+Training steps 5 × 10 5 5 × 10 5
+
+EMA decay 0.999 —Parameters 5.71 M 4.19 M
+
+D.5 Hardware 
+
+All experiments were run on either one/two NVIDIA RTX A6000 GPUs or one/two NVIDIA H100 GPUs. 
+
+D.6 Repositories 
+
+We made use of the following repositories and resources: 1. patrick-kidger/diffrax (for VBT) 2. patrick-kidger/equinox (for neural networks in JAX) 3. Lightning-AI/torchmetrics (for FID) 4. noegroup/ScoreMD (for Alanine-Dipeptide dataset and diffusion baselines) 32 0
+
+> 0
+> Diffusion
+> data
+> 0
+> 0
+> 100 steps
+> 0
+> 0
+> 64 steps
+> 0
+> 0
+> 32 steps
+> 0
+> 0
+> 16 steps
+> 0
+> 0
+> 8 steps
+> 0
+> 0
+> 4 steps
+> 0
+> 0
+> 2 steps
+> 0
+> 0
+> 1 steps
+> 0
+> 0
+> SSFM
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+> 0
+
+Figure 8: Pooled Chignolin Ramachandran plots. All backbone ϕ/ψ torsions are superimposed for ground-truth data ( left-most column ) and generated samples from the diffusion baseline ( top ) and SSFM ( bottom ) across sampling step counts: [100, 64, 32, 16, 8, 4, 2, 1]. 3 2 1 0 1                                                                    
+
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> Diffusion
+> data
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 100 steps
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 64 steps
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 32 steps
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 16 steps
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 8 steps
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 4 steps
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 2 steps
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 1 steps
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> SSFM
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+> 32101
+> TIC 0
+> 6
+> 4
+> 2
+> 0
+> 2
+> TIC 1
+
+Figure 9: Chignolin tICA plots. Ground-truth data is shown in the left-most column . The two primary tICA components and projected samples are shown from the diffusion baseline ( top ) and SSFM ( bottom )across sampling step counts: [100, 64, 32, 16, 8, 4, 2, 1]. 
+
+# E Discussions 
+
+E.1 Contribution statement 
+
+SM and ZB initially conceived the idea and developed it over correspondence with NR and JF. The development of the theory was led by SM. The rough path convergence of the Brownian polynomial was shown by TH. The image experiments and related open-source code were led by SM and ZB. The molecular experiments and related open-source code were led by SM (ALDP) and NR (Chignolin). SM and ZB wrote the paper, with contributions from all other authors. AT and JF guided the project. 
+
+E.2 Broader impacts 
+
+We propose a framework for few-step generation of additive-noise SDEs, with demonstrated appli-cations in image generation and molecular dynamics. The primary positive impacts of this work is the acceleration of molecular dynamic simulations relevalent to drug discovery and other ai4science applications which use diffusion models. Improvements to image generation efficiency also reduce inference-time energy consumption. As with all advances in generative modelling, there is a risk that improved image generation could be misused to produce harmful synthetic media; however, SSFMs represent an efficiency improvement to existing pipelines rather than a new capability, and we do not believe this work introduces risks beyond those already present in deployed diffusion models. 
+
+E.3 Limitations 
+
+The current framework was demonstrated on additive-noise SDEs; extending this framework to state-dependent SDEs is possible with the theory developed here. We leave this to future work. The poly-33 nomial approximation of the Brownian path introduces a truncation error controlled by the degree 
+
+N , which in practice requires tuning as a hyperparameter. Our image generation experiments are conducted on CIFAR-10 and CelebA-64; scaling to larger datasets and higher resolutions remains to be demonstrated. Finally, the empirical comparison to weak stochastic flow maps focuses primar-ily on generative performance metrics; a more detailed empirical study of the pathwise consistency properties and their downstream implications is left to future work. 34

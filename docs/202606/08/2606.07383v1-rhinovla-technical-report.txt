@@ -1,0 +1,433 @@
+Title: RhinoVLA Technical Report
+
+URL Source: https://arxiv.org/pdf/2606.07383v1
+
+Published Time: Mon, 08 Jun 2026 01:03:00 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# RhinoVLA Technical Report 
+
+Huixi Intelligence 
+
+## Abstract 
+
+Vision-Language-Action (VLA) models have shown strong potential for robotic manipulation, but real-time deployment on edge hardware remains challenging. In this work, we identify VLM visual and context tokens as a major source of deployment latency: for GEMM-dominated projection operators, computation grows linearly with the number of input tokens when model dimensions are fixed. Motivated by this observation, we propose RhinoVLA, a deployment-oriented VLA model co-designed with the Huixi R1 edge SoC. RhinoVLA adopts a token-efficient Qwen3-VL backbone and a continuous Action Expert, reducing the VLM-side token and computation burden while preserving pretrained multimodal capability. To support cross-robot learning, RhinoVLA further introduces a unified interface that combines View Registry, 72D physical state-action slot space, and robot-instance LoRA, allowing heterogeneous robot observations and action schemas to be aligned under a shared policy. On the deployment side, RhinoVLA is optimized through hardware-aware compilation, mixed-precision execution, and parallel visual encoding. Experiments show that RhinoVLA achieves downstream performance comparable to π0.5 at a similar parameter scale, while reaching 11.69 Hz end-to-end inference on Huixi R1, meeting the 10 Hz real-time closed-loop control target. The project will be open-sourced at https://github.com/ HuixiAI/RhinoVLA .
+
+## 1 Introduction 
+
+Vision-Language-Action (VLA) models have recently shown strong potential for robotic manipu-lation and embodied decision-making [ 5, 46 , 17 , 4 , 3 ]. By combining visual perception, language understanding, and continuous action generation, these models provide a promising path toward general-purpose robot policies. However, deploying VLA models on real robots remains difficult. Modern VLA systems often use pretrained vision-language backbones with long multimodal contexts, and iterative action-generation modules. These components improve policy capability, but they also introduce substantial computation and memory traffic, making real-time closed-loop inference challenging on onboard edge hardware. The key deployment bottleneck is not model size alone, but how the VLA token structure maps to edge hardware. In a typical VLA pipeline, the VLM backbone processes visual observations and language context before the Action Expert generates continuous actions. Our analysis of π0.5 [31 ]shows that the VLM Backbone and Action Expert dominate end-to-end latency on NVIDIA Jetson AGX Orin [ 23 ], together accounting for more than 90% of the total runtime. A closer operator-level breakdown further shows that most VLM latency comes from MLP projection operators. Since these projections are GEMM-dominated, their FLOPs scale linearly with the number of VLM visual and context tokens when the hidden dimensions are fixed. Therefore, two VLA models with a similar parameter scale can have very different inference speeds if they use different visual-token organizations. This token-scaling property directly motivates our algorithm-system co-design. On the algorithm side, we need a VLM backbone that is not only pretrained for strong multimodal reasoning, but also 
+
+> arXiv:2606.07383v1 [cs.RO] 5 Jun 2026
+
+efficient in its visual token representation. We therefore build RhinoVLA on Qwen3-VL [ 1 ]. Under a common 256 × 256 image setting, Qwen3-VL can represent one image with about 64 merged visual tokens, while PaliGemma-224 [ 2 ] uses 256 image tokens. This lower visual-token cost is especially important for VLA inference, where multiple camera views and language context are processed by the VLM before action generation. On the hardware side, because the VLM occupies a large fraction of VLA runtime and its dominant operators are mostly compute-bound, VLA inference benefits from an edge SoC with high onboard compute headroom. We therefore deploy RhinoVLA on Huixi self-developed chip R1, a 7 nm edge SoC with 500 TOPS INT8 compute, providing stronger AI compute headroom than Orin-class edge platforms. To translate this peak capability into actual inference speed, we further optimize RhinoVLA on R1 with hardware-aware compilation, mixed-precision execution, and parallel visual encoding. Beyond inference efficiency, RhinoVLA is designed to address another central challenge in VLA training: heterogeneous robot datasets do not share a unified input-output interface. Different robots may use different camera layouts, view orders, sensing modalities, action definitions, end effectors, and low-level control conventions. Directly pooling such data can make the learning problem ill-defined, because the same image index may correspond to different camera roles, and the same action dimension may denote different physical quantities across robots. RhinoVLA resolves this mismatch with a unified interface and a unified pre-training strategy. A View Registry explicitly tags each image with its camera role and modality. A unified 72D physical slot space, together with binary state and action masks, assigns fixed physical semantics to state-action dimensions and excludes invalid slots from supervision. Robot-instance LoRA [ 14 ] modules model residual embodiment-specific behavior without introducing robot-specific output heads. During pre-training, RhinoVLA jointly optimizes the VLM LoRA, shared Action Expert, and robot-instance LoRA on mixed robot data. The masked flow-matching loss supervises only valid action slots, while residual regularization keeps the LoRA adapters focused on embodiment-specific corrections. This lets RhinoVLA learn shared visuomotor structure while retaining low-cost robot adaptation. Algorithm -system co -design for VLA stack Real -time control 
+
+> Real -time
+
+## Embodiment -agnostic deployment 
+
+VLA Chip & System Robot     
+
+> RhinoVLA
+> @R1
+> RhinoVLA R1 System Board
+> π0.5
+> @Orin X
+> Freq (Hz)
+> 11.69
+> 10
+> 1.17
+> Task: Sort the red bag, black fan, and white foam into separate compartments.
+
+AGIBOT G2 GALBOT G1 
+
+Figure 1: RhinoVLA achieves real-time edge control at 11.69 Hz through algorithm–system co-design and enables embodiment-agnostic deployment across diverse robots. Shown in Figure 1, these algorithm–deployment co-design choices translate into a VLA system with both competitive policy performance and real-time onboard inference. RhinoVLA keeps a parameter scale comparable to π0.5, but achieves substantially higher end-to-end speed by reducing the VLM token burden and improving hardware utilization on R1. It reaches downstream task accuracy comparable to π0.5 and runs at 11.69 Hz on Huixi R1, meeting the 10 Hz closed-loop inference target [21, 16]. Our contributions are summarized as follows: 2• We identify VLM visual and context tokens as a key source of VLA deployment cost. Based on this observation, we design RhinoVLA around a token-efficient Qwen3-VL backbone, enabling faster inference than PI-style models at a comparable parameter scale. • We introduce a unified cross-robot training framework. This framework enables RhinoVLA to learn shared visuomotor structure across heterogeneous robot embodiments while pre-serving embodiment-specific flexibility. • Through algorithm-system co-optimization, RhinoVLA achieves downstream task accuracy comparable to π0.5 while reaching 11.69 Hz end-to-end inference on the Huixi R1 edge SoC. 
+
+## 2 Background 
+
+2.1 Vision-Language-Action Models 
+
+Early VLA models mainly followed an end-to-end robot policy design. RT-1 [ 5] uses a transformer-based policy that takes visual observations and language instructions as inputs and predicts tokenized robot actions, trained mainly on large-scale robot trajectories from the Everyday Robots platform. RT-2 [ 46 ] further extends this paradigm by representing robot actions as text tokens and co-fine-tuning a pretrained VLM on both robot trajectories and web-scale vision-language data, making robot control compatible with next-token prediction. However, in these systems, visual-language understanding and action prediction are still tightly coupled within a single policy, and the action interface is largely discretized or tokenized for scalable training. Recent VLA models have gradually shifted toward a more modular architecture. Systems such as π0 [ 4 ], π0.5 [31 ], and GR00T N1 [ 3 ] typically build on pretrained VLM backbones for visual-language understanding, while introducing dedicated action modules for continuous robot control. 
+
+π0 uses a flow-matching action expert on top of a pretrained VLM; π0.5 combines discrete action-token pretraining with continuous flow-matching post-training; and GR00T N1 adopts a dual-system design where a VLM module interprets visual-language inputs and a DiT-based [ 29 ] action module generates motor actions. Meanwhile, training data has expanded from relatively narrow robot-platform datasets toward cross-embodiment and heterogeneous mixtures, including multi-robot trajectories, web vision-language data, simulation, synthetic data, and human videos. This evolution improves the task-level capability and cross-embodiment generalization of VLA models, but also makes edge deployment increasingly challenging due to the high computation cost of pretrained VLM backbones, long multimodal context, and the real-time latency requirements of closed-loop robot control. Therefore, designing more efficient VLA architectures is necessary for practical deployment on resource-constrained robotic platforms. 
+
+2.2 VLM Backbones for VLA Models 
+
+The development of VLA backbones follows the broader progress of vision-language models. Early VLMs mainly focused on large-scale image-text alignment: CLIP [ 34 ] learned transferable visual rep-resentations from natural-language supervision, while later models such as Flamingo and LLaVA [ 19 ]extended VLMs toward interleaved image-text understanding, few-shot visual prompting, and visual instruction following. As a result, pretrained VLMs have become a natural choice for providing semantic visual-language representations in robot policies. When used in VLA models, the VLM backbone must balance semantic capability and deployment cost. Large backbones can improve instruction understanding and generalization, but their parameter size and visual token cost directly affect robotic deployment, especially on edge hardware. Existing VLA systems therefore span different scales. RT-2 [ 46 ] uses large PaLI-family VLMs [ 2 ], with RT-2-X [ 27 ] reaching the 55B scale, and represents robot actions as text tokens. OpenVLA [ 17 ] uses a 7B Prismatic-style VLM built from DINOv2 [ 28 ], SigLIP [ 42 ], and Llama 2 [ 38 ], and is trained on 970k robot demonstrations. In contrast, π0 adopts a more compact PaliGemma backbone of about 3B parameters and adds a 300M-parameter action expert, resulting in a 3.3B-parameter VLA. This comparison shows a practical trend: modern VLA systems increasingly use a pretrained VLM as the semantic backbone, but smaller and more efficient backbones are preferred when real-time edge deployment is considered. 3The Qwen-VL series [ 39 , 33 , 1] is a promising backbone direction under this trend. Earlier Qwen-VL variants have already been used in VLA systems, such as DexVLA [ 40 ] with Qwen2-VL-2B and LingBot-VLA [ 41 ] with Qwen2.5-VL. Qwen3-VL further improves several capabilities that are directly useful for VLA: spatial-temporal modeling, fine-grained visual feature usage, long interleaved multimodal context, and timestamp-based video grounding. These upgrades better match multi-view robot observations, short visual histories, object grounding, and temporally changing scenes. Recent Qwen3-VL-based VLA examples, including VLA Foundry and InternVLA-A1, suggest that Qwen3-VL is becoming an important candidate backbone for future efficient VLA systems. 
+
+2.3 Edge Hardware for VLA Deployment 
+
+Existing VLA deployment hardware mainly includes desktop GPUs and NVIDIA Jetson edge platforms. Desktop GPUs such as RTX 4090/5090 [ 22 , 24 ] offer strong compute capability and a mature CUDA ecosystem, but their high power, large form factor, and cooling requirements make them unsuitable for on-board robotic deployment. Jetson platforms such as Orin [ 23 ] and Thor [ 25 ]are more compact and widely used in robotics; however, Orin has limited compute headroom for 10 Hz VLA inference, while Thor offers higher performance at a much higher system cost. Recently, high-performance Chinese edge SoCs from vendors such as Huixi have also been adopted by robotics companies. In this work, we use Huixi R1, a 7 nm SoC designed for embodied intelligence. R1 provides 500 TOPS INT8 compute, an 8-core SIMT architecture, and 200 GB/s-class memory bandwidth, offering strong compute and memory support for multimodal visual encoding and VLA inference. It has also been adopted by leading embodied intelligence companies such as AgiBot as an on-board compute chip. 
+
+## 3 Method 
+
+3.1 Performance analysis 3.1.1 VLA Roofline Analysis 
+
+To quantify the deployment bottleneck of current VLA models on edge hardware, we conduct an end-to-end roofline analysis using NVIDIA Jetson AGX Orin as a representative platform. Orin provides a theoretical FP16 throughput of approximately 43 TFLOPS and a memory bandwidth of around 203 GB/s. Considering practical factors such as operator efficiency, scheduling overhead, irregular memory access, and model complexity, we assume an ideal compute utilization of 40%, corresponding to an effective FP16 throughput of approximately 17.2 TFLOPS. We select several representative VLA models, including π0.5, GR00T N1, and RDT [ 31 , 3, 20 ], and estimate their end-to-end computational requirements under different control frequencies. The estimation covers the main inference stages, including vision encoding, VLM prefill, and action expert inference. As shown in Figure 2, π0.5 and RDT already approach or exceed Orin’s effective roofline limit at a target frequency of 5 Hz, and significantly exceed the hardware capability at 10 Hz and above. This indicates that, even under the relatively optimistic assumption of 40% compute utilization, current edge hardware can hardly support these VLA models to meet the minimum real-time closed-loop control requirement of 10 Hz. 
+
+3.1.2 VLA Latency breakdown 
+
+To identify the major sources of latency in end-to-end VLA inference, we conduct a breakdown analysis of the π0.5 PyTorch-SDPA inference pipeline on NVIDIA Jetson AGX Orin. The results show that, within the total end-to-end latency of approximately 858.3 ms, the vision encoder, VLM Backbone, and action expert take 69.3 ms, 528.0 ms, and 257.0 ms, respectively. Among them, the VLM Backbone and action expert together account for more than 90% of the end-to-end inference time, making them the dominant performance bottlenecks in the π0.5 inference pipeline. Therefore, to meet the real-time closed-loop control requirement at the 10 Hz level, the latency introduced by the VLM Backbone and action expert should be the primary optimization targets. To further clarify the optimization direction for the VLM Backbone, we take π0.5 as an example and perform an operator-level latency breakdown of its VLM component on the Orin platform. 410 2 10 3
+
+> Arithmetic Intensity (FLOPs / Byte)
+> 10 0
+> 10 1
+> 10 2
+> Required FP16 Throughput (TFLOPS)
+> 1Hz
+> 5Hz
+> 10Hz
+> 30Hz
+> 1Hz
+> 5Hz
+> 10Hz
+> 30Hz
+> 1Hz
+> 5Hz
+> 10Hz
+> 30Hz
+> Orin roofline
+> Ridge: 86 FLOPs/Byte
+> Workload
+> Pi0.5
+> GR00T
+> RDT
+
+Figure 2: End-to-end roofline analysis of representative VLA models on NVIDIA Jetson AGX Orin under FP16 precision. The results show that the latency of the VLM is not evenly distributed across all operators, but is highly concentrated in the MLP module inside the Transformer blocks. Specifically, the three linear projection operators, gate_proj, up_proj, and down_proj, together account for approximately 74.7% of the VLM latency. In contrast, the attention projection operators, including Q_proj, K_proj, V_proj, and O_proj, account for only about 7.2% in total, while the remaining operators account for approximately 18.1%. This indicates that, during π0.5 VLM inference, the MLP module is a more dominant source of latency than the attention projections. From the roofline perspective, gate_proj, up_proj, and down_proj are essentially GEMM operators with relatively high arithmetic intensity. For a typical linear layer, given an input matrix 
+
+X ∈ RB×S×din (1) and a weight matrix 
+
+W ∈ Rdin ×dout (2) the output can be written as 
+
+Y = XW, Y ∈ RB×S×dout (3) The computational cost can be approximated as FLOPs = 2 BSd in dout . (4) where B denotes the batch size, S denotes the number of input tokens, and din and dout denote the input and output channel dimensions, respectively. For gate_proj, up_proj, and down_proj in the MLP module, such computation is repeatedly performed in every Transformer block. Therefore, the total computational cost grows linearly with the number of input tokens, hidden size, intermediate size, and the number of layers. As shown by the formula, when the weight dimensions are largely fixed, the computational cost of MLP projection operators is proportional to the number of input tokens S. Therefore, the key to reducing VLM Backbone latency is to reduce the input size to the VLM, especially the number of 5visual tokens and context tokens. Based on this observation, one design principle of RhinoVLA is to compress visual tokens, remove redundant context, and optimize the organization of multimodal tokens, thereby reducing the MLP GEMM computation at the source, alleviating the compute pressure on edge devices, and lowering the overall VLM latency. 
+
+3.2 RhinoVLA Architecture Overview. RhinoVLA follows the two-module VLA decomposition used by π0.5: a visual-language backbone encodes robot observations and language instructions, and an Action Expert generates continuous action chunks with flow matching. This design preserves a strong pretrained VLM for perception and instruction understanding, while keeping action generation in a separate robot-control module. For the visual-language backbone, the latency analysis motivates reducing the token burden at the VLA model level. Since the dominant MLP projection operators scale linearly with the number of visual and context tokens, RhinoVLA adopts a 2.13B-parameter Qwen3-VL [ 1] as its visual-language backbone. Under the common 224 × 224 image setting, Qwen3-VL represents one image with 64 merged visual tokens after spatial merging, whereas the PaliGemma-224 [ 2] backbone used by 
+
+π0.5 uses 256 image tokens. This reduces the visual token burden by 4 × before the multimodal sequence enters the language backbone. For multi-view VLA inputs, where several camera streams are processed together with language instructions, this reduction directly lowers the MLP GEMM computation analyzed above. At the same time, Qwen3-VL provides strong pretrained multimodal capability, making it a suitable backbone for token-efficient VLA inference without weakening visual-language reasoning. The Action Expert keeps a comparable scale to π0.5, with 0.40B parameters versus about 0.43B, but is redesigned around the Qwen3-VL interface rather than directly reusing the original Gemma expert. It follows Qwen-compatible transformer components, including attention/cache handling and text-MLP blocks. At each denoising step, the Action Expert conditions on the last 18 layers of the Qwen3-VL KV cache, the current 72D robot state, state/action masks, the noisy action chunk, the flow-matching time, and the robot-instance index. It predicts a flow velocity over the unified 72D action slot space, with invalid dimensions masked out. In this way, action generation uses reusable visual-language context from the VLM, while the state/action masks and robot-instance index expose the robot-specific control interface to the Action Expert. While the compact VLM improves efficiency, cross-robot training introduces heterogeneity in observations, action interfaces, and robot embodiments. To enable a shared policy across diverse platforms, RhinoVLA incorporates three key mechanisms (Figure 3): a view registry for observation alignment, a unified 72D physical state–action slot space for action alignment, and robot-instance LoRA adapters for embodiment-specific adaptation. We detail these components next. 
+
+Challenge A: Camera-view heterogeneity. Robot datasets often use different camera layouts and naming conventions. Although many datasets contain comparable view types, such as front, head-mounted, overhead, or wrist cameras, they may differ in camera count, mounting pose, field name, view order, and modality. Without explicit view labels, the model must infer camera identity from image order or dataset-specific field names. This is unreliable in cross-robot training: the first image in one dataset may be a head view, whereas the first image in another dataset may be a wrist view. 
+
+Mechanism A: View Registry. RhinoVLA introduces a View Registry that maps each dataset-specific camera field to a fixed role-modality vocabulary during preprocessing. The corresponding tag is inserted before the image content, such as [head|rgb] , [left_wrist|rgb] , or [head|depth] .As a result, Qwen3-VL receives both the image content and its explicit camera identity before tokenization, while different samples may still contain different numbers of views. The View Registry decouples camera identity from dataset-specific image order. It makes camera observations comparable across datasets while preserving view-dependent cues: head or front cameras usually provide stable global context, whereas wrist cameras provide close-up manipulation views that move with the arm. Explicit view tags prevent these distinctions from being hidden inside dataset-specific conventions. Table 1 summarizes the View Registry vocabulary and prompt template. 6Challenges in cross -robot heterogeneity 
+
+A. Camera -view heterogeneity B. Action -schema heterogeneity across robots C. Robot -instance variation 
+
+Our contributions 
+
+A. View -Registry prompt template B. Unified 72D slot space + binary masks 
+
+> Arm 0
+> D0 –D6
+> Arm 1
+> D7 –D13
+> Gripper
+> D14 –D15
+> Hand 0 DoF
+> D16 –D31
+> Hand 1 DoF
+> D32 –D47
+> Head RPY
+> D48 –D50
+> Torso
+> D51 –D52
+> Folded leg
+> D53 –D54
+> Waist
+> D55 –D57
+> Base velocity
+> D58 –D60
+> Reserved
+> D61 –D71
+
+C. Robot -instance LoRA          
+
+> LoRA · G1
+> A×B
+> LoRA · G2
+> A×B
+> [head | rgb] <img> [left_wrist | rgb] <img> [right_wrist | rgb] <img> ...
+> sxtmsma
+
+Action Expert           
+
+> Layer 1
+> ...
+> Layer 18
+> action chunks over the 72D action space
+> xt+Δt ←xt+Δt · v θ(x t, t, s, m s, m a,cvlm ,ridx )
+> ridx =i
+> xt
+> LoRA
+> idx ...
+> Task: "pick up the red bag"
+
+Rh ino VLA 
+
+Qwen3 -VL Prefix                                           
+
+> LoRA
+> r = 64
+> +
+> Layer last -17
+> ...
+> Layer last
+> expose last 18 layers KV cache →hard -routed by ridx
+> Instance LoRA LoRA | idx i
+> AgiBot G1 AgiBot G2
+> [head | rgb] [left_wrist | rgb] [right_wrist | rgb] [head | depth]
+> · · ·
+> [role | modality] →view -registry tag
+> AgiBot G1 (8 cams :fisheye + top + wrist +...) Head joint range
+> * Referenced by Galbot G1 from RViz
+> Franka Panda
+> Shared Action -Expert base (trained on all platforms)
+> extensible
+> ●Arm joint DoF ●Body/mobile -base control ●End -effectors
+> LoRA
+> idx 0
+> LoRA
+> idx N++
+> LoRA · ...
+> A×BAB
+> ... + 5 more
+> ●Camera roles ●View counts ●Modalities ●Joint -chain topology ●Joint base link ●Join limit
+> Frame Axes Link -Joint Frames
+> ~40.6 °
+
+Figure 3: Overview of RhinoVLA. The architecture aligns heterogeneous robot datasets through three interface mechanisms. The Action Expert conditions on Qwen3-VL visual-language memory and predicts masked flow velocities over active action slots. 
+
+Prompt field Example / value 
+
+Task text pick up the cup 
+
+View role front , left_wrist , head 
+
+Modality rgb , depth , rgbd 
+
+Image content structured Qwen-VL image item 
+
+Training prompt template: 
+
+Task: {task} Views: [{role_1} | {modality_1}] + image_1 [{role_2} | {modality_2}] + image_2 ... [{role_n} | {modality_n}] + image_n 
+
+Table 1: View Registry prompt fields and training template. Each image is explicitly tagged with its camera role and modality, allowing heterogeneous camera layouts to be represented through a shared prompt interface. 
+
+Challenge B: Action-schema heterogeneity. Robot action vectors cannot be shared by length or index position alone. The same vector index may refer to different physical quantities in different datasets, and some robots may not expose the corresponding degree of freedom at all. Directly pooling such action vectors would assign physically different meanings to the same output dimension, making cross-robot action learning ill-defined. 
+
+Mechanism B: Unified 72D slot space with binary masks. RhinoVLA uses a unified 72D slot space as the shared state-action contract across robots. Each slot has a fixed physical meaning across datasets. State and action use the same slot definition: the state records the current physical value, while the action label represents the future target for the same slot whenever such a target is defined. For mobile-base slots, the action is defined as a velocity target rather than a position target. A dataset may activate only a subset of slots, but it cannot redefine their semantics. Binary masks are attached to the same 72D space. The state mask indicates which state dimensions exist in the current sample, and the action mask indicates which output dimensions are valid for supervision. As model inputs, the masks tell the Action Expert which slots are present in the current robot. During training, invalid or physically absent action slots are excluded from the flow-matching 7Slots Physical group Unit Examples                                     
+
+> D0–D6 Arm 0 canonical joints rad upper arm, forearm, and wrist joints for a sin-gle arm or left arm D7–D13 Arm 1 canonical joints rad right arm in a bimanual robot D14–D15 Parallel grippers closed ratio 0 is open, 1 is closed D16–D31 Hand 0 active DoF rad active hand-control slots for the first hand D32–D47 Hand 1 active DoF rad active hand-control slots for the second hand D48–D50 Head / neck RPY rad roll, pitch, and yaw when available D51–D52 Torso pitch / lift rad, m torso pitch and vertical lift D53–D54 Folded-leg mechanism joints rad two actuated joints for foldable leg mecha-nisms D55–D57 Waist RPY rad waist roll, pitch, and yaw D58–D60 Base velocity command m/s, m/s, rad/s base vx,vy, and yaw rate D61–D71 Reserved auxiliary slots reserved inactive in the current schema
+
+Table 2: Unified 72D slot space for RhinoVLA. The table defines the shared physical coordinate system used to align heterogeneous robot state and action schemas. Binary masks specify which slots are valid for each robot and sample. supervision. This prevents missing dimensions from being treated as zero-valued targets and avoids introducing spurious supervision for robot-specific degrees of freedom. The 72D contract follows the motivation of physically interpretable action spaces inspired by RDT [ 20 ]. Active output dimensions are tied to physical quantities: arm, wrist, head, and waist angles use radians; parallel grippers use a closed ratio in [0 , 1] ; and base commands use metric velocity units. These slot groups define the physical coordinate system exposed to the Action Expert, as listed in Table 2. Detailed mapping rules, including dexterous-hand allocation and converter constraints, are provided in Appendix B. Together, the slot definitions and binary masks form a single robot interface: slots fix the physical meaning of each dimension, while masks select the subset that is valid for a particular robot and sample. This allows RhinoVLA to train on heterogeneous robots without forcing all datasets to share the same action-vector length or index convention. 
+
+Challenge C: Robot-instance residual variation. The View Registry and unified 72D slot space align camera observations and state-action semantics, but they do not remove all embodiment-specific differences. Two robots may share the same nominal action slots while still responding differently due to calibration errors, joint limits, gripper mechanics, camera placement, payload, low-level controllers, or action scaling. A single shared policy must therefore capture both cross-robot common structure and instance-specific residual behavior. 
+
+Mechanism C: Robot-instance LoRA. RhinoVLA places robot-instance LoRA modules inside the Action Expert. The shared Action Expert receives gradients from all datasets and learns common visuomotor structure across robot platforms. For each sample, the corresponding LoRA module is selected by instance_id and learns a small robot-specific correction on top of the shared base model. We use robot-instance LoRA instead of robot-specific output heads for two reasons. First, separate output heads would weaken the unified 72D action contract by allowing each robot to learn its own final action mapping. Second, they would introduce robot-specific deployment graphs, making it harder to reuse the same inference kernels and hardware-specific operator optimizations across robots. In contrast, robot-instance LoRA adapts the internal action-generation features while keeping the attention modules, final action projection, and 72D output interface shared. The LoRA modules are inserted into the feed-forward network of every Action Expert layer, while the attention modules and final action projection remain shared. This placement keeps the main action-generation computation common across robots, while providing enough capacity to model residual instance-specific behavior. During deployment, the selected robot-instance LoRA can be merged into the base Action Expert weights. This design provides three practical advantages: 1. Unified deployment graph. After merging the selected robot-instance LoRA, every robot uses the same 18-layer Action Expert structure. The deployed model does not require 8robot-specific computation graphs, so the same inference kernels and hardware-specific operator optimizations can be reused. 2. Sparse adapter activation. Although the training code may reserve multiple instance ids, each sample is hard-routed by instance_id to one robot-instance LoRA. A forward pass therefore activates only the selected adapter, not all reserved adapters. 3. Low-cost robot extension. Adding a new robot does not require a new action head or changes to the unified 72D slot space, as long as the robot can be mapped to existing slots. The new robot only requires a small robot-instance LoRA and its normalization statistics. 
+
+3.3 Training Strategy 
+
+This section describes how the architecture above is trained. We first convert heterogeneous robot demonstrations into the shared visual and action interface, then train the policy with unified cross-embodiment pretraining, and finally adapt the pretrained model to a target real robot with a small amount of task data. 
+
+3.3.1 Training Data and Standardization 
+
+The training mixture is assembled from multiple robot demonstration sources, including joint-space subsets from Open X-Embodiment [ 27 ], and AgiBotWorld [ 6 ]. These sources cover single-arm and dual-arm robots, parallel grippers, dexterous hands, and multiple manipulation tasks. Each sample is converted into the interface in Figure 3 before it reaches the model. Camera fields are mapped to View Registry. Native robot states and actions are mapped to the 72D physical slot space. State and action masks record which slots are valid for the current robot. The 72D space reserves 16 slots for each hand. These slots follow a 4-3-3-3-3 allocation from thumb to little finger: four active DoF for the thumb and three active DoF for each other finger. Hand actions are mapped to this layout according to the active-joint semantics, joint order, units, and limits specified by the corresponding hardware or SDK manual. This allocation matches the design pattern used by many five-finger dexterous hands, while lower-DoF hands can be represented by masking the missing finger joints. (Only motor-actuated active joints occupy hand slots; passive or mechanically coupled joints are not treated as valid action dimensions.) Only samples that can be reliably mapped to the 72D physical slot space and its corresponding masks are used for training. The current pretraining model does not supervise leg or foot joints, so those fields are excluded from the training targets when they appear in the source data. 
+
+3.3.2 Pre-training 
+
+RhinoVLA is trained as a cross-embodiment policy on the mixed robot demonstration corpus. The Qwen3-VL backbone is kept frozen, while three trainable components are optimized together: the VLM LoRA, the shared Action Expert, and the robot-instance LoRA inside the Action Expert. The VLM LoRA adapts the visual-language backbone to robot camera views and manipulation instructions. The shared Action Expert learns the common 72D action-generation policy across robots. The selected instance LoRA is routed by instance_id .Training batches are drawn from the mixed robot datasets with the same power-law balancing rule used in π-style VLA training, 
+
+pi = N 0.43 
+
+> i
+
+P 
+
+> j
+
+N 0.43 
+
+> j
+
+,
+
+where Ni is the number of training samples in dataset i. This gives larger datasets higher sampling probability without allowing them to dominate every batch. State and action masks follow the 72D slot convention defined above. They specify which physical slots are available for the current robot, and only active action slots contribute to the flow-matching objective. For a clean target chunk z ∈ RH×72 , Gaussian noise a ∼ N (0 , I ), and interpolation time t ∈ [0 , 1] ,we construct 
+
+xt = (1 − t)a + tz. 
+
+The Action Expert predicts 
+
+ˆvθ = fθ (xt, t, s, m s, m a, c vlm , r ),
+
+9where s denotes the 72D robot state, ms and ma are the state and action masks, and cvlm denotes the last-18-layer Qwen3-VL KV cache used as visual-language conditioning for the Action Expert. The variable r selects the robot-instance LoRA used by the current sample. The flow target is z − a, and the main masked flow-matching loss is 
+
+LFM =
+
+P 
+
+> h,d
+
+ma(d)w(h, d ) ∥ˆvθ (h, d ) − (z(h, d ) − a(h, d )) ∥22
+
+P 
+
+> h,d
+
+ma(d)w(h, d ) + ϵ ,
+
+where w(h, d ) is a per-slot weighting term used to balance action groups. During training, the base Action Expert prediction is also kept under direct supervision and the adapter residual is regularized. This prevents the instance LoRA from taking over the full action-generation problem: the shared Action Expert remains responsible for the cross-robot policy, while the instance LoRA captures smaller deviations caused by robot-specific hardware and control behavior. 
+
+3.3.3 Post-training and Real-Robot Transfer 
+
+After pretraining, RhinoVLA can be adapted to a target real-robot task without changing the model interface. The pretrained model already provides shared visual-language conditioning, the unified 72D state-action schema, and mask-conditioned action generation. Therefore, transfer only requires fitting the target-task behavior within the same View Registry, physical slot space, masks, and robot-instance routing. During post-training, the visual-language encoder, including the pretrained VLM LoRA, is frozen. Most Action Expert parameters are also frozen, and we update only the target robot’s instance LoRA. This reuses the same residual adaptation mechanism for task transfer: the shared base preserves the cross-robot policy learned during pretraining, while the target instance LoRA absorbs task- and robot-specific residual corrections from a small real-robot dataset. 
+
+3.4 Efficient deployment on Huixi R1 
+
+We deploy RhinoVLA on our Huixi R1. Figure 4 reports the runtime frequency of RhinoVLA on the R1 platform after applying a series of deployment optimizations, including compilation optimization, mixed-precision deployment, and parallel encoding. These techniques are implemented with consideration of the hardware characteristics of R1, enabling an end-to-end execution frequency of 11.69 Hz. In the following sections, we describe each optimization technique in detail and analyze its contribution to the overall acceleration. Baseline 
+
+> Compilation Optimization
+> Mixed Precision
+> Parallel Encoding
+> Optimized Frame Rate
+> 5.84
+> 1.74
+> 3.02
+> 1.09
+> 11.69
+> Inference Frame Rate (Hz)
+
+Figure 4: Cumulative frame-rate improvement of RhinoVLA on Huixi R1. Bars for compilation, mixed precision, and parallel encoding denote incremental gains over the previous configuration. 
+
+Compilation optimization. We optimize the compilation pipeline from three aspects: operator-level optimization, graph-level optimization, and runtime-level optimization. At the operator level, we optimize the Attention kernels in VLA models according to the memory hierarchy and execution model of the R1 chip. VLA inference contains long multimodal sequences composed of language tokens, visual tokens, robot states, and action-related tokens, making Attention sensitive to off-chip memory traffic and on-chip data reuse. We therefore adapt FlashAttention-style tiling [ 12 ] to R1’s software-managed on-chip scratchpad memory (SPM), keeping Q/K/V tiles, online 10 softmax statistics, and partial outputs on chip whenever possible. Compared with conventional per-SM shared-memory organization on GPUs, R1 provides a larger globally coordinated on-chip memory space, which enables larger attention tiles and more efficient cross-compute-unit reuse and reduction. With these optimizations, the VLA Attention kernel reaches over 80% of the theoretical peak compute throughput on representative input shapes. At the graph level, we design aggressive operator fusion for VLA Transformer blocks. In the fused Attention and MLP layers, adjacent operations such as normalization, linear projection, bias addition, activation, and residual connection are combined into larger execution units. Intermediate activations and small parameters such as RMSNorm [ 43 ] weights and biases are kept in SPM as much as possible, while off-chip traffic is mainly dominated by large GEMM weights and boundary activations. This fused dataflow avoids repeatedly materializing intermediate tensors in DDR, thereby alleviating the memory-wall bottleneck and improving energy efficiency by replacing expensive external-memory accesses with low-cost on-chip SPM accesses. At the runtime scheduling level, we introduce fine-grained operator task scheduling. VLA inference contains heterogeneous operators with different compute and memory characteristics, including GEMM, normalization, activation, data layout transformation, and softmax. Instead of treating each kernel as a large homogeneous workload, the R1 runtime decomposes operators into finer-grained tasks and assigns them according to compute demand, SPM usage, and data-movement requirements. This allows compute-intensive and memory-sensitive tasks to be scheduled more flexibly, reducing compute-unit stalls caused by small or memory-bound operators and improving overall chip utilization. 
+
+Mixed-precision deployment. In practical deployment, we adopt a mixed-precision quantization scheme with INT8 weights and FP16 activations. Our experiments show that directly applying W8A8 quantization noticeably degrades task success rate and action prediction accuracy. Therefore, we quantize only the model weights to INT8 while keeping activations in FP16. This design reduces weight storage and memory bandwidth cost while avoiding the accuracy loss caused by low-precision activation quantization. However, W8A16 is not automatically efficient on edge hardware. A conventional implementation usually dequantizes INT8 weights into FP16 before GEMM computation, introducing additional data movement, temporary storage, and conversion overhead. These costs can offset the performance benefits of weight quantization. To address this issue, we implement a customized W8A16 GEMM kernel for the R1 architecture, where weight loading, dequantization, and matrix multiplication are fused into a single execution pipeline. The kernel design combines the memory bandwidth benefit of quantization with the multi-core parallelism of R1. For major linear layers in the Transformer, GEMM is decomposed into multiple sub-matrix tasks and distributed across eight compute cores, allowing each core to perform relatively independent weight loading and local matrix computation. To reduce DDR channel contention under multi-core execution, we reorganize the offline weight layout in a memory-channel-aware manner, leading to more balanced data streams across physical DDR bandwidth. Within each core, the kernel avoids a two-stage “dequantize-then-compute” execution flow. Instead, weight loading, scale conversion, and matrix multiply-accumulate are organized as an overlapped pipeline, where different processing units handle memory access, INT8-to-FP16 conversion, and FP16 MAC concurrently. We use per-channel scaling to reduce weight storage and bandwidth requirements while preserving the numerical accuracy of linear layers. We further conduct kernel-level profiling on key operators in the π0.5 VLM backbone. For the latency-dominant up_proj operator, the W16A16 implementation takes 191 μs, while the customized W8A16 GEMM reduces the latency to 113 μs, achieving a 1.69× speedup. The kernel also reaches 50.6% compute utilization. These results show that the proposed W8A16 GEMM implementation effectively reduces memory pressure in linear layers and hides much of the dequantization overhead through fused execution, thereby improving kernel efficiency on R1 while maintaining model accuracy. 
+
+Parallel encoding. RhinoVLA takes three image streams as visual inputs, including one head camera and two wrist cameras mounted on the left and right hands. In the open-source implementation of π0.5, these images are processed sequentially by the visual encoder. However, we find that this sequential execution is inefficient on R1, because each single-image ViT inference has a relatively 11 Figure 5: Pre-training loss diagnostics. The left panel shows the global masked flow-matching loss, while the right panel reports the full objective loss and per-instance losses on AgiBot G1 and AgiBot G2. low arithmetic intensity and only achieves a low compute utilization. As a result, running the three views one by one leads to poor hardware occupancy and higher latency. To improve visual encoding efficiency, we replace the sequential execution of three individual ViT forwards with a batched parallel encoding scheme. Specifically, the three camera images are packed into a single batch and processed together by the vision encoder. This increases the effective workload size of each kernel launch, improves data reuse and parallel occupancy on R1. Experimental results show that the latency of processing the three input images is reduced from 34.52 ms to 24.31 ms. 
+
+## 4 Experiment 
+
+This section evaluates RhinoVLA from training behavior to downstream task performance. We first verify that unified pre-training is stable, then analyze whether instance LoRA captures embodiment residuals and improves action prediction. We then report task-level results in simulation and on real robots. This order links the final success rates to the training procedure and design choices that produce them. 
+
+4.1 Setup Evaluation goals. The experiments are organized around three questions. First, we examine whether instance LoRA improves held-out action prediction under the shared 72D action interface. Second, we ask whether cross-embodiment pretraining improves downstream policy learning under a standard simulation benchmark. Third, we test whether the same pretrained policy can be transferred to real robots with different bodies and end effectors using a small amount of target-task data. 
+
+Training data and common model interface. RhinoVLA is trained on real-robot trajectories from AgiBotWorld Beta [ 11 ] and AgiBotWorld 2026 [ 37 ], covering 2,976.4 hours on G1 robots and hundreds more on G2 robots, providing both scale and embodiment diversity. 
+
+4.2 Model evaluation Pre-training diagnostics. We analyze the masked flow-matching losses from unified pre-training, where the VLM LoRA, shared Action Expert, and robot-instance LoRA are optimized jointly. Figure 5 reports the global/full-objective losses and the per-instance losses for AgiBot G1 and AgiBot G2. The G1 and G2 curves show different magnitudes and decay rates, reflecting embodiment-and controller-specific residuals between the two platforms. These residuals are handled by the robot-instance LoRA modules, while the shared Action Expert learns from the mixed cross-robot trajectories through a unified state–action interface. 12 Instance LoRA learns embodiment residuals. We examine whether the robot-instance LoRA adapters capture embodiment-specific residuals. For manipulator instances with different action supports, we compare action-mask Hamming distances with LoRA-residual similarities measured on a shared probe set. Figure 6 shows that robot pairs with closer action supports generally have more similar LoRA residu-als, whereas structurally distant pairs show weaker residual similarity. This correspondence indicates that the adapters encode embodiment-dependent corrections rather than only dataset identities. 
+
+Figure 6: Small-scale diagnostic comparing instance-LoRA residual similarity with action-mask distance. The left matrix reports residual correlations between instance adapters on the same probe set, while the right matrix reports Hamming distances between their active action masks. A smaller mask distance corresponds to more similar controllable joint structure. 
+
+Instance LoRA improves action prediction. Table 3 compares the shared Action Expert without instance LoRA and the full RhinoVLA model under the same validation protocol. Instance LoRA gives small but consistent gains in masked flow-matching loss, arm-joint MAE, yaw-rate MAE, and gripper MAE, with little change in base-velocity MAE. This matches the role of instance adaptation: arm and gripper dimensions carry most of the embodiment variation in the current robot mixture, while the shared Action Expert already models the remaining dimensions well. Table 3: Instance-LoRA ablation on held-out action prediction. Both rows use the same validation split, seed, masks, and per-instance dimension weights. Masked FM Loss is computed by globally merging the numerator and denominator across evaluation shards. MAE is computed only over active slots selected by the action mask.                
+
+> Method Masked FM Loss Arm MAE Base velocity MAE Yaw rate MAE Gripper MAE Base 0.0192 0.0446 0.0187 0.0195 0.1064
+> Instance LoRA 0.0191 0.0440 0.0188 0.0194 0.1056
+
+Simulation Evaluation. We evaluate our method on the four standard LIBERO suites: Spatial, Object, Goal, and Long. As shown in Table 4, our method achieves an average success rate of 90.0% with a single jointly trained checkpoint. It outperforms all direct policy baselines and surpasses representative VLA models such as OpenVLA, CoT-VLA, π0-FAST, and π0. The improvement is particularly evident on the challenging Long suite, where our method reaches 82.4%, outper-forming π0 and π0-FAST by 9.4 and 22.2 percentage points, respectively. These results suggest that Qwen3-VL-2B, despite its compact scale, provides expressive vision-language representations for manipulation, enabling an action expert to learn effective continuous control from LIBERO demonstrations. We further distinguish our setting from π0.5: π0.5 adopts a multi-source co-training recipe that combines robot trajectories with heterogeneous vision-language and semantic supervision. In contrast, our model is initialized only from the general-purpose Qwen3-VL-2B-Instruct backbone and trains the action expert from scratch on LIBERO demonstrations. Although this lightweight 13 setting still leaves a performance gap to π0.5, the competitive results against several VLA baselines indicate that a compact pretrained VLM can provide a promising starting point for continuous robot policy learning under limited robot-specific pretraining. Table 4: Success rates (%) on the LIBERO benchmark. S, O, G, and L denote LIBERO-Spatial, LIBERO-Object, LIBERO-Goal, and LIBERO-Long, respectively.                                                                              
+
+> Model SOGLAvg
+> Baseline Direct Policy Models
+> Diffusion Policy [10] 78 .392 .568 .350 .572 .4
+> Octo [26] 78 .985 .784 .651 .575 .1
+> MDT [35] 78 .587 .573 .564 .876 .0
+> Baseline VLA Models
+> TraceVLA [45] 84 .685 .275 .154 .174 .8
+> OpenVLA [17] 84 .788 .479 .253 .776 .5
+> SpatialVLA [32] 88 .289 .978 .655 .578 .1
+> WorldVLA [8] 85 .689 .082 .659 .079 .1
+> CoT-VLA [44] 87 .591 .687 .669 .083 .9
+> π0-FAST [30] 96 .496 .888 .660 .285 .5
+> π0[4] 90 .086 .095 .073 .086 .0
+> NORA [15] 92 .295 .489 .474 .687 .9
+> SmolVLA [36] 93 .094 .091 .077 .088 .8
+> π0.5[31] 98 .898 .298 .092 .496 .9
+> Ours
+> RhinoVLA 93 .091 .093 .482 .490 .0
+
+Real-robot Evaluation. Finally, we evaluate whether the same pretrained policy can be adapted to real robots with different embodiments. The real-robot tasks are conducted on three commercial robot platforms with distinct controllable structures: AgiBot G1 , AgiBot G2 , and Galbot G1 .The deployment tasks cover single-arm and bimanual manipulation, short-horizon and long-horizon tasks, as well as rigid and deformable object manipulation. Specifically, Galbot G1 performs multiple short-horizon single-arm pick-and-place tasks, AgiBot G2 performs long-horizon single-arm pick-and-place tasks, and AgiBot G1 performs a bimanual towel-folding task. We evaluate the models under two deployment settings: seen and unseen. In the seen setting, the adaptation data and evaluation rollouts are collected on the same robot and in the same workspace. In the unseen setting, the evaluation differs from the adaptation data in terms of robot instance, workspace, or object placement distribution. For each task, we conduct multiple trials and report the success rate (SR). The evaluation details and success criteria for different tasks are detailed in Appendix C. Table 5: Real-robot success rates after target-task adaptation. SR denotes the percentage of successful real-robot rollouts. The manipulation figures are shown in Figure 1 and Figure 7. “-” denotes not evaluated.                           
+
+> Robot Task Setting π0.5SR RhinoVLA SR Galbot G1 Red bag to the far bin Unseen 100% 100% Black fan to the middle bin Unseen -40% White foam to the near bin Unseen -20% AgiBot G2 Three-step sequence Seen -58% Unseen 18% 24% AgiBot G1 Towel folding Seen -67% Unseen -43%
+
+Table 5 summarizes the task success rates across different embodiments. On Galbot G1, an em-bodiment not covered in pretraining, RhinoVLA shows a certain degree of generalization in the 14 unseen setting. For the task of picking the red bag and placing it into the far bin, RhinoVLA achieves a success rate of 100%, matching π0.5. On AgiBot G2, the evaluation involves more challenging long-horizon pick-and-place tasks, where the robot must understand the instruction and place the red bag, black fan, and white foam into their corresponding bins. RhinoVLA achieves a success rate of 58% in the seen setting and 24% in the more difficult unseen setting, outperforming π0.5 by 6% and demonstrating stronger generalization. On AgiBot G1, RhinoVLA achieves success rates of 67% and 43% in the seen and unseen settings, respectively, on the towel-folding task. These results further demonstrate RhinoVLA’s effectiveness in deformable object manipulation. 
+
+Figure 7: RhinoVLA performs a bimanual towel-folding task on AgiBot G1, demonstrating robustness in deformable object manipulation. 
+
+4.3 Inference efficiency End-to-end performance on R1. After applying the compilation, mixed-precision, and parallel-encoding optimizations described in Sec. 3.4., the full RhinoVLA pipeline runs end-to-end at 11.69 Hz 
+
+on the Huixi R1 SoC, up from 5.84 Hz at the unoptimized baseline (Figure 4). This satisfies the 10 Hz minimum requirement for real-time closed-loop control. Table 6 reports the per-stage latency breakdown of the optimized pipeline. Table 6: End-to-end latency breakdown of RhinoVLA on Huixi R1.              
+
+> Stage Latency (ms) %Vision Encoder (3 views) 24.31 28.4 VLM Backbone 20.78 24.3 Action Expert 36.71 42.9 Others 3.74 4.4
+> Total 85.54 100.0
+> Achieved closed-loop frequency 11.69 Hz
+
+## 5 Conclusion 
+
+We presented RhinoVLA, a deployment-oriented VLA model designed for real-time onboard robot control. By identifying VLM visual and context tokens as a major source of inference cost, RhinoVLA adopts a token-efficient Qwen3-VL backbone and an Action Expert to reduce VLM-side computation while preserving multimodal capability. To support cross-robot learning, RhinoVLA introduces a unified interface with view registry, a 72D physical state-action slot space, and robot-instance LoRA, enabling shared policy learning with embodiment-specific residual adaptation. With hardware-aware compilation, mixed-precision execution, and parallel visual encoding on Huixi R1, RhinoVLA achieves task performance comparable to π0.5 and reaches 11.69 Hz end-to-end inference. 
+
+## 6 Future work 
+
+RhinoVLA currently demonstrates an initial robot–model–chip workflow on Huixi R1, where the R1 platform is used for data collection and onboard deployment. In future open-source releases, we plan to extend this workflow by adding training support on R1, enabling the full data-collection, training, and deployment loop to run on the same edge SoC. This will make it possible to connect RhinoVLA 15 with reinforcement learning pipelines and support real-robot online policy improvement directly on the deployed platform. We will continue to follow more efficient and capable VLM backbones and update the visual-language module of RhinoVLA accordingly, such as future Qwen-series models, to further improve VLA performance while maintaining deployment efficiency. 16 A Additional VLA introduction 
+
+A.1 VLM Backbones in Recent VLA Models                   
+
+> VLM family Representative use Backbone characteristics
+> PaLI-X / PaLM-E fam-ily [9, 13] RT-2 Large web-trained VLMs; RT-2 casts robot actions into text-token form so robot data can be co-trained with vision-language data. Prismatic VLM: DINOv2 + SigLIP + Llama 2 OpenVLA Open 7B stack that fuses pretrained DINOv2 and SigLIP visual features with a Llama 2 language model. PaliGemma π0,π0.5Compact open VLM based on SigLIP and Gemma; used as the visual-language prefix before the πaction expert. Eagle-2 [18] GR00T N1 VLM module paired with a diffusion-transformer action module in a dual-system humanoid policy. Qwen2-VL DexVLA Native dynamic resolution and M-RoPE for image, video, and text positions. Qwen2.5-VL LingBot-VLA Native dynamic-resolution ViT, window attention, stronger grounding, structured output, and absolute time encoding for video. Qwen3-VL VLA Foundry; InternVLA-A1 [7] Interleaved-MRoPE, DeepStack multi-level visual features, long inter-leaved multimodal context, and text-timestamp alignment.
+
+Table 7: Representative VLM backbones used by, or relevant to, recent VLA models. The table summarizes backbone characteristics only. As summarized in Table 7, recent VLA systems increasingly build upon powerful pretrained VLM backbones rather than training perception modules from scratch. Early approaches such as RT-2 leverage large web-scale VLMs to transfer vision-language knowledge into robotic control, while OpenVLA adopts an open-source stack combining DINOv2, SigLIP, and Llama 2. More recent VLAs predominantly rely on the PaliGemma and Qwen-VL families. PaliGemma is used in π0 and 
+
+π0.5 due to its compact design and strong vision-language capabilities, whereas the Qwen-VL series introduces dynamic-resolution processing, improved grounding, long-context multimodal reasoning, and structured output generation. These advances make modern VLM backbones increasingly suitable for embodied decision making, providing stronger perception, language understanding, and multimodal reasoning capabilities for downstream action generation. 
+
+A.2 Rhino VLA Comparison with π0.5
+
+As shown in Table 8, Rhino VLA keeps the Action Expert at a scale comparable to the π0.5 reference while using a more compact Qwen3-VL backbone. The action side also follows a Qwen-compatible attention and cache layout, and extends the action interface to the masked 72D physical slot space used for cross-robot training. 
+
+## B Additional Details of the Unified 72D Action Interface 
+
+B.1 Semantic Mapping Rule 
+
+The unified 72D slot space is mapped semantically rather than positionally. A raw joint or command is written to a slot only when its physical role matches the slot definition. If a robot lacks a canonical degree of freedom, the corresponding slot remains masked, and later joints are not shifted into the empty position. This rule prevents an absent joint from changing the physical meaning of subsequent action dimensions. For example, a single-arm robot writes its arm joints to D0–D6 when their roles match the canonical arm chain. A bimanual robot writes the left or first arm to D0–D6 and the right or second arm to D7–D13. If a robot exposes fewer than seven active arm joints, the missing canonical slots are masked rather than filled by unrelated joints. 
+
+B.2 State and Action Conversion 
+
+State and action values are converted into the slot-defined physical units whenever calibration and metadata are available. Joint angles are represented in radians. Parallel grippers are represented as a closed ratio in [0 , 1] , where 0 denotes fully open and 1 denotes fully closed. Mobile-base commands use metric velocity units, including linear velocities in m/s and yaw rate in rad/s. 17 Item RhinoVLA π0.5 reference 
+
+VLM side 
+
+VLM backbone Qwen3-VL-2B PaliGemma VLM inference-path parameters 2.13B 2.92B VLM text transformer 28 layers, hidden size 2048, MLP hidden size 6144 18 layers, hidden size 2048, MLP hidden size 16384 VLM text attention 16 attention heads / 8 KV heads, head dimen-sion 128 8 attention heads / 1 KV head, head dimen-sion 256 VLM vision transformer 24 layers, hidden size 1024, MLP hidden size 4096, 16 heads 27 layers, hidden size 1152, MLP hidden size 4304, 16 heads Visual-token interface in the mea-sured setting Images are resized to 256 × 256 ; each im-age gives a 16 × 16 raw visual grid and 64 merged image tokens after spatial merging Fixed 256 image tokens per 224 × 224 im-age in the PaliGemma path 
+
+Action Expert side 
+
+Action-side inference-path param-eters 0.40B 0.43B Action Expert depth / width 18 layers / 1024 hidden size 18 layers / 1024 hidden size Action Expert MLP hidden size 3072 4096 Action Expert attention heads / KV heads 16 / 8 8 / 1 Action Expert GQA grouping 2 query heads share one KV head 8 query heads share one KV head Action Expert head dimension 128 256 Action Expert attention computa-tion Suffix tokens attend to Qwen3-VL prefix K/V and suffix K/V with Q/K normalization and scaled dot-product attention Suffix tokens attend to the PaliGemma prefix context and suffix K/V in the original π ac-tion expert Action-side tokens 1 state token + 30 noisy action tokens 30 noisy action tokens in our same-condition benchmark; released π0.5 uses H = 50 
+
+Visual-language context used by Action Expert Last 18 layers of Qwen3-VL KV cache PaliGemma prefix context used by the π ac-tion expert Action Expert block design Qwen-compatible attention/cache handling with AdaRMS conditioning and Qwen-style MLP blocks Gemma expert blocks used by the original 
+
+π0.5 action model Action interface Masked 72D physical state–action contract Reference fixed-dimensional action interface 
+
+Table 8: Detailed architectural comparison between RhinoVLA and the PaliGemma-based π0.5 VLA. The comparison separates the VLM backbone from the action side and reports the attention layout, GQA setting, hidden width, and action-token interface used by each model. Parameter counts follow the inference path: tied language embeddings are counted in the VLM backbone, while unused output heads are excluded from the action-side count. 
+
+Per-hand slots Finger Meaning 
+
+H0 Thumb Abduction/adduction H1 Thumb Opposition rotation H2 Thumb Metacarpophalangeal flexion/extension H3 Thumb Interphalangeal flexion/extension H4, H7, H10, H13 Index, middle, ring, little Abduction/adduction H5, H8, H11, H14 Index, middle, ring, little Metacarpophalangeal flexion/extension H6, H9, H12, H15 Index, middle, ring, little Proximal interphalangeal flexion/extension 
+
+Table 9: Canonical per-hand allocation inside the unified 72D slot space. For the first hand, H0–H15 correspond to D16–D31; for the second hand, they correspond to D32–D47. Missing fingers or inactive DoF are masked rather than reassigned to another finger. When a dataset provides normalized, delta, or controller-specific commands, the converter first checks whether the corresponding physical unit, joint limit, and control convention are available. If the value can be reliably converted into the slot-defined representation, it is written to the corresponding slot. Otherwise, the value is kept outside the supervised 72D action target and the slot is masked during training. 
+
+B.3 Dexterous-Hand Slot Allocation 
+
+Dexterous hands use a 16D active-control superset per hand. The first hand uses H0–H15, correspond-ing to D16–D31, and the second hand uses H0–H15, corresponding to D32–D47. The allocation follows a 4-3-3-3-3 structure from thumb to little finger, as shown in Table 9. This hand schema does not assume that every dexterous hand has 16 independent motors. Only active, motor-controlled joints are supervised as action dimensions. Passive joints, mechanically coupled follower joints, and kinematically derived joints are not treated as separate action targets. Lower-DoF hands map verified actuators to the closest canonical finger slots and mask the remaining dimensions. 18 B.4 Converter Constraints for Hand Commands 
+
+A converter may write a source hand command into the 72D action target only when the hardware or SDK documentation establishes the active-joint order, unit, and joint limit. If a dataset provides normalized hand commands, the converter maps them to nominal radians using hand-specific joint limits when such limits are available. If the normalization convention or physical limits are unknown, the corresponding values are not supervised as 72D action slots. This conservative rule avoids assigning physically ambiguous hand commands to fixed semantic slots. It also prevents passive or coupled hand motions from being incorrectly interpreted as independently controllable action dimensions. 
+
+B.5 Reserved Slots 
+
+Slots D61–D71 are reserved auxiliary slots. They are inactive in the current training schema and do not carry fixed semantics. These slots can only be activated in future versions after their physical meanings, units, and masking rules are explicitly defined. Until then, they remain masked in both model inputs and training targets. 
+
+## C Evaluation Details on Real Robots 
+
+Pick and place. During evaluation, objects are initialized at different tabletop positions within the task workspace. A rollout is considered successful only when the robot grasps the specified target object and places it into the specified target location. Grasping an incorrect object, placing the object into the wrong cell or region, dropping the object, or exceeding the rollout budget is counted as a failure. Towel folding. During evaluation, the towel is initialized at different tabletop positions within the task workspace. A rollout is considered successful only when the robot lifts the towel with both arms and folds it in half. Failure cases include failing to grasp or lift the towel, dropping it during execution, producing an incomplete or incorrect fold, or exceeding the rollout budget. 
+
+## D Author List 
+
+The authors are listed in alphabetical order by first name: Chen Zhang, Chenyang Zhou, Guanglei Ding, Guanghui He, Haibin Gao, Jiajia Chen, Jianyong Zhang, Lianyi Yu, Ningyi Xu, Ping Xu, Qingchen Li, Yingjun Hu, Yijia Zhang, and Yuxi Liu. 
+
+## References 
+
+[1] Shuai Bai, Yuxuan Cai, et al. Qwen3-vl technical report. arXiv preprint arXiv:2511.21631 ,2025. [2] Lucas Beyer, Andreas Steiner, Andre Susano Pinto, Alexander Kolesnikov, et al. Paligemma: A versatile 3b vlm for transfer. arXiv preprint arXiv:2407.07726 , 2024. [3] Johan Bjorck, Fernando Castaneda, Nikita Cherniadev, Xingye Da, et al. Gr00t n1: An open foundation model for generalist humanoid robots. arXiv preprint arXiv:2503.14734 , 2025. [4] Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, et al. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 , 2024. [5] Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, et al. Rt-1: Robotics transformer for real-world control at scale. arXiv preprint arXiv:2212.06817 , 2022. [6] Qingwen Bu, Jisong Cai, Li Chen, Xiuqi Cui, Yan Ding, Siyuan Feng, Shenyuan Gao, Xindong He, Xu Huang, Shu Jiang, et al. Agibot world colosseo: A large-scale manipulation platform for scalable and intelligent embodied systems. arXiv preprint arXiv:2503.06669 , 2025. [7] Junhao Cai, Zetao Cai, Jiafei Cao, Yilun Chen, Zeyu He, Lei Jiang, Hang Li, Hengjie Li, Yang Li, Yufei Liu, et al. Internvla-a1: Unifying understanding, generation and action for robotic manipulation. arXiv preprint arXiv:2601.02456 , 2026. 19 [8] Jun Cen, Chaohui Yu, Hangjie Yuan, Yuming Jiang, Siteng Huang, Jiayan Guo, Xin Li, Yibing Song, Hao Luo, Fan Wang, Deli Zhao, and Hao Chen. Worldvla: Towards autoregressive action world model. arXiv preprint arXiv:2506.21539 , 2025. [9] Xi Chen, Josip Djolonga, Piotr Padlewski, Basil Mustafa, Soravit Changpinyo, Jialin Wu, Carlos Riquelme Ruiz, Sebastian Goodman, Xiao Wang, Yi Tay, et al. Pali-x: On scaling up a multilingual vision and language model. arXiv preprint arXiv:2305.18565 , 2023. [10] Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. 
+
+The International Journal of Robotics Research , 44(10–11), 2025. [11] AgiBot World Colosseum contributors. Agibot world colosseum. https://github.com/ OpenDriveLab/AgiBot-World , 2024. [12] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in neural information processing systems , 35:16344–16359, 2022. [13] Danny Driess, Fei Xia, Mehdi SM Sajjadi, Corey Lynch, Aakanksha Chowdhery, Brian Ichter, Ayzaan Wahid, Jonathan Tompson, Quan Vuong, Tianhe Yu, et al. Palm-e: An embodied multimodal language model. arXiv preprint arXiv:2303.03378 , 2023. [14] Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, et al. Lora: Low-rank adaptation of large language models. In International Conference on Learning Representations , 2022. [15] Chia-Yu Hung, Qi Sun, Pengfei Hong, Amir Zadeh, Chuan Li, U-Xuan Tan, Navonil Majumder, and Soujanya Poria. Nora: A small open-sourced generalist vision language action model for embodied tasks. arXiv preprint arXiv:2504.19854 , 2025. [16] Eric Jang, Alex Irpan, Mohi Khansari, Daniel Kappler, et al. Bc-z: Zero-shot task generalization with robotic imitation learning. In Proceedings of the 5th Conference on Robot Learning ,volume 164 of Proceedings of Machine Learning Research , pages 991–1002. PMLR, 2022. [17] Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, et al. Openvla: An open-source vision-language-action model. In Proceedings of The 8th Conference on Robot Learning , Proceedings of Machine Learning Research, 2025. [18] Zhiqi Li, Guo Chen, Shilong Liu, Shihao Wang, Vibashan VS, Yishen Ji, Shiyi Lan, Hao Zhang, Yilin Zhao, Subhashree Radhakrishnan, et al. Eagle 2: Building post-training data strategies from scratch for frontier vision-language models. arXiv preprint arXiv:2501.14818 , 2025. [19] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. arXiv preprint arXiv:2304.08485 , 2023. [20] Songming Liu, Lingxuan Wu, Bangguo Li, Hengkai Tan, et al. Rdt-1b: A diffusion foundation model for bimanual manipulation. arXiv preprint arXiv:2410.07864 , 2024. [21] Jianlan Luo et al. Precise and dexterous robotic manipulation via human-in-the-loop reinforce-ment learning. arXiv preprint arXiv:2410.21845 , 2024. [22] NVIDIA. GeForce RTX 4090: Graphics cards for gaming. Official product specification page, 2022. Accessed: 2026-06-02. [23] NVIDIA. Nvidia jetson agx orin series technical brief. Technical brief, 2022. [24] NVIDIA. GeForce RTX 5090: Graphics cards for gamers and creators. Official product specification page, 2025. Accessed: 2026-06-02. [25] NVIDIA Corporation. Nvidia jetson thor series modules data sheet. Official Datasheet, 2025. Accessed: 2026-06-02. 20 [26] Octo Model Team, Dibya Ghosh, Homer Walke, Karl Pertsch, Kevin Black, Oier Mees, Sudeep Dasari, Joey Hejna, Tobias Kreiman, Charles Xu, Jianlan Luo, You Liang Tan, Lawrence Yun-liang Chen, Pannag Sanketi, Quan Vuong, Ted Xiao, Dorsa Sadigh, Chelsea Finn, and Sergey Levine. Octo: An open-source generalist robot policy. In Robotics: Science and Systems , 2024. [27] Abby O’Neill, Abdul Rehman, Abhishek Gupta, Abhiram Maddukuri, et al. Open x-embodiment: Robotic learning datasets and rt-x models. arXiv preprint arXiv:2310.08864 ,2023. [28] Maxime Oquab, Timothée Darcet, Théo Moutakanni, Huy Vo, Marc Szafraniec, Vasil Khalidov, Pierre Fernandez, Daniel Haziza, Francisco Massa, Alaaeldin El-Nouby, et al. Dinov2: Learning robust visual features without supervision. arXiv preprint arXiv:2304.07193 , 2023. [29] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF international conference on computer vision , pages 4195–4205, 2023. [30] Karl Pertsch, Kyle Stachowicz, Brian Ichter, Danny Driess, Suraj Nair, Quan Vuong, Oier Mees, Chelsea Finn, and Sergey Levine. Fast: Efficient action tokenization for vision-language-action models. arXiv preprint arXiv:2501.09747 , 2025. [31] Physical Intelligence. π0.5: A vision-language-action model with open-world generalization. Technical report, 2025. [32] Delin Qu, Haoming Song, Qizhi Chen, Yuanqi Yao, Xinyi Ye, Yan Ding, Zhigang Wang, Jiayuan Gu, Bin Zhao, Dong Wang, and Xuelong Li. Spatialvla: Exploring spatial representations for visual-language-action model. In Robotics: Science and Systems , 2025. [33] Qwen Team. Qwen2.5-vl technical report. arXiv preprint arXiv:2502.13923 , 2025. [34] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, et al. Learning transferable visual models from natural language supervision. In Proceedings of the 38th International Conference on Machine Learning , volume 139 of Proceedings of Machine Learning Research ,pages 8748–8763. PMLR, 2021. [35] Moritz Reuss, Ömer Erdinç Ya˘ gmurlu, Fabian Wenzel, and Rudolf Lioutikov. Multimodal diffusion transformer: Learning versatile behavior from multimodal goals. In Robotics: Science and Systems , 2024. [36] Mustafa Shukor, Dana Aubakirova, Francesco Capuano, Pepijn Kooijmans, Steven Palma, Adil Zouitine, Michel Aractingi, Caroline Pascal, Martino Russi, Andres Marafioti, Simon Alibert, Matthieu Cord, Thomas Wolf, and Remi Cadene. Smolvla: A vision-language-action model for affordable and efficient robotics. arXiv preprint arXiv:2506.01844 , 2025. [37] AgiBot World Team. Agibot world 2026. https://huggingface.co/datasets/ agibot-world/AgiBotWorld2026 , 2026. [38] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. [39] Peng Wang, Shuai Bai, Sinan Tan, et al. Qwen2-vl: Enhancing vision-language model’s perception of the world at any resolution. arXiv preprint arXiv:2409.12191 , 2024. [40] Junjie Wen, Yichen Zhu, Jinming Li, Zhibin Tang, Chaomin Shen, and Feifei Feng. Dexvla: Vision-language model with plug-in diffusion expert for general robot control. arXiv preprint arXiv:2502.05855 , 2025. [41] Wei Wu, Fan Lu, Yunnan Wang, Shuai Yang, Shi Liu, Fangjing Wang, Qian Zhu, He Sun, Yong Wang, Shuailei Ma, et al. A pragmatic vla foundation model. arXiv preprint arXiv:2601.18692 ,2026. [42] Xiaohua Zhai, Basil Mustafa, Alexander Kolesnikov, and Lucas Beyer. Sigmoid loss for language image pre-training. In Proceedings of the IEEE/CVF international conference on computer vision , pages 11975–11986, 2023. 21 [43] Biao Zhang and Rico Sennrich. Root mean square layer normalization. Advances in neural information processing systems , 32, 2019. [44] Qingqing Zhao, Yao Lu, Moo Jin Kim, Zipeng Fu, Zhuoyang Zhang, Yecheng Wu, Zhaoshuo Li, Qianli Ma, Song Han, Chelsea Finn, Ankur Handa, Ming-Yu Liu, Donglai Xiang, Gordon Wetzstein, and Tsung-Yi Lin. Cot-vla: Visual chain-of-thought reasoning for vision-language-action models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2025. [45] Ruijie Zheng, Yongyuan Liang, Shuaiyi Huang, Jianfeng Gao, Hal Daumé III, Andrey Kolobov, Furong Huang, and Jianwei Yang. Tracevla: Visual trace prompting enhances spatial-temporal awareness for generalist robotic policies. In International Conference on Learning Representa-tions , 2025. [46] Brianna Zitkovich, Tianhe Yu, Sichun Xu, Peng Xu, et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. In Proceedings of The 7th Conference on Robot Learning , volume 229 of Proceedings of Machine Learning Research , pages 2165–2183. PMLR, 2023. 22
