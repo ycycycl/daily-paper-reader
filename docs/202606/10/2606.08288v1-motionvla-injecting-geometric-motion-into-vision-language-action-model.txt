@@ -1,0 +1,442 @@
+Title: MotionVLA: Injecting Geometric Motion into Vision-Language-Action Model
+
+URL Source: https://arxiv.org/pdf/2606.08288v1
+
+Published Time: Tue, 09 Jun 2026 00:49:50 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# MotionVLA: Injecting Geometric Motion into Vision-Language-Action Model 
+
+Shanglin Yuan 1,2 Weiheng Zhao 1,2 Xianda Guo 2,3 
+
+Wei Sui 2† Li Yu 1 Wenyu Liu 1 Xinggang Wang 1✉
+
+> 1
+
+Huazhong University of Science and Technology 2D-Robotics 
+
+> 3
+
+Wuhan University 
+
+Abstract: Vision-language-action (VLA) models increasingly condition robot policies on history, depth, or 4D features to resolve ambiguity in long-horizon manipulation. However, more spatiotemporal evidence is not necessarily better: when the injected evidence is not motion-consistent, it can introduce geometric drift, fragmented temporal cues, and unstable action generation. This raises a simple question: should a VLA remember past frames, or remember the motion that connects them? We introduce MotionVLA , a motion-history interface that converts a short past-only video window into compact, time-continuous trajectory-field tokens. Instead of treating history as a sparse set of independently lifted frames, MotionVLA represents recent observations as physically coherent mo-tion evidence. Current visual tokens query this history to retrieve task-relevant motion information, which is then recoupled into the VLA stream under trajectory-grounded supervision. Experiments across simulation benchmarks and preliminary real-robot rollouts show that MotionVLA improves long-horizon manipulation while producing smoother and more direct executions. These results suggest that effective VLA memory is not just about providing more 4D context, but about exposing motion-consistent evidence that is usable for control. 
+
+Keywords: Vision-Language-Action, Motion History, Robot Learning 
+
+## 1 Introduction 
+
+Long-horizon manipulation requires a robot policy to infer not only what is visible now, but also how the robot arrived there. In many multi-stage tasks, the same current observation can correspond to different control states depending on recent motion: a robot may need to continue the current subgoal, terminate it, or move on to the next one. Such visual aliasing makes purely reactive policies fragile and may trigger the state chaos phenomenon [ 1, 2, 3 ]. This suggests that memory is not merely additional context for a robot policy, but a control interface whose structure determines whether past evidence can be used stably for action generation. Vision-language-action (VLA) models [ 4 , 5 , 6 , 7 , 8 , 9 , 10 , 11 , 12 , 13 , 14 , 15 , 16 , 3 ] provide a strong framework for language-conditioned robot control, formulating action generation as conditional sequence prediction from visual observations, proprioception, and natural-language instructions. A common design reuses a pretrained vision-language model for perception and instruction follow-ing, and attaches an action head for low-level continuous control. For example, π0 [6 ] builds on PaliGemma-3B [ 17 ], inheriting semantic priors from large-scale vision-language pretraining while adapting them to robot actions. To reduce ambiguity in long-horizon manipulation, recent methods increasingly condition VLA policies on additional temporal or spatial evidence, including history or memory modules [ 1, 18 , 19 , 12 , 20 ], explicit 3D geometry [ 15 , 16 ], and spatiotemporal extensions that expose 4D evidence to the policy [2, 3]. However, the trend of injecting more spatiotemporal evidence hides an important assumption: the injected evidence must itself be coherent enough to be useful for control. Our analysis suggests that                    
+
+> arXiv:2606.08288v1 [cs.RO] 6 Jun 2026 Memory Bank Sampled Per -Frame 3D
+> “Close the cabinet.”
+> VGGT
+> 4D
+> Action
+> VLM Act
+> 2D
+> Uniformly Sampled
+> Trace
+> Anything
+> 4D
+> Action
+> VLM Act
+> 2D
+> Trajectory Field
+> Geometry
+> Inconsistent
+> Better 4D!
+> 𝑓 𝜏 −𝑃
+> 𝑓 𝜏 −𝑀
+> 𝑓 𝜏 −𝑁
+> 𝑓 𝜏 −3𝑁
+> 𝑓 𝜏 −2𝑁
+> 𝑓 𝜏 −𝑁
+> Unstable
+> Training
+> Easy to
+> Train!
+> Real gripper end Estimated gripper end Gripper end trajectory
+> in Trajectory Field
+> Zigzag trajectory
+> Smooth trajectory
+> Jittering Actions
+> Smooth Actions
+> 𝑡 ∈[0,1]
+> 𝑡 ∈{𝜏 ,𝜏 −𝑀 ,𝜏 −𝑁 ,…}
+> (a). Mainstream discrete 4D injection method
+> (b). Our time -domain continuous 4D injection method
+> Rank the blocks
+> in color order
+> Stack green block
+> on the red one
+> Stack three
+> bowls
+
+Figure 1: Discrete 4D evidence can be fragmented, while trajectory fields provide a more consistent motion interface. Instead of treating history as a sparse set of independently lifted frames, MotionVLA represents recent observations as queryable, time-continuous motion evidence for smoother and more direct control. this assumption does not always hold. In representative 4D injection pipelines, a policy may still complete an episode while taking noticeably less direct end-effector paths. As shown in Table 4, this behavior appears in our LIBERO path-efficiency analysis, where the executed trajectories of a 4D-injected VLA variant can contain substantial detours relative to expert demonstrations and the π0
+
+baseline. This observation suggests that the bottleneck is not simply whether a VLA has access to history or geometry, but whether the injected history provides motion-consistent evidence that can be stably used for action generation (Figure 1). To understand this failure mode, we examine how 4D evidence is commonly constructed. A typical discrete 4D injection pattern samples a finite set of historical frames, lifts each selected frame into geometry-aware tokens through RGB-D back-projection or learned 2D-derived geometry predictors [ 2,3], and sparsifies the resulting history through memory or keyframe sampling strategies [ 1, 2]. Such a representation is 4D in form, but not necessarily motion-consistent in time. Independent frame-wise lifting can introduce geometrical inconsistency , where the same physical point is mapped to drifting 3D locations across frames. Sparse or non-uniform history can further cause temporal fragmentation , making the motion evidence irregular and hard to exploit. These effects can propagate into action generation as jittery corrections, unstable optimization, or detour-like executions. We therefore argue that effective VLA memory should represent the motion that connects observations, rather than merely storing more observations. To this end, we introduce MotionVLA , a motion-history interface that converts a short past-only observation window into compact, time-continuous trajectory-field tokens. In our implementation, this interface is instantiated with trajectory-field representations [ 21 , 22 ], which provide continuous motion cues over the recent history window. Instead of concatenating raw history or independently lifted 4D features into the policy prefix, MotionVLA stores these tokens as a queryable motion history. Current visual tokens then retrieve task-relevant motion evidence from this history, and the retrieved information is recoupled into the VLA stream under trajectory-grounded supervision. This design keeps the role of motion history explicit: it should expose recent physical progress to the policy, rather than simply enlarge the context with additional frames or geometric tokens. Experiments across RoboTwin2.0 [ 23 ] and LIBERO [ 24 ], together with preliminary real-robot rollouts, show that MotionVLA improves long-horizon manipulation while producing smoother and more direct executions. Ablations further indicate that naive history aggregation or naive 4D 2token injection is not sufficient; the gains come from aligning, querying, and recoupling temporally consistent motion evidence so that it becomes usable for control. Our main contributions are: • We propose MotionVLA , a compact time-continuous motion-history interface that rep-resents recent observations as trajectory-field tokens rather than as independently lifted historical frames. • We introduce a queryable motion history with a Decouple-then-Recouple design: current visual tokens retrieve task-relevant motion evidence from the past-only motion history before fusing it back into the VLA stream under trajectory-grounded supervision. • Experiments across RoboTwin2.0 and LIBERO, together with preliminary real-robot rollouts, show that motion-consistent history improves long-horizon manipulation and produces smoother, more direct executions. 
+
+## 2 Related Work 
+
+History and Memory in VLAs. Temporal modeling is central to long-horizon decision making in sequential domains such as autonomous driving [ 25 , 26 , 27 ]. In robot control, generalist VLAs transfer VLM priors to action generation and are often pretrained on heterogeneous robot-data mixtures [ 28 , 4, 5, 6, 29 , 8, 9, 10 , 11 , 12 , 13 , 14 ]. Most policies nevertheless predict actions primarily from the current observation, which can fail under state ambiguity [ 1]. Multi-frame conditioning [ 18 ]helps but increases context length; recent methods compress history through rendered trajectories [ 12 ], memory retrieval [ 1], or compact temporal chunks [ 19 ]. Our work follows this memory-aware direction but uses a continuous trajectory-field interface rather than raw frame stacking or sparse keyframe selection. Beyond temporal conditioning, complementary efforts improve controllability and representations, e.g., scaling action tokenizers [ 30 ] or injecting richer world knowledge into VLA training [ 31 ]. These directions improve the policy output space or semantic priors, while MotionVLA focuses on the consistency of historical evidence before it is exposed to the policy. 
+
+Injecting Geometry into VLAs. Geometry-aware policies incorporate metric cues such as depth maps, point clouds, or 3D embeddings from pretrained predictors [ 32 , 33 , 34 ]. DP3 [ 35 ] shows the value of simple point-cloud inputs for visuomotor learning. DepthVLA [ 15 ] incorporates depth-aware spatial reasoning, while GeoVLA [ 16 ] transforms depth into point clouds and fuses geometric embeddings with VLM features for action generation. PointVLA [ 36 ] similarly explores point-cloud conditioning for VLA policies. Spatially grounded VLMs [ 37 , 38 , 39 ] also show that explicit geometry can improve language-conditioned perception. These methods mainly address per-frame or static geometry; when such cues are applied independently across time, the temporal association between physical points can remain underspecified. MotionVLA instead targets temporally consistent motion evidence. 
+
+4D Spatiotemporal Injection. Spatiotemporal VLMs and 4D representations have been explored for dynamic understanding and generation [ 39 , 40 , 41 , 42 ], and robot policies increasingly use space–time cues beyond static geometry. Temporal modeling is also central in autonomous driving, where spatiotemporal BEV/3D stacks are widely used [ 27 , 25 , 43 , 26 ]. ARM4R [ 44 ] lifts 2D tracking into 3D trajectories for robot pretraining; 4D-VLA [ 2 ] encodes sequential RGB-D observations with memory-bank sampling; SwiftVLA [ 3 ] derives auxiliary 4D features from streaming 2D images and a temporal cache. These approaches provide 4D evidence as additional context, while our work is complementary: we focus on how the consistency of injected 4D evidence affects whether it can be reliably used for control. This distinction matters for manipulation because small frame-to-frame geometric drift can manifest as inefficient corrections or end-effector detours even when a policy eventually completes the task. This motivates using time-continuous trajectory fields [ 45 , 22 ] as the motion-history interface. 32D -4D               
+
+> Fusion
+> Encoder
+> Touch the blocks in
+> the order of red ,
+> green and blue .
+> VLM Action
+> (∆𝑥 ,∆𝜃 ,𝑔𝑟𝑖𝑝 )
+> History
+> Pretrained 4D
+> Trajectory Extractor
+> 2D -4D Fusion
+> EEF Hist. Traj .
+> GT
+> ℒ𝑟𝑒𝑐𝑜𝑛𝑠𝑡𝑟𝑢𝑐𝑡
+> Pred 4D Tokens
+> 2D Tokens
+> Cross
+> Attn.
+> VLM
+> Current
+> Trajectory Extractor
+> Trajectory
+> Field
+> DPT
+> Time
+> Embedding
+> ×N
+> Encoder
+> Global Attention
+> Feed Forward
+> Framewise
+> Attention
+> One -Pass Forward
+> Tokenwise Projection
+> My arm has just arrived above
+> the red block ; it should touch
+> down, not move away ! 4D -Reasoning
+
+Figure 2: Overview of MotionVLA . MotionVLA builds a past-only motion history from trajectory-field tokens. Current visual features query this memory via cross-attention to retrieve task-relevant motion tokens, which are then recoupled into the VLA stream. An auxiliary trajectory reconstruction head (top right) grounds the retrieved tokens in control-relevant dynamics. 
+
+## 3 Method 
+
+3.1 Preliminaries VLA policy ( π0). We study language-conditioned robot control at discrete timesteps t [ 6]. The agent receives multi-view RGB observations ot = {I(k) 
+
+> t
+
+}Ncam  
+
+> k=1
+
+and proprioception st ∈ Rds , together with an instruction x. A VLA policy outputs an H-step continuous action chunk at ∈ RH×da . We write the tokenized perception-language-state prefix as 
+
+Ht = LLM 
+
+Enc img (ot); Enc txt (x); Tok( st)
+
+, (1) where [·; ·] denotes token concatenation. To model continuous actions, π0 uses a flow-based action expert parameterized by a conditional velocity field vθ (aτ , τ ; Ht), with τ ∈ [0 , 1] , which is integrated from noise to generate at at inference. 
+
+Trajectory-field 4D representation. To summarize short-horizon dynamics, we use a frozen pretrained trajectory extractor (TraceAnything[ 22 ]) on a short head-camera sequence. Given T head-camera frames Ihead 1: T = {Ihead 1 , . . . , I head  
+
+> T
+
+}, the extractor represents each pixel by a continuous-time 3D trajectory function over normalized time, T : ( i, u, v ) 7 → xi,u,v (·) ∈ C([0 , 1] , R3), where i
+
+indexes the input frame and (u, v ) indexes pixel coordinates. Besides dense trajectory-field outputs, the extractor also provides internal spatiotemporal tokens; we denote the final-layer decoder tokens by Z = TrajEnc tok (Ihead 1: T ), which serve as compact 4D features for downstream conditioning. 
+
+3.2 Building a Past-only Motion History Past-only motion history. At timestep t, MotionVLA converts past head-camera observations into a queryable motion history Mkv . The construction explicitly excludes the current frame Ihead 
+
+> t
+
+and uses the selected history window Wt =
+
+h ˜Ihead 
+
+> t−1−(Thist −1)∆
+
+, . . . , ˜Ihead 
+
+> t−1−∆
+
+, ˜Ihead 
+
+> t−1
+
+i
+
+, where ∆ is the temporal stride and ˜Ihead  
+
+> τ
+
+repeats the earliest available frame whenever τ precedes the episode start. The window therefore spans roughly Thist ∆ raw frames while remaining strictly past-only. During training, Wt is obtained by indexing the same episode; during inference, the same definition is implemented online with a per-episode FIFO buffer, so train and test use an identical history interface. 4Algorithm 1 Building the queryable motion history Mkv 
+
+Require: step t, history length Thist , stride ∆
+
+Require: episode frames or FIFO buffer B
+
+1: if training then 
+
+2: B ← [Ihead 1 , . . . , I head  
+
+> t−1
+
+]
+
+3: else 
+
+4: Append Ihead  
+
+> t−1
+
+to B and evict the oldest frame 5: end if 
+
+6: Left-pad B with its earliest frame until 
+
+|B| ≥ 1 + ( Thist − 1)∆ 
+
+7: L ← |B| 
+
+8: Wt ← StrideSample( B, T hist , ∆) 
+
+9: Wt ← Norm(Resize( Wt)) 
+
+10: Zt ← TrajEnc tok (Wt)
+
+11: Mkv ← PosEnc( Wz Zt) ∈ RB×S4D ×E
+
+12: return Mkv 
+
+Compact token interface. The output of Algorithm 1 is the queryable motion his-tory Mkv . We do not feed dense trajectory fields to the VLA directly; instead, we keep only the final decoder tokens and project them to the VLA hidden size through Wz .This token-level interface preserves cross-frame motion evidence while avoiding the token explosion and local tracking-noise sensitivity of dense trajectory-field outputs. Crucially, Mkv is used only as a key–value memory for later retrieval, so the current observation still determines which parts of the past are read, keeping motion history as a compact control-relevant memory. 
+
+3.3 Decouple-then-Recouple 4D Fusion 
+
+Our design follows a simple chain: (i) extract 4D evidence with a trajectory extractor, (ii) decouple 
+
+task-relevant motion via query-conditioned retrieval, (iii) supervise the retrieved tokens to preserve temporal grounding, and (iv) recouple motion with current perception for action generation. 
+
+Decouple: query-conditioned retrieval. Let Vhead ∈ RB×Simg ×E denote the current head-camera visual tokens produced by the VLA visual encoder (Figure 2). We use these current-frame tokens as queries to retrieve motion-conditioned evidence from the motion history: 
+
+M = MHA  Vhead , LN( Mkv ), LN( Mkv ) , (2) where M ∈ RB×Simg ×E . Thus, M has the same token length as the current head-view queries, but each token is conditioned on the longer past-only motion history. This query-conditioned retrieval aligns historical motion evidence to the current observation, rather than naively concatenating all historical features into the policy prefix. 
+
+Trajectory-grounded motion tokens. Query-conditioned retrieval alone may still allow motion-conditioned tokens M to collapse into appearance summaries; during training we therefore optimize the joint objective L = Laction + α Ltraj . For the action term, we follow π0’s flow-matching behavior cloning: given an expert action chunk a ∈ RH×da , we sample τ ∼ U (0 , 1) and ϵ ∼ N (0, I),construct aτ = (1 − τ )ϵ + τ a, and regress the policy’s predicted velocity field vθ (aτ , τ ; prefix ) to the target field u(aτ | a) = a − ϵ:
+
+Laction = E
+
+h
+
+∥vθ (aτ , τ ; prefix ) − (a − ϵ)∥22
+
+i
+
+. (3) To ground M in temporally meaningful progress (Figure 2), we add an auxiliary history-action reconstruction objective. Let ahist ∈ RThist ×da denote the action sequence aligned with the same history window used to build the motion history. We attach a lightweight prediction head gϕ, predict 
+
+ˆahist = gϕ(M), and minimize 
+
+Ltraj = 1
+
+Thist da
+
+∥ˆahist − ahist ∥22 . (4) This auxiliary supervision keeps the main action objective unchanged while encouraging the retrieved motion-conditioned tokens to encode control-relevant dynamics rather than static appearance dif-ferences. We use action sequences, instead of reconstructing pixels or dense trajectories directly, because they more directly reflect the robot’s dynamical progress and state evolution. 
+
+Recouple: lightweight fusion into the VLA stream. We then recouple the motion-conditioned current tokens with the VLA’s current multi-view visual tokens using a lightweight fusion module (Figure 2). Let Vmv ∈ RB×Smv ×E denote the multi-view visual tokens at time t. We concatenate 5motion-conditioned and multi-view visual tokens and apply a token-mixing MLP to obtain fused tokens 
+
+F = MLP([ M; Vmv ]) ∈ RB×(Simg +Smv )×E .
+
+Finally, we feed F to the VLA backbone together with text tokens and robot-state tokens, enabling the flow-based action expert to condition on both current perception and retrieved motion evidence through shared self-attention. 
+
+## 4 Experiments 
+
+We organize the evaluation around three questions aligned with our main claims: (i) does motion history improve long-horizon manipulation success, (ii) does it produce more motion-consistent executions rather than merely higher terminal success, and (iii) are the gains due to the proposed alignment, retrieval, and recoupling design rather than simply adding more history or 4D tokens? 
+
+4.1 Experimental Protocol Benchmarks. We evaluate MotionVLA on RoboTwin2.0 [ 23 ] and LIBERO [ 24 ]. For RoboTwin2.0, we use six manipulation tasks grouped by episode length: two long-horizon tasks ( >400 steps), two mid-horizon tasks (300–400 steps), and two short-horizon tasks ( <300 steps). One long-horizon task, blocks touching rgb , is a custom RoboTwin2.0 task designed to stress multi-stage temporal reasoning; the other five tasks are standard RoboTwin2.0 tasks. Detailed task definitions are provided in Appendix B. For LIBERO, we evaluate on LIBERO-S PATIAL , LIBERO-O BJECT , LIBERO-GOAL , and LIBERO-L ONG following the standard protocol, and report suite-wise success rates and their average. 
+
+Metrics. We report success rate (SR) for all benchmarks. To evaluate the motion-consistency claim beyond terminal success, we also report path efficiency, defined as the ratio between the end-effector travel length executed by a policy and the corresponding expert demonstration length. For an episode with end-effector positions {pt}Tepisode  
+
+> t=1
+
+, we compute 
+
+L =
+
+> Tepisode −1
+
+X
+
+> t=1
+
+∥pt+1 − pt∥2, (5) and define 
+
+PE = Lpolicy 
+
+Lexpert 
+
+. (6) We average PE over successful episodes and always report it together with SR, since PE alone can be biased when different methods succeed on different subsets of episodes. Lower PE indicates fewer detours, with PE = 1 matching expert path length. 
+
+Implementation details. Unless otherwise specified, the head-camera stream is sampled at 10 FPS, and MotionVLA uses Thist = 5 selected past frames with stride ∆ = 2 , covering 10 raw camera frames. Training and inference use the same past-only history definition: the current frame is excluded, and if the available past context is too short to fill the selected strided history, the window is left-padded by repeating the earliest available frame. The trajectory extractor is frozen and run once per timestep on the subsampled head-camera history. Training follows a generic-to-specific recipe. 
+
+Stage I trains on a heterogeneous manipulation mixture (100 hours) to align the motion-history interface with the VLA embedding space using the action loss and Ltraj . Stage II adapts the policy to target tasks with the auxiliary trajectory head detached. Unless otherwise specified, both stages use learning rate 1 × 10 −5 and batch size 32. For preliminary real-world validation on Agilex Piper, we collect more than 100 demonstrations per task, train the model on 8 NVIDIA H20 GPUs, and evaluate it on a single NVIDIA A800 GPU. 6Table 1: Main results on RoboTwin2.0 (success rate %). Tasks are grouped by average episode length: long-term ( >400 steps), mid-term (300–400), and short-term ( <300). “Touch” is blocks touching rgb ,“Rank” is blocks ranking rgb , “Stack2” is stack blocks two , “Stack3” is stack bowls three , “Place” is 
+
+place a2b right , “Hand” is handover block .Long-Term Mid-Term Short-Term Method Publication Touch Rank Stack2 Stack3 Place Hand Avg. DP [46] RSS’23 0 0 7 63 13 10 16 DP3 [35] arXiv’24 0 3 24 57 49 70 34 RDT [4] ICLR’25 0 1 25 48 0 42 19 OpenVLA-OFT [14] arXiv’25 3 45 53 62 23 11 33                          
+
+> π0(baseline) [6] RSS’25 19 43 43 55 35 48 41 Ours (w/o Recouple) —37 53 52 63 45 55 51 Ours (w/ Recouple) —41 53 57 67 37 63 53
+
+Table 2: Results on LIBERO (success rate %). History indicates whether the policy explicitly conditions on past observation frames at inference time (multi-view inputs at the same timestep are marked as ✗). 3D indicates whether the policy explicitly uses 3D cues at inference time (e.g., depth/point clouds/3D coordinate embeddings). Method Publication History 3D Spatial Object Goal Long Avg. Diffusion Policy [46] RSS’23 ✗ ✗ 78.3 92.5 68.3 50.5 72.4 Octo [29] RSS’24 ✗ ✗ 78.9 85.7 84.6 51.1 75.1 OpenVLA [5] CoRL’24 ✗ ✗ 84.7 88.4 79.2 53.7 76.5 CoT-VLA [11] CVPR’25 ✗ ✗ 87.5 91.6 87.6 69.0 83.9 
+
+π0-FAST [7] arXiv’25 ✗ ✗ 96.4 96.8 88.6 60.2 85.5 PixelVLA [47] arXiv’25 ✗ ✗ 88.5 90.0 85.8 82.6 86.7 GR00T-N1 [48] arXiv’25 ✗ ✗ 94.4 97.6 93.0 90.6 93.9 
+
+π0 [6] RSS’25 ✗ ✗ 96.8 98.8 95.8 85.2 94.2 TraceVLA [12] ICLR’25 ✓ ✗ 84.6 85.2 75.1 54.1 74.8 SpatialVLA [10] RSS’25 ✗ ✓ 88.2 89.9 78.6 55.5 78.1 DepthVLA [15] arXiv’25 ✗ ✓ 96.4 98.0 95.8 89.2 94.9 4D-VLA [2] NeurIPS’25 ✓ ✓ 88.9 95.2 90.9 79.1 88.6 SwiftVLA [3] arXiv’25 ✓ ✓ 97.2 96.8 97.4 89.0 95.1 Ours — ✓ ✓ 96.2 98.0 96.2 91.2 95.4 4.2 Main Results 4.2.1 Simulation Benchmarks 
+
+Tables 1 and 2 summarize the simulation results. On RoboTwin2.0, MotionVLA reaches 53% average success, improving over π0 by 12 points; on the long-horizon Touch task, success increases from 19% 
+
+to 41% . On LIBERO, MotionVLA obtains the best average score among the listed methods ( 95 .4% )and the best LIBERO-L ONG score ( 91 .2% ), improving over π0 by 6.0 points on the long-horizon suite. Together with the weaker history-only and geometry-only baselines, these results suggest that the gain comes from aligned, queryable motion history rather than generic extra context. 
+
+4.2.2 Real-world Validation 
+
+On an Agilex Piper setup with three temporally demanding tasks (Table 3), MotionVLA improves average success from 28 .7% to 41 .9% and reduces average completion steps from 338 to 282. The improvement is visible not only on Pick&Place but also on the more temporally structured Ranking and Touching tasks. These results provide preliminary real-world evidence for the motion-history interface, but are not intended as a comprehensive deployment study across embodiments or environments. Qualitative rollouts and trajectory-field visualizations are provided in Appendix C. 7Table 3: Real-world validation on Agilex Piper. SR is success rate (%); steps are computed by multiplying completion time by 10 and rounding to the nearest integer. For Avg. Steps, unavailable task-level step values are excluded from the average.                                    
+
+> Pick&Place Ranking Touching Avg. Method SR ↑Steps ↓SR ↑Steps ↓SR ↑Steps ↓SR ↑Steps ↓
+> Demo –119 –351 –261 –244
+> π080.0 118 6.1 558 0.0 –28.7 338 Ours 92.5 119 18.2 443 15.0 285 41.9 282
+
+4.3 Motion Consistency and Component Evidence 
+
+Table 4: Path efficiency on LIBERO.          
+
+> GOAL LONG
+> Method SR ↑PE ↓SR ↑PE ↓
+> π0[6] 95.8 1.23 85.2 1.19 4D-VLA* [2] 88.8 1.88 72.6 2.06 4D-VLA [2] 89.8 1.36 78.6 1.32 Ours 96.2 1.05 91.2 1.10
+
+Table 5: Component ablation. T1/T2 are Touch/Stack3; Stg1/Aux/Proj denote Stage-I, auxiliary loss, and projector.                                       
+
+> Hist. 4D Stg1 Aux Proj T1 T2 Avg.
+> ×××××19 55 37
+> ✓××××323 13
+> ✓✓×××12 19 16
+> ✓✓✓××34 45 40
+> ✓✓✓✓×37 63 50
+> ✓✓✓✓✓41 67 54
+
+Motion consistency. Table 4 tests whether higher suc-cess also yields more direct executions. On LIBERO-GOAL /LIBERO-L ONG , MotionVLA obtains PE =1.05 /1.10 , closer to expert path length than both π0
+
+(1.23 /1.19 ) and 4D-VLA ( 1.36 /1.32 ). The pseudo-RGBD 4D-VLA* variant is less efficient, indicating that noisy per-frame geometry can introduce detours rather than improve motion consistency. 
+
+Component evidence. Table 5 rules out a simple “more history or more tokens” explanation. Naive visual his-tory reduces the two-task average from 37% to 13% ,and unaligned 4D tokens reach only 16% . Stage-I align-ment raises the average to 40% , while auxiliary trajectory grounding and recoupling further improve it to 50% and 
+
+54% . This pattern supports the decouple-then-recouple interface: motion history must be aligned, queried by the current observation, and reinjected into the VLA token space. 
+
+## 5 Conclusion 
+
+We introduced MotionVLA , a time-continuous motion-history interface for π0-style VLA policies that recouples compact trajectory-field tokens with current perception through trajectory-grounded supervision. Across evaluated simulation settings, MotionVLA improves long-horizon consistency and path efficiency over the baseline; preliminary Agilex Piper results show the same trend in success and speed. These results support the central premise that resolving spatiotemporal inconsistency in the injected evidence is as important as adding more historical observations. Thus, MotionVLA changes history from fragmented frame evidence into a queryable motion representation that better matches manipulation geometry. Future work includes robust trajectory extraction, broader history schedules, and larger-scale real-world validation. 
+
+## 6 Limitations 
+
+Motion history is most useful under temporal ambiguity or long-horizon state confusion, but can be neutral or slightly harmful when the current observation is sufficient. The frozen trajectory extractor can fail under occlusion, fast motion, or textureless scenes; broader history-size search and stronger-backbone integration remain future work. Our real-world results are preliminary and cover few Agilex Piper tasks, so they should be read as evidence that the interface transfers beyond simulation rather than as a comprehensive deployment study. 8References 
+
+[1] H. Shi, B. Xie, Y. Liu, L. Sun, F. Liu, T. Wang, E. Zhou, H. Fan, X. Zhang, and G. Huang. Mem-oryvla: Perceptual-cognitive memory in vision-language-action models for robotic manipulation. 
+
+arXiv preprint arXiv:2508.19236 , 2025. [2] J. Zhang, Y. Chen, Y. Xu, Z. Huang, Y. Zhou, Y.-J. Yuan, X. Cai, G. Huang, X. Quan, H. Xu, et al. 4d-vla: Spatiotemporal vision-language-action pretraining with cross-scene calibration. 
+
+Advances in Neural Information Processing Systems , 38:33914–33937, 2026. [3] C. Ni, C. Chen, X. Wang, Z. Zhu, W. Zheng, B. Wang, T. Chen, G. Zhao, H. Li, Z. Dong, et al. Swiftvla: Unlocking spatiotemporal dynamics for lightweight vla models at minimal overhead. 
+
+arXiv preprint arXiv:2512.00903 , 2025. [4] S. Liu, L. Wu, B. Li, H. Tan, H. Chen, Z. Wang, K. Xu, H. Su, and J. Zhu. Rdt-1b: a diffusion foundation model for bimanual manipulation. In International Conference on Learning Representations , volume 2025, pages 29982–30009, 2025. [5] M. J. Kim, K. Pertsch, S. Karamcheti, T. Xiao, A. Balakrishna, S. Nair, R. Rafailov, E. Foster, G. Lam, P. Sanketi, et al. Openvla: An open-source vision-language-action model. arXiv preprint arXiv:2406.09246 , 2024. [6] K. Black, N. Brown, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, L. Groom, K. Hausman, B. Ichter, et al. π0: A visionlanguage-action flow model for general robot control, 2024a. URL https://arxiv.org/abs/2410.24164 , 2024. [7] K. Pertsch, K. Stachowicz, B. Ichter, D. Driess, S. Nair, Q. Vuong, O. Mees, C. Finn, and S. Levine. Fast: Efficient action tokenization for vision-language-action models. arXiv preprint arXiv:2501.09747 , 2025. [8] Q. Li, Y. Liang, Z. Wang, L. Luo, X. Chen, M. Liao, F. Wei, Y. Deng, S. Xu, Y. Zhang, et al. Cogact: A foundational vision-language-action model for synergizing cognition and action in robotic manipulation. arXiv preprint arXiv:2411.19650 , 2024. [9] M. Shukor, D. Aubakirova, F. Capuano, P. Kooijmans, S. Palma, A. Zouitine, M. Aractingi, C. Pascal, M. Russi, A. Marafioti, et al. Smolvla: A vision-language-action model for affordable and efficient robotics. arXiv preprint arXiv:2506.01844 , 2025. [10] D. Qu, H. Song, Q. Chen, Y. Yao, X. Ye, Y. Ding, Z. Wang, J. Gu, B. Zhao, D. Wang, et al. Spatialvla: Exploring spatial representations for visual-language-action model. arXiv preprint arXiv:2501.15830 , 2025. [11] Q. Zhao, Y. Lu, M. J. Kim, Z. Fu, Z. Zhang, Y. Wu, Z. Li, Q. Ma, S. Han, C. Finn, et al. Cot-vla: Visual chain-of-thought reasoning for vision-language-action models. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 1702–1713, 2025. [12] R. Zheng, Y. Liang, S. Huang, J. Gao, H. Daum ´e III, A. Kolobov, F. Huang, and J. Yang. Tracevla: Visual trace prompting enhances spatial-temporal awareness for generalist robotic policies. In International Conference on Learning Representations , volume 2025, pages 54277– 54296, 2025. [13] P. Intelligence, K. Black, N. Brown, J. Darpinian, K. Dhabalia, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, et al. π0.5: a vision-language-action model with open-world generalization. 
+
+arXiv preprint arXiv:2504.16054 , 2025. [14] M. J. Kim, C. Finn, and P. Liang. Fine-tuning vision-language-action models: Optimizing speed and success. arXiv preprint arXiv:2502.19645 , 2025. [15] T. Yuan, Y. Liu, C. Lu, Z. Chen, T. Jiang, and H. Zhao. Depthvla: Enhancing vision-language-action models with depth-aware spatial reasoning. arXiv preprint arXiv:2510.13375 , 2025. 9[16] L. Sun, B. Xie, Y. Liu, H. Shi, T. Wang, and J. Cao. Geovla: Empowering 3d representations in vision-language-action models. arXiv preprint arXiv:2508.09071 , 2025. [17] L. Beyer, A. Steiner, A. S. Pinto, A. Kolesnikov, X. Wang, D. Salz, M. Neumann, I. Alabdul-mohsin, M. Tschannen, E. Bugliarello, et al. Paligemma: A versatile 3b vlm for transfer. arXiv preprint arXiv:2407.07726 , 2024. [18] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, J. Dabis, C. Finn, K. Gopalakrishnan, K. Haus-man, A. Herzog, J. Hsu, et al. Rt-1: Robotics transformer for real-world control at scale. arXiv preprint arXiv:2212.06817 , 2022. [19] H. Li, S. Yang, Y. Chen, Y. Tian, X. Yang, X. Chen, H. Wang, T. Wang, F. Zhao, D. Lin, et al. Cronusvla: Transferring latent motion across time for multi-frame prediction in manipulation. 
+
+arXiv preprint arXiv:2506.19816 , 2025. [20] D. Li, Y. Zhang, M. Cao, D. Liu, W. Xie, T. Hui, L. Lin, Z. Xie, and Y. Li. Towards long-horizon vision-language-action system: Reasoning, acting and memory. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 6839–6848, 2025. [21] G. Wu, T. Yi, J. Fang, L. Xie, X. Zhang, W. Wei, W. Liu, Q. Tian, and X. Wang. 4d gaussian splatting for real-time dynamic scene rendering. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 20310–20320, 2024. [22] X. Liu, Y. Xiao, D. Y. Chen, J. Feng, Y.-W. Tai, C.-K. Tang, and B. Kang. Trace anything: Representing any video in 4d via trajectory fields. arXiv preprint arXiv:2510.13802 , 2025. [23] T. Chen, Z. Chen, B. Chen, Z. Cai, Y. Liu, Z. Li, Q. Liang, X. Lin, Y. Ge, Z. Gu, et al. Robotwin 2.0: A scalable data generator and benchmark with strong domain randomization for robust bimanual robotic manipulation. arXiv preprint arXiv:2506.18088 , 2025. [24] B. Liu, Y. Zhu, C. Gao, Y. Feng, Q. Liu, Y. Zhu, and P. Stone. Libero: Benchmarking knowledge transfer for lifelong robot learning. Advances in Neural Information Processing Systems , 36: 44776–44791, 2023. [25] Z. Li, W. Wang, H. Li, E. Xie, C. Sima, T. Lu, Q. Yu, and J. Dai. Bevformer: learning bird’s-eye-view representation from lidar-camera via spatiotemporal transformers. IEEE Transactions on Pattern Analysis and Machine Intelligence , 47(3):2020–2036, 2024. [26] Y. Hu, J. Yang, L. Chen, K. Li, C. Sima, X. Zhu, S. Chai, S. Du, T. Lin, W. Wang, et al. Planning-oriented autonomous driving. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 17853–17862, 2023. [27] B. Liao, S. Chen, H. Yin, B. Jiang, C. Wang, S. Yan, X. Zhang, X. Li, Y. Zhang, Q. Zhang, et al. Diffusiondrive: Truncated diffusion model for end-to-end autonomous driving. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 12037–12047, 2025. [28] A. O’Neill, A. Rehman, A. Maddukuri, A. Gupta, A. Padalkar, A. Lee, A. Pooley, A. Gupta, A. Mandlekar, A. Jain, et al. Open x-embodiment: Robotic learning datasets and rt-x models: Open x-embodiment collaboration 0. In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pages 6892–6903. IEEE, 2024. [29] O. M. Team, D. Ghosh, H. Walke, K. Pertsch, K. Black, O. Mees, S. Dasari, J. Hejna, T. Kreiman, C. Xu, et al. Octo: An open-source generalist robot policy. arXiv preprint arXiv:2405.12213 ,2024. [30] Y. Wang, H. Zhu, M. Liu, J. Yang, H.-S. Fang, and T. He. Vq-vla: Improving vision-language-action models via scaling vector-quantized action tokenizers. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 11089–11099, 2025. 10 [31] W. Zhang, H. Liu, Z. Qi, Y. Wang, X. Yu, J. Zhang, R. Dong, J. He, H. Wang, Z. Zhang, et al. Dreamvla: a vision-language-action model dreamed with comprehensive world knowledge. 
+
+Advances in Neural Information Processing Systems , 38:24195–24228, 2026. [32] S. Zhang, G. Wu, Z. Xie, X. Wang, B. Feng, and W. Liu. Dynamic 2d gaussians: Geometrically accurate radiance fields for dynamic objects. In Proceedings of the 33rd ACM International Conference on Multimedia , pages 8144–8153, 2025. [33] J. Wang, M. Chen, N. Karaev, A. Vedaldi, C. Rupprecht, and D. Novotny. Vggt: Visual geometry grounded transformer. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2025. [34] H. Lin, S. Chen, J. H. Liew, D. Y. Chen, Z. Li, G. Shi, J. Feng, and B. Kang. Depth anything 3: Recovering the visual space from any views. arXiv preprint arXiv:2511.10647 , 2025. [35] Y. Ze, G. Zhang, K. Zhang, C. Hu, M. Wang, and H. Xu. 3d diffusion policy: Generalizable visuomotor policy learning via simple 3d representations. arXiv preprint arXiv:2403.03954 ,2024. [36] C. Li, J. Wen, Y. Peng, Y. Peng, and Y. Zhu. Pointvla: Injecting the 3d world into vision-language-action models. IEEE Robotics and Automation Letters , 11(3):2506–2513, 2026. [37] B. Chen, Z. Xu, S. Kirmani, B. Ichter, D. Sadigh, L. Guibas, and F. Xia. Spatialvlm: Endowing vision-language models with spatial reasoning capabilities. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 14455–14465, 2024. [38] A.-C. Cheng, H. Yin, Y. Fu, Q. Guo, R. Yang, J. Kautz, X. Wang, and S. Liu. Spatialrgpt: Grounded spatial reasoning in vision-language models. Advances in Neural Information Processing Systems , 37:135062–135093, 2024. [39] Z. Fan, J. Zhang, R. Li, J. Zhang, R. Chen, H. Hu, K. Wang, H. Qu, S. Zhou, D. Wang, et al. Vlm-3r: Vision-language models augmented with instruction-aligned 3d reconstruction. arXiv preprint arXiv:2505.20279 , 2025. [40] S. Zhou, A. Vilesov, X. He, Z. Wan, S. Zhang, A. Nagachandra, D. Chang, D. Chen, X. E. Wang, and A. Kadambi. Vlm4d: Towards spatiotemporal awareness in vision language models. In 
+
+Proceedings of the IEEE/CVF international conference on computer vision , pages 8600–8612, 2025. [41] H. Zhou and G. H. Lee. Uni4d-llm: A unified spatiotemporal-aware vlm for 4d understanding and generation. arXiv preprint arXiv:2509.23828 , 2025. [42] W. Li, R. Zhou, J. Zhou, Y. Song, J. Herter, M. Qin, G. Huang, and H. Pfister. 4d langsplat: 4d language gaussian splatting via multimodal large language models. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 22001–22011, 2025. [43] S. Wang, Y. Liu, T. Wang, Y. Li, and X. Zhang. Exploring object-centric temporal modeling for efficient multi-view 3d object detection. In Proceedings of the IEEE/CVF international conference on computer vision , pages 3621–3631, 2023. [44] D. Niu, Y. Sharma, H. Xue, G. Biamby, J. Zhang, Z. Ji, T. Darrell, and R. Herzig. Pre-training auto-regressive robotic models with 4d representations. arXiv preprint arXiv:2502.13142 , 2025. [45] C. Wang, B. Eckart, S. Lucey, and O. Gallo. Neural trajectory fields for dynamic novel view synthesis. arXiv preprint arXiv:2105.05994 , 2021. [46] C. Chi, Z. Xu, S. Feng, E. Cousineau, Y. Du, B. Burchfiel, R. Tedrake, and S. Song. Diffusion policy: Visuomotor policy learning via action diffusion. The International Journal of Robotics Research , 44(10-11):1684–1704, 2025. 11 [47] W. Liang, G. Sun, Y. He, J. Dong, S. Dai, I. Laptev, S. Khan, and Y. Cong. Pixelvla: Advancing pixel-level understanding in vision-language-action model. arXiv preprint arXiv:2511.01571 ,2025. [48] J. Bjorck, F. Casta ˜neda, N. Cherniadev, X. Da, R. Ding, L. Fan, Y. Fang, D. Fox, F. Hu, S. Huang, et al. Gr00t n1: An open foundation model for generalist humanoid robots. arXiv preprint arXiv:2503.14734 , 2025. 12 Appendix A Additional Experimental Results and Ablations 
+
+A.1 Training Efficiency and Stage-I Sensitivity 0K 10K 20K 30K 
+
+(a) 
+
+0
+
+20 
+
+40 
+
+60 
+
+> Success Rate (%)
+> Ours (w/ 4D)
+> Baseline (w/o 4D)
+> (a) Training efficiency.
+
+0K 40K 60K 80K 120K 
+
+(b) 
+
+0
+
+20 
+
+40 
+
+60  
+
+> Success Rate (%)  Peak: 63% (b) Stage-I training steps.
+
+Figure 3: Training efficiency and Stage-I sensitivity. On stack blocks two , MotionVLA reaches higher early success than the baseline, suggesting that motion-history tokens provide a useful optimization prior. Stage-I alignment peaks around 60k steps in this setting; insufficient alignment underuses trajectory-field features, while overly long Stage-I training can slightly hurt downstream adaptation. MotionVLA converges faster during downstream adaptation because the motion-history interface reduces ambiguity in mapping visually similar intermediate states to actions. The Stage-I sweep further suggests that the trajectory-field interface should be aligned to the VLA embedding space, but not over-specialized to the heterogeneous pretraining mixture before target-task adaptation. 
+
+A.2 History Window, Stride, and Inference Speed 
+
+Table 6: History-window ablation on blocks touching rgb . Eff. denotes the effective raw-frame temporal coverage Thist ∆.                                
+
+> Thist ∆Eff. FPS SR 0––12.3 19 3268.9 33 5157.3 35 5210 7.1 41
+> 10 110 3.1 40 10 220 3.1 23 20 240 0.9 26
+
+The default setting Thist = 5 , ∆ = 2 gives the best observed success–speed trade-off in this ablation. Compared with Thist = 5 , ∆ = 1 , increasing the stride improves success from 35% to 41% while preserving similar inference speed. However, longer effective histories do not consistently help: they increase computation and may introduce stale or task-irrelevant early-stage motion, making retrieval less focused for the current control state. A1 A.3 Motion-history Alignment Diagnostics 
+
+Figure 4: Training curves during motion-history interface alignment. We plot the action loss and the auxiliary trajectory-grounding loss used in Stage-I alignment. The auxiliary trajectory-grounding loss is used only to shape the retrieved motion-conditioned tokens during alignment. In Stage II, the auxiliary trajectory head is detached, and the downstream policy is optimized for action generation. This separation keeps the motion-history tokens grounded in recent robot dynamics while avoiding an additional inference-time prediction requirement. 
+
+A.4 Controlled Robustness to Motion-History Corruption 
+
+The frozen trajectory extractor is a potential source of error under occlusion, fast motion, appearance perturbation, or textureless regions. To quantify how such errors affect MotionVLA, we conduct a controlled robustness evaluation on RoboTwin2.0. For each task, we load the MotionVLA checkpoint trained with clean inputs. At test time, we corrupt only the past head-camera frames Wt that are fed to the frozen trajectory extractor, while keeping the current observation, proprioception, and language instruction unchanged. This intervention isolates the sensitivity of the motion-history branch from the main current-observation pathway. We apply three increasing corruption levels: mild, medium, and severe. Each level combines random spatial occlusion, frame-wise appearance perturbation, and random dropping of history frames. We use this setting as a controlled proxy for trajectory-extractor failure rather than as a complete robustness benchmark for all possible visual corruptions. Since the π0 baseline does not use the motion-history branch, we report its clean performance as a reference. Table 7: Controlled robustness analysis on RoboTwin2.0. We corrupt only the history frames fed to the frozen trajectory extractor at test time, while keeping the current observation unchanged. SR is re-ported in percentage. “Rank” denotes blocks ranking rgb , and “Hand” denotes handover block .Avg. is the mean over the two tasks.                         
+
+> Model Corruption Rank Hand Avg.
+> π0Clean 43 48 45.5 MotionVLA Clean 53 63 58.0 MotionVLA Mild 53 62 57.5 MotionVLA Medium 50 59 54.5 MotionVLA Severe 45 53 49.0
+
+As shown in Table 7, MotionVLA degrades progressively rather than collapsing abruptly when the history branch is corrupted. Compared with clean MotionVLA, the average success rate drops by 0.5, 3.5, and 9.0 points under mild, medium, and severe corruption, respectively. Even under severe corruption, MotionVLA remains above the clean π0 baseline on both tasks. These results support a bounded robustness claim under this controlled history-branch corruption setting, while also confirming that severe trajectory-extractor failures can still degrade action quality. A2 B Task Definitions in RoboTwin2.0 
+
+We evaluate MotionVLA on six RoboTwin2.0 manipulation tasks (Table 1). Among them, blocks touching rgb 
+
+is a custom task constructed in the RoboTwin2.0 simulation environment, while the other five tasks are standard RoboTwin2.0 tasks. Below we describe the goal and the success criteria for each task. 
+
+blocks touching rgb (custom). Goal. The robot uses the gripper tip to touch three colored blocks in the order red → green → blue . Success. The episode is successful if the gripper tip makes physical contact with the red, green, and blue blocks exactly once each in the correct order, without repeated touches or missed touches. 
+
+blocks ranking rgb. Goal. The robot picks up three blocks and arranges them into a left-to-right line with the color order red → green → blue . Success. The episode is successful if the three blocks are placed approximately on a straight line and the left-to-right color ordering matches the target ranking. 
+
+stack blocks two. Goal. The robot grasps the green block and stacks it on top of the red block. Success. 
+
+The episode is successful if the green block stably remains above the red block (i.e., a valid two-block stack is formed and maintained). 
+
+stack bowls three. Goal. The robot stacks three bowls into a single three-bowl stack. Success. The episode is successful if all three bowls are stacked together. 
+
+place a2b right. Goal. The robot places object A (randomly sampled) to the right of object B (randomly sampled). Success. The episode is successful if object A is positioned to the right of object B. 
+
+handover block. Goal. A bimanual task: the left arm grasps a red cube, hands it over to the right arm, and the right arm places the cube onto a blue pad. Success. The episode is successful if the red cube stably remains on the blue pad at the end of the episode. blocks_touching_rgb 
+
+> blocks _ranking _rgb
+> stack_blocks_two
+> stack_bowls_three
+> place_a2b_right
+> handover_block
+
+Figure 5: Demonstrations of the six tasks. A3 C Additional Qualitative Results 
+
+Figure 6: Qualitative examples on blocks touching rgb . Success (top): the gripper touches the blocks in the required order. Failure (bottom): the gripper misses the red block and perturbs the green and blue blocks during contact. 
+
+Figure 7: LIBERO trajectory-field visualization. Consecutive frames illustrate temporally struc-tured motion cues extracted from the past observation window. 
+
+Figure 8: Real-world trajectory-field visualization. Consecutive Agilex Piper observations show the trajectory-field cues used by the motion-history interface. A4 Figure 9: Real-world rollouts. Example rollouts on Agilex Piper for the preliminary real-world validation tasks. A5

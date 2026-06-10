@@ -1,0 +1,1000 @@
+Title: Guided Discovery of New Behaviors using Diffusion Policies
+
+URL Source: https://arxiv.org/pdf/2606.08743v1
+
+Published Time: Tue, 09 Jun 2026 01:23:30 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# Guided Discovery of New Behaviors using Diffusion Policies 
+
+Dian Yu 1, Sebastian Sanokowski 1, and Majid Khadiv 11Munich Institute of Robotics and Machine Intelligence, Technical University of Munich 
+
+{imdian.yu, sebastian.sanokowski, majid.khadiv }@tum.de 
+
+Abstract: Diffusion models have become a powerful tool for generative model-ing in robotics, with diffusion policies excelling at modeling multimodal action-trajectory distributions. However, when demonstrations are limited, standard sampling often reproduces dominant behaviors while neglecting valid but rare modes, limiting the discovery of novel solutions. Existing approaches, such as guidance methods or combining reinforcement learning (RL) with diffusion, either push samples into infeasible regions or struggle to escape local minima, failing to systematically uncover diverse behaviors. To address these challenges, we pro-pose a framework that combines Feynman–Kac correctors with a novel guiding potential that systematically guides diffusion policy samples towards promising yet underrepresented samples. These trajectories are refined using sampling-based trajectory optimization and reincorporated into the training set to retrain the diffu-sion policy. Our method effectively mines and repairs novel trajectories, enabling the systematic discovery of diverse and executable behaviors. We demonstrate the effectiveness of our framework across a range of manipulation environments, consistently discovering new behaviors. A supplementary video is available at: 
+
+youtu.be/T7MUvMA67VM .
+
+Keywords: Diffusion Policies, Rare-Event Sampling, Motion Discovery 
+
+## 1 Introduction 
+
+Diffusion models [ 1 , 2, 3 ] have emerged as one of the most powerful tools for generative modeling in robotics. In particular, diffusion policies [ 4 ] are proven to be a powerful tool for modeling multimodal action-trajectory distributions. However, under limited demonstrations, standard sampling often reproduces dominant modes while under-representing valid but rare behaviors [ 4 ]. This raises the question: How can we systematically discover new behaviors in diffusion policies? 
+
+A common approach is to use guidance methods [ 5] to increase sample diversity [ 6, 7, 8]. However, these methods often push samples into low-support regions, resulting in trajectories that are infeasible or non-executable in the environment. Alternatively, methods which combine reinforcement learning (RL) [ 9] with diffusion samplers [ 10 , 11 , 12 ], such as in [ 13 , 14 , 15 ], could be applied to discover new behaviors. Yet, RL and diffusion samplers are prone to getting stuck in local minima [ 16 ], making it difficult to discover diverse behaviors. Even when initialized with a pretrained policy, RL typically refines the existing policy to improve motion optimality rather than exploring new modes, unless explicit reward shaping toward new goals is used [17]. To address these limitations, we propose our framework Guided Discovery of New Behaviors (GDNB), which builds upon guidance methods while mitigating their shortcomings. GDNB is motivated by the evidence that diffusion models, which are trained in the sparse data regime, can assign low probability to useful behaviors [ 18 , 19 , 20 ]. Thus, we systematically guide samples using Feynman– Kac correctors [ 21 ] towards trajectories from the diffusion policy that are both promising and underrepresented samples. These frontier trajectories are then refined and corrected using sampling-based trajectory optimization methods and added to the training set to retrain the diffusion policy. 
+
+> arXiv:2606.08743v1 [cs.RO] 7 Jun 2026
+
+Our goal is to systematically mine and repair new trajectories from the diffusion model, enabling the discovery of novel and diverse behaviors. We evaluate GDNB across diverse manipulation environments and show that it discovers executable behaviors underrepresented by the initial policy. An overview of our framework is presented in Fig. 1. 
+
+Figure 1: Overview of the GDNB bootstrapping loop. A Rare-Event sampler proposes frontier trajectories, which are locally repaired and added back to the dataset for policy fine-tuning. 
+
+1.1 Related Work Policy improvement and exploration after behavior cloning. Several recent methods aim to improve diffusion or generative policies after an imitation learning stage. Diffusion Policy Policy Optimization (DPPO) [ 13 ] extends Proximal Policy Optimization (PPO) [ 22 ] to diffusion models and [ 14 , 15 ] explain how to apply diffusion models to maximum-entropy reinforcement learning. DSRL steers a frozen diffusion policy by learning in its latent-noise space [ 23 ]; SOE [ 24 ] constrains robot exploration to a learned action manifold. However, to discover diverse solutions, these methods need to be combined with skill discovery, novelty search, or reward shaping in order to encourage exploration [25, 26, 27, 17]. 
+
+Synthetic demonstrations and local trajectory repair. A complementary direction is to synthesize or relabel additional demonstrations. MimicGen scales imitation datasets by adapting a small number of human demonstrations to new contexts [ 28 ], while online imitation and dataset-aggregation methods address compounding errors through additional expert or corrective data [ 29 ]. Our method instead proposes candidates from the low-support frontier of the learned policy and admits them only after environment rollout and local repair. The repair stage builds on sampling-based trajectory optimization [30], leveraging recent advances in zero-order optimization [31, 32, 33]. 
+
+Guided and rare-event diffusion sampling. Inference-time guidance modifies diffusion sampling toward user-specified objectives or constraints [ 5]. In robotics, guided diffusion or flow-based planners use costs, generated trajectories, or safety constraints to steer samples toward feasible motion [6, 7, 8]. Rare-event diffusion sampling has also been studied in molecular modeling, where several guidance potentials are proposed, that aim at guiding the diffusion model towards rare events [ 34 ]. These methods primarily optimize sampler-side rare-region coverage or unbiased estimator recovery. 
+
+## 2 Preliminaries 
+
+We consider a sequential decision-making problem with environment time t = 0 , . . . , T − 1, state 
+
+xt ∈ X = Rdx , and action at ∈ A = Rda . The environment evolves as xt+1 = fdyn (xt, a t), with 
+
+x0 ∼ ρ0. A rollout is τ = ( x0, a 0, . . . , x T −1, a T −1, x T ). A sparse task reward rt = r(xt, a t, x t+1 ),2or its rollout aggregate R(τ ), measures task performance, and Success( τ ) ∈ { 0, 1} denotes task success. In our setup, we assume access to an offline dataset of demonstrations D = {τi}Ni=1 , where 
+
+τi is a successful trajectory. The demonstrations capture valid strategies for solving the task, but typically represent only a sparse subset of all feasible behaviors. In practice, many environments admit multiple qualitatively different solutions that achieve high reward, yet the dataset may over-represent a few dominant modes while under-representing rare but useful behaviors. Our goal is therefore not only to imitate the demonstrations, but to discover additional successful behaviors while remaining consistent with the environment dynamics and task constraints. Concretely, we seek to learn policies that can interact with the environment in diverse ways while still achieving the task objective. 
+
+2.1 Diffusion Policies 
+
+Let A0 
+
+> t
+
+∼ pdata (At | xt), where A0 
+
+> t
+
+= ( at, . . . , a t+H−1) ∈ RH×da is an action chunk of horizon 
+
+H conditioned on the current state. Diffusion policies model multimodal action distributions by learning to reverse a forward noising process that progressively perturbs A0 
+
+> t
+
+into Gaussian noise. In continuous time, this process is commonly written as a stochastic differential equation (SDE) 
+
+dA kt = g(k, A kt ) dk + b(k) dW k, k ∈ [0 , 1] , (1) where Wk is a Wiener process in the action-chunk space RHd a , g : [0 , 1] × RHd a → RHd a is the forward drift, k ∈ [0 , 1] is the diffusion time step, and b : [0 , 1] → R+ is the diffusion coefficient. By using either a variance-preserving or variance-exploding SDE [ 3], the terminal reference distribution is approximately an isotropic Gaussian. Diffusion models learn to reverse this diffusion process. With k parameterizing the reverse sampler from noise to data, the reverse-time dynamics are written as 
+
+dA kt = b(k)2∇A log pk(Akt | xt) − g(k, A kt )dk + b(k) d ¯Wk, (2) where ¯Wk is reverse-time Brownian motion and ∇A log pk(Akt | xt) is the conditional score. Since this score is unknown, a neural network skθ (Akt , x t) is trained to approximate it. Then, starting from Gaussian noise, repeated application of Eq. (2) generates action chunks that approximately follow the demonstrated action distribution. By repeatedly unrolling the diffusion policy in the environment, one obtains the corresponding state trajectories X0: T .For control, we use diffusion policies that generate future action sequences conditioned on the current observation. At execution time, only the first h < H actions, At,h = ( at, . . . , a t+h−1), are applied before replanning. A major advantage of diffusion policies is that they naturally represent multimodal behavior distributions. However, in the low-data regime, sampling is typically dominated by high-density modes from the demonstrations. As a result, rare but valid strategies are often assigned low probability and are rarely generated during ordinary sampling. 
+
+Guidance toward tilted distributions. A common approach to increasing diversity in diffusion model samples is guidance [5]. Guidance modifies the reverse diffusion dynamics to bias sampling toward action chunks that maximize a desired property B(At, x t). This can be framed as sampling from a tilted target distribution: 
+
+p(At) ∝ πθ (At|xt) exp( βB (At, x t)) , (3) which assigns low probability to regions where either πθ (At|xt) or exp( βB (At, x t)) is small, and high probability where both distributions have significant probability mass. Standard guid-ance methods attempt to solve this by adjusting the learned score as ˜skθ (Akt , x t) = skθ (Akt , x t) + 
+
+β∇ABk(Akt , x t), where β controls the guidance strength. However, this approach does not correctly sample from Eq. 3 [ 21 ] and introduces bias, potentially leading to samples with low support under 
+
+p(At). This issue can be addressed using Feynman–Kac correctors (FKCs) [ 21 ], which provide a principled framework for steering diffusion processes (see Sec. 3.1 for more details). 32.2 Sampling-Based Trajectory Optimization 
+
+Sampling-based trajectory optimization (SBTO) [ 35 ] optimizes a candidate action sequence by repeatedly sampling candidate control trajectories and performing a weighted average over rollouts to improve the cost. To handle the curse of dimensionality in long-horizon problems, recent SBTO formulations [ 30 ] optimize over a sliding window of trajectories, warm-starting each segment from the solution of the previous segment. This setting is particularly effective when the optimizer tracks an imperfect reference, which is what we need in this work. In this work, we modify the SBTO in [30] to use it as a repair module (see Sec. 3.2 and App. B.1). 
+
+## 3 Method 
+
+Diffusion models trained on robotic data learn a distribution πθ (τ ) over trajectories, but in the rare data regime tend to converge toward high-probability modes representing “average” behaviors [36 , 17 ]. In robotics this limits the discovery of diverse and novel solutions. Our method addresses this by explicitly targeting frontier samples : trajectories with low local support under the current policy-induced distribution πθr (τ ), but not so far from support that they become unrecoverable. Operationally, sampler-side rarity is measured by calibrated denoiser-score energy, while evaluation-side rarity uses the distance-to-measure (DTM) percentile u defined in Sec. 4.2. Rare samples serve a dual purpose. First, they act as out-of-distribution probes , preventing mode collapse and ensuring the policy explores diverse behaviors across the support of πθ (τ ). Second, they often represent novel or edge-case behaviors that the model has not yet fully learned. By mining these samples, we force exploration of under-represented state-action regions. Without explicitly targeting them, πθ (τ ) would continue refining high-probability behaviors rather than discovering new ones. We propose a closed-loop bootstrapping framework that integrates the methods introduced in Sec. 2 into a cohesive pipeline, as illustrated in Fig. 1. Our iterative process consists of three key steps: (1) we guide a pretrained diffusion model toward rare samples using a Feynman–Kac corrected biasing potential; (2) a sampling-based trajectory optimization algorithm repairs the sampled rare candidates toward physical feasibility and task completion; and (3) corrected trajectories are appended to the dataset to fine-tune the diffusion policy πθ . This creates a targeted curriculum [ 37 ] where the model attempts unusual behaviors, receives corrective feedback, and improves. Compared to random sampling, this is more efficient as it focuses learning on the most informative, under-represented parts of the distribution. Pseudocode is provided in Algorithm 1. 
+
+3.1 Guidance toward rare events 
+
+A central component of our framework is the guidance function Bk(Akt , x t), which systematically biases diffusion samples toward low-probability regions. To achieve this goal, we propose to leverage the learned score skθ (Akt , x t) of the diffusion model as a proxy for identifying such regions. Intuitively, samples with small score norms tend to lie in stationary, high-probability regions of the distribution. In contrast, large score norms indicate regions where the model drifts, corresponding to low-probability areas. To operationalize this, at diffusion time k we define 
+
+Bk(Akt , x t) = −Φ( dkθ (Akt , x t)) , dkθ (Akt , x t) = ∥˜skθ (Akt , x t)∥22, (4) where ˜skθ is the active score output whitened using mean and variance statistics from ordinary base-policy rollouts at the same diffusion time. Here, Φ is inspired by the Lennard–Jones potential [ 38 , 39 ]; writing x = d/d ∗, its shape and gradient are shown in Fig. 4. It is given by 
+
+Φ( d) = 
+
+ d∗
+
+d
+
+p
+
+− pq
+
+ d∗
+
+d
+
+q
+
++
+
+ pq − 1
+
+
+
+, p > q > 0. (5) where p and q control shell sharpness, and d∗ = d∗ 
+
+> k
+
+> 0 is the target rare-shell energy at diffusion time k, calibrated from base-sample statistics as detailed in App. A.3. 
+
+Feynman–Kac Correctors for Tilted Target Distributions. To guide a diffusion model with a learned score sθ toward the tilted target distribution in (3) , [ 21 ] propose simulating a batch of 4particles according to the following SDEs: 
+
+dA kt =
+
+h
+
+b2
+
+> k
+
+
+
+skθ (Akt , x t) + βk ∇ABk (Akt , x t)
+
+
+
+− gk (Akt )
+
+i
+
+dk + bk dW k , (6) 
+
+dℓ k =
+
+
+
+∂k βk Bk (Akt , x t) − ⟨∇ ABk (Akt , x t), g k (Akt )⟩ +
+
+
+
+βk ∇ABk (Akt , x t), b2
+
+> k
+
+2 skθ (Akt , x t)
+
+ 
+
+dk. (7) 
+
+We follow the definitions from Sec. 2.1 and ℓk = log wk is the particle log-weight. After generation, particles are resampled with probabilities softmax( ℓ0). (See App. A.4 for more details). 
+
+3.2 Bootstrapping Framework Algorithm 1 Pseudocode of the Guided Discovery Framework 
+
+Require: initial dataset D0, reset distribution ρ0, rounds R, number of independent initial states N , number of calibration samples M , number of rare samples L
+
+1: πθ0 ← Train( D0) ▷ current diffusion action policy 
+
+2: for r = 0 , . . . , R − 1 do 
+
+3: {x0,n }Nn=1 ∼ ρ0
+
+4: D+ 
+
+> r
+
+← {} 
+
+5: for n = 1 , . . . , N do 
+
+6: {τ base  
+
+> m
+
+}Mm=1 ← BaseRollout( πθr , x 0,n ) ▷ Sample M independent trajectories for state x0,n 
+
+7: Γr,n ← CalibrateSampler( {τ base  
+
+> m
+
+}Mm=1 ) ▷ compute score statistics over all M trajectories 
+
+8: {τ rare  
+
+> ℓ
+
+}Lℓ=1 ← RareRollout( πθr , Γr,n , x 0,n ) ▷ sample L rare trajectories for state x0,n 
+
+9: {τ ⋆ℓ }Lℓ=1 ← SBTO( {τ rare  
+
+> ℓ
+
+}Lℓ=1 , x 0,n ) ▷ fixed-horizon local repair 
+
+10: D+ 
+
+> r
+
+← D + 
+
+> r
+
+∪ { τ ⋆ℓ : Success( τ ⋆ℓ ) = 1 , ℓ = 1 , . . . , L } ▷ insert successful repairs 
+
+11: end for 
+
+12: Dr+1 ← D r ∪ D +
+
+> r
+
+13: πθr+1 ← FineTune( πθr , Dr+1 )
+
+14: end for 
+
+15: return DR, π θR
+
+Algorithm 1 summarizes the bootstrapping loop. Starting from one of N randomly sampled ini-tial states x0,n , a batch of M calibration samples is obtained from the unguided diffusion model (BaseRollout ) in order to obtain calibration statistics Γr,n . Next, a batch of L candidates is sampled from the rare-event sampler ( RareRollout ) via FKC correction, and these trajectories are further refined using SBTO . Finally, successful repairs are added to Dr , and the diffusion policy is fine-tuned for the next round. 
+
+## 4 Experiments 
+
+In our experiments, we aim to evaluate whether our framework enables a diffusion policy to learn new behaviors. To this end, we first assess in Section 4.1 whether our rare event guidance method proposed in Section 3 combined with SBTO refinement can recover missing modes in a multimodal action distribution starting from a pretrained policy. In Section 4.2, we first evaluate how our guidance potential performs in sampling rare yet in-distribution samples, comparing it against several baseline methods. Finally, we apply our full pipeline to challenging robotics manipulation benchmarks in simulation and validate the results with real-world experiments. 
+
+4.1 Mode Recovery in Multimodal Action Distributions 
+
+The Multimodal Agent benchmark, introduced in [ 15 ], is a multimodal RL task designed to evaluate whether diffusion-based RL policies can effectively cover multimodal action distributions in markov decision processes. In this benchmark, an agent proposes movements within a continuous range of possible directions, while the environment dynamics discretize the resulting state into one of eight fixed directional states. The initial demonstrations lie intentionally in a single-mode. Importantly, the reward landscape is bimodal for each state, with reward-equivalent optima at 
+
+a = ±0.5, corresponding to ±45 ◦ turns. For further details, see App. C. In this work, we repurpose 5Figure 2: Representative GDNB-discovered behaviors and real-world replay. (Blue/Cyan) denote common behaviors from the base policy, (orange/red) denote rare behaviors discovered by GDNB. Translucent robot copies indicate temporal rollout snapshots, and colored markers indicate accumulated contact locations. This figure shows key frames and contact/pose summaries. Kitchen 
+
+(A1–A2): GDNB discovers rare subtask sequences, including rare successful sequences that complete at least four subtasks; here, colors indicate rollout stages rather than common-vs-rare labels. Can 
+
+(B1–B3): B1 shows that GDNB discovers new gripper–can contact locations, B2 compares the corresponding common and rare end-effector grasp poses, and B3 shows a real-robot replay of the rare grasp-pose variant. Lift (C1–C2): C1 compares a common blue-box pickup with a rare orange/red-box pickup at the lifting moment, and C2 shows the corresponding real-robot replay. 
+
+ToolHang (D1–D2): D1 compares a common blue-gripper release motion with a rare orange/red-gripper release orientation, and D2 shows the real-robot replay of the rare release variant. the Multimodal Agent benchmark to test whether, given a collapsed policy that represents only a single mode, GDNB can recover previously undiscovered modes. Our evaluation, illustrated in Figure 3, demonstrates that by leveraging the rare-event sampler introduced in Section 3.1 combined with SBTO correction, GDNB successfully recovers the missing modes on this task. 
+
+4.2 Rare Behavior Discovery in Robotic Manipulation 
+
+Figure 3: Mode recovery in Multimodal Agent .
+
+Demonstrations cover only the right-turn optimum. GDNB is able to recover the probability mass of the second optimum. To systematically evaluate our rare event sampling potential and the discovery of new behavior, GDNB is evaluated on eight robotics manipulation benchmarks from [ 4]: Push-T , Block Pushing , Franka Kitchen , Lift , Can , Square , Transport ,and ToolHang . The suite covers various object interactions such as planar push-ing, object pushing, articulated kitchen manipulation, grasping, placement, inser-tion/alignment, bimanual transport, and tool hanging. 
+
+Action-space rarity sampler perfor-mance. We first evaluate the rare-event sampler from Sec. 3.1 by analyzing generated action chunks. For each action chunk, we compute a k-nearest-neighbor (kNN) DTM score and convert it to a percentile u ∈ [0 , 1] using held-out unmodi-fied diffusion-policy samples from the same starting condition [ 40 ] (See App. A.2). Equivalently, a larger u indicates that the corresponding samples have lower base policy distribution support. We detect a sample as a frontier sample when 0.90 ≤ u ≤ 0.985 and report it as Frontier . We report 6the out-of-distribution rate as OOD = Pr( u > 0.985) and the common-sample rate as Common 
+
+= Pr( u < 0.90) . Results are reported in Tab. 1, where all methods are evaluated with the same tuning budget. We include two groups of baselines. Existing sampler baselines are UmbrellaDiff, 
+
+∆G-Diff, MetaDiff [ 34 ], and Annealed FKC [ 21 ]. The uncited rows are simple internal baselines (see App. A.2):                                                                       
+
+> Sampler Frontier ↑OOD ↓Common ↓
+> GDNB (Ours) 59 .05 ±2.19 0.00 ±0.00 40 .95
+> Simple internal baselines
+> Direct sampling 4.95 ±0.38 1.05 ±0.18 94 .00
+> Best-of-Krejection 55 .10 ±1.95 8.10 ±0.47 36 .80
+> One-sided action-bank reweighting 45 .57 ±1.31 9.75 ±0.53 44 .68
+> Rare-shell Sampling 22 .55 ±0.77 3.90 ±0.35 73 .55
+> Existing sampler baselines
+> UmbrellaDiff [34] 56 .47 ±1.99 9.88 ±0.54 33 .65 ∆G-Diff [34] 21 .00 ±0.86 2.50 ±0.28 76 .50
+> MetaDiff [34] 16 .25 ±0.35 3.98 ±0.15 79 .77
+> Annealed FKC [21] 9.45 ±0.47 1.48 ±0.18 89 .07
+
+Table 1: Action-space rarity sampler performance. Rarity is measured by the base-calibrated kNN-DTM percentile u
+
+on whitened diffusion action chunks. Values are percentages. Reported ± values are standard errors. 
+
+Qualitative and real-world eval-uation. We apply the full GDNB pipeline to manipulation bench-marks, illustrating new behavioral discoveries in Fig. 2. GDNB’s rare rollouts reveal coherent, task-relevant interactions, not mere ge-ometric deviations. The supple-mentary video includes all sim-ulated rollouts and real-robot re-plays; Appendix D.1 provides quali-tative descriptions for Push-T, Block Pushing, Square, and Transport. In Kitchen , rarity emerges at the subtask-sequence level: GDNB un-covers uncommon subtask orders, including rare successful sequences completing at least four subtasks (appearing in ∼ 1% of the original distribution). Panels A1–A2 show rendered Kitchen rollouts from different viewpoints. In Can , GDNB discovers a distinct grasp-and-release strategy: the gripper contacts the can at novel locations (B1) and approaches with a different end-effector orientation (B2), with B3 showing the real-robot replay. In Lift , GDNB finds a flip-then-grasp pickup: the end effector flips the cube into a new orientation before grasping (bottom row of C1), with C2 showing the real-robot replay. In ToolHang , GDNB discovers a rare mid-air release mode, where the robot releases the tool toward the hook mid-air (right of D1), replayed on the real robot in D2. These examples demonstrate GDNB’s ability to expose structured interactions: subtask ordering, object-local contact, end-effector pose at contact time, object reorientation before grasping, and release timing/orientation. Physical replays confirm executability of selected Can, Lift, and ToolHang motions beyond simulation: after calibrating end-effector–object geometry to match simulation, we replay trajectories open loop on the real robot, recomputing joint-space commands via inverse kinematics to address physical base height and workspace differences. 
+
+Quantitative evaluation. We quantitatively evaluate discovered rollouts using physically inter-pretable task-related event measures, such as contact geometry, object motion, approach or release pose, handoff geometry, timing, and subtask order. The full list of event measures is provided in App. D. These events describe the contact geometry, object motion, approach or release pose, handoff geometry, timing, and subtask order. We then compare the resulting sample distributions using Kernel Density Estimation (KDE) [ 41 ]. We compute two KDE-based metrics. The Task Feature KDE is estimated directly on the scalar event value extracted from the rollout. This metric measures how the rollout distribution shifts or spreads along a physically interpretable event dimension. The Task Rareness KDE is computed based on a rareness score sa(τ ) ∈ [0 , 1] (see App. D), where larger values denote events that are rarer under the original policy. Axis definitions, score families, and KDE construction are given in App. D; Task-feature distribution-shift diagnostics are shown in App. D.5. Table 2 reports success and selected KDE summary scores. Feature bal. balances retained task-feature density and breadth; DV bal. balances outside-base density and variance; Memory, Novel gain, and Support denote retained base density, added rare-tail density, and total successful support in rareness space. ± denotes standard deviation over the eight benchmarks; (more details in App. E). 
+
+Baseline Comparison. We compare against five baseline methods that aim to improve or expand a behavior-cloned diffusion policy after initial training: policy-gradient fine-tuning (DPPO [ 13 ]), modal-level self-improvement (SIME [ 42 ]), on-manifold exploration (SOE [ 24 ]), synthetic demonstration 7generation (MimicGen [ 28 ]), and latent-noise steering of a frozen diffusion policy (DSRL [ 23 ]). All baselines start from the same pretrained diffusion policy or demonstrations, use the same benchmark reset states, and environment success/reward signals. Implementation details are given in App. E.1. We also include three internal framework ablations in the same table: direct rollout of the pretrained checkpoint, GDNB without the rare sampler, and GDNB without SBTO. These rows isolate whether distributional expansion comes from the rare-guided sampler and whether the repair stage is needed to turn rare drafts into reliable executable data.                                                                                                                                                                                
+
+> Task Feature KDE Task Rareness KDE Method Success ↑Feature bal. ↑DV bal. ↑Memory ↑Novel gain ↑Support ↑
+> GDNB (Ours) 0.883 ±0.257 0.664 ±0.189 0.308 ±0.131 0.813 ±0.158 0.100 ±0.150 0.582 ±0.232
+> DPPO [13] 0.796 ±0.277 0.503 ±0.310 0.276 ±0.209 0.689 ±0.223 0.069 ±0.088 0.483 ±0.240
+> SIME [42] 0.752 ±0.291 0.660 ±0.238 0.262 ±0.145 0.923 ±0.054 0.033 ±0.037 0.555 ±0.257
+> SOE [24] 0.760 ±0.272 0.661 ±0.228 0.216 ±0.127 0.927 ±0.088 0.020 ±0.025 0.524 ±0.238
+> MimicGen [28] 0.751 ±0.283 0.640 ±0.202 0.246 ±0.139 0.855 ±0.181 0.027 ±0.034 0.528 ±0.226
+> DSRL [23] 0.744 ±0.283 0.679 ±0.215 0.238 ±0.159 0.903 ±0.093 0.022 ±0.025 0.534 ±0.232
+> Pretrained checkpoint 0.779 ±0.141 0.656 ±0.223 0.244 ±0.159 0.893 ±0.056 0.065 ±0.053 0.408 ±0.081
+> w/o rare sampler 0.857 ±0.104 0.153 ±0.084 0.100 ±0.034 0.804 ±0.057 0.067 ±0.054 0.536 ±0.072
+> w/o SBTO 0.778 ±0.094 0.265 ±0.091 0.102 ±0.034 0.709 ±0.085 0.042 ±0.105 0.512 ±0.106
+
+DV = density–variance. 
+
+Table 2: Policy quality under Task Feature KDE and Task Rareness KDE. Task Feature KDE evaluates successful rollout density on task-feature coordinates. Task Rareness KDE evaluates successful rollout density on base-calibrated rareness scores. All KDE metrics are scaled to [0 , 1] .A comparison in Table 2 shows that GDNB achieves the highest success rate, the strongest Task Feature density–variance score, and the largest Task Rareness novel gain and support. DSRL attains the highest Feature balanced score and SOE has the highest Memory, but both add less successful rareness-tail density and achieve lower task success. Overall, GDNB gives the strongest combined profile across execution, task-feature expansion, and rareness-score expansion. 
+
+Continuation across rare-mining rounds. The GDNB pipeline can be applied for several rounds of iterations. Thus, we repeat the whole pipeline on the fine-tuned policy on Can, ToolHang, and Transport, where we continue to observe novel behavior without a success-rate drop. On Can, we observe new contact/release points; on ToolHang, we observe new approach/contact variations. Transport mostly preserves the first-round rare behaviors, with smaller changes in right-hand approach, handoff timing, and contact pose. App. F reports the consecutive-round distribution metrics. 
+
+## 5 Limitations 
+
+We did not fully characterize the long-term behavior of our GDNB framework. Specifically, it remains unclear whether, after many iterations, the method begins to saturate, either by failing to discover new behaviors or by producing samples via rare guidance that are no longer repairable by SBTO. Second, GDNB requires careful tuning of both the SBTO optimizer and the biasing-potential hyperparameters. Finally, our strategy of adding newly discovered trajectories into the training dataset might not scale well to a large number of GDNB iterations. Thus, it would be useful to add filters that only keep the most important and diverse samples or to combine our method with continual learning [ 43 ] methods. Other interesting directions for future work are to study round-wise saturation and automatic parameter selection. 
+
+## 6 Conclusion 
+
+In this work, we present GDNB, a bootstrapping framework for discovering new executable behaviors in diffusion policies. GDNB uses Feynman–Kac sampling with a biasing potential that systematically guides samples into lower probability regions. A sampling-based optimization algorithm then filters and repairs these samples through rollouts in simulation. Successfully repaired samples are added to the training set, and the diffusion policy is fine-tuned on the extended dataset. Our experiments show that GDNB is able to recover missing modes in a multimodal action space. Across manipulation 8benchmarks we observe the emergence of new behaviors. Representative real-world replays further confirm that the discovered motions are physically executable. 9References 
+
+[1] J. Sohl-Dickstein, E. Weiss, N. Maheswaranathan, and S. Ganguli. Deep unsupervised learning using nonequilibrium thermodynamics. In International conference on machine learning , pages 2256–2265. pmlr, 2015. [2] J. Ho, A. Jain, and P. Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. [3] Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon, and B. Poole. Score-based generative modeling through stochastic differential equations. In International Conference on Learning Representations , 2021. URL https://openreview.net/forum?id=PxTIG12RRH S.[4] C. Chi, Z. Xu, S. Feng, E. Cousineau, Y. Du, B. Burchfiel, R. Tedrake, and S. Song. Diffusion policy: Visuomotor policy learning via action diffusion. The International Journal of Robotics Research , 44(10-11):1684–1704, 2025. [5] J. Ho and T. Salimans. Classifier-free diffusion guidance, 2022. URL https://arxiv.org/ abs/2207.12598 .[6] K. Saha, V. Mandadi, J. Reddy, A. Srikanth, A. Agarwal, B. Sen, A. Singh, and M. Krishna. Edmp: Ensemble-of-costs-guided diffusion for motion planning. In 2024 IEEE International Conference on Robotics and Automation (ICRA) , pages 10351–10358. IEEE, 2024. [7] S. Fan, Q. Yang, Y. Liu, K. Wu, Z. Che, Q. Liu, and M. Wan. Diffusion trajectory-guided policy for long-horizon robot manipulation. IEEE Robotics and Automation Letters , 10(12): 12788–12795, 2025. doi:10.1109/LRA.2025.3619794. URL https://doi.org/10.1109/ LRA.2025.3619794 .[8] X. Dai, Z. Yang, D. Yu, F. Liu, H. Sadeghian, S. Haddadin, and S. Hirche. Safeflow: Safe robot motion planning with flow matching via control barrier functions. arXiv preprint arXiv:2504.08661 , 2025. [9] R. S. Sutton and A. G. Barto. Reinforcement learning - an introduction . Adaptive computation and machine learning. MIT Press, 1998. ISBN 978-0-262-19398-6. URL http://www.inco mpleteideas.net/book/first/the-book.html .[10] Q. Zhang and Y. Chen. Path integral sampler: A stochastic control approach for sampling. In 
+
+International Conference on Learning Representations , 2022. URL https://openreview.n et/forum?id=_uCb2ynRu7Y .[11] J. Berner, L. Richter, and K. Ullrich. An optimal control perspective on diffusion-based generative modeling. Transactions on Machine Learning Research , 2024. ISSN 2835-8856. URL https://openreview.net/forum?id=oYIjw37pTP .[12] S. Sanokowski, L. Gruber, C. Bartmann, S. Hochreiter, and S. Lehner. Rethinking losses for diffusion bridge samplers. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. URL https://openreview.net/forum?id=O58KDUfB4x .[13] A. Ren, J. Lidard, L. Ankile, A. Simeonov, P. Agrawal, A. Majumdar, B. Burchfiel, H. Dai, and M. Simchowitz. Diffusion policy policy optimization. In International Conference on Learning Representations , 2025. [14] O. Celik, Z. Li, D. Blessing, G. Li, D. Palenicek, J. Peters, G. Chalvatzaki, and G. Neumann. DIME: Diffusion-based maximum entropy reinforcement learning. In A. Singh, M. Fazel, D. Hsu, S. Lacoste-Julien, F. Berkenkamp, T. Maharaj, K. Wagstaff, and J. Zhu, editors, 
+
+Proceedings of the 42nd International Conference on Machine Learning , volume 267 of Pro-ceedings of Machine Learning Research , pages 6958–6977. PMLR, 13–19 Jul 2025. URL 
+
+https://proceedings.mlr.press/v267/celik25a.html .10 [15] S. Sanokowski and K. Patil. Diffusion-augmented markov decision processes for maximum entropy reinforcement learning. arXiv preprint arXiv:2512.02019 , 2025. [16] J. He, Y. Du, F. Vargas, D. Zhang, S. Padhy, R. OuYang, C. Gomes, and J. M. Hern ´andez-Lobato. No trick, no treat: Pursuits and challenges towards simulation-free training of neural samplers. 
+
+arXiv preprint arXiv:2502.06685 , 2025. [17] A. Longhini, D. Emukpere, J.-M. Renders, and S. Kim. Behavioral mode discovery for fine-tuning multimodal generative policies, 2026. URL https://arxiv.org/abs/2605.11387 .[18] X. Gu, C. Du, T. Pang, C. Li, M. Lin, and Y. Wang. On memorization in diffusion models. 
+
+Transactions on Machine Learning Research , 2025. ISSN 2835-8856. URL https://openre view.net/forum?id=D3DBqvSDbj . Accepted by TMLR. [19] C. He, X. Liu, G. M. S. Camps, J. Bruno, G. A. Sartoretti, and M. Schwager. Demystifying robot diffusion policies: Action memorization and a simple lookup table alternative. In 
+
+The Fourteenth International Conference on Learning Representations , 2026. URL https: //openreview.net/forum?id=PL0tJOfm7I .[20] Z. Kadkhodaie, F. Guth, E. P. Simoncelli, and S. Mallat. Generalization in diffusion models arises from geometry-adaptive harmonic representations. In The Twelfth International Confer-ence on Learning Representations , 2024. URL https://openreview.net/forum?id=ANvm VS2Yr0 .[21] M. Skreta, T. Akhound-Sadegh, V. Ohanesian, R. Bondesan, A. Aspuru-Guzik, A. Doucet, R. Brekelmans, A. Tong, and K. Neklyudov. Feynman-kac correctors in diffusion: An-nealing, guidance, and product of experts. In A. Singh, M. Fazel, D. Hsu, S. Lacoste-Julien, F. Berkenkamp, T. Maharaj, K. Wagstaff, and J. Zhu, editors, Proceedings of the 42nd International Conference on Machine Learning , volume 267 of Proceedings of Ma-chine Learning Research , pages 55906–55949. PMLR, 13–19 Jul 2025. URL https: //proceedings.mlr.press/v267/skreta25a.html .[22] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. [23] A. Wagenmaker, Y. Zhang, M. Nakamoto, S. Park, W. Yagoub, A. Nagabandi, A. Gupta, and S. Levine. Steering your diffusion policy with latent space reinforcement learning. In J. Lim, S. Song, and H.-W. Park, editors, Proceedings of The 9th Conference on Robot Learning ,volume 305 of Proceedings of Machine Learning Research , pages 258–282. PMLR, 27–30 Sep 2025. URL https://proceedings.mlr.press/v305/wagenmaker25a.html .[24] Y. Jin, J. Lv, H. Xue, W. Chen, C. Wen, and C. Lu. Soe: Sample-efficient robot policy self-improvement via on-manifold exploration. arXiv preprint arXiv:2509.19292 , 2025. [25] B. Eysenbach, A. Gupta, J. Ibarz, and S. Levine. Diversity is all you need: Learning skills without a reward function. arXiv preprint arXiv:1802.06070 , 2018. [26] R. Devidze, P. Kamalaruban, and A. Singla. Exploration-guided reward shaping for reinforce-ment learning under sparse rewards. In S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh, editors, Advances in Neural Information Processing Systems , volume 35, pages 5829–5842. Curran Associates, Inc., 2022. URL https://proceedings.neurips.cc /paper_files/paper/2022/file/266c0f191b04cbbbe529016d0edc847e-Paper-Con ference.pdf .[27] J. Lehman and K. O. Stanley. Novelty Search and the Problem with Objectives , pages 37–56. Springer New York, New York, NY, 2011. ISBN 978-1-4614-1770-5. doi:10.1007/978-1-461 4-1770-5 3. URL https://doi.org/10.1007/978-1-4614-1770-5_3 .11 [28] A. Mandlekar, S. Nasiriany, B. Wen, I. Akinola, Y. Narang, L. Fan, Y. Zhu, and D. Fox. Mimicgen: A data generation system for scalable robot learning using human demonstrations. In J. Tan, M. Toussaint, and K. Darvish, editors, Proceedings of The 7th Conference on Robot Learning , volume 229 of Proceedings of Machine Learning Research , pages 1820–1864. PMLR, 06–09 Nov 2023. URL https://proceedings.mlr.press/v229/mandlekar23a.html .[29] S. Ross, G. Gordon, and D. Bagnell. A reduction of imitation learning and structured prediction to no-regret online learning. In G. Gordon, D. Dunson, and M. Dud ´ık, editors, Proceedings of the Fourteenth International Conference on Artificial Intelligence and Statistics , volume 15 of 
+
+Proceedings of Machine Learning Research , pages 627–635, Fort Lauderdale, FL, USA, 11–13 Apr 2011. PMLR. URL https://proceedings.mlr.press/v15/ross11a.html .[30] V. Dhedin, I. Taouil, S. Omar, D. Yu, K. Tao, A. Dai, and M. Khadiv. Dynaretarget: Dynamically-feasible retargeting using sampling-based trajectory optimization. arXiv preprint arXiv:2602.06827 , 2026. [31] M. Kobilarov. Cross-entropy motion planning. The International Journal of Robotics Research ,31(7):855–871, 2012. [32] C. Pinneri, S. Sawant, S. Blaes, J. Achterhold, J. Stueckler, M. Rolinek, and G. Martius. Sample-efficient cross-entropy method for real-time planning. In J. Kober, F. Ramos, and C. Tomlin, editors, Proceedings of the 2020 Conference on Robot Learning , volume 155 of 
+
+Proceedings of Machine Learning Research , pages 1049–1065. PMLR, 16–18 Nov 2021. URL 
+
+https://proceedings.mlr.press/v155/pinneri21a.html .[33] G. Williams, A. Aldrich, and E. A. Theodorou. Model predictive path integral control: From theory to parallel computation. Journal of Guidance, Control, and Dynamics , 40(2):344–357, 2017. [34] Y. Xie, L. Winkler, L. Sun, S. Lewis, A. E. Foster, J. J. Luna, T. Hempel, M. Gastegger, Y. Chen, I. Zaporozhets, et al. Enhanced diffusion sampling: Efficient rare event sampling and free energy calculation with diffusion models. arXiv preprint arXiv:2602.16634 , 2026. [35] V. Kurtz. Hydrax: Sampling-based model predictive control on gpu with jax and mujoco mjx, 2024. https://github.com/vincekurtz/hydrax. [36] K. Rana, R. Lee, D. Pershouse, and N. Suenderhauf. IMLE Policy: Fast and Sample Efficient Visuomotor Policy Learning via Implicit Maximum Likelihood Estimation. In Proceedings of Robotics: Science and Systems , LosAngeles, CA, USA, June 2025. doi:10.15607/RSS.2025. XXI.158. [37] Y. Bengio, J. Louradour, R. Collobert, and J. Weston. Curriculum learning. In Proceedings of the 26th annual international conference on machine learning , pages 41–48, 2009. [38] G. Mie. Zur kinetischen theorie der einatomigen k ¨orper. Annalen der Physik , 316(8):657–697, 1903. doi:https://doi.org/10.1002/andp.19033160802. URL https://onlinelibrary.wile y.com/doi/abs/10.1002/andp.19033160802 .[39] R. J. Sadus. Second virial coefficient properties of the nm lennard-jones/mie potential. The Journal of Chemical Physics , 149(7), 2018. doi:10.1063/1.5041320. [40] F. Chazal, D. Cohen-Steiner, and Q. M ´erigot. Geometric inference for probability measures. 
+
+Foundations of Computational Mathematics , 11(6):733–751, 2011. [41] M. Rosenblatt. Remarks on some nonparametric estimates of a density function. The Annals of Mathematical Statistics , 27(3):832–837, 1956. [42] Y. Jin, J. Lv, W. Yu, H. Fang, Y.-L. Li, and C. Lu. Sime: Enhancing policy self-improvement with modal-level exploration. In 2025 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pages 9792–9799. IEEE, 2025. 12 [43] J. Kirkpatrick, R. Pascanu, N. Rabinowitz, J. Veness, G. Desjardins, A. A. Rusu, K. Milan, J. Quan, T. Ramalho, A. Grabska-Barwinska, et al. Overcoming catastrophic forgetting in neural networks. Proceedings of the national academy of sciences , 114(13):3521–3526, 2017. [44] X. Gu, L. Akoglu, and A. Rinaldo. Statistical analysis of nearest neighbor methods for anomaly detection. Advances in Neural Information Processing Systems , 32, 2019. [45] J. T. Barron. A general and adaptive robust loss function. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , June 2019. 13 A Sampler Details 
+
+This appendix gives sampler-side derivations and implementation details omitted from the main method. In this sampler appendix only, t denotes diffusion/reverse time; environment time is not used in the sampler derivations. App. A.1 explains the predicted-noise rarity coordinate used by the rare-event sampler. App. A.2 defines the action-space DTM percentile used in Tab. 1 and summarizes the action-bank ablation variants. App. A.3 records the complementary rare-shell potential used by the diffusion sampler. App. A.4 derives the Euler–Maruyama Feynman–Kac weight update used in implementation. Except for the post-hoc action-space DTM coordinate, quantities in this section are defined in denoising coordinates and do not define a task-space interest region or a rollout-side frontier gate. 
+
+A.1 Gaussian-Reference Scale for Denoiser-Score Energy 
+
+This appendix gives the reference calculation behind the denoiser-score energy dtθ used by the sampler in Sec. 3.1. The calculation is used only to put the sampler-side energy on a stable scale. It is not a claim that diffusion-policy trajectories are globally Gaussian, nor that the resulting statistic is a calibrated likelihood, task-space novelty score, or standalone OOD detector. Let 
+
+˜stθ (y, c ) = Pact ϵθ (y, t, c ) − μst
+
+σst + εstd 
+
+∈ Rdeff 
+
+be the whitened active denoiser-score proxy at reverse time t, where Pact removes padded or inactive denoiser-output coordinates. The sampler-side calibration bank in Algorithm 1 provides time-dependent statistics μst , σ st , fitted from ordinary policy traces. The energy and standardized coordinate are 
+
+dtθ (y, c ) = ∥˜stθ (y, c )∥22, zt(y, c ) = dtθ (y, c ) − deff 
+
+√2deff 
+
+. (8) The whitening is a calibration step for denoiser-score proxy features across reverse time. It is not a density model. 
+
+Bayes denoising identity. Under the standard ϵ-prediction objective, the population-optimal full predicted-noise vector satisfies 
+
+ϵ⋆, full  
+
+> θ
+
+(y, t, c ) = E[ϵ | Yt = y, c ] = −¯σt∇y log pt(y | c), (9) on the coordinates of the Gaussian corruption process. Projecting to the active coordinates gives 
+
+h⋆t (y, c ) = Pact ϵ⋆, full  
+
+> θ
+
+(y, t, c ) = −¯σtPact ∇y log pt(y | c). (10) Thus, the active predicted-noise output is proportional to the active conditional score; after whitening, it is the implementation of the main-text proxy ˜stθ , whose squared norm is dtθ .
+
+Reference scale. If the active whitened coordinates were locally close to independent standard Gaussian residuals, then dtθ would have mean deff and variance 2deff . This motivates the standardized coordinate in Eq. (8) . In practice, the policy distribution can be sparse, multimodal, and anisotropic, so the global distribution of dtθ need not be χ2. We therefore use zt only as a proposal-side coordinate for constructing the complementary potential. Whether a sampled action becomes data is decided later by forward rollout, local refinement, and acceptance. 
+
+A.2 Action-Space kNN-DTM Percentiles and Action-Bank Variants 
+
+Tab. 1 uses an action-space rarity coordinate computed separately for each starting condition. The coordinate is based on DTM, a robust distance-like construction for probability measures [ 40 ]. Nearest-neighbor DTM scores have also been studied as anomaly scores with finite-sample guaran-tees [ 44 ]. We use this score only as a calibrated local rarity proxy over action chunks, not as a global likelihood estimator. 14 For a fixed starting condition s, the base action bank contains action chunks in RNbank ×H×da , which we flatten to xi ∈ RHd a . Whitening is fitted per starting condition using train-split robust statistics: median centering and MAD scaling, with a standard-deviation fallback for nearly constant coordinates. We use a 70% train split as the reference bank Rs and the remaining split for calibration. For a whitened query ˜x, the empirical kNN-DTM score is 
+
+dk(˜ x; Rs) = 
+
+"
+
+1
+
+k
+
+> k
+
+X
+
+> i=1
+
+∥˜x − NN i(˜ x; Rs)∥22
+
+#1/2
+
+, k = 10 .
+
+The held-out calibration split converts this score into a percentile 
+
+u(x) = bFcal ,s 
+
+ dk(˜ x; Rs).
+
+Thus, larger u means that the candidate action chunk lies farther from the direct-policy action bank for the same starting condition. The frontier interval used in Tab. 1 is 0.90 ≤ u ≤ 0.985 . The OOD column reports Pr( u > 0.985) .
+
+Action-bank variants. The uncited sampler rows in Tab. 1 are internal action-bank ablations. They operate on an already generated action bank and do not modify the diffusion reverse dynamics. For completeness, we also include GDNB’s ranking rule in the last row. All values in Tab. 1 are aggregated over multiple experimental runs and multiple independently sampled starting conditions; the reported means and standard errors are computed over this multi-start evaluation pool.                                   
+
+> Paper row Mathematical idea Best-of-Krejection Post-hoc best-of-bank selection. At each step, draw K= 50 available bank candidates and keep the one closest to the target band 0.90 ≤u≤0.985 .One-sided action-bank reweight-ing Weighted sampling without replacement with w(u)∝exp {5 sigmoid(( u−0.90) /0.03) }. This reduces common samples but does not explicitly penalize u > 0.985 .Rare-shell Sampling Weighted sampling without replacement with an LJ-like shell weight w(u)∝exp[ −3VLJ (u; 0 .975)] ,soft-capped at 10 . This is a soft preference, not a hard frontier filter. GDNB row Frontier-first ranking: candidates inside 0.90 ≤u≤0.985 are prioritized, common candidates are considered next, and u > 0.985 OOD candidates are placed last. The LJ shell value is used as a secondary score.
+
+Table 3: Action-bank sampler variants described with paper-facing names only. The key distinction is that Rare-shell Sampling and GDNB both use an LJ-shaped rarity preference, but only GDNB adds the hard frontier-first/OOD-last ordering. This ordering explains why the GDNB row obtains high frontier coverage while keeping the OOD rate at zero in Tab. 1. Rare-shell Sampling targets a higher shell percentile, u⋆ = 0 .975 , but because it is only stochastic weighted sampling, it can still select many common samples and some OOD samples. 
+
+A.3 Complementary Rare-Shell Potential 
+
+The main method uses a bounded rare-shell potential in denoiser-score energy. Given a target standardized level z⋆, the corresponding target rare-shell energy in the main-text notation is 
+
+d⋆t = deff + p2deff z⋆. (11) Dropping the conditioning variable c for readability, use the calibrated energy dtθ (y, c ) from Eq. (8) .We define the normalized score-energy coordinate 
+
+xt(y, c ) = dtθ (y, c ) + εE
+
+d⋆t + εE
+
+. (12) Here εE > 0 is a small numerical stabilizer. The value xt(y, c ) ≈ 1 corresponds to the target rare shell. Values below one have lower calibrated denoiser-score energy than the target, and values above one have higher calibrated denoiser-score energy. We do not interpret this ordering as a global likelihood ordering. 15 Figure 4: Lennard-Jones-like rare-shell potential. We visualize the normalized score-energy coordinate x = d/d ∗. The shell cost Φ( x) = x−12 − 2x−6 + 1 is minimized at x = 1 , corresponding to the target rare shell d = d∗. The reward bias B(x) = −Φ( x) therefore attracts samples toward this shell instead of monotonically pushing them toward increasingly large score norms. Green curves show the corresponding derivatives, which determine the guidance direction. The shell cost used in the main experiments is 
+
+Ct(y) = γt cap vmax 
+
+
+
+xt(y)−p − pq xt(y)−q +
+
+ pq − 1
+
+ 
+
+, p > q > 0. (13) The uncapped term has its minimum at xt = 1 , so Ct is minimized at the target shell. We absorb the guidance strength into this time-dependent cost. In the main-text notation, the complete bias entering the tilted target is βtBt(y) = −Ct(y).
+
+Activation window. The scalar schedule γt ∈ [0 , ∞) both scales the bias and activates it only on selected reverse-time intervals. This prevents the bias from over-constraining the highest-noise phase and avoids over-editing the final denoising steps. All variants below use the same guided Euler–Maruyama proposal and FKC correction; only the scalar cost Ct changes. 
+
+One-sided denoiser-energy potential. For ablations, we also use a one-sided complementary cost: 
+
+Cone  
+
+> t
+
+(y) = γt softplus( −κz t(y) + τz ). (14) Here κ > 0 controls the softplus slope, and τz is a scalar offset for the standardized coordinate zt.This version suppresses common low-zt particles but does not explicitly discourage particles from moving beyond a target shell. In the main-text notation, the corresponding complete bias satisfies 
+
+βtBone  
+
+> t
+
+(y) = −Cone  
+
+> t
+
+(y).
+
+A.4 Euler–Maruyama Feynman–Kac Weights 
+
+This appendix derives the discrete weight update used by the rare-event sampler. The derivation is carried out directly on the Euler–Maruyama path space used in implementation. This avoids continuous-time divergence, Hessian-trace, or Laplacian estimates. Let 
+
+Yk := Ytk , ∆tk = tk+1 − tk, bk := btk , Ck := Ctk (Yk), ηk := ∇y Ctk (Yk).
+
+Here Ct(y) := −βtBt(y) denotes the complete nonnegative shell cost used by the Euler–Maruyama proposal, including the time-dependent guidance strength. Thus exp[ −Ct(y)] = exp[ βtBt(y)] ,matching the tilted-target convention used in Sec. 3.1. The unguided Euler–Maruyama target kernel follows the main-text reverse-time drift, 
+
+pk(Yk+1 | Yk) = N  Yk+1 ; Yk + b2
+
+> k
+
+stk 
+
+> θ
+
+(Yk, c ) − g(tk, Y k) ∆tk, b 2
+
+> k
+
+∆tkI . (15) 16 The guided proposal kernel is 
+
+qCk (Yk+1 | Yk) = N  Yk+1 ; Yk + b2
+
+> k
+
+stk 
+
+> θ
+
+(Yk, c ) − g(tk, Y k) − b2
+
+> k
+
+ηk
+
+ ∆tk, b 2
+
+> k
+
+∆tkI , (16) where the proposal drift is the main-text unguided reverse-time drift plus the cost-gradient correction, 
+
+b2
+
+> k
+
+stk 
+
+> θ
+
+(Yk, c ) − g(tk, Y k) − b2
+
+> k
+
+ηk. (17) Equivalently, a proposal sample can be written as 
+
+Yk+1 = Yk + b2
+
+> k
+
+stk 
+
+> θ
+
+(Yk, c ) − g(tk, Y k) − b2
+
+> k
+
+ηk
+
+ ∆tk + bk
+
+p∆tkξk, ξk ∼ N (0 , I ). (18) The unnormalized tilted density at time tk contains the factor exp[ −Ctk (Yk)] = exp[ βtk Btk (Yk)] 
+
+under the main-text convention Ct = −βtBt. The incremental log-weight is therefore 
+
+ℓk+1 − ℓk = −(Ck+1 − Ck) + log pk(Yk+1 | Yk)
+
+qCk (Yk+1 | Yk) , ℓk := log wk. (19) Since the two kernels are Gaussians with equal covariance, the ratio is explicit. Using Eq. (18), 
+
+Yk+1 −  Yk + b2
+
+> k
+
+stk 
+
+> θ
+
+(Yk, c ) − g(tk, Y k) − b2
+
+> k
+
+ηk
+
+ ∆tk
+
+ = bk
+
+p∆tkξk, (20) whereas relative to the unguided mean, 
+
+Yk+1 −  Yk + b2
+
+> k
+
+stk 
+
+> θ
+
+(Yk, c ) − g(tk, Y k) ∆tk
+
+ = bk
+
+p∆tkξk − b2
+
+> k
+
+∆tkηk. (21) Substitution into the Gaussian log-density ratio gives 
+
+log pk(Yk+1 | Yk)
+
+qCk (Yk+1 | Yk) = − 12 b2
+
+> k
+
+∆tk∥ηk∥22 + bk
+
+p∆tk⟨ηk, ξ k⟩. (22) Combining Eq. (19) and Eq. (22) yields 
+
+ℓk+1 = ℓk − (Ck+1 − Ck) − 12 b2
+
+> k
+
+∆tk∥ηk∥22 + bk
+
+p∆tk⟨ηk, ξ k⟩. (23) This correction is exact for the chosen Euler–Maruyama Gaussian kernels. It is not a claim that the continuous-time guided drift alone exactly realizes the tilted marginals. 
+
+Resampling. Weights are normalized within each particle batch. For normalized weights ˜wi, we use the Kish effective sample size 
+
+ESS = 1
+
+P 
+
+> i
+
+˜w2
+
+> i
+
+. (24) Sequential Monte Carlo (SMC) resampling is triggered when ESS falls below a fixed threshold during denoising. After any intermediate resampling, particle weights are reset uniformly. At the final reverse step, the returned particle is selected according to 
+
+Pr( i) = exp( ℓ0,i )
+
+P 
+
+> j
+
+exp( ℓ0,j ) = softmax( ℓ0)i, (25) which matches the main-text description. 
+
+## B Local Repair and Policy Adaptation 
+
+This appendix expands the non-sampling operators in Algorithm 1. These components do not define the rare region. SBTO tests whether each sampled rare draft can be locally refined into a successful trajectory; the adaptation objective specifies how accepted repairs are mixed with rehearsal data. 17 B.1 SBTO Implementation: Frontier-Preserving Local Repair 
+
+In GDNB, SBTO denotes the local repair operator applied after rare-candidate generation. This operator does not define the rare region and is not used as a planner from scratch. Instead, it receives a diffusion-sampled draft action sequence and tests whether the draft can be converted into a successful, executable rollout through bounded local edits. We call this implementation frontier-preserving because its trust-region and regularization terms are designed to keep the repaired trajectory close to the sampled draft while correcting local failures. 
+
+Relation to prior SBTO formulations. The repair module follows the standard SBTO recipe of sampling candidate trajectories in a lower-dimensional knot space, rolling them out in simulation, and updating the sampling distribution using an elite set [ 30 ]. The use case, however, differs from DynaRetarget [ 30 ]. DynaRetarget is designed for dynamically feasible retargeting and uses an incremental horizon strategy to solve progressively longer problems. In contrast, our SBTO instance optimizes a fixed-horizon window around a sampled diffusion-policy draft. Its objective is not to track an external kinematic reference as closely as possible, but to preserve the draft’s frontier behavior while making the rollout successful and executable. 
+
+Knot representation and local trust region. Let 
+
+A0 = ( a00, . . . , a 0 
+
+> T−1
+
+) ∈ RT ×da
+
+be a rare-candidate draft action sequence, with initial state x0 and task context c. We downsample the draft to Nk action knots and reconstruct full actions by interpolation: 
+
+K0 = Π( A0), A(K) = I(K). (26) The search is restricted to a local trust region around the draft knots: 
+
+Tm(K0) = 
+
+n
+
+K : ∥D−1 
+
+> K
+
+(Ki − K0 
+
+> i
+
+)∥∞ ≤ ρ(m) 
+
+> K
+
+, i = 1 , . . . , N k
+
+o
+
+, (27) where DK scales the action channels and ρ(m) 
+
+> K
+
+is the trust-region radius at Cross-Entropy Method (CEM) iteration m. In practice, ρ(m) 
+
+> K
+
+can be warmed up from a small initial radius to the full radius. This makes early iterations conservative and prevents the optimizer from immediately leaving the sampled draft. For each candidate K, the simulator executes 
+
+τ (K) = Rollout( x0, A (K), c ). (28) We denote the draft rollout by τ 0 = τ (K0).
+
+Repair objective. SBTO minimizes a rollout-based repair objective 
+
+JFP -SBTO (K) = Jtask (τ (K)) + λtrack Jtrack (A(K), A 0, τ (K), τ 0)+ λrs Jres -smooth (A(K), A 0) + λknot Jknot (K, K 0)+ γsucc (τ (K)) λsparse Jsparse (A(K), A 0) + λcap Jcap (A(K), A 0) .
+
+(29) The first line encourages task completion while keeping the repaired trajectory close to the draft. The second line discourages high-frequency residual edits and large knot displacement. The final line is a success-gated sparse-edit penalty: once a candidate is close to succeeding, unnecessary edits are penalized more strongly. A typical task term is 
+
+Jtask (τ ) = −Rtask (τ ) + λfail 1[Success( τ ) = 0] , (30) where Rtask is the environment reward or rollout score. 18 Draft tracking and residual smoothness. The tracking term collects task-specific local preserva-tion costs, such as action tracking, end-effector tracking, gripper timing, action-bound penalties, or task-visible descriptor preservation: 
+
+Jtrack = Jact + Jeef + Jgrip + Jbound + Jdesc . (31) Not all terms are used in every task backend; Eq. (31) summarizes the common interface. Let the residual action edit be 
+
+δa t = at − a0 
+
+> t
+
+.
+
+We penalize high-frequency residual edits rather than over-smoothing the whole candidate action sequence: 
+
+Jres -smooth (A, A 0) = 1
+
+T − 2 
+
+> T−3
+
+X
+
+> t=0
+
+D−1
+
+> a
+
+ δa t+2 − 2δa t+1 + δa t
+
+ 22 . (32) The knot prior is 
+
+Jknot (K, K 0) = 1
+
+NkNkX
+
+> i=1
+
+∥D−1 
+
+> K
+
+(Ki − K0 
+
+> i
+
+)∥22. (33) 
+
+Frame-sparse Welsch edit penalty. A central difference from a purely quadratic edit penalty is the frame-sparse edit regularizer based on the Welsch/Leclerc robust loss [ 45 ]. Define the normalized per-frame edit magnitude 
+
+gt(A, A 0) = ∥D−1 
+
+> a
+
+(at − a0 
+
+> t
+
+)∥2. (34) The Welsch penalty is 
+
+ρW (g; σW) = 1 − exp 
+
+
+
+− g2
+
+2σ2W
+
+
+
+, (35) and the sparse-edit cost is 
+
+Jsparse (A, A 0) = 1
+
+T 
+
+> T−1
+
+X
+
+> t=0
+
+ρW (gt(A, A 0); σW). (36) Because ρW saturates for large gt, this term behaves like a soft count of edited frames. It discourages repairs that spread small changes across many frames, while allowing a small number of critical frames to change substantially when needed for success. We optionally add a soft cap on the number of edited frames: 
+
+Nedit (A, A 0) =  
+
+> T−1
+
+X
+
+> t=0
+
+ρW (gt(A, A 0); σW), Jcap = softplus 
+
+ Nedit − Ncap 
+
+τcap 
+
+2
+
+. (37) 
+
+Success-gated edit regularization. The sparse-edit regularizer is most useful after the optimizer has found a nearly successful candidate. We therefore gate it by a smooth success score: 
+
+γsucc (τ ) = sigmoid 
+
+ Rmax (τ ) − Rgate 
+
+τgate 
+
+
+
+, (38) where Rmax (τ ) is the maximum rollout reward or task progress score. When a candidate is far from success, CEM mainly optimizes the task objective. Once the candidate becomes close to success, the Welsch sparse-edit and edit-cap terms discourage unnecessary deformation of the draft. 
+
+CEM update and fallback. At CEM iteration m, SBTO samples knot candidates from a Gaussian distribution, projects them into the trust region in Eq. (27) , rolls them out, and selects the elite set Em
+
+with lowest JFP -SBTO . The sampling distribution is updated by 
+
+μm+1 = (1 − αμ)μm + αμ
+
+1
+
+|E m|
+
+X
+
+> K∈E m
+
+vec( K), (39) 
+
+Σm+1 = (1 − αΣ)Σ m + αΣ Cov ( {vec( K) : K ∈ E m}) + ϵΣI. (40) The best candidate over all CEM iterations is returned. If the optimized candidate does not improve the repair objective over the draft, the backend falls back to the draft. Thus optimization is allowed to fail without forcing a large off-draft motion into the dataset. 19 Acceptance. In the implementation used for the main experiments, insertion into the dataset uses environment success as the hard acceptance condition: 
+
+Accept( τ ⋆) = 1[Success( τ ⋆) = 1] . (41) Locality is enforced before this decision by the trust region, knot prior, tracking terms, Welsch sparse-edit penalty, and fallback. Rarity is not used as a post-repair hard acceptance gate. This separation is intentional: the sampler proposes rare candidates, while SBTO only tests whether each rare-candidate draft can be locally repaired into a successful trajectory. 
+
+B.2 Retention-Regularized Adaptation 
+
+This appendix expands the fine-tuning step in Algorithm 1. Let D+ 
+
+> r
+
+be the accepted repaired trajectories after achieved-outcome relabeling, and let D(r)reh ⊂ D r be a matched rehearsal set. For an observation o, action trajectory A, condition c, diffusion time t, and Gaussian noise ϵ ∼ N (0 , I ),define 
+
+Yt = √¯αtA + √1 − ¯αtϵ. (42) The accepted repairs are trained with the standard denoising loss 
+
+L+(θ) = ED+ 
+
+> r,t,ϵ
+
+∥ϵ − ϵθ (Yt, t, o, c )∥22
+
+ , (43) and rehearsal data are trained with 
+
+Lreh (θ) = ED(r)reh ,t,ϵ 
+
+∥ϵ − ϵθ (Yt, t, o, c )∥22
+
+ . (44) When retention regularization is used, the previous checkpoint θr is frozen and the adapted denoiser is anchored on rehearsal states: 
+
+LKD (θ; θr ) = ED(r)reh ,t,ϵ 
+
+h
+
+∥ϵθ (Yt, t, o, c ) − sg[ ϵθr (Yt, t, o, c )] ∥22
+
+i
+
+. (45) The adaptation objective is 
+
+θr+1 = arg min  
+
+> θ
+
+L+(θ) + λreh Lreh (θ) + λKD LKD (θ; θr ) + λanchor ∥θ − θr ∥22. (46) The rehearsal and distillation terms reduce drift on previously supported behaviors while the accepted repairs introduce new support. 
+
+## C Multimodal Agent protocol details 
+
+Multimodal Agent [15] uses heading observations 
+
+ot = [cos θt, sin θt]
+
+and scalar actions at ∈ [−1, 1] . The reward landscape has two symmetric optimal action modes at 
+
+a = −0.5 and a = +0 .5. We use this task as a controlled support-recovery diagnostic: the initial data cover all heading conditions but contain demonstrations from only one action mode. 
+
+Seed distribution. The seed demonstrations are deliberately one-sided. Headings are sampled from the eight supported conditions 
+
+θ ∈ {− 180 ◦, −135 ◦, −90 ◦, −45 ◦, 0◦, 45 ◦, 90 ◦, 135 ◦},
+
+and the observation is the corresponding heading embedding [cos θ, sin θ]. Actions are sampled only near the right-turn optimum a = +0 .5, with small Gaussian perturbations and clipping to [−1, 1] .Thus the seed dataset is condition-diverse in observations but single-mode in actions. Across the five random seeds used in our runs, this corresponds to 960 one-sided seed demonstrations. 20 Toy-task bootstrapping protocol. In this toy environment, we replace the robot repair module with a simple reward-curve selector. Candidate actions are generated by the sampler, ranked by the native reward curve, and the top 20% are inserted back into the training set together with rehearsal samples. The sampler itself does not access the reward curve. This isolates whether sampling and reinsertion can create support for a missing reward-equivalent mode, rather than whether a trajectory optimizer can solve a manipulation task. 
+
+Metrics. We report average per-step return ¯R and left/right mode masses 
+
+m− = Pr( |a + 0 .5| ≤ 0.1) , m+ = Pr( |a − 0.5| ≤ 0.1) . (47) Since the missing mode is a = −0.5, the primary support-recovery diagnostic is m−. We also report mode balance 
+
+Bmode = 1 − |m+ − m−|
+
+m+ + m− + ε , (48) which is near zero for a single-mode policy and near one for a balanced two-mode policy. These quantities are support diagnostics; the main purpose of this task is qualitative mode-recovery analysis rather than a scalar-return benchmark.   
+
+> (a) Baseline / seed-trained policy (b) DPPO
+> (c) REPPO (d) GDNB (Ours)
+
+Figure 5: Condition-wise action densities on Multimodal Agent . Each colored curve is the KDE of sampled actions for one heading condition. The gray curve shows the bimodal reward landscape, and the shaded bands mark the two reward-equivalent optima at a = −0.5 and a = +0 .5. The seed-trained baseline is concentrated on the right mode. DPPO preserves the same collapse. REPPO broadens the density around the right well but still does not create a separate left-mode peak. GDNB recovers visible probability mass near the missing left mode while retaining the original right mode. Figure 5 shows why this benchmark is a support-recovery test rather than a standard reward-improvement test. Because both a = −0.5 and a = +0 .5 are reward-optimal, a policy can obtain high return while remaining collapsed onto the seed-supported right mode. The baseline in Fig. 5a and DPPO in Fig. 5b remain sharply concentrated near a = +0 .5. REPPO in Fig. 5c increases variance around the same right-mode region, but it still does not form a distinct density peak at a = −0.5. In contrast, GDNB in Fig. 5d recovers a second peak near the missing left mode while preserving mass near the original right mode. The qualitative conclusion is therefore support expansion: native-reward 21 (a) Transport 
+
+> (b) Push-T
+> (c) Block Pushing
+
+Figure 6: Qualitative rare-case diagnostics for remaining benchmarks. (a) End-effector-center trajectories for two phases of Transport, with common rollouts in the left column and rare rollouts in the right column. (b) Base and rare pusher-center trajectories around the T-shaped block in Push-T. (c) Box-frame angle diagnostics for Block Pushing: first-contact angle on the left and post-contact push direction on the right. fine-tuning baselines remain essentially single-mode, whereas rare-guided bootstrapping exposes and reincorporates the absent reward-equivalent mode. 
+
+## D Task-related Rare Events and KDE Protocol 
+
+This appendix defines the task-related event measures used in Experiment 2. These axes are post-hoc evaluation coordinates. They are not used by the rare-event sampler, the repair optimizer, the fine-tuning loss, or baseline selection. 
+
+D.1 Qualitative rare-case descriptions for remaining benchmarks 
+
+This subsection complements the main qualitative panels in Fig. 2 by describing the remaining manip-ulation benchmarks. The descriptions are not additional filtering rules: they are visual interpretations of the same discovered rollout families used for the task-related event measures in Tab. 4. 
+
+Transport. Fig. 6(a) visualizes end-effector-center trajectories for two representative phases of the bimanual transport task, with common rollouts shown in the left column and rare rollouts shown in the right column. The first row tracks the left end-effector as it approaches the hammer-shaped payload before lift, ending at the left-clamp proxy. The second row tracks the right end-effector as it approaches the payload while the left end-effector is already holding it, ending at the handoff proxy. Compared with the compact common trajectories, the rare rollouts exhibit different approach corridors and handoff geometries. These differences indicate a task-level behavioral change: GDNB alters the spatial coordination between the two arms during clamp and handoff, rather than merely adding small perturbations to the marginal trajectory of a single end-effector. 
+
+Push-T. Fig. 6(b) visualizes the pusher-center trajectories around the T-shaped object. The base policy concentrates on a narrow family of motions around the commonly used side of the T and 22 repeatedly approaches similar contact neighborhoods. The rare rollouts found by GDNB instead wrap around the object with broad arcs, often reaching the upper shoulder or the opposite side of the T before applying contact. This pattern is physically meaningful because planar pushing is highly sensitive to where the pusher contacts the object: changing the side and angle of contact changes the induced rotation and translation of the T. The rare trajectories therefore correspond to alternative contact sequences for manipulating the same object, rather than to arbitrary geometric perturbations of the base path. 
+
+Block Pushing. Fig. 6(c) shows two angle distributions expressed in the coordinate frame of the box. The left polar plot measures the angle at which the agent first contacts the box, while the right polar plot measures the direction of the subsequent push after contact. Common rollouts occupy the dominant box-frame sectors in blue, whereas rare rollouts concentrate in orange sectors that are only weakly represented by the base policy. The resulting rare behavior is a change in contact mechanics: GDNB discovers side-biased contacts and post-contact pushes from less common box-relative directions. These modes are useful because the same object displacement can be achieved through different contact faces and force directions, and the rare distribution exposes those alternatives explicitly. 
+
+Square. In Square, the most salient rare behavior is a stable try–fail–retry insertion pattern. Instead of executing a single monotone approach and insertion, rare rollouts first attempt to align the object with the square peg or goal, encounter a partial-contact failure such as a misalignment or blocked insertion, retreat or reorient locally, and then attempt the insertion again. This recovery-like sequence is rare under the base policy, which more often follows a direct approach mode. The pattern is physically meaningful because contact-rich insertion tasks frequently require local correction after the first contact; discovering such retry behavior adds a qualitatively different recovery strategy rather than merely adding path noise. 
+
+D.2 Task-feature and rareness-score coordinates 
+
+For each task-related event a, let fa(τ ) be the rollout descriptor vector. We summarize each event with two complementary scalar coordinates: a physically interpretable task-feature coordinate xa(τ ),and a base-calibrated rareness score sa(τ ).
+
+Task Feature KDE. Task Feature KDE uses a one-dimensional task-feature coordinate 
+
+xa(τ ) = ρa v⊤ 
+
+> a
+
+Wa
+
+ fa(τ ) − μa
+
+, ρa ∈ {− 1, +1 }. (49) The whitening statistics (μa, W a) are fitted on base rollouts. The vector va is the event-axis projection direction, and ρa orients the axis so that larger values correspond to the rarer side of the base rollout bank. KDEs are computed directly on xa(τ ).           
+
+> Benchmark Rare events Benchmark Rare events Push-T contact dynamics; block progress; contact timing Block Pushing block contact mode; contact path; block motion trajectory Franka Kitchen attempt order; success order Lift contact timing; short-horizon box motion; box–end-effector contact point Can can-local contact geometry; contact end-effector pose; release end-effector pose Square end-effector trajectory; object–goal contact dynamics; peg-insert motion Transport bimanual pre-approach; gripper contact mode; handoff geometry ToolHang pre-hook approach; grasp/hook contact; gripper–tool contact mode
+
+Table 4: Task-related rare events in manipulation benchmarks: Semantic rollout descriptors used for post-hoc rare-behavior evaluation. Task-feature coordinates are defined below; the full descriptor-to-score-family mapping is given in Table 5. 
+
+Task Rareness KDE. Task Rareness KDE uses a base-calibrated rareness score sa(τ ) ∈ [0 , 1] .Depending on the event, sa is computed by kNN-DTM percentile, robust-distance percentile, raw percentile, or task-interest anchor percentile. 23 For kNN-DTM axes, we use 
+
+dk,a (τ ) = 
+
+ 1
+
+k
+
+X  
+
+> v∈NN k( ˜fa(τ); Va)
+
+∥ ˜fa(τ ) − v∥22
+
+
+
+> 1/2
+
+, sa(τ ) = bFcal ,a 
+
+ dk,a (τ ), (50) where ˜fa is the whitened event feature, Va is the base reference split, and bFcal ,a is the empirical CDF on the base calibration split. For Kitchen, attempt-order and success-order are discrete subtask-order descriptors. KDE is applied only after mapping these descriptors to scalar base-calibrated feature/rareness coordinates, so the curves should be interpreted as smoothed empirical summaries rather than densities over raw sequence labels. The separate true-success-sequence diagnostic is categorical and is analyzed by sequence frequencies rather than continuous KDE. 
+
+D.3 KDE protocol 
+
+For both KDE views, density-based metrics use success-only rollouts. For method m and axis a, let 
+
+ˆpF, + 
+
+> m,a
+
+be the success-only KDE on the Task Feature coordinate xa, and let ˆpR, + 
+
+> m,a
+
+be the success-only KDE on the Task Rareness coordinate sa. KDEs are evaluated on a fixed one-dimensional grid using a Gaussian kernel and are normalized to unit area on the grid. Metrics are computed per axis, averaged within each benchmark, and then averaged across the eight benchmarks. Task Feature KDE reports feature retention, feature breadth, feature balanced, base-density affinity, outside-base mass, outside-base variance, outside-base evenness, outside-base diversity, and density– variance balanced. Task Rareness KDE reports Memory, Novel gain, Support, and Rare recall. 
+
+D.4 Task event measures and score families 
+
+Table 5: Task event descriptors used by Task Feature KDE and Task Rareness KDE. Task Feature KDE uses the listed event descriptor as its task-feature coordinate. Task Rareness KDE uses the listed base-calibrated score family.                                                 
+
+> Task Event descriptor Task Rareness score family Can Can-local fingertip contact geometry task-specific local feature percentile Can contact end-effector pose task-specific local feature percentile Can release end-effector pose task-specific local feature percentile Lift box–end-effector contact point robust-distance percentile Lift short-horizon box motion robust-distance percentile Lift contact timing raw percentile Square end-effector trajectory local feature kNN-DTM percentile Square object–goal contact dynamics task-interest anchor percentile Square peg-insert object motion task-interest anchor percentile Transport bimanual pre-approach task-interest anchor percentile Transport left gripper contact mode task-interest anchor percentile Transport handoff geometry task-interest anchor percentile ToolHang pre-hook approach task-interest anchor percentile ToolHang grasp / hook contact task-interest anchor percentile ToolHang gripper–tool contact mode task-interest anchor percentile Push-T block–target contact dynamics task-interest anchor percentile Push-T block target progress task-interest anchor percentile Push-T late nearest keypoint task-interest anchor percentile Franka Kitchen attempt order local feature kNN-DTM percentile Franka Kitchen success order local feature kNN-DTM percentile Block Pushing block2 motion trajectory local feature kNN-DTM percentile Block Pushing agent–block2 contact mode task-interest anchor percentile Block Pushing block2 contact path task-interest anchor percentile
+
+D.5 Task-Feature Distribution-Shift Diagnostics 
+
+Figure 7 overlays the base-policy, adapted-policy, and rare-sampled rollout banks on the Task Feature KDE axes. Rightward shifts correspond to movement toward the rare side of the base-calibrated task-feature coordinate. Quantitative summaries are reported in Tables 6 and 7. 24 E Baseline KDE Ablation Details 
+
+This section reports the component metrics for GDNB, the external baselines, and the pretrained checkpoint in Table 2. Task Feature KDE metrics are computed on task-feature coordinates. Task Rareness KDE metrics are computed on base-calibrated rareness scores. For Kitchen , attempt-order and success-order are discrete subtask-order descriptors whose scalar base-calibrated embeddings are smoothed for KDE plots and metrics; the true-success-sequence diagnostic is evaluated categorically by sequence frequencies. Table 6: Task Feature KDE component summary. Entries are percentages. Outside-base denotes regions where base relative density is below the cutoff.                                                                         
+
+> Method Base dens. Out. mass Out. var Out. even. Out. div. DV bal. Feat. ret. Feat. br. Feat. bal.
+> GDNB (Ours) 84.0 15.0 10.5 74.3 21.0 30.8 66.3 78.2 66.3 DPPO 81.5 15.3 11.6 71.2 20.4 27.6 59.3 66.1 50.3 SIME 83.7 14.9 9.1 69.7 17.4 26.2 64.5 88.9 66.0 SOE 81.6 17.5 7.4 69.3 14.1 21.6 61.6 89.6 66.1 MimicGen 82.7 16.1 8.5 70.1 16.6 24.6 62.9 85.8 64.0 DSRL 80.2 18.2 8.6 71.2 15.9 23.8 61.1 93.4 67.9
+> Pretrained checkpoint 78.5 18.3 9.0 69.7 16.4 24.3 61.3 91.4 65.6
+
+Out. = outside-base; DV = density–variance; Feat. = feature. 
+
+Table 7: Task-level Task Feature KDE summary. Each cell reports density–variance balanced / feature balanced, in percent.                                                                 
+
+> Method Can Lift Square Transport ToolHang Push-T Kitchen Block Pushing
+> GDNB (Ours) 1.6 / 41.6 30.1 / 53.1 34.1 / 47.2 40.8 / 59.4 27.0 / 72.0 31.3 / 76.3 38.2 / 91.6 43.5 / 89.6 DPPO 1.3 / 38.6 18.4 / 48.2 1.9 / 8.9 20.4 / 16.7 35.2 / 73.4 58.8 / 38.2 36.3 / 89.3 48.8 / 89.4 SIME 1.1 / 31.5 21.4 / 58.9 21.4 / 41.2 18.5 / 53.2 30.5 / 69.2 26.2 / 90.8 46.7 / 89.8 43.7 / 93.5 SOE 1.2 / 31.4 19.9 / 50.3 16.7 / 51.7 16.3 / 53.9 21.0 / 69.4 22.7 / 88.0 28.6 / 90.4 46.4 / 93.6 MimicGen 1.2 / 31.4 20.4 / 52.3 22.2 / 51.4 17.1 / 54.7 26.2 / 67.3 24.9 / 82.3 36.0 / 81.1 49.0 / 91.9 DSRL 1.2 / 31.6 18.5 / 52.0 10.0 / 66.8 16.5 / 54.1 31.9 / 69.0 22.7 / 87.9 39.8 / 88.7 49.5 / 92.9 Pretrained checkpoint 1.3 / 31.4 17.7 / 51.3 29.2 / 53.4 12.6 / 52.5 17.5 / 66.5 23.8 / 88.6 43.0 / 90.3 49.7 / 90.9
+
+E.1 Ablation Baseline Adaptations 
+
+This appendix describes how the baseline methods in Experiment 2 are adapted to the common benchmark-scale rare-behavior discovery protocol. The goal of these comparisons is not to claim a bit-for-bit reproduction of every original training stack, but to instantiate each method’s core mechanism under the same reset distribution, rollout budget, environment reward/success signal, and post-hoc evaluation events used for our method. Unless otherwise stated, all methods use the same fixed-start runner, the same base diffusion-policy checkpoint or seed demonstrations, the same native task rewards and success checks, and the same final-policy rollout protocol. The task-related rare events in Table 4 are used only for post-hoc measurement; they are not used as optimization rewards, exploration objectives, or selection labels for any baseline. 
+
+DPPO. DPPO fine-tunes a diffusion policy with policy-gradient reinforcement learning [ 13 ]. In our adaptation, the imitation-trained diffusion policy is used as the initial stochastic policy. We collect rollouts with the same fixed-start runner used by the other methods, compute native environment rewards and advantages, and update the diffusion model with a PPO-style objective. For diffusion actions, the policy likelihood term is implemented through a reverse-transition log-probability surrogate along the continuous-SDE denoising process, so that the update remains compatible with diffusion-policy action chunks. The reported DPPO policy is the final fine-tuned policy evaluated by the same rollout and post-hoc rare event metrics as all other methods. This adaptation preserves 25 DPPO’s central idea—native-reward policy-gradient improvement of the diffusion policy—but it does not add explicit novelty rewards or task rare event labels. 
+
+SIME. SIME targets policy self-improvement through modal-level exploration and data selec-tion [ 42 ]. We implement it as a modal-exploration wrapper around the base diffusion policy. At each decision step, the policy samples multiple candidate action chunks. These chunks are embedded into a mode representation using PCA features, a mode dictionary, and a history-based novelty score. The executed chunk is selected to favor underrepresented modes while remaining valid under the policy sampler. Rollouts are then filtered by task success or segment quality and used for subsequent self-improvement fine-tuning with the same rehearsal protocol used by the other data-augmentation baselines. This preserves SIME’s mode-level exploration and data-selection principle, while adapting its mode representation to diffusion action chunks and the fixed-start benchmark runner. 
+
+SOE. SOE explores on a learned action manifold rather than by arbitrary action-space noise [ 24 ]. In our adaptation, we fit a compact action-manifold model from base-policy action chunks and seed demonstrations. The main implementation uses a compact PCA-based action manifold for stable cross-task deployment, and the learned variant uses a conditional encoder–decoder to map between action chunks and latent coordinates. Exploration is performed by perturbing the latent coordinate and decoding the result back to an action chunk, which is then executed with the same fixed-start runner. The resulting rollouts are evaluated and, when used for policy improvement, inserted through the same training-data interface as the other methods. This preserves the SOE principle of manifold-constrained perturbation, but replaces the original task-specific latent training and human-guidance components with a benchmark-uniform action-manifold adaptation. 
+
+MimicGen. MimicGen is a demonstration-synthesis baseline rather than a policy-exploration baseline [ 28 ]. We therefore adapt it at the data-generation level. Starting from the same seed demonstrations, we segment demonstrations into object-centric subtasks, transform the corresponding motion segments to new object or scene contexts, replay the adapted segments with the task controller, and retain only demonstrations that pass the environment success checks. The successful synthetic demonstrations are converted into the same diffusion-policy training format as the other accepted data and used to fine-tune the original policy. For fairness in the final comparison, we evaluate the fine-tuned policy using the same fixed-start rollout bank and the same post-hoc task-related rare events. This adaptation keeps MimicGen’s structured demonstration-generation mechanism, but it does not treat MimicGen as an online action sampler. 
+
+DSRL. DSRL improves a diffusion policy by learning a steering policy in the latent-noise space while keeping the base diffusion-policy weights frozen [ 23 ]. In our adaptation, the base policy is frozen and a lightweight RL policy outputs latent-noise or initial-noise modifications for the diffusion sampler. The steering policy is trained with native environment reward using PPO or SAC, depending on the task interface, and the final frozen-policy-plus-steering composite is evaluated on the same fixed-start rollouts as the other methods. When rollout artifacts are required for downstream analysis, we save the trajectories generated by the final steering policy in the same replay-compatible format used by the other baselines. This preserves DSRL’s central frozen-policy steering semantics and avoids direct diffusion-weight fine-tuning. 
+
+## F Continuation Across Rare-Mining Rounds 
+
+We evaluate whether rare mining saturates after one augmentation round on three tasks. Rare1 denotes the accepted rare set from the first round, and Rare2 denotes the accepted rare set obtained by applying the same sampler to the first-round fine-tuned policy with unchanged hyperparameters. For each task-related axis, we report four descriptive quantities. Retention is the fraction of Rare2 samples inside the Rare1 5–95 percentile interval. Novelty is the complementary mass outside that interval. TV is the total-variation distance between the Rare1 and Rare2 one-dimensional KDEs on 26 the calibrated task-axis score: 
+
+TV(Rare1 , Rare2) = 12
+
+Z 10
+
+|pRare1 (s) − pRare2 (s)| ds. 
+
+High retention means Rare2 preserves the previous rare family, while high TV means the Rare2 score distribution differs strongly from Rare1. We also report two shifts relative to the first-round fine-tuned policy. ∆out is the change in mass outside the fine-tuned 5–95 percentile interval: 
+
+∆out = Pr 
+
+> Rare2
+
+[s / ∈ I(ft) 5–95 ] − Pr 
+
+> Rare1
+
+[s / ∈ I(ft) 5–95 ].
+
+∆>q 95 is the corresponding change in mass above the fine-tuned 95th percentile. Positive values indicate that Rare2 moves farther into the fine-tuned tail; negative values indicate a more conservative next rare set. Finally, Spread ratio is the Rare2/Rare1 ratio of median pairwise RMS distance within each rare set, averaged over task axes. It is a descriptive internal-diversity measure: values above one indicate that Rare2 is more spread out than Rare1 on average, but this should be read together with retention and outwardness. Table 8: Consecutive-round rare-mining diagnostic. Retention, Novelty, TV, ∆out , ∆>q 95 , and Spread ratio are averaged over task-related axes. TV measures the KDE distance between Rare1 and Rare2 on calibrated axis scores. Spread ratio is the Rare2/Rare1 median pairwise RMS distance within the rare set.                             
+
+> Task 1st/2nd round success rate Ret. Nov. TV ∆out ∆>q 95 Spread ratio ToolHang 0.630/0.682 0.838 0.162 0.348 −0.052 +0 .049 1.304 Transport 0.855/0.859 0.936 0.064 0.332 −0.202 −0.033 1.354 Can 0.947/0.998 0.005 0.995 0.957 +0 .637 +0 .856 7.265
+
+Interpretation. Can shows the clearest continuation signal. Rare2 is almost entirely outside Rare1 support, has the largest TV distance, moves strongly into the fine-tuned tail, and has much larger internal spread. This indicates a new contact/release pose family rather than saturation of the first rare family. ToolHang shows rare-family retention with mild expansion. Rare2 preserves most of Rare1 support, but still adds nonzero novelty and a small positive high-tail shift. Its main change is approach/contact-orientation variation within the same broad ToolHang rare family. Transport should be read conservatively. Rare2 is distributionally different from Rare1, but it has high retention, low novelty, negative outward shift relative to the fine-tuned policy, and only moderate spread increase. This is best interpreted as local handoff/contact geometry reweighting and rare-support consolidation, not broad new-mode discovery. 27 Figure 7: Task-feature distribution-shift diagnostics across manipulation benchmarks. Each panel shows a one-dimensional Task Feature KDE for a task-related event axis. Blue curves denote rollout samples from the base diffusion policy, orange curves denote rare-sampled rollout candidates, and green curves denote rollout samples from the fine-tuned policy after adaptation. The horizontal coordinate is the base-calibrated task-feature axis, oriented so that rightward movement corresponds to the rarer side of the base-policy rollout distribution. Densities are normalized within each panel and should be interpreted as distributional overlap and shift patterns rather than as directly comparable ab-solute density magnitudes across different event measures. Kitchen panels show Gaussian-smoothed KDEs of scalar embeddings of discrete attempt-order and success-order descriptors. 28

@@ -1,0 +1,696 @@
+Title: ω-EVA: Envision, Verify, and Act with Latent Interactive World Models
+
+URL Source: https://arxiv.org/pdf/2606.09457v1
+
+Published Time: Tue, 09 Jun 2026 02:16:12 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# ω-EVA: Envision, Verify, and Act with Latent Interactive World Models 
+
+Zhenguo Sun ∗ Yu Sun ∗† Hande Huang Alois Knoll 
+
+## Abstract 
+
+Embodied policies typically map current observations directly to actions, leaving candidate-action consequences implicit. World models provide predictive super-vision, representations, or external simulation, but rarely let a policy inspect the imagined consequence of its own proposal before acting. We introduce ω-EVA, a latent interactive world model that realizes an Envision–Verify–Act loop for embodied action generation. Its three-stage framework learns action-conditioned latent dynamics, trains a language-conditioned flow policy on dynamics-aware vi-sual representations, and feeds the policy’s proposal back through the world model. A tri-branch refiner jointly reasons over the current state, proposal-conditioned fu-ture, and proposed action to produce the final action chunk. Because consequence reasoning remains in latent feature space, ω-EVA avoids generating future videos at inference. Evaluations across diverse single-arm, bimanual, long-horizon, and perturbed simulation settings show that the complete interaction pipeline consis-tently improves the proposal policy, while latent diagnostics indicate meaningful action-conditioned future structure. With approximately 1.2B parameters and no additional robot-data pretraining, ω-EVA demonstrates a compact and competi-tive performance–scale–data trade-off, making the world model an active action-feedback module rather than a passive predictor. 
+
+## 1 Introduction 
+
+Embodied manipulation is inherently counterfactual. A robot should not only ask which action best matches the current observation and language instruction; it should also ask what would happen if that action were executed. This distinction becomes critical in dexterous manipulation, where small errors in reaching, grasping, or object alignment can compound into failure. Recent vision-language-action (VLA) models and generative visuomotor policies have made impressive progress on the first question. Large-scale robot transformers and VLA models show strong language-conditioned gener-alization across diverse manipulation tasks [Brohan et al., 2023, Kim et al., 2024, Black et al., 2024, Intelligence et al., 2025], while action-chunking and diffusion-style policies improve the modeling of continuous, multimodal control trajectories [Zhao et al., 2023, Chi et al., 2025, Liu et al., 2025]. Yet most policies still follow a direct observation-to-action paradigm: given the present scene, de-code an action chunk. The future consequence of that chunk remains implicit inside the policy parameters, rather than being exposed as something the policy can inspect before acting. World models appear to offer the missing counterfactual interface by modeling how the environment evolves under condition [Ding et al., 2025, Hou et al., 2026]. Recent world-action models extend this idea to robotics by jointly learning visual dynamics and robot actions, showing that future prediction can inject useful physical structure into policy learning [Zhu et al., 2025, Li et al., 2025, Ma et al., 2026, Bi et al., 2026, Team et al., 2026]. However, existing approaches usually make the world model useful in one of three ways. Some use future video or latent prediction mainly as a training-time auxiliary objective or representation-learning signal, so explicit imagination is skipped during inference for efficiency [Li et al., 2025, Ma et al., 2026, Yuan et al., 2026]. Others perform test-time video generation, goal-conditioned prediction, or rollout-based planning, which can provide richer consequence reasoning but is expensive for closed-loop robot control [Ye et al., 2026b, Guo et al., 2025, Zhou et al., 2025]. A third line uses predictive models as external guidance or conditioning 
+
+> ∗Contributed equally.
+> †Project leader.
+> arXiv:2606.09457v1 [cs.RO] 8 Jun 2026
+
+signals for a generative policy [An et al., 2026]. These uses are valuable, but they rarely create an internal interaction loop in which a candidate action is tested against an action-conditioned world model and corrected before execution. We introduce ω-EVA, a latent interactive world model for embodied action generation. ω-EVA is built around a simple but different paradigm: a policy should interact with its own imagined con-sequence before it acts. Instead of treating the world model as a passive auxiliary predictor or a standalone video simulator, ω-EVA makes it an active verifier inside the action-generation step. The policy first proposes an action chunk, the world model envisions the latent future induced by that exact proposal, and a refiner updates the action using both the proposal and its imagined conse-quence. This Envision–Verify–Act loop turns future prediction into proposal-conditioned feedback: the robot does not merely predict what to do from the present, but checks what its intended action is likely to cause. 
+
+ω-EVA realizes this paradigm with a three-stage training procedure. First, we pretrain an action-conditioned latent world model that predicts future visual features from current visual features and an action chunk, yielding both a future latent prediction and a dynamics-aware current representa-tion. Second, we train a language-conditioned action generation policy on these world-model-aware current latents, so the initial action proposal already benefits from action-conditioned visual dynam-ics. Third, and most importantly, we freeze the pretrained world model and policy, feed the policy’s own proposal back through the world model, obtain the imagined future latent caused by that pro-posal, and train a refiner over the current latent, imagined future latent, and proposed action. It therefore changes the role of the world model from “learn a better representation” to “interact with a concrete action candidate and help correct it.” At inference time, ω-EVA follows the same Envision–Verify–Act loop. Given a visual observation and language instruction, the policy generates an initial action proposal. The frozen latent world model then predicts the future visual features that would result from executing this proposal. Finally, the refinement module verifies the proposal through the imagined consequence and outputs a refined action sequence for execution. Because imagination is performed in a compact feature space rather than through pixel-level video generation, ω-EVA preserves test-time consequence reasoning while keeping the loop practical for closed-loop control. This design is especially relevant under visual per-turbations, object-layout shifts, and contact uncertainty, where a proposal-conditioned consequence signal can help correct brittle action chunks before they reach the robot. Our contributions are threefold. First, we propose latent interactive world modeling as a paradigm for embodied action generation, where a policy interacts with imagined consequences before exe-cution. Second, we introduce an action-conditioned latent world model that predicts future visual features while providing dynamics-aware current representations for action generation. Third, we develop an Envision–Verify–Act refiner that turns stage 3 into proposal-conditioned consequence feedback, improving action robustness without requiring full future video generation. 
+
+## 2 Related Work 
+
+2.1 Vision-Language-Action and Generative Visuomotor Policies 
+
+Robot manipulation has increasingly shifted from task-specific visuomotor policies toward gen-eralist models conditioned on vision and language. Large-scale robot transformers first demon-strated that data scale and task diversity can support broad real-world control [Brohan et al., 2023]. OpenVLA and subsequent vision-language-action (VLA) models extend this direction through open model development, flow-based action generation, and open-world generalization [Kim et al., 2024, Black et al., 2024, Intelligence et al., 2025]. Human-centric pretraining further transfers motion and interaction priors from large-scale human videos to dexterous and cross-embodiment robot learn-ing [Luo et al., 2025, 2026a]. Together, these works establish increasingly capable visual-language representations for direct robot control. A complementary line focuses on the action distribution itself. Action Chunking Transformer pre-dicts temporally extended action sequences [Zhao et al., 2023], while diffusion-based policies cap-ture multimodal continuous trajectories in visuomotor and bimanual manipulation [Chi et al., 2025, Liu et al., 2025]. Flow-based VLAs similarly generate action chunks by transporting noise toward a language- and observation-conditioned action distribution [Black et al., 2024]. These policy families 2provide strong proposal generators, but their standard interface remains observation and language in, action out. Although future consequences may be implicitly encoded in the learned parame-ters, the policy does not typically expose the visual consequence of its particular candidate action and use it as feedback before execution. ω-EVA retains a generative action policy, but inserts an action-conditioned predictive interaction between proposing and finalizing the action. 
+
+2.2 World-Action Models and Latent Predictive Learning 
+
+World models learn useful structure by representing or predicting how the environment evolves [Ding et al., 2025]. In embodied control, actions intervene directly on that evolution, motivating world-action models that jointly reason about observations, dynamics, and robot behavior [Hou et al., 2026, Wang et al., 2026]. Existing systems use this predictive capability in several ways. Unified World Models and related video-action models couple future generation with action modeling for large-scale pretraining or policy learning [Zhu et al., 2025, Li et al., 2025, Ma et al., 2026]. Other systems treat world modeling as a scalable data engine or a unified control backbone [Team et al., 2025, 2026, Li et al., 2026]. Latent action world models and action-centered designs further seek compact and efficient interfaces between visual dynamics and control [Bi et al., 2026, Ye et al., 2026a]. Collectively, these approaches show that future prediction can supply useful dynamics structure, supervision, and synthetic experience for robot policies. Predictive representation learning offers an alternative to reconstructing full future videos. Video Prediction Policy learns future-oriented visual representations for generalist control [Hu et al., 2024], while JEPA style VLA incorporate latent future prediction into VLA learning [Sun et al., 2026, Miao et al., 2026]. More general joint-embedding architectures study stable latent prediction for visual understanding and planning [Maes et al., 2026, Balestriero and LeCun, 2025, Assran et al., 2025]. ω-EVA shares their motivation for avoiding unnecessary pixel generation and likewise predicts future visual features. The distinction lies in the predictive interface: latent prediction is not used only to pretrain a representation or regularize a policy. At inference, ω-EVA conditions the world model on the policy’s own action proposal and exposes the resulting future latent to a separate action-refinement module. 
+
+2.3 Test-Time Imagination and Consequence-Aware Action Refinement 
+
+The foundational promise of world models is that imagined dynamics can inform decisions before they are executed [Ha and Schmidhuber, 2018]. Dreamer and its successors operationalize this principle by learning behavior through latent rollouts in model-based reinforcement learning [Hafner et al., 2019, 2020, 2023]. In robot learning, recent work has adapted test-time imagination through several interfaces. Generative world-action models produce controllable rollouts or directly act as zero-shot policies [Ye et al., 2026b, Guo et al., 2025]. Video models can also support visuomotor planning, generate policy targets, or translate predicted motion into robot actions [Kim et al., 2026, Du et al., 2023, Wen et al., 2024, Feng et al., 2025, Bharadhwaj et al., 2024, Zhou et al., 2025]. These methods make predicted futures operational, but commonly rely on generated video trajectories, goals, or planning-oriented outputs. Another direction asks whether explicit future generation is necessary at deployment. Fast-WAM studies efficient policies that avoid costly test-time imagination [Yuan et al., 2026], while action-centered world-action models seek more efficient coupling between dynamics and actions [Ye et al., 2026a]. Feedback World Model instead uses predictive feedback to guide a diffusion policy during generation [An et al., 2026]. These approaches move world models closer to the policy loop, yet existing methods rarely combine three properties simultaneously: conditioning imagination on the policy’s specific candidate action, feeding the imagined latent back within the same control decision, and jointly reasoning over the current state, imagined consequence, and original proposal to directly rewrite that action. 
+
+ω-EVA closes this local interaction loop through proposal-conditioned latent feedback. Its policy first generates an action chunk; the frozen world model predicts the latent consequence of that exact proposal; and the refiner directly produces a new action from the present state, imagined future, and proposal. This is neither rollout-based planning nor reward evaluation, and it does not require decoding a future video. The world model instead serves as an internal action-feedback 3module, turning future prediction from an auxiliary learning signal or external simulator into an active participant in embodied action generation. 
+
+## 3 Method 
+
+3.1 Problem Formulation 
+
+We consider language-conditioned robot manipulation from visual observations. At environment step t, the robot receives a visual observation ot and a language instruction l, and must predict an action chunk at:t+H ∈ RH×da , where H is the action horizon and da is the action dimension. Each training sample contains the current observation, instruction, and expert action chunk. To super-vise action-conditioned dynamics, it additionally provides a future observation ot+n at a variable prediction step n ∈ { 0, . . . , H }, bounded by the remaining length of the episode. A frozen visual encoder maps the current observation ot and future observation ot+n to patch-level features Ic and I(n) 
+
+> f
+
+, respectively. Here, I(n) 
+
+> f
+
+denotes the ground-truth future feature used to super-vise latent dynamics prediction. A frozen text encoder maps the instruction l to language tokens 
+
+Te. From Ic, the world model also learns a dynamics-aware current representation ct that captures visual information relevant to how the scene can evolve under robot actions. A conventional visuomotor policy directly models the mapping (ot, l ) 7 → at:t+H , leaving the con-sequence of the predicted action implicit. ω-EVA instead introduces an action-conditioned latent consequence between action proposal and final action generation. Its inference problem is expressed by the composition 
+
+ˆa0 
+
+> t:t+H
+
+= πϕ(ct, T e), ˆIf = Wθ (Ic, ˆa0 
+
+> t:t+H
+
+), ˆat:t+H = Rψ (ct, ˆIf , ˆa0 
+
+> t:t+H
+
+),
+
+where πϕ first produces an initial action proposal ˆa0 
+
+> t:t+H
+
+, the action-conditioned world model Wθ
+
+predicts its latent future consequence ˆIf , and the refiner Rψ outputs the final action chunk ˆat:t+H
+
+using the current representation, imagined future, and proposal itself. The learning objective is therefore not only to imitate expert actions, but to make the predicted consequence of a candidate action available as explicit feedback before that action is executed. We next describe how ω-EVA learns the latent dynamics model, proposal policy, and consequence-aware refiner through a three-stage framework. 
+
+3.2 ω-EVA Overview 
+
+Figure 1 presents ω-EVA as a closed interaction loop between action generation and latent conse-quence prediction. Given the current visual feature Ic and language tokens Te, the proposal policy 
+
+πϕ first produces an initial action chunk ˆa0 
+
+> t:t+H
+
+from the dynamics-aware current representation ct.The world model Wθ then conditions on this specific proposal to envision its future consequence 
+
+ˆIf . Finally, the refiner Rψ jointly reasons over ct, ˆIf , and ˆa0 
+
+> t:t+H
+
+to produce the refined action 
+
+ˆat:t+H . The world model thus supports action generation in two complementary ways: it provides a dynamics-shaped representation of the observed state and an explicit consequence of the action currently under consideration. 
+
+ω-EVA builds the capabilities required for this loop in three stages. Stage 1 learns the action-conditioned latent dynamics model Wθ by predicting variable-horizon future visual features. In addition to its future prediction, the model produces ct, which preserves the current observation while encoding dynamics-relevant visual structure. Stage 2 learns the language-conditioned pro-posal policy πϕ on top of ct and Te, yielding an initial action generator informed by the learned dynamics representation. Stage 3 freezes Wθ and πϕ, feeds each generated proposal back into the world model, and trains Rψ to correct the proposal from its imagined latent consequence. Stages 1 and 2 therefore establish the predictive model and proposal policy, while Stage 3 connects them into the Envision–Verify–Act interaction loop. Training Stage 3 uses the same proposal–imagination–refinement data flow as inference. At de-ployment, the refined action is executed without decoding ˆIf into pixels, and the full procedure is repeated after the next observation. This preserves explicit test-time consequence reasoning while 4Algorithm 1 Three-stage training of ω-EVA 
+
+Require: Training tuples (Ic, I (n)
+
+f , l, a t:t+H ), with valid-action masks and n bounded by the re-maining episode length 
+
+Ensure: World model Wθ (including learnable future queries Q), flow policy πϕ, and refiner Rψ
+
+1: Stage 1: action-conditioned latent world model 
+
+2: for each Stage 1 minibatch do 
+
+3: Sample n ∈ { 1, . . . , min( H, L t)} and construct a(n)
+
+t:t+H .
+
+4: Predict ( ˆIf , c t) = Wθ (Ic, a (n)
+
+t:t+H ; Q).
+
+5: Update θ, including Q, by minimizing Lwm = ∥ ˆIf − I(n)
+
+f ∥1.
+
+6: end for 
+
+7: Stage 2: world-aware action generator 
+
+8: for each Stage 2 minibatch do 
+
+9: Encode instruction l into language tokens Te.
+
+10: Obtain ct from Wθ using the full expert action chunk. 
+
+11: Sample τ and ϵ, form xτ = (1 − τ )a + τ ϵ .
+
+12: Predict vϕ(xτ , c t, T e, τ ) and compute Lf m .
+
+13: Update ϕ and, when unfrozen, θ (including Q) using Lstage 2.
+
+14: end for 
+
+15: Stage 3: imagined-interaction action refiner 
+
+16: Freeze Wθ (including Q) and πϕ.
+
+17: for each Stage 3 minibatch do 
+
+18: Extract ct from Wθ (Ic, a dummy ; Q) and encode l into Te.
+
+19: Generate proposal ˆa0
+
+t:t+H = πϕ(ct, T e) by flow integration. 
+
+20: Envision ( ˆIf , c t) = Wθ (Ic, ˆa0
+
+t:t+H ; Q) without gradients. 
+
+21: Refine action ˆat:t+H = Rψ (ct, ˆIf , ˆa0
+
+t:t+H ).
+
+22: Update Rψ by minimizing Lref ine .
+
+23: end for 
+
+keeping imagination inside a compact latent space. Algorithm 1 summarizes the optimization sched-ule; the following subsections detail the three learned components. MMDIT with        
+
+> Cross Attn Blocks
+> IC
+> If
+> QAt
+> ct
+> Causal MMDIT Blocks
+> Noisy
+> Action
+> At
+> MMDIT Blocks
+> AtIf
+> At'
+> ctctTe
+> MLPs AtAction
+> Action-Conditioned
+> Latent World Model
+> World-Aware
+> Action Generator
+> Imagined-Interaction
+> Action Refiner
+> ICQAt
+> Atct
+> ct
+> Noisy
+> Action Te
+> If
+> At'
+> ctrelies on dummy Atduring inference
+
+ω-EVA:  Envision, Verify, and Act 
+
+with  Latent  Interactive World Models  
+
+> IC
+> If
+> DINOv3
+> At
+> At
+> Q
+> QIC
+> IC
+> Velocity prediction
+> and sample
+> Te
+> T5
+> Encoder "Pick up
+> the cup"
+> QLearnable
+> queries
+
+Figure 1: Overview of ω-EVA. The left side shows the Envision–Verify–Act interaction loop: the world-aware action generator proposes an action, the action-conditioned latent world model envi-sions its consequence, and the imagined-interaction refiner corrects the proposal before execution. The right side details the three modules learned across Stages 1–3. 
+
+3.3 Stage 1: Action-Conditioned Latent World Model 
+
+Stage 1 learns the action-conditioned latent world model Wθ . Given the current observation and an action prefix, it predicts the visual feature of the corresponding future observation. Simultaneously, 5and equally importantly, the same model produces the dynamics-aware current-state representation 
+
+ct used by the Stage 2 policy. The key insight is that a model forced to anticipate how objects and the scene will evolve under actions must learn to attend to motion-relevant visual patterns—object boundaries, contact points, and task-relevant spatial relationships—and these patterns are naturally embedded in ct. The design therefore separates two complementary outputs: an action-dependent future consequence ˆIf and an action-independent current representation ct shaped by the future-prediction objective. 
+
+Input representation. Let Ev denote the frozen DINOv3 encoder [Siméoni et al., 2025]. The patch features from the current observation are concatenated as 
+
+Ic = Ev (ot) ∈ RN ×dv ,
+
+where N is the total number of visual tokens across multiple views. A visual projection Pv maps 
+
+Ic to current-state tokens C0 ∈ RN ×d. The action projection Pa maps an action chunk to tokens 
+
+A0 ∈ RH×d. A set of learnable future queries Q ∈ RN ×d, optimized as part of Wθ , initializes 
+
+Q0 and provides the prediction slots from which the future feature is decoded. Learned positional embeddings are added independently to the three token groups. 
+
+Variable-horizon action conditioning. Instead of always predicting a fixed terminal observation, Stage 1 jointly varies the action prefix and its future target. For each sample, we draw 
+
+n ∼ U{ 1, . . . , min( H, L t)},
+
+where Lt is the number of remaining environment steps. The truncated action chunk retains its first 
+
+n actions; the remaining positions are set to a stationary state, whose concrete form depends on the action space. For delta actions representing relative displacements, zeros indicate no motion. For absolute joint-space actions, the last valid pose at+n−1 is repeated across the remaining positions, so that the robot holds its configuration after the cutoff. Denoting the resulting chunk by a(n) 
+
+> t:t+H
+
+, its prediction target is synchronized to the same horizon: 
+
+A0 = Pa
+
+
+
+a(n)
+
+> t:t+H
+
+
+
+, I(n) 
+
+> f
+
+= Ev (ot+n).
+
+This paired truncation and target shift exposes the world model to consequences at different horizons and prevents it from associating every action input with a single fixed future frame. That is, this augmentation forces the world model to predict future visual states from partially observed action sequences and to infer how far into the future the truncated actions could carry the scene. As a result, the model cannot rely on the full action chunk as a shortcut and must develop a more robust understanding of action-conditioned dynamics, which in turn strengthens the quality of both the predicted future features ˆIf and the current latent ct.
+
+Causal multimodal attention. The model applies L multimodal attention blocks to future-query tokens Qℓ, current visual tokens Cℓ, and action tokens Aℓ. The three branches have independent QKV projections, output projections, and feed-forward networks, while attention is computed jointly over their concatenated keys and values. Information flow is controlled by the block visibility mask 
+
+M =
+
+"1 0 01 1 01 1 1
+
+#
+
+,
+
+whose rows and columns correspond to current-state, action tokens, and future-query tokens, respec-tively. Thus, future queries attend to all branches to combine the observed scene with the action prefix; current-state tokens attend only to themselves; and action tokens attend to the current-state and action branches. For block Bℓθ ,
+
+(Qℓ+1 , C ℓ+1 , A ℓ+1 ) = Bℓθ (Qℓ, C ℓ, A ℓ; M ).
+
+The restricted current-state branch prevents action and future-query information from entering Cℓ,so its final output remains independent of the candidate action. Nevertheless, because the future-query branch uses Cℓ as predictive context, gradients from future prediction train this branch to expose visual information useful for action-conditioned dynamics. We therefore define the final dynamics-shaped current representation as ct = CL.6Linear            
+
+> Causal Multi-Modal Self-Attention
+> DINOv3
+> QKV
+> Linear Linear
+> QKVQKV
+> Action
+> Encoder
+> Learnable query tokens
+> Action
+> Chunk
+> FFN FFN FFN
+> Linear
+> L1 loss
+> DINOv3
+> Attention Mask
+> Action
+> Encoder
+> Noisy
+> Action
+> Cross-Attention
+> Self-Attention
+> AdaLN
+> Cross-Attention
+> xM
+> "pick up the white
+> cup and place it
+> on the plate"
+> T5 Encoder
+> Nx
+> Linear
+> Velocity Prediction
+
+Figure 2: Stage 2 world-aware action generation. A time-conditioned Query Transformer takes the noised action chunk as query tokens. Each block performs action self-attention followed by cross-attention to the world-model representation ct and language tokens Te, and predicts the flow velocity used to generate an initial action proposal. 
+
+Latent future prediction. A linear prediction head Pf maps the final future-query tokens back to the frozen DINOv3 feature space: 
+
+ˆIf = Pf (QL), Lwm = ˆIf − I(n) 
+
+> f1
+
+.
+
+The feature prediction ˆIf is later used as the imagined consequence of an action proposal, while ct
+
+provides the action-independent visual condition for Stage 2 action generation. 
+
+3.4 Stage 2: World-Aware Action Generator 
+
+As illustrated in Figure 2, Stage 2 couples the latent world model with a language-conditioned flow policy πϕ. Its role is to transform the dynamics-shaped current representation ct learned in Stage 1 into an initial action proposal. Unlike Stage 1, Stage 2 uses the full expert action chunk, with episode-end padding where necessary, rather than a randomly truncated prefix. Passing this chunk through Wθ yields ct, while a frozen T5 encoder [Raffel et al., 2020] produces instruction tokens that are mapped to the model dimension by a learned projection: 
+
+¯Te = Pl(Te).
+
+The world-model and language features remain separate conditioning sequences and are accessed through independent cross-attention modules. 
+
+Flow-matching action queries. We formulate action generation as conditional flow matching [Lip-man et al., 2022]. To distinguish flow time from the environment index t, let τ ∈ [0 , 1] denote the flow timestep. During training, we sample 
+
+τ = σ(ξ), ξ ∼ N (0 , 1) ,
+
+and Gaussian action noise ϵ ∼ N (0 , I ) with the same shape as the normalized expert chunk a =
+
+at:t+H . A point on the linear probability path between data and noise is 
+
+xτ = (1 − τ )a + τ ϵ. 
+
+Rather than using fixed learned queries, the policy directly embeds the noised action: 
+
+X0 = Pa(xτ ) + Ea,
+
+where Pa is an action MLP and Ea ∈ RH×d is a learned action-position embedding. This preserves the temporal correspondence between each query token and its action-chunk position throughout denoising. 7Time-conditioned query transformer. The flow timestep is encoded with sinusoidal features fol-lowed by an MLP, producing eτ . The policy then applies a sequence of Query Transformer blocks. In block Gℓϕ, the action queries are updated in four steps: 
+
+˜Xℓ = SelfAttn( Xℓ; eτ ),
+
+¯Xℓ = ˜Xℓ + CrossAttn v ( ˜Xℓ, c t),
+
+ˆXℓ = ¯Xℓ + CrossAttn l( ¯Xℓ, ¯Te),Xℓ+1 = FFN( ˆXℓ; eτ ).
+
+The language cross-attention uses the text padding mask. Flow-time conditioning is injected into self-attention and the feed-forward network through adaptive layer normalization: eτ predicts scale, shift, and residual-gating parameters for both transformations. The final action tokens are mapped to the velocity field by a linear head, 
+
+vϕ(xτ , c t, T e, τ ) = Pv (XL).
+
+Joint training objective. Under the chosen interpolation, the target velocity is constant along the path: 
+
+v⋆ = ϵ − a. 
+
+The flow policy is trained with 
+
+Lf m = ∥vϕ(xτ , c t, T e, τ ) − (ϵ − a)∥22 .
+
+We jointly optimize the proposal policy and latent world model using 
+
+Lstage 2 = Lf m + λwm Lwm , λwm = 0 .1.
+
+The world-model term retains the future-prediction supervision while allowing ct to adapt to action generation. The implementation also supports freezing Wθ after Stage 1; in that setting, only πϕ is optimized and the world-model term is omitted. 
+
+Initial proposal generation. At inference, the policy first extracts ct from Wθ using a dummy zero-action input, as permitted by the action-independent current-state branch. Starting from Gaussian action noise xτS ∼ N (0 , I ) at τS = 1 , it follows a decreasing, sequence-length-shifted schedule to 
+
+τ0 = 0 , where S is the number of integration steps. We use explicit Euler integration: 
+
+xτs−1 = xτs + ( τs−1 − τs)vϕ(xτs , c t, T e, τ s).
+
+The terminal sample defines the Stage 2 proposal, 
+
+ˆa0 
+
+> t:t+H
+
+= xτ0 ,
+
+which is subsequently evaluated through the latent world model in Stage 3. 
+
+3.5 Stage 3: Imagined-Interaction Action Refiner 
+
+Stage 3 is the central step that turns the predictive and action-generation capabilities learned in Stages 1–2 into an interactive world-model policy. Before this stage, the world model supplies fu-ture supervision and a dynamics-shaped representation for action generation. Stage 3 introduces the missing feedback path: the policy’s own action proposal is returned to the world model, and the con-sequence imagined for that proposal is used to produce the final action. The world model therefore participates directly in a single control decision rather than remaining only a training objective or visual backbone. 
+
+Proposal-conditioned imagination. We freeze the world model Wθ and proposal policy πϕ, and train only the refiner Rψ . Given Ic and Te, the frozen Stage 2 pipeline first extracts the current repre-sentation with a dummy zero-action input and generates an initial proposal through flow integration: 
+
+ct = Wθ (Ic, a dummy ), ˆa0 
+
+> t:t+H
+
+= πϕ(ct, T e).
+
+The proposal is then fed back into the frozen world model to obtain its action-conditioned latent consequence: 
+
+( ˆIf , c t) = Wθ (Ic, ˆa0 
+
+> t:t+H
+
+).
+
+8Here, ˆIf is the same latent future representation learned through DINO-feature prediction in Stage 1, now conditioned on the policy’s own proposal rather than an expert action. Because the current-state branch of Wθ cannot attend to action or future-query tokens, the returned ct remains a function of the current observation alone; only ˆIf is conditioned on the proposal. All condition extraction is performed without gradient propagation into Wθ or πϕ.
+
+Tri-branch interaction refiner. The refiner receives three aligned token groups: 
+
+C0 = ct + Ec, F 0 = ˆIf + Ef , U 0 = Pr (ˆ a0 
+
+> t:t+H
+
+) + Ea,
+
+where Pr projects the proposal into the model dimension and Ec, E f , E a are learned positional embeddings. These branches expose the three quantities required for consequence-aware correction: 
+
+C0 represents the currently observed state, F 0 represents what the proposed action is predicted to cause, and U 0 represents the action currently under consideration. The refiner applies Lr tri-branch multimodal attention blocks. Each branch has independent QKV projections, output projection, and feed-forward network, while attention is computed jointly over the concatenated current, future, and proposal tokens. Unlike the structured visibility mask in Stage 1, Stage 3 uses no attention mask, allowing all three branches to interact: 
+
+(F ℓ+1 , C ℓ+1 , U ℓ+1 ) = Rℓψ (F ℓ, C ℓ, U ℓ).
+
+This full interaction lets each proposal token compare its intended motion against both the present scene and its predicted outcome. Stage 3 introduces neither a flow timestep nor adaptive layer normalization, and it does not run a second denoising process. A linear action head directly maps the final proposal branch to the refined action: 
+
+ˆat:t+H = Pout (U Lr ).
+
+Accordingly, the refiner does not predict an explicit verification score or a residual offset. In Envision–Verify–Act, verify denotes using the imagined consequence to assess and directly rewrite the proposed action. 
+
+Refinement supervision. Stage 3 does not receive the ground-truth future observation as an input. Its future feedback is generated entirely by the frozen world model from the policy’s own proposal, matching the information available at deployment. Only the refined action is supervised. With a validity mask mh ∈ { 0, 1} for each action step, we minimize the mean absolute error over valid action elements: 
+
+Lref ine =
+
+PHh=1 mh ∥ˆat+h − at+h∥1
+
+da
+
+PHh=1 mh
+
+.
+
+This objective trains Rψ to determine how the proposal should change when its predicted conse-quence is considered. Stage 3 thereby closes the proposal–imagination–refinement loop: the world model becomes a proposal-conditioned action-feedback module inside the policy, which is the defin-ing mechanism of ω-EVA’s latent interactive world-model paradigm. 
+
+3.6 Inference: Envision–Verify–Act 
+
+At deployment, ω-EVA performs one Envision–Verify–Act interaction before committing an action chunk. Given the current observation ot and instruction l, the frozen visual and language encoders first produce 
+
+Ic = Ev (ot), Te = El(l).
+
+The world model is then evaluated with a dummy zero-action input to extract the action-independent current representation, 
+
+ct = Wθ (Ic, a dummy ).
+
+Conditioned on (ct, T e), the proposal policy initializes xτS ∼ N (0 , I ) at τS = 1 and integrates its learned velocity field along the decreasing shifted schedule τS > · · · > τ 0 = 0 :
+
+xτs−1 = xτs + ( τs−1 − τs)vϕ(xτs , c t, T e, τ s).
+
+The terminal sample ˆa0 
+
+> t:t+H
+
+= xτ0 is the action considered by the world model. 9Algorithm 2 Envision–Verify–Act inference 
+
+Require: Current observation ot, instruction l, execution prefix K ≤ H, encoders Ev , E l, Wθ , πϕ,and Rψ
+
+Ensure: Refined action chunk ˆat:t+H 
+
+> 1:
+
+Encode Ic = Ev (ot) and Te = El(l). 
+
+> 2:
+
+Extract ct from Wθ (Ic, a dummy ; Q) with a dummy zero action.  
+
+> 3:
+
+Sample xτS ∼ N (0 , I ) with τS = 1 . 
+
+> 4:
+
+for s = S, S − 1, . . . , 1 do  
+
+> 5:
+
+vs ← vϕ(xτs , c t, T e, τ s). 
+
+> 6:
+
+xτs−1 ← xτs + ( τs−1 − τs)vs. 
+
+> 7:
+
+end for  
+
+> 8:
+
+Set proposal ˆa0 
+
+> t:t+H
+
+← xτ0 . 
+
+> 9:
+
+Envision: ˆIf ← Wθ (Ic, ˆa0 
+
+> t:t+H
+
+; Q). 
+
+> 10:
+
+Verify: ˆat:t+H ← Rψ (ct, ˆIf , ˆa0 
+
+> t:t+H
+
+). 
+
+> 11:
+
+Execute the first K actions of ˆat:t+H , observe ot+K , and repeat. 
+
+Envision and verify. ω-EVA feeds this specific proposal back into the frozen world model to predict its latent consequence, and the refiner uses that consequence as action feedback: 
+
+ˆIf = Wθ (Ic, ˆa0 
+
+> t:t+H
+
+), ˆat:t+H = Rψ (ct, ˆIf , ˆa0 
+
+> t:t+H
+
+).
+
+Here, verify is a single consequence-aware refinement rather than reward evaluation, an explicit verification score, or multi-step planning. The system neither observes the true future nor decodes 
+
+ˆIf into a future video; all consequence reasoning remains in the latent feature space. 
+
+Receding-horizon execution. After refinement, the robot executes the first K ≤ H actions from 
+
+ˆat:t+H , receives a new observation ot+K , and repeats the full interaction. Setting K = 1 gives step-wise closed-loop control, while K > 1 gives action-chunk execution between replanning steps. The execution prefix is selected by the deployment protocol rather than fixed by the model. Algorithm 2 summarizes this deployment loop. Thus, ω-EVA retains explicit test-time consequence reasoning without invoking a separate pixel-level simulator: the world model acts as an internal, proposal-conditioned feedback module within each control decision. 
+
+## 4 Experiments 
+
+We evaluate ω-EVA on three simulated manipulation benchmarks: LIBERO [Liu et al., 2023], LIBERO-PLUS [Fei et al., 2025], and RoboTwin 2.0 [Chen et al., 2025]. Together, they cover single-arm and bimanual control, long-horizon task execution, and robustness to visual, linguistic, and environmental perturbations. We report task success rate, robot-pretraining usage, and core model size. Our evaluation focuses on whether the compact ω-EVA architecture remains competi-tive without robot pretraining and whether Stage 3 consistently improves its Stage 2 proposal policy through proposal-conditioned imagined consequences. 
+
+4.1 Experimental Setup Implementation. For LIBERO and LIBERO-PLUS, ω-EVA uses an agent-view image and a wrist-view image, each resized to 256 × 256 and encoded independently before their visual tokens are concatenated. The action horizon is H = 16 and the action dimension is 7. RoboTwin 2.0 provides left-wrist, right-wrist, and head-camera observations; following the benchmark setup used by Fast-WAM [Yuan et al., 2026], we stitch the three views into one image before visual encoding. The action horizon remains H = 16 , with a 14 -dimensional action for bimanual control. For ω-EVA, the Stage 1 latent world model contains 12 decoupled multimodal-attention blocks with hidden dimension 1024 and 8 attention heads. The Stage 2 flow policy uses 12 Query Transformer blocks and 5 Euler integration steps at inference. The Stage 3 refiner contains 12 tri-branch joint-attention blocks and directly predicts the refined action chunk. 10 Table 1: Success rates (%) on LIBERO. Baseline values are reported by Fast-WAM [Yuan et al., 2026] and the cited original works. “Robot Pretrain” indicates additional robot interaction data before benchmark training. Params excludes T5 for ω-EVA and follows the published main-model size for baselines. Bold marks the best average within each robot-pretraining group. Method Core Params Robot Pretrain Spatial Object Goal Long Avg. OpenVLA [Kim et al., 2024] 7B Yes 84.7 88.4 79.2 53.7 76.5                                                                  
+
+> π0[Black et al., 2024] 3.3B Yes 96.8 98.8 95.8 85.2 94.1
+> π0.5[Intelligence et al., 2025] 3.3B Yes 98.8 98.2 98.0 92.4 96.9 LingBot-VA [Li et al., 2026] 5.3B Yes 98.5 99.6 97.2 98.5 98.5
+> Motus Bi et al. [2026] 8B Yes 96.8 99.8 96.6 97.6 97.7 VLA-JEPA Sun et al. [2026] 3B Yes 96.2 99.6 97.2 95.8 97.2 VLA-JEPA Sun et al. [2026] 3B No 94.8 99.6 95.8 94.0 96.1 Fast-WAM [Yuan et al., 2026] 6B No 98.2 100.0 97.0 95.2 97.6
+> ω-EVA Stage 2 (Ours) 0.8B No 98.8 99.4 97.6 95.8 97.9
+> ω-EVA Stage 3 (Ours) 1.2B No 99.0 99.8 98.2 97.4 98.6
+
+ω-EVA uses no robot pretraining . The world model, action policy, and refiner are initialized and trained only on the training data of the corresponding benchmark; they do not load robot-policy, VLA, robot-trajectory, or robot-video pretraining. We use frozen DINOv3 and text encoders solely to extract generic visual and language features, following the architecture in Section 3. Accordingly, “Robot Pretrain” in the following tables denotes pretraining on additional robot interaction data, rather than the use of frozen generic representation encoders. The Stage 2 world-model–policy stack contains approximately 0.8B parameters, and adding the Stage 3 refiner increases ω-EVA to approximately 1.2B parameters. Both counts include the frozen DINOv3 visual encoder but exclude the frozen T5 text encoder. For baselines, we report the main policy or world-action-model size stated by the corresponding work. Since different works may account for frozen or auxiliary encoders differently, the parameter column indicates model scale rather than a strictly standardized parameter-count benchmark. 
+
+Training details. All three stages are trained with AdamW, an initial learning rate of 10 −4, a cosine-annealed final learning rate of 10 −6, weight decay 10 −6, and (β1, β 2) = (0 .9, 0.95) . We use 500 warmup iterations, bfloat16 mixed precision, and Distributed Data Parallel training. Our main runs use 16 NVIDIA H100 GPUs with 80 GB memory each and a total batch size of 1024. Stage 1, Stage 2, and Stage 3 are trained for 50, 30, and 20 epochs, respectively. We evaluate checkpoints from multiple epochs through repeated simulator rollouts and report the best rollout result for each stage. 
+
+4.2 Simulation Benchmarks LIBERO. LIBERO [Liu et al., 2023] comprises four standard suites—Spatial, Object, Goal, and Long—that test spatial reasoning, object interaction, goal interpretation, and long-horizon execu-tion. Each task is initialized from benchmark-provided states and evaluated with the official simu-lator horizon. Table 1 compares ω-EVA with published VLA and world-action-model results. The reported baselines differ substantially in their pretraining data and model scale, so we expose their robot-pretraining status rather than treating the table as a strictly controlled ranking. Without robot pretraining, the compact 0.8B Stage 2 model reaches an average success rate of 97 .9% .The complete Envision–Verify–Act pipeline raises this result by 0.7 points to 98 .6% , improving all four suites and yielding its largest gain of 1.6 points on LIBERO-Long. The 1.2B Stage 3 model achieves the highest average in the table despite using only benchmark training data, outperforming substantially larger robot-pretrained and benchmark-only models. These results establish both a favorable performance–scale trade-off and a consistent benefit from adding the full Stage 3 pipeline to the same proposal policy. 
+
+LIBERO-PLUS robustness and transfer. LIBERO-PLUS [Fei et al., 2025] extends LIBERO with seven controlled perturbation categories spanning camera, robot appearance, language, light-ing, background, sensor noise, and scene layout. We evaluate ω-EVA in two settings. For zero-11 Table 2: Success rates (%) under LIBERO-PLUS perturbations. Published baseline values are from Fei et al. [2025], Sun et al. [2026], and the cited original works. Params excludes T5 for 
+
+ω-EVA and follows published main-model sizes for baselines. Bold marks the best average within each training-data and robot-pretraining group. Method Core Params Training Data Robot Pretrain Camera Robot Language Light Background Noise Layout Avg. OpenVLA [Kim et al., 2024] 7B LIBERO Yes 0.8 3.5 23.0 8.1 34.8 15.2 28.5 15.6                                                                                                                           
+
+> π0[Black et al., 2024] 3.3B LIBERO Yes 13.8 6.0 58.8 85.0 81.4 79.0 68.9 53.6
+> π0-FAST [Pertsch et al., 2025] 3.3B LIBERO Yes 65.1 21.6 61.0 73.2 73.2 74.4 68.8 61.6 OpenVLA-OFT Kim et al. [2025] 7B LIBERO Yes 56.4 31.9 79.5 88.7 93.3 75.8 74.2 69.6 VLA-JEPA Sun et al. [2026] 3B LIBERO Yes 63.3 67.1 85.4 95.6 93.6 66.3 85.1 79.5
+> VLA-JEPA Sun et al. [2026] 3B LIBERO No 40.3 55.7 72.9 88.2 70.5 38.2 74.6 62.9 Fast-WAM [Yuan et al., 2026] 6B LIBERO No 16.4 44.5 68.9 78.2 53.7 37.7 60.7 51.5
+> ω-EVA Stage 2 (Ours) 0.8B LIBERO No 59.5 58.8 66.4 97.1 74.5 74.1 76.7 71.3
+> ω-EVA Stage 3 (Ours) 1.2B LIBERO No 62.8 61.6 64.4 96.7 76.9 74.1 76.8 72.2
+> LIBERO-PLUS post-trained [Fei et al., 2025] 7B LIBERO-PLUS Yes 92.8 30.3 85.8 94.9 93.9 89.3 77.6 79.5
+> ω-EVA Stage 2 (Ours) 0.8B LIBERO-PLUS No 92.0 62.8 66.1 93.5 92.2 90.8 76.7 81.2
+> ω-EVA Stage 3 (Ours) 1.2B LIBERO-PLUS No 95.3 65.2 66.1 94.5 93.9 94.4 79.5 83.4
+
+Table 3: Success rates (%) on RoboTwin 2.0. Baseline values are reported by Fast-WAM [Yuan et al., 2026] and the cited original works. Params excludes T5 for ω-EVA and follows published main-model sizes for baselines. Bold marks the best average within each robot-pretraining group. 
+
+ω-EVA uses only RoboTwin 2.0 training data. Method Core Params Robot Pretrain Clean Randomized Avg. 
+
+π0 [Black et al., 2024] 3.3B Yes 65.9 58.4 62.2 
+
+π0.5 [Intelligence et al., 2025] 3.3B Yes 82.7 76.8 79.8 LingBot-VA [Li et al., 2026] 5.3B Yes 92.9 91.5 92.2 Motus [Bi et al., 2026] 8B Yes 88.7 87.0 87.8 Being-H0.7 [Luo et al., 2026b] 3B Yes 90.2 89.6 89.9 MotuBrain [Team et al., 2026] 8B Yes 95.8 96.1 96.0 
+
+Fast-WAM [Yuan et al., 2026] 6B No 91.9 91.8 91.8 
+
+ω-EVA Stage 2 (Ours) 0.8B No 89.2 88.6 88.9 
+
+ω-EVA Stage 3 (Ours) 1.2B No 90.4 90.1 90.3 shot transfer, the model is trained only on LIBERO and directly evaluated on LIBERO-PLUS. For benchmark-specific training, all trainable ω-EVA modules are trained on the LIBERO-PLUS split, still without any additional robot pretraining. Table 2 includes representative baselines from the LIBERO-PLUS paper and reports the training data used by each ω-EVA variant. Under zero-shot transfer from LIBERO, the complete Stage 3 pipeline improves the average by 0.9
+
+points, from 71 .3% to 72 .2% . Among methods without robot pretraining, ω-EVA exceeds VLA-JEPA and Fast-WAM by 9.3 and 20 .7 points, respectively, while using a smaller model. The Stage 3 gain is not uniform across categories: Camera, Robot, Background, and Layout improve, Noise is unchanged after rounding, while Language and Light decrease slightly. With LIBERO-PLUS benchmark training, Stage 3 produces a larger 2.2-point gain, from 81 .2% to 83 .4% , improving six of seven perturbation categories and matching Language. These results support a measured robust-ness claim: the full Envision–Verify–Act pipeline consistently improves aggregate performance and benefits most visual perturbations, without implying universal gains under every shift. 
+
+RoboTwin 2.0. RoboTwin 2.0 [Chen et al., 2025] evaluates bimanual manipulation across clean and domain-randomized conditions. It complements LIBERO by increasing action dimensionality, camera coverage, and sensitivity to visual and physical variation. Table 3 compares our result with published VLA and world-action-model results under the benchmark’s clean and randomized task groups. The complete Stage 3 pipeline improves the RoboTwin average by 1.4 points, from 88 .9% to 90 .3% ,with gains in both clean and randomized settings. ω-EVA does not achieve the highest absolute RoboTwin score; instead, it offers a favorable performance–scale–data trade-off. Its 1.2B model surpasses the reported Motus and Being-H0.7 results and remains within 1.5 points of the 6B Fast-WAM model, while using no robot pretraining. We therefore characterize ω-EVA as compact and competitive rather than state of the art. The consistent Stage 3 gain further shows that the full inter-action pipeline transfers from single-arm LIBERO tasks to higher-dimensional bimanual control. 12 4.3 Ablation Studies 
+
+Unless otherwise specified, all ablations are conducted on LIBERO using the same visual inputs, action horizon, training configuration, and rollout protocol as the main experiment. Each study changes only the component under examination. We first analyze whether future-prediction training produces a dynamics-aware yet action-independent current representation, then evaluate latent future fidelity and isolate the source of the Stage 3 improvement. 
+
+4.3.1 Dynamics-Aware Current Representation and Action Invariance 
+
+Stage 1 is designed to produce two complementary outputs: an action-conditioned future prediction 
+
+ˆIf and an action-independent current representation ct shaped by future-prediction supervision. We examine both the spatial structure learned by the current branch and whether the decoupled attention mask prevents ground-truth actions from leaking into the Stage 2 policy condition. 
+
+Spatial representation analysis. We visualize the spatial activation of the frozen DINOv3 fea-tures, the Stage 1 current representation, and the current representation after Stage 2 co-training. For a patch token zp, its activation is defined as 
+
+sp = ∥zp∥2 .
+
+The patch scores are reshaped to their spatial grid, upsampled to the input resolution, and overlaid on the same current observation. We use the same colormap and normalize each heatmap indepen-dently; therefore, Figure 3 compares where each representation concentrates its activation, rather than absolute activation magnitudes across models.      
+
+> (a) Current observation (b) DINOv3 (c) Stage 1 ct(d) Stage 2 ct
+
+Figure 3: Spatial activation of the current visual representation. Compared with the generic DINOv3 features in (b), future-prediction training in (c) redistributes activation toward the robot end effector, manipulated object, and nearby interaction regions. The Stage 2 co-trained world model in (d) retains these dynamics-relevant cues while adapting the representation for action generation. The heatmaps are qualitative representation diagnostics and do not by themselves establish globally superior features. The frozen DINOv3 map emphasizes generic visually salient regions. After Stage 1, activation becomes more concentrated around the end effector, the manipulated cup, and nearby objects whose spatial relations can change under robot actions. Stage 2 co-training preserves these interaction-relevant regions while adapting ct to condition the flow policy. This progression is consistent with the intended role of future prediction: it shapes the current branch to expose visual structure useful for scene dynamics without requiring the branch itself to observe an action. 
+
+Action-invariance sanity check. During Stage 2 co-training, the world-model forward pass re-ceives the expert action to retain future-prediction supervision. This could create target leakage if action information entered the current branch used by the policy. We test this directly by holding the current images fixed and extracting 
+
+c(a) 
+
+> t
+
+= W cθ (Ic, a ), ∆( a, a ′) = c(a) 
+
+> t
+
+− c(a′) 
+
+> t
+
+,
+
+where W cθ denotes the current-state output of the world model. We compare the expert chunk with a dummy zero chunk, Gaussian random actions, and expert chunks shuffled across the batch. 13 Table 4: Action-invariance of ct on the LIBERO evaluation set. Differences are computed element-wise between current representations extracted from identical images under different ac-tion inputs. Expert, dummy, random, and batch-shuffled actions all produce numerically identical ct
+
+values. Action comparison Mean abs. diff. ↓ Max abs. diff. ↓ Cosine similarity ↑
+
+Expert vs. dummy 0.000 0.000 1.000 Expert vs. random 0.000 0.000 1.000 Expert vs. shuffled 0.000 0.000 1.000 Across the full LIBERO evaluation set, replacing the expert chunk with dummy, random, or batch-shuffled actions leaves ct numerically unchanged: all comparisons have zero mean and maximum absolute difference and unit cosine similarity. This confirms that the action supplied for Stage 2 future supervision does not enter the policy condition. The result follows the decoupled visibility mask, under which current-state tokens attend only to the current branch, and rules out equality being a special case of the dummy input. Importantly, this invariance applies only to ct: the future-query branch ˆIf remains action-conditioned by design. 
+
+4.3.2 Action-Conditioned Latent Future Fidelity Evaluation protocol. Our world model predicts future DINOv3 features rather than pixels. To make these latent consequences observable, we train a single diagnostic decoder D to map frozen DINOv3 features back to image space. The decoder is used only for this analysis and is not part of policy training or inference. For each valid LIBERO sequence, we pair the current observation ot
+
+with the future observation ot+16 after one complete action chunk, discarding episode tails shorter than 16 steps. We evaluate four conditions. First, D(Ev (ot+16 )) reconstructs the true future feature and measures the information preserved by the DINOv3–decoder projection. Second, the world model predicts a future latent from the current observation and the ground-truth action chunk. Third and fourth, we replace the ground-truth action with the Stage 2 proposal and Stage 3 refined action, respectively. All predicted latents are visualized through the same decoder and compared directly with the orig-inal future observation ot+16 . We report the Structural Similarity Index Measure (SSIM), a paired image metric that evaluates structural agreement and is higher when the decoded prediction more closely matches its target, and the Fréchet Inception Distance (FID), a set-level metric that compares the feature distributions of decoded predictions and real future images and is lower when the distri-butions are closer. Because the decoder and metrics use the same LIBERO data, this experiment is a representation diagnostic rather than a held-out reconstruction or generalization evaluation. Table 5: Action-conditioned future-latent fidelity on LIBERO. All decoded predictions are eval-uated against the original future observation ot+16 . SSIM measures paired structural similarity, whereas FID compares the distributions of the corresponding decoded and real image sets. Bold marks the better result between Stage 2 and Stage 3. Condition SSIM vs. raw GT ↑ FID vs. raw GT ↓
+
+## DINO reconstruction ceiling 0.9700 7.10 GT-action imagination 0.9569 7.40 Stage 2 proposal imagination 0.9520 7.41 Stage 3 refined-action imagination 0.9562 7.40 
+
+Table 5 first establishes the decoder reference: reconstructing the ground-truth DINOv3 feature reaches an SSIM of 0.9700 and an FID of 7.10 against the original future images. Conditioning the world model on the ground-truth action yields 0.9569 SSIM and 7.40 FID, showing that its predicted latent retains much of the target future structure after decoding. Replacing the Stage 2 proposal with the Stage 3 refined action increases SSIM from 0.9520 to 0.9562 and decreases FID from 7.41 to 
+
+7.40 . The SSIM gain of 0.0042 provides paired evidence that futures induced by refined actions align 14 (a) Current observation (b) Raw GT future (c) Decoded GT future   
+
+> (d) GT-action imagination (e) Stage 2 proposal (f) Stage 3 refinement
+
+Figure 4: Decoded action-conditioned future latents. All latent predictions are rendered by the same diagnostic decoder. The GT-action prediction in (d) closely follows the decoded future target in (c), indicating that the world model captures action-conditioned scene evolution. Compared with the Stage 2 proposal in (e), the Stage 3 refined action in (f) produces a future whose robot pose and scene structure more closely match the target and GT-action reference. Decoder smoothing reflects the diagnostic projection and is not pixel generation performed by the policy. more closely with their targets. The 0.01 FID reduction is small, and is therefore interpreted only as preserving, with a slight improvement in, set-level distributional fidelity. Stage 3 also approaches the GT-action reference, trailing it by only 0.0007 SSIM and matching its FID at the reported precision, consistent with Figure 4. This diagnostic supports improved latent-future alignment after refinement, but does not by itself establish that all policy gains are caused exclusively by the imagined-future branch. 
+
+4.3.3 Disentangling Future Feedback and Proposal Anchoring 
+
+We next isolate the two inputs that distinguish the Stage 3 refiner from a conventional state-conditioned action head: the imagined future ˆIf and the original Stage 2 proposal ˆa0. In all Stage 3 variants, the Stage 1 world model and Stage 2 proposal policy remain frozen, and we keep the refiner depth and training protocol unchanged. The full model receives all three branches, 
+
+Rψ (ct, ˆIf , ˆa0).
+
+We compare it with two targeted input ablations. Stage 3 w/o imagined future removes the world-model rollout and trains the refiner from only the current representation and proposal, 
+
+Rψ (ct, ˆa0).
+
+This variant tests whether a generic state-conditioned proposal refiner can explain the Stage 3 gain without consequence feedback. Stage 3 w/o action proposal retains proposal-conditioned imagina-tion but removes the proposal tokens from the refiner, 
+
+ˆIf = Wθ (Ic, ˆa0), Rψ (ct, ˆIf ).
+
+Thus, ˆa0 is still used to generate the same imagined consequence as in the full model, but is not exposed as a correction anchor when producing the final action. This variant tests whether the 15 current state and predicted outcome are sufficient, or whether the refiner must also know which action produced that outcome. Table 6: Stage 3 input-branch ablation on LIBERO. Current, Future, and Proposal indicate the branches provided directly to the refiner. The Stage 2 proposal policy has no refiner and serves as the unrefined reference. For Stage 3 w/o action proposal, the frozen Stage 2 proposal is still used by the world model to generate the Future branch, but is withheld from the refiner. Variant Current Future Proposal Spatial Object Goal Long Avg.                                 
+
+> ω-EVA Stage 2 √––98.8 99.4 97.6 95.8 97.9
+> ω-EVA Stage 3 √√√99.0 99.8 98.2 97.4 98.6 w/o imagined future √–√97.6 99.8 96.8 94.6 97.2 w/o action proposal √√–97.2 99.4 95.0 92.4 96.0
+
+Table 6 shows that both imagined-future feedback and proposal anchoring are necessary for the Stage 3 gain. Removing the imagined future reduces the average from 98 .6% to 97 .2% , a 1.4-point drop, and performs 0.7 points below the unrefined Stage 2 policy. Thus, an additional state-and-proposal refiner alone does not explain the improvement; proposal-conditioned consequence feed-back provides information that is absent from generic refinement. Removing the proposal branch produces a larger decline to 96 .0% , 2.6 points below the full model and 1.9 points below Stage 2. Although this variant still receives the future imagined from the same Stage 2 proposal, the refiner no longer observes which action produced that consequence. The result supports the proposal’s role as a correction anchor for translating future feedback into a precise action update. Together, the two ablations validate the full current–future–proposal interaction: the imagined consequence provides the feedback to assess, while the proposal identifies the action that must be rewritten. 
+
+## 5 Conclusion 
+
+We presented ω-EVA, a latent interactive world model that turns future prediction into proposal-conditioned feedback for embodied action generation. Rather than using a world model only as a training objective, representation learner, or standalone simulator, ω-EVA places it inside the action-generation loop. Its three-stage framework first learns action-conditioned latent dynamics, then trains a language-conditioned flow policy to produce an initial action chunk, and finally closes the loop through Stage 3: the proposal is fed back to the world model, its latent consequence is envi-sioned, and a tri-branch refiner jointly reasons over the current state, imagined future, and proposal to produce the final action. Because this interaction remains in feature space, the policy can reason about a candidate consequence without generating a future video. Experiments across LIBERO, LIBERO-PLUS, and RoboTwin 2.0 consistently show that the com-plete Envision–Verify–Act pipeline improves its Stage 2 proposal policy. Stage 3 raises average suc-cess from 97 .9% to 98 .6% on LIBERO, from 71 .3% to 72 .2% under zero-shot LIBERO-PLUS trans-fer, from 81 .2% to 83 .4% with LIBERO-PLUS training, and from 88 .9% to 90 .3% on RoboTwin 2.0. The gains cover all LIBERO suites, both RoboTwin evaluation settings, and most LIBERO-PLUS perturbation categories. The latent-fidelity analysis further provides representation-level evidence that action-conditioned predictions preserve meaningful future structure and that futures induced by refined actions align more closely with the target than those induced by Stage 2 proposals. Taken together, these results support the value of the complete interaction pipeline while leaving the inde-pendent causal contribution of each Stage 3 branch to the controlled studies now under evaluation. Notably, these results are obtained with an approximately 1.2B-parameter model and no additional robot-data pretraining, demonstrating a compact and competitive performance–scale–data trade-off rather than relying on substantially larger pretrained policies. 
+
+Future directions. The present system performs one consequence-aware refinement before exe-cuting an action chunk and replans after receiving the next observation. A natural extension is intra-chunk closed-loop refinement , in which intermediate observations continuously update the imagined future and remaining actions while the chunk is being executed. A complementary direction is it-erative imagination–refinement : a refined action can be returned to the world model to produce a 16 new consequence, followed by another refinement step. Studying the number of iterations, conver-gence behavior, latency, and task success would expose the trade-off between deeper consequence reasoning and responsive control. The predictive interface can also be extended beyond vision by incorporating tactile, force, and proprioceptive signals, which may be especially valuable under contact, occlusion, and visual ambiguity. Although the current compact model is trained only on benchmark robot data, robot-video or trajectory pretraining and larger model scales may improve dynamics fidelity and generalization. Finally, action-conditioned world modeling offers a promising interface for test-time self-evolution: after executing an action, the agent can compare its imagined consequence with the observed outcome and use this feedback to continually calibrate the world model and, potentially, adapt the policy and refiner. These directions point toward embodied world-model agents that do not merely imagine once before acting, but continuously perceive, envision, revise, and learn from their own interaction. 
+
+## References 
+
+Tuo An, Jindou Jia, Gen Li, Jingliang Li, Chuhao Zhou, Pengfei Liu, Bofan Lyu, Jiaqi Bai, Xinying Guo, Geng Li, et al. Feedback world model enables precise guidance of diffusion policy. arXiv preprint arXiv:2605.15705 , 2026. Mido Assran, Adrien Bardes, David Fan, Quentin Garrido, Russell Howes, Matthew Muckley, Am-mar Rizvi, Claire Roberts, Koustuv Sinha, Artem Zholus, et al. V-jepa 2: Self-supervised video models enable understanding, prediction and planning. arXiv preprint arXiv:2506.09985 , 2025. Randall Balestriero and Yann LeCun. Lejepa: Provable and scalable self-supervised learning with-out the heuristics. arXiv preprint arXiv:2511.08544 , 2025. Homanga Bharadhwaj, Debidatta Dwibedi, Abhinav Gupta, Shubham Tulsiani, Carl Doersch, Ted Xiao, Dhruv Shah, Fei Xia, Dorsa Sadigh, and Sean Kirmani. Gen2act: Human video generation in novel scenarios enables generalizable robot manipulation. arXiv preprint arXiv:2409.16283 ,2024. Hongzhe Bi, Hengkai Tan, Shenghao Xie, Zeyuan Wang, Shuhe Huang, Haitian Liu, Ruowen Zhao, Yao Feng, Chendong Xiang, Yinze Rong, et al. Motus: A unified latent action world model. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 35101–35113, 2026. Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom, Karol Hausman, Brian Ichter, et al. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 , 2024. Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Joseph Dabis, Chelsea Finn, Keerthana Gopalakrishnan, Karol Hausman, Alexander Herzog, Jasmine Hsu, Julian Ibarz, Brian Ichter, Alex Irpan, Tomas Jackson, Sally Jesmonth, Nikhil J. Joshi, Ryan Julian, Dmitry Kalash-nikov, Yuheng Kuang, Isabel Leal, Kuang-Huei Lee, Sergey Levine, Yao Lu, Utsav Malla, Deek-sha Manjunath, Igor Mordatch, Ofir Nachum, Carolina Parada, Jodilyn Peralta, Emily Perez, Karl Pertsch, Jornell Quiambao, Kanishka Rao, Michael S. Ryoo, Grecia Salazar, Pannag R. Sanketi, Kevin Sayed, Jaspiar Singh, Sumedh Sontakke, Austin Stone, Clayton Tan, Huong T. Tran, Vin-cent Vanhoucke, Steve Vega, Quan Vuong, Fei Xia, Ted Xiao, Peng Xu, Sichun Xu, Tianhe Yu, and Brianna Zitkovich. RT-1: Robotics Transformer for Real-World Control at Scale. In Kostas E. Bekris, Kris Hauser, Sylvia L. Herbert, and Jingjin Yu, editors, Robotics: Science and Systems XIX , 2023. Tianxing Chen, Zanxin Chen, Baijun Chen, Zijian Cai, Yibin Liu, Zixuan Li, Qiwei Liang, Xi-anliang Lin, Yiheng Ge, Zhenyu Gu, et al. Robotwin 2.0: A scalable data generator and bench-mark with strong domain randomization for robust bimanual robotic manipulation. arXiv preprint arXiv:2506.18088 , 2025. Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song. Diffusion policy: Visuomotor policy learning via action diffusion. The Interna-tional Journal of Robotics Research , 44(10-11):1684–1704, 2025. ISSN 0278-3649, 1741-3176. 17 Jingtao Ding, Yunke Zhang, Yu Shang, Yuheng Zhang, Zefang Zong, Jie Feng, Yuan Yuan, Hongyuan Su, Nian Li, Nicholas Sukiennik, Fengli Xu, and Yong Li. Understanding world or pre-dicting future? a comprehensive survey of world models. ACM Comput. Surv. , 58(3), September 2025. ISSN 0360-0300. doi: 10.1145/3746449. URL https://doi.org/10.1145/3746449 .Yilun Du, Sherry Yang, Bo Dai, Hanjun Dai, Ofir Nachum, Josh Tenenbaum, Dale Schuurmans, and Pieter Abbeel. Learning universal policies via text-guided video generation. Advances in neural information processing systems , 36:9156–9172, 2023. Senyu Fei, Siyin Wang, Junhao Shi, Zihao Dai, Jikun Cai, Pengfang Qian, Li Ji, Xinzhe He, Shiduo Zhang, Zhaoye Fei, et al. Libero-plus: In-depth robustness analysis of vision-language-action models. arXiv preprint arXiv:2510.13626 , 2025. Yao Feng, Hengkai Tan, Xinyi Mao, Chendong Xiang, Guodong Liu, Shuhe Huang, Hang Su, and Jun Zhu. Vidar: Embodied video diffusion model for generalist manipulation. arXiv preprint arXiv:2507.12898 , 2025. Yanjiang Guo, Lucy Xiaoyang Shi, Jianyu Chen, and Chelsea Finn. Ctrl-world: A controllable generative world model for robot manipulation. arXiv preprint arXiv:2510.10125 , 2025. David Ha and Jürgen Schmidhuber. World models. arXiv preprint arXiv:1803.10122 , 2(3):440, 2018. Danijar Hafner, Timothy Lillicrap, Jimmy Ba, and Mohammad Norouzi. Dream to control: Learning behaviors by latent imagination. arXiv preprint arXiv:1912.01603 , 2019. Danijar Hafner, Timothy Lillicrap, Mohammad Norouzi, and Jimmy Ba. Mastering atari with dis-crete world models. arXiv preprint arXiv:2010.02193 , 2020. Danijar Hafner, Jurgis Pasukonis, Jimmy Ba, and Timothy Lillicrap. Mastering diverse domains through world models. arXiv preprint arXiv:2301.04104 , 2023. Bohan Hou, Gen Li, Jindou Jia, Tuo An, Xinying Guo, Sicong Leng, Haoran Geng, Yanjie Ze, Tatsuya Harada, Philip Torr, et al. World model for robot learning: A comprehensive survey. 
+
+arXiv preprint arXiv:2605.00080 , 2026. Yucheng Hu, Yanjiang Guo, Pengchao Wang, Xiaoyu Chen, Yen-Jen Wang, Jianke Zhang, Koushil Sreenath, Chaochao Lu, and Jianyu Chen. Video prediction policy: A generalist robot policy with predictive visual representations. arXiv preprint arXiv:2412.14803 , 2024. Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, et al. π0.5: a vision-language-action model with open-world generalization. arXiv preprint arXiv:2504.16054 , 2025. Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael Rafailov, Ethan Paul Foster, Pannag R. Sanketi, Quan Vuong, Thomas Kollar, Benjamin Burchfiel, Russ Tedrake, Dorsa Sadigh, Sergey Levine, Percy Liang, and Chelsea Finn. Open-VLA: An Open-Source Vision-Language-Action Model. In Pulkit Agrawal, Oliver Kroemer, and Wolfram Burgard, editors, Conference on Robot Learning , volume 270 of Proceedings of Machine Learning Research , pages 2679–2713. PMLR, 2024. Moo Jin Kim, Chelsea Finn, and Percy Liang. Fine-tuning vision-language-action models: Optimiz-ing speed and success. arXiv preprint arXiv:2502.19645 , 2025. Moo Jin Kim, Yihuai Gao, Tsung-Yi Lin, Yen-Chen Lin, Yunhao Ge, Grace Lam, Percy Liang, Shuran Song, Ming-Yu Liu, Chelsea Finn, et al. Cosmos policy: Fine-tuning video models for visuomotor control and planning. arXiv preprint arXiv:2601.16163 , 2026. Lin Li, Qihang Zhang, Yiming Luo, Shuai Yang, Ruilin Wang, Fei Han, Mingrui Yu, Zelin Gao, Nan Xue, Xing Zhu, et al. Causal world modeling for robot control. arXiv preprint arXiv:2601.21998 ,2026. Shuang Li, Yihuai Gao, Dorsa Sadigh, and Shuran Song. Unified video action model. arXiv preprint arXiv:2503.00200 , 2025. 18 Yaron Lipman, Ricky TQ Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative modeling. arXiv preprint arXiv:2210.02747 , 2022. Bo Liu, Yifeng Zhu, Chongkai Gao, Yihao Feng, Qiang Liu, Yuke Zhu, and Peter Stone. Libero: Benchmarking knowledge transfer for lifelong robot learning. Advances in Neural Information Processing Systems , 36:44776–44791, 2023. Songming Liu, Lingxuan Wu, Bangguo Li, Hengkai Tan, Huayu Chen, Zhengyi Wang, Ke Xu, Hang Su, and Jun Zhu. RDT-1B: A Diffusion Foundation Model for Bimanual Manipulation. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 , 2025. Hao Luo, Yicheng Feng, Wanpeng Zhang, Sipeng Zheng, Ye Wang, Haoqi Yuan, Jiazheng Liu, Chaoyi Xu, Qin Jin, and Zongqing Lu. Being-H0: Vision-Language-Action Pretraining from Large-Scale Human Videos. Preprint at arXiv:2507.15597 , 2025. Hao Luo, Ye Wang, Wanpeng Zhang, Sipeng Zheng, Ziheng Xi, Chaoyi Xu, Haiweng Xu, Haoqi Yuan, Chi Zhang, Yiqing Wang, Yicheng Feng, and Zongqing Lu. Being-H0.5: Scaling Human-Centric Robot Learning for Cross-Embodiment Generalization. Preprint at arXiv:2601.12993 ,2026a. Hao Luo, Wanpeng Zhang, Yicheng Feng, Sipeng Zheng, Haiweng Xu, Chaoyi Xu, Ziheng Xi, Yuhui Fu, and Zongqing Lu. Being-h0. 7: A latent world-action model from egocentric videos. 
+
+arXiv preprint arXiv:2605.00078 , 2026b. Teli Ma, Jia Zheng, Zifan Wang, Chunli Jiang, Andy Cui, Junwei Liang, and Shuo Yang. Dit4dit: Jointly modeling video dynamics and actions for generalizable robot control. arXiv preprint arXiv:2603.10448 , 2026. Lucas Maes, Quentin Le Lidec, Damien Scieur, Yann LeCun, and Randall Balestriero. Leworld-model: Stable end-to-end joint-embedding predictive architecture from pixels. arXiv preprint arXiv:2603.19312 , 2026. Shangchen Miao, Ningya Feng, Jialong Wu, Ye Lin, Xu He, Dong Li, and Mingsheng Long. Jepa-vla: Video predictive embedding is needed for vla models. arXiv preprint arXiv:2602.11832 ,2026. Karl Pertsch, Kyle Stachowicz, Brian Ichter, Danny Driess, Suraj Nair, Quan Vuong, Oier Mees, Chelsea Finn, and Sergey Levine. Fast: Efficient action tokenization for vision-language-action models. arXiv preprint arXiv:2501.09747 , 2025. Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and Peter J Liu. Exploring the limits of transfer learning with a unified text-to-text transformer. Journal of machine learning research , 21(140):1–67, 2020. Oriane Siméoni, Huy V Vo, Maximilian Seitzer, Federico Baldassarre, Maxime Oquab, Cijo Jose, Vasil Khalidov, Marc Szafraniec, Seungeun Yi, Michaël Ramamonjisoa, et al. Dinov3. arXiv preprint arXiv:2508.10104 , 2025. Jingwen Sun, Wenyao Zhang, Zekun Qi, Shaojie Ren, Zezhi Liu, Hanxin Zhu, Guangzhong Sun, Xin Jin, and Zhibo Chen. Vla-jepa: Enhancing vision-language-action model with latent world model. arXiv preprint arXiv:2602.10098 , 2026. GigaWorld Team, Angen Ye, Boyuan Wang, Chaojun Ni, Guan Huang, Guosheng Zhao, Haoyun Li, Jiagang Zhu, Kerui Li, Mengyuan Xu, et al. Gigaworld-0: World models as data engine to empower embodied ai. arXiv preprint arXiv:2511.19861 , 2025. MotuBrain Team, Chendong Xiang, Fan Bao, Haitian Liu, Hengkai Tan, Hongzhe Bi, James Li, Jiabao Liu, Jingrui Pang, Kiro Jing, et al. Motubrain: An advanced world action model for robot control. arXiv preprint arXiv:2604.27792 , 2026. Siyin Wang, Junhao Shi, Zhaoyang Fu, Xinzhe He, Feihong Liu, Chenchen Yang, Yikang Zhou, Zhaoye Fei, Jingjing Gong, Jinlan Fu, et al. World action models: The next frontier in embodied ai. arXiv preprint arXiv:2605.12090 , 2026. 19 Youpeng Wen, Junfan Lin, Yi Zhu, Jianhua Han, Hang Xu, Shen Zhao, and Xiaodan Liang. Vid-man: Exploiting implicit dynamics from video diffusion model for effective robot manipulation. 
+
+Advances in Neural Information Processing Systems , 37:41051–41075, 2024. Angen Ye, Boyuan Wang, Chaojun Ni, Guan Huang, Guosheng Zhao, Hao Li, Hengtao Li, Jie Li, Jindi Lv, Jingyu Liu, et al. Gigaworld-policy: An efficient action-centered world–action model. 
+
+arXiv preprint arXiv:2603.17240 , 2026a. Seonghyeon Ye, Yunhao Ge, Kaiyuan Zheng, Shenyuan Gao, Sihyun Yu, George Kurian, Suneel Indupuru, You Liang Tan, Chuning Zhu, Jiannan Xiang, et al. World action models are zero-shot policies. arXiv preprint arXiv:2602.15922 , 2026b. Tianyuan Yuan, Zibin Dong, Yicheng Liu, and Hang Zhao. Fast-wam: Do world action models need test-time future imagination? arXiv preprint arXiv:2603.16666 , 2026. Tony Z. Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware. In Kostas E. Bekris, Kris Hauser, Sylvia L. Herbert, and Jingjin Yu, editors, Robotics: Science and Systems XIX , 2023. Pengfei Zhou, Liliang Chen, Shengcong Chen, Di Chen, Wenzhi Zhao, Rongjun Jin, Guanghui Ren, and Jianlan Luo. Act2goal: From world model to general goal-conditioned policy. arXiv preprint arXiv:2512.23541 , 2025. Chuning Zhu, Raymond Yu, Siyuan Feng, Benjamin Burchfiel, Paarth Shah, and Abhishek Gupta. Unified world models: Coupling video and action diffusion for pretraining on large robotic datasets. In Proceedings of Robotics: Science and Systems (RSS) , 2025. 20

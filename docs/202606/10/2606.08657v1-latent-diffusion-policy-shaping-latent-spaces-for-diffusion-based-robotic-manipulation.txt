@@ -1,0 +1,532 @@
+Title: Latent Diffusion Policy: Shaping Latent Spaces for Diffusion-Based Robotic Manipulation
+
+URL Source: https://arxiv.org/pdf/2606.08657v1
+
+Published Time: Tue, 09 Jun 2026 01:39:06 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# Latent Diffusion Policy: Shaping Latent Spaces for Diffusion-Based Robotic Manipulation 
+
+Zhexuan Zhou ∗
+
+, Yichen Lai ∗
+
+, Jinhao Zhang ∗
+
+, Huizhe Li, Youmin Gong, Jie Mei †
+
+Abstract: Diffusion-based visuomotor policies operating directly in raw action spaces conflate scene comprehension with trajectory generation within a single denoising process. The resulting velocity field must simultaneously encode scene information and generate precise trajectories, increasing learning complexity and limiting performance on tasks demanding precise temporal coordination across mul-tiple arms. To simplify this joint learning problem, we introduce Latent Diffusion Policy (LDP), a two-stage framework performing flow matching in a deliber-ately shaped latent space. By absorbing scene understanding into an observation-conditioned CVAE encoder, LDP concentrates the conditional distribution of each observation. Consequently, the flow model avoids implicitly resolving scene-dependent structures; instead, it generates within a pre-concentrated distribution featuring a smoother velocity field, simplifying learning from limited demonstra-tions. Furthermore, to capture temporal dependencies among latent tokens, LDP trains with per-token diffusion forcing and employs staircase inference sampling to resolve the resulting distributional mismatch. We also propose reconstruction FID (rFID) as a lightweight proxy predicting downstream task success solely from latent space statistics. On coordination-intensive tasks from RoboTwin 2.0, LDP outperforms DP3 by a substantial margin and transfers effectively to real-world bimanual deployments. 
+
+## 1 Introduction 
+
+Diffusion-based visuomotor policies demonstrate strong performance in robotic manipulation [ 1 , 2, 3,4 ], effectively circumventing the mode-averaging artifacts inherent in standard behavior cloning [ 5, 6]. However, these methods operate directly within raw action spaces, where the conditional target distribution p(a|o) shifts with each new observation. Consequently, the learned velocity field must simultaneously address two intertwined tasks within a single denoising process: interpreting the current scene to determine the target action distribution, and generating precise trajectories to realize this target. This coupling increases the effective complexity of the velocity field. Unlike single-step generators, flow-based methods integrate the velocity field over multiple ODE steps, accumulating approximation errors at each step—making them particularly sensitive to velocity field complexity. The associated learning burden intensifies for manipulation tasks requiring precise temporal coordination across diverse scenes. To simplify this joint learning problem, we introduce Latent Diffusion Policy (LDP) , a two-stage framework performing flow matching within a deliberately shaped latent space. A conventional approach is to compress actions via an autoencoder and generate within the resulting space [ 7]. However, the critical question is not whether to employ a latent space, but what structural properties it should possess to facilitate downstream flow-based generation. Our central design choice is observation-conditioned encoding: by injecting scene context into the CVAE encoder via feature concatenation (fig. 1), the encoder incorporates scene understanding into the encoding process. This mechanism concentrates the per-observation conditional distribution p(z|o), while ensuring each latent token retains complete information to reconstruct the action. Consequently, the flow model 
+
+> 1
+
+These authors contributed equally to this work. 
+
+> 2
+
+Corresponding author. 
+
+> arXiv:2606.08657v1 [cs.RO] 7 Jun 2026
+
+avoids implicitly resolving scene-dependent structures; instead, it operates within a pre-concentrated distribution featuring a smoother velocity field, simplifying learning from limited demonstrations. To evaluate this concentration without the prohibitive computational cost of full pipeline training, we propose reconstruction FID (rFID, Heusel et al. [8] ) as a lightweight diagnostic metric predicting downstream task success solely from latent space statistics. This shaped latent space yields a supplementary benefit: as the CVAE tokenizes action trajectories into a sequence of K latent tokens, each encoding a distinct temporal segment, LDP can exploit this sequential structure during generation. LDP is trained using per-token diffusion forcing [ 9], assigning independent noise levels to each token to ensure the model learns cross-segment temporal dependencies. However, this strategy introduces a train-inference mismatch: standard sampling applies uniform noise across all tokens simultaneously, a configuration never encountered during training. We resolve this discrepancy via staircase sampling, an inference procedure that staggers the denoising schedule across tokens by an optimal offset δ∗ to restore distributional consistency. Our primary contributions are summarized as follows: 1. Observation-Conditioned Latent Space Shaping. We show that observation-conditioned encoding concentrates the per-observation conditional distribution in latent space, empir-ically simplifying the downstream flow generation task. We additionally adapt rFID as a diagnostic metric for latent architecture selection without full pipeline training. 2. Staircase Sampling for Diffusion Forcing. We combine per-token diffusion forcing with a staircase inference schedule that restores distributional consistency between training and inference, with a heuristic offset derivation matching empirical findings. 3. Coordination Task Performance. LDP achieves strong performance on coordination-intensive tasks in RoboTwin 2.0, and transfers to real-world bimanual manipulation from limited teleoperated demonstrations. 
+
+## 2 Related Work 
+
+Diffusion-Based Robot Policies. Diffusion Policy [ 1 ] first formulated visuomotor control as DDPM-based [ 10 , 11 ] action denoising. DP3 [ 2] extended this paradigm to 3D point cloud observa-tions, achieving strong geometric generalization. Subsequent efforts have scaled toward generalist robot policies [ 12 , 13 , 14 , 15 ] and accelerated inference through consistency distillation [ 16 ] and flow matching [ 17 ]. HDP3 [ 18 ] leverages frequency-domain analysis to reduce model capacity. A critical consideration is that all these methods operate in the raw action space. LDP departs from this convention by performing generation in a deliberately shaped latent space, yielding complementary advantages for coordination-intensive manipulation. 
+
+Action Representations and Latent Spaces. ACT [ 19 ] employs a CVAE with a Transformer decoder but samples directly from the learned prior without iterative diffusion refinement. VQ-BeT [ 20 ] discretizes actions via VQ-VAE [ 21 ], while 3D Diffuser Actor [ 22 ] operates within a 3D scene representation. DART [ 23 ] tokenizes actions for diffusion-based generation but does not explicitly optimize the latent distribution for downstream flow matching. Crucially, these prior approaches treat the latent space as a byproduct of compression—evaluating it solely by reconstruction quality. LDP’s key departure is recognizing that conditional distributional structure (measurable via rFID) governs downstream generation quality independently of reconstruction accuracy. LAPA [ 24 ]learns latent actions from video without requiring explicit action labels. We note that DART lacks open-source code for reproduction on our benchmark, and π0 [ 12 ] targets generalist multi-task settings with substantially different data scales, precluding direct single-task comparison. In contrast to the above formulations, LDP introduces rFID as a quantitative diagnostic for latent space quality and deliberately shapes the target distribution through observation-conditioned encoding. 
+
+Latent Diffusion and Diffusion Forcing. The frozen two-stage paradigm established by Stable Diffusion [ 7] has demonstrated substantial efficacy for image generation. While the downstream 2Stage 1: Latent Space Shaping (CVAE) 
+
+Stage 2: Flow Matching + Diffusion Forcing 
+
+Inference    
+
+> Token 0 Token 1 Token N
+> clean noisy
+
+Token-wise Flow Interpolation 
+
+> Staircase ODE Sampler
+> Token 0
+> Token 1
+> Token N
+
+# …… …… 
+
+> Sampling Activated
+> observation
+> action
+
+FiLM 
+
+×S
+
+> Expand
+
+FiLM 
+
+÷S
+
+FiLM 
+
+> Sampling Deactivated
+
+Figure 1: Overview of Latent Diffusion Policy (LDP). A conditional CVAE first compresses action sequences a ∈ RH×da into latent tokens z ∈ RK×dz , with observation features c concatenated to trajectory tokens to shape the latent distribution. A Diffusion Transformer then learns to generate latent tokens via flow matching with per-token diffusion forcing. At inference time, staircase sampling staggers the denoising progress across tokens, and the frozen CVAE decoder maps the generated latents back to actions. generation quality of these models is standardly quantified by the Fr ´echet Inception Distance (FID) [8 ], achieving high fidelity fundamentally relies on strict alignment between training and inference distributions. Diffusion Forcing [ 9] extends diffusion training to sequential data by assigning independent per-token noise levels; however, this formulation does not address the resulting train-inference distributional mismatch at sampling time. DDIM [ 25 ] and consistency models [ 26 ] reduce sampling steps under the assumption of shared noise levels across all dimensions. Score-based goal-conditioned policies [ 27 ] and discrete diffusion for language modeling [ 28 , 29 ] explore orthogonal research directions. To our knowledge, staircase sampling represents the first inference procedure specifically engineered for per-token diffusion forcing. 
+
+## 3 Preliminaries 
+
+Problem Setting. We address visuomotor policy learning from demonstrations [ 30 , 5, 31 ]. Specif-ically, given a dataset of expert trajectories D = {(oi, ai)}Mi=1 , where oi denotes 3D point cloud observations and ai ∈ RH×da denotes an action sequence of horizon H with da-dimensional actions, 3the objective is to learn a conditional policy π(a|o) that generates action sequences given the current observation. 
+
+Flow Matching. Flow matching [ 32 , 33 ] constructs a probability path between the data distribution 
+
+p0 and a standard Gaussian p1 = N (0 , I) via linear interpolation: 
+
+xt = (1 − t) x0 + t ξ, t ∈ [0 , 1] , ξ ∼ N (0 , I). (1) A neural network fθ learns to predict the velocity field vt = ξ − x0 by minimizing: 
+
+LFM = Et∼U (ϵ, 1−ϵ), x0, ξ
+
+h
+
+∥fθ (xt, t ) − (ξ − x0)∥2i
+
+. (2) Generation proceeds by integrating the learned ODE dxt/dt = fθ (xt, t ) from t = 1 to t ≈ 0 via an Euler solver [ 34 ]. Compared to DDPM [ 10 ], flow matching requires substantially fewer function evaluations owing to straighter transport paths [33]. 
+
+## 4 Latent Diffusion Policy 
+
+4.1 Method Overview 
+
+As illustrated in Figure 1, LDP simplifies trajectory generation via a frozen two-stage pipeline. In 
+
+Stage 1 , an observation-conditioned CVAE compresses action sequences a ∈ RH×da into a compact latent token sequence z ∈ RK×dz . By concatenating scene features with trajectory tokens in the encoder, the CVAE reorganizes the latent space so that, for each observation, the corresponding conditional distribution p(z|o) is concentrated and geometrically regular—yielding a structurally simpler generation target for the downstream flow model. In Stage 2 , a Diffusion Transformer learns to generate these latent tokens via flow matching. To exploit the temporal structure of the token sequence, we train with per-token diffusion forcing and resolve the resulting train-inference mismatch with staircase sampling . The CVAE decoder is frozen during Stage 2 and maps generated latents back to executable actions at inference. We detail each stage below. 
+
+4.2 Latent Space Shaping via Conditional VAE Conditional VAE Structure. We employ a conditional variational autoencoder (CVAE) to learn a structured latent space on which the flow model operates. Given an action sequence a ∈ RH×da and observation features c = gη (o) extracted by a PointNet-based encoder [ 35 ], the CVAE encoder maps actions to a sequence of latent tokens: 
+
+μ, log σ2 = fenc (a, c), μ ∈ RK×dz . (3) Concretely, the encoder first projects normalized actions into a hidden sequence via a temporal convolutional tokenizer with residual blocks, compressing the horizon into K latent tokens. Scene context is then injected by concatenating observation features with the trajectory token representations, enabling the posterior network to condition on both action structure and scene context jointly. A lightweight decoder maps latent tokens back to actions ˆa = fdec (z) ∈ RH×da without observation conditioning, ensuring all scene-dependent information is encoded into the latent structure exclusively through the encoder. Before passing latents to the flow model, we normalize each dimension to unit variance: z = μ ⊙ s where sd = 1 /std d(μ) is computed per dimension from encoder posterior statistics over the training set. The CVAE is trained with a composite loss: 
+
+LCVAE = Lrecon + βKL (e) KL( qϕ(z | a, c) ∥ pψ (z | c)) , (4) where Lrecon combines a weighted MSE loss with velocity and acceleration smoothness penalties on the reconstructed trajectory, pψ (z | c) is a learned conditional prior that regularizes the posterior toward an observation-dependent target, and βKL (e) follows a linear epoch warmup schedule. At inference, the flow model generates from a standard Gaussian N (0, I); the conditional prior serves solely as a training regularizer that encourages concentrated, observation-specific posterior clusters. 4Why Conditioning Simplifies Generation. A natural question arises: since the decoder receives 
+
+no observation input, each latent token must still encode sufficient information to reconstruct the full action sequence. How, then, does observation conditioning help? The answer lies in distributional reorganization . An unconditional encoder maps all actions through the same function regardless of scene context, producing a latent space where tokens from different observations intermingle—the per-observation distribution p(z|o) that the flow model must generate becomes dispersed and potentially multi-modal. An observation-conditioned encoder, by receiving scene features as additional input, can specialize its mapping for each observation, clustering same-scene latents into compact regions. We observe empirically that conditioning reduces per-observation latent variance (measured via rFID). Our working hypothesis is that this concentration simplifies the conditional velocity field the flow model must approximate: when the target distribution for a given observation is compact and unimodal, the velocity field exhibits less spatial variation, reducing approximation error under a fixed network capacity and step budget. While we do not formally prove this link (concentrated distributions do not universally guarantee smoother fields), the empirical evidence strongly supports it: rFID predicts downstream success (section 5.3), and removing conditioning degrades performance severely. We note that removing conditioning simultaneously changes both concentration and latent semantics, so the observed degradation reflects both effects jointly. 
+
+4.3 Latent Denoising with Diffusion Forcing 
+
+Given the structured latent space from Stage 1, we train a Diffusion Transformer (DiT, Peebles and Xie [36] ) to generate latent tokens z ∈ RK×dz via flow matching. To condition generation, observation features and timestep information are fused and injected into the network via standard adaptive layer normalization (adaLN). 
+
+Per-Token Diffusion Forcing. By construction, the encoder’s temporal pooling compresses each contiguous H/K -step segment into one latent token, and the decoder’s linear upsampling reverses this mapping—token j therefore governs the action sub-sequence over timesteps [( j−1) ·H/K, j ·H/K ).Standard flow matching ignores this sequential structure by corrupting all tokens with a shared noise level t, so that all neighbors are always at the same signal-to-noise ratio—removing any incentive to exploit cross-token temporal dependencies. We instead employ per-token diffusion forcing [ 9]: during training, each token j receives an independent noise level tj ∼ U (ϵ, 1−ϵ). This compels the model to predict the velocity for a partially denoised token using context from neighbors at different 
+
+denoising stages—learning to exploit inter-segment temporal dependencies rather than treating tokens independently. The adaLN parameters accordingly become per-token (shape (B, K, d h)), and the training objective is: 
+
+L = Ez0, ξ, t
+
+ 1
+
+K
+
+> K
+
+X
+
+> j=1
+
+fθ (zt, t, c)(j) − (ξ(j) − z(j)0 ) 2
+
+ , (5) where z0 = μ ⊙ s are the scaled encoder posterior means, t = ( t1, . . . , t K ), z(j) 
+
+> t
+
+= (1 − tj )z(j)0 +
+
+tj ξ(j), ξ(j) ∼ N (0 , I), and tj ∼ U (ϵ, 1−ϵ) independently. 
+
+Staircase Sampling. Per-token diffusion forcing strengthens temporal reasoning but introduces a train–inference distribution mismatch. During training, the model always conditions on neighbors at diverse noise levels; yet standard ODE inference denoises all tokens with a shared schedule, presenting a uniform-t configuration that lies outside the training distribution. Empirically, this mismatch significantly degrades the generation success rate (section 5.3). We resolve this via staircase sampling (as shown in Algorithm 1): the denoising schedule of each token is staggered by a fixed step offset δ, so that at every inference step the K tokens span distinct noise levels—reproducing the per-token diversity seen during training. The optimal offset δ∗ should make the tokens’ instantaneous noise levels approximate a uniform spread over [0 , 1] at each step, matching the marginal distribution 5Algorithm 1 Staircase Sampling 
+
+Require: Trained DiT fθ , condition c, ODE steps N , offset δ, length K 
+
+> 1:
+
+S ← N + δ · (K − 1) {Total sampling steps } 
+
+> 2:
+
+∆t ← 1/N {Step size } 
+
+> 3:
+
+z(j) ∼ N (0 , I) for j = 1 , . . . , K {Initialize from noise } 
+
+> 4:
+
+tj ← 1.0 for j = 1 , . . . , K {All tokens start at full noise } 
+
+> 5:
+
+for i = 0 to S − 1 do  
+
+> 6:
+
+v ← fθ (z, t, c) {Current time vector } 
+
+> 7:
+
+for j = 1 to K do  
+
+> 8:
+
+if i ≥ (j − 1) · δ and tj > 0 then  
+
+> 9:
+
+z(j) ← z(j) − ∆t · v(j) {Euler step } 
+
+> 10:
+
+tj ← max( tj − ∆t, 0)  
+
+> 11:
+
+end if  
+
+> 12:
+
+end for  
+
+> 13:
+
+end for  
+
+> 14:
+
+return z
+
+of independent training samples. This yields a range-matching heuristic (Remark D.1, Appendix) that predicts δ∗ = 2 , which exactly matches the empirical optimum (section 5.3). 
+
+## 5 Experiments 
+
+We evaluate LDP on the RoboTwin 2.0 benchmark [ 37 ] with 3D point cloud observations, focusing on overall policy performance, the diagnostic value of rFID, and ablations of conditioning, diffusion forcing, and staircase sampling. 
+
+5.1 Experimental Setup 
+
+We evaluate on RoboTwin 2.0 [ 37 ], which provides 50 bimanual tasks with two 7-DoF arms (Aloha-AgileX). Observations are 3D point clouds (1024 points, XYZ+RGB) plus 14-dim proprioceptive state; actions are 14-dimensional (7 DoF × 2 arms). Each task uses 50 expert demonstrations for training and 100 episodes for evaluation. The CVAE compresses H = 8 action steps into K = 4 latent tokens ( dz = 32 , total 128-dim); the DiT has L = 6 layers, dh = 192 ; inference uses 10 ODE steps with staircase δ = 2 (16 total calls). We compare against DP [ 1] (100-step DDPM), ACT [19 ] (CVAE + Transformer decoder), DP3 [2 ] (10-step DDIM, 3D point clouds), and Flow Policy [ 17 ] (1-step consistency flow matching). Baseline sources are specified in the table captions; all comparisons use the 50-demo protocol. Full hyperparameters in section A. 
+
+5.2 Main Results 
+
+Table 1 reports results on 11 coordination-intensive tasks. The selection criterion—defined prior to examining any method’s results—is structural: tasks involving multi-phase sequential manipula-tion where success depends on precise temporal ordering of sub-actions (e.g., handover, stacking, coordinated placement). LDP achieves the highest average success rate (65.7%), outperforming DP3 (50.1%) by +15.6% and obtaining the best result on 9 of 11 tasks. The largest gains appear on tasks with strong temporal dependencies: stack blocks two (+27% over DP3) and handover block (+25%), where precise inter-arm timing is essential. On the two tasks where other methods excel (open microwave: ACT 86%; pick dual bottles: Flow 83%), the primary challenge is single-step grasping precision rather than temporal coordination. 
+
+Comparison with ACT. Both LDP and ACT [ 19 ] use observation-conditioned CVAEs, but with different roles. ACT uses the CVAE prior directly for one-shot generation, so quality is limited by prior fidelity. LDP instead uses the CVAE to shape a concentrated latent space, while a separate flow 6Table 1: Success rates (%) on RoboTwin 2.0 coordination tasks. We report 11 tasks selected by a structural criterion defined prior to examining results: tasks involving multi-phase manipulation requiring sequential coordination (e.g., handover, stacking, multi-object placement). DP/ACT/DP3 from the official leaderboard [ 37 ]; Flow Policy from Zhang et al. [17] . LDP uses 16 model calls. Best in bold .
+
+Task Steps DP ACT DP3 Flow LDP 
+
+handover block 600 10 42 70 16 95 
+
+beat block hammer 400 42 56 72 75 91 
+
+place empty cup 500 37 61 65 58 80 
+
+place burger fries 500 72 49 72 55 79 
+
+pick dual bottles 400 24 31 60 83 78 place cans plasticbox 800 40 16 48 18 71 
+
+open microwave 700 5 86 61 7 70 stack bowls three 900 63 48 57 0 68 
+
+stack blocks two 800 7 25 24 13 51 
+
+place bread skillet 500 11 7 19 30 32 
+
+blocks ranking rgb 1200 0 1 3 0 8
+
+Average 28.3 38.4 50.1 32.3 65.7 10 20 30 40 50 60        
+
+> rFID(prior)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Success rate (%)
+> beat handover
+> hanging
+> blocks
+> adjust
+> r=0.78, p< 0.01
+> Easy ( 400 steps)
+> Medium (500-700)
+> Hard ( 800)
+
+Figure 2: Left: rFID vs. success rate across 10 unimodal tasks ( r = −0.78 , p < 0.01 ). Lower rFID strongly predicts higher downstream success. Right: Staircase offset δ ablation averaged over 3 tasks. δ∗ = 2 predicted by our range-matching heuristic achieves the highest average, while δ = 0 
+
+(synchronous) drops substantially. model performs iterative generation within that space. This separation of representation learning from generation accounts for LDP’s +27.3% average gain over ACT on coordination tasks. 
+
+Broader evaluation. On a 28-task coordination subset excluding pure precision tasks (section G), LDP achieves the highest average success rate (52.9%), ahead of DP3 (51.9%) and Flow Policy (36.5%). Inference latency is 72.6 ms per action (16 forward passes), comparable to DP3 (51.4 ms) and much faster than DP (460 ms). 
+
+5.3 Ablation and System Analysis Ablation summary. Table 2 presents systematic ablations (fig. 2 right visualizes the staircase effect). We identify the following essential components: 
+
+Staircase sampling. Removing the staircase offset ( δ = 0 ) reduces average success from 88.7% to 73.3% across the key 3-task ablation set (table 2), with the largest drop on beat block hammer (−26%). Our range-matching heuristic (Remark D.1) predicts δ∗ = 2 , which matches the empirical optimum. All 12 displayed per-task comparisons improve with staircase sampling (table 9). 7Observation conditioning & latent quality. Removing observation input from the encoder severely degrades coordination tasks while having little effect on simpler ones, supporting the view that conditioning concentrates the flow target where task complexity is high (Remark I.1). We quantify this concentration using rFID between the CVAE posterior and prior. As shown in fig. 2 left, rFID strongly predicts downstream success on unimodal tasks (full data in table 11). Conditioning yields 
+
+3–478 × lower rFID than an unconditional N (0, I) baseline. 
+
+Diffusion forcing & frozen training. Standard flow matching without per-token noise underperforms LDP on 5 tested tasks, with the largest gains on tasks requiring inter-arm timing. The frozen two-stage design is also essential: joint training fails entirely. 
+
+The latent compression trade-off. DP3 operates directly in raw 112-dimensional action space and remains strong overall. LDP instead improves coordination tasks by 15.6% while underperforming on high-precision tasks, reflecting a trade-off of 4-token latent compression: it preserves trajectory-level structure but smooths sub-step corrections. Still, generation in a concentrated latent space is crucial: raw-space flow matching reaches only 32.3% on our coordination subset versus LDP’s 65.7%. Doubling the latent dimension ( dz = 64 , total 256-dim) severely degrades performance, confirming that the compact 128-dim representation is best in our 50-demonstration regime. A detailed computational cost analysis is provided in section K. Table 2: Key ablations. Average success rate (%) across 3 tasks (beat block hammer, handover block, place empty cup; 100 episodes each). Removing observation conditioning or staircase sampling causes severe degradation.            
+
+> Variant Avg SR (%) ∆
+> Full LDP 88.7 —
+> −Obs conditioning 53.7 −35.0
+> −Staircase ( δ= 0 )73.3 −15.4 Additional ablations in section B.
+
+5.4 Real-World Experiments 
+
+We deploy LDP on a real Aloha-AgileX bimanual robot with a single Intel RealSense D455 camera. Using 50 teleoperated demonstrations per task and no simulation pre-training, we evaluate 50 trials per task on four temporal coordination tasks. As shown in table 3, LDP achieves 76.5% average success; setup details are in section J. Table 3: Real-world success rates (%) on Aloha-AgileX (50 trials/task).          
+
+> Cup Place Stack Cubes Handover Dual Bottles Avg
+> LDP 82 70 80 74 76.5
+
+## 6 Conclusion 
+
+This work shows that the conditional distributional structure of the latent space, shaped by observation-conditioned encoding, is a primary factor governing flow-based action generation quality. The latent token decomposition further enables per-token diffusion forcing to capture inter-segment temporal dependencies, while staircase sampling restores distributional consistency at inference. On bimanual coordination tasks from RoboTwin 2.0, LDP substantially outperforms DP3, and real-world deployment on an Aloha-AgileX platform confirms effective transfer from limited teleoperated demonstrations. 
+
+Limitations and Future Directions. Latent compression smooths fine-grained sub-step corrections, degrading performance on precision-demanding tasks, and staircase sampling incurs higher latency than single-step flow methods. Future work includes adaptive compression granularity, step-reduction distillation, and multi-task CVAEs [14]. 8References 
+
+[1] C. Chi, S. Feng, Y. Du, Z. Xu, E. Cousineau, B. Burchfiel, and S. Song. Diffusion policy: Visuomotor policy learning via action diffusion. In Robotics: Science and Systems (RSS) , 2023. [2] Y. Ze, G. Yan, Y. Wu, A. Macaluso, Y. Ge, J. Ye, N. Hansen, L. E. Li, and X. Xu. 3D diffusion policy: Generalizable visuomotor policy learning via simple 3d representations. In Robotics: Science and Systems (RSS) , 2024. [3] M. Janner, Y. Du, J. Tenenbaum, and S. Levine. Planning with diffusion for flexible behavior synthesis. In International Conference on Machine Learning (ICML) , 2022. [4] A. Ajay, Y. Du, A. Gupta, J. Tenenbaum, T. Jaakkola, and P. Agrawal. Is conditional gener-ative modeling all you need for decision making? In International Conference on Learning Representations (ICLR) , 2023. [5] A. Mandlekar, D. Xu, J. Wong, S. Nasiriany, C. Wang, R. Kulkarni, L. Fei-Fei, S. Savarese, Y. Zhu, and R. Mart ´ın-Mart ´ın. What matters in learning from offline human demonstrations for robot manipulation. In Conference on Robot Learning (CoRL) , 2021. [6] P. Florence, C. Lynch, A. Zeng, O. A. Ramirez, A. Wahid, L. Downs, A. Wong, J. Lee, I. Mordatch, and J. Tompson. Implicit behavioral cloning. In Conference on Robot Learning (CoRL) , 2022. [7] R. Rombach, A. Blattmann, D. Lorenz, P. Esser, and B. Ommer. High-resolution image synthesis with latent diffusion models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2022. [8] M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler, and S. Hochreiter. Gans trained by a two time-scale update rule converge to a local nash equilibrium, 2018. [9] B. Chen, D. Marti Monso, Y. Du, M. Simchowitz, R. Tedrake, and V. Sitzmann. Diffusion forcing: Next-token prediction meets full-sequence diffusion. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. [10] J. Ho, A. Jain, and P. Abbeel. Denoising diffusion probabilistic models. In Advances in Neural Information Processing Systems (NeurIPS) , 2020. [11] Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon, and B. Poole. Score-based generative modeling through stochastic differential equations. In International Conference on Learning Representations (ICLR) , 2021. [12] K. Black, N. Brown, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, L. Groom, K. Hausman, B. Ichter, et al. π0: A vision-language-action flow model for general robot control. arXiv preprint arXiv:2410.24164 , 2024. [13] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, X. Chen, K. Choromanski, T. Ding, D. Driess, A. Dubey, C. Finn, et al. RT-2: Vision-language-action models transfer web knowledge to robotic control. In Conference on Robot Learning (CoRL) , 2023. [14] O. M. Team, D. Ghosh, H. Walke, K. Pertsch, K. Black, O. Mees, S. Dasari, J. Hejna, T. Kreiman, C. Xu, et al. Octo: An open-source generalist robot policy. In Robotics: Science and Systems (RSS) , 2024. [15] S. Liu, L. Wu, B. Li, H. Tan, H. Chen, Z. Wang, K. Xu, H. Su, and J. Zhu. RDT-1B: a diffusion foundation model for bimanual manipulation. arXiv preprint arXiv:2410.07864 , 2024. [16] A. Prasad, K. Lin, J. Wu, L. Zhou, and J. Bohg. Consistency policy: Accelerated visuomotor policies via consistency distillation. In Robotics: Science and Systems (RSS) , 2024. 9[17] Q. Zhang, Z. Liu, H. Fan, G. Liu, B. Zeng, and S. Liu. Flowpolicy: Enabling fast and robust 3D flow-based policy via consistency flow matching for robot manipulation. In AAAI Conference on Artificial Intelligence , volume 39, pages 14754–14762, 2025. [18] J. Zhang, Z. Zhou, H. Li, W. Xia, H. Song, Y. Gong, Y. Lai, and J. Mei. Hydra-DP3: Frequency-aware right-sizing of 3D diffusion policies for visuomotor control. arXiv preprint arXiv:2605.01581 , 2026. [19] T. Z. Zhao, V. Kumar, S. Levine, and C. Finn. Learning fine-grained bimanual manipulation with low-cost hardware. In Robotics: Science and Systems (RSS) , 2023. [20] S. Lee, Y. Wang, H. Erickson, B. Eysenbach, and C. Finn. Behavior generation with latent actions. In International Conference on Machine Learning (ICML) , 2024. [21] A. van den Oord, O. Vinyals, and K. Kavukcuoglu. Neural discrete representation learning. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2017. [22] T.-W. Ke, N. Gkanatsios, and K. Fragkiadaki. 3D diffuser actor: Policy diffusion with 3D scene representations. In International Conference on Machine Learning (ICML) , 2024. [23] V. Vosylius and W. W. Mayol-Cuevas. Render and diffuse: Aligning image and action spaces for diffusion-based behaviour cloning. In Robotics: Science and Systems (RSS) , 2024. [24] S. Wang, J. Zheng, Y. Park, K. Pertsch, and S. Levine. Latent action pretraining from videos. 
+
+arXiv preprint arXiv:2410.11758 , 2024. [25] J. Song, C. Meng, and S. Ermon. Denoising diffusion implicit models. In International Conference on Learning Representations (ICLR) , 2021. [26] Y. Song, P. Dhariwal, M. Chen, and I. Sutskever. Consistency models. In International Conference on Machine Learning (ICML) , 2023. [27] M. Reuss, M. Li, X. Jia, and R. Lioutikov. Goal-conditioned imitation learning using score-based diffusion policies. In Robotics: Science and Systems (RSS) , 2023. [28] S. S. Sahoo, M. Arriola, D. Schuurmans, and M. Kazemi. Simple and effective masked diffusion language models. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. [29] Y. Du, B. Chen, M. Simchowitz, R. Tedrake, and V. Sitzmann. Mercury: A code-efficient approach to discrete diffusion language modeling. arXiv preprint arXiv:2502.01672 , 2025. [30] D. A. Pomerleau. Efficient training of artificial neural networks for autonomous navigation. 
+
+Neural Computation , 3(1):88–97, 1991. [31] C. Chi, Z. Xu, C. Pan, E. Cousineau, B. Burchfiel, S. Feng, R. Tedrake, and S. Song. Universal manipulation interface: In-the-wild robot teaching without in-the-wild robots. In Robotics: Science and Systems (RSS) , 2024. [32] Y. Lipman, R. T. Chen, H. Ben-Hamu, M. Nickel, and M. Le. Flow matching for generative modeling. In International Conference on Learning Representations (ICLR) , 2023. [33] X. Liu, C. Gong, and Q. Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. In International Conference on Learning Representations (ICLR) , 2023. [34] Y. Lipman, R. T. Chen, H. Ben-Hamu, and M. Nickel. Flow matching guide and code. arXiv preprint arXiv:2412.06264 , 2024. [35] C. R. Qi, L. Yi, H. Su, and L. J. Guibas. PointNet++: Deep hierarchical feature learning on point sets in a metric space. In Advances in Neural Information Processing Systems (NeurIPS) ,2017. 10 [36] W. Peebles and S. Xie. Scalable diffusion models with transformers. In IEEE/CVF International Conference on Computer Vision (ICCV) , 2023. [37] T. Chen, Z. Chen, B. Chen, Z. Cai, Y. Liu, Q. Liang, Z. Li, X. Lin, Y. Ge, Z. Gu, et al. Robotwin 2.0: A scalable data generator and benchmark with strong domain randomization for robust bimanual robotic manipulation. arXiv preprint arXiv:2506.18088 , 2025. 
+
+## A Implementation Details 
+
+A.1 CVAE Architecture 
+
+Table 4: CVAE hyperparameters. 
+
+Parameter Value 
+
+Action dimension da 14 Action horizon H 8Latent sequence length K 4Latent token dimension dz 32 Total latent dimension 128 Encoder hidden dimension 128 Decoder hidden dimension 128 Conditioning type Concat Decoder observation conditioning None KL weight 10 −2
+
+Training epochs 500 Optimizer Adam Learning rate 10 −4
+
+Batch size 256 
+
+The CVAE encoder consists of: (1) a TrajectoryTokenEncoder that projects normalized actions 
+
+RH×da → RK×128 via an MLP followed by reshaping and linear projection; (2) a concatenation conditioning step where observation features (512-dim, from 4 observation steps × 128-dim DP3 encoder output) are projected via an ObsConditionAdapter and concatenated with trajectory tokens along the feature dimension; (3) a TokenGaussianHead ( 256 → 128 → [dz , d z ]) that outputs per-token mean μ and log-variance. The decoder is a TrajectoryTokenDecoder: an MLP that maps RK×dz → RH×da , followed by action denormalization using dataset statistics. 
+
+A.2 DiT Architecture 
+
+Table 5: DiT hyperparameters. 
+
+Parameter Value 
+
+Depth (layers) L 6Hidden dimension dh 192 Attention heads 6FFN ratio 4.0 FFN hidden dimension 768 Dropout 0.1 Conditioning type FiLM (adaLN) Condition fusion Addition Input projection Linear( dz → 512 → dh)Positional embedding Learnable ( K ×dh)Time embedding Sinusoidal + MLP 
+
+11 Each DiT block applies: LayerNorm → adaLN modulation → multi-head self-attention →
+
+gated residual → LayerNorm → adaLN → FFN → gated residual. The adaLN parameters 
+
+(γ1, β 1, α 1, γ 2, β 2, α 2) are generated from the conditioning signal y via Linear (dh → 6dh). Under diffusion forcing, these parameters become per-token: shape changes from (B, d h) to (B, K, d h).The final layer applies LayerNorm → adaLN → Linear( dh → 768 ) → GELU → Linear( 768 → dz ). 
+
+A.3 3D Point Cloud Encoder 
+
+The observation encoder uses DP3’s architecture: a PointNet processes 1024 points (XYZ + RGB, 6 channels) through LayerNorm, MLP layers, and max pooling to produce a 128-dim feature. A separate state MLP encodes the proprioceptive state (14-dim joint positions) to 64 dimensions. The features are concatenated and projected to 128 dimensions. With 4 observation time steps, the final condition vector is 512-dimensional. 
+
+A.4 Training Details Two-Stage Training Pipeline. Training proceeds in two sequential stages on a single NVIDIA RTX 5880 Ada GPU (48GB): 
+
+Stage 1 (CVAE): The observation-conditioned CVAE is trained for 500 epochs per task using Adam with lr = 10 −4 and batch size 256. KL warmup linearly increases the KL weight from 0 to 10 −2 over epochs 100–200. Action sequences are normalized to zero mean and unit variance using per-task dataset statistics. Training takes approximately 30 minutes per task. 
+
+Stage 2 (DiT): After the CVAE converges, we freeze it and compute per-dimension latent scale factors from 50 batches of posterior means. The DiT is then trained for 3000 epochs. Training takes approximately 10 hours per task. Table 6: LDP (DiT) training hyperparameters.                                 
+
+> Parameter Value
+> Optimization
+> Optimizer AdamW Learning rate 10 −4
+> Betas (0.95, 0.999) Weight decay 10 −6
+> LR scheduler Cosine (to 0) Warmup steps 500 Batch size 256 Training epochs 3000 EMA decay 0.75
+> Flow Matching
+> Time epsilon ϵ0.01 ODE tstart (inference) 1.0 ODE tend (inference) 0.001 Inference ODE steps N10 Staircase offset δ2Total model calls 16
+> Diffusion Forcing
+> Per-token noise tj∼ U (ϵ, 1−ϵ)
+> Causal sampling Disabled
+> Loss
+> Flow matching loss weight 1.0 Reconstruction loss weight 0.0 Latent noise scale 0.0
+
+12 Evaluation Protocol. Each trained policy is evaluated over 100 episodes per task with randomized initial object configurations. An episode is deemed successful if the task goal is achieved within the prescribed step limit (400–1700 steps depending on task difficulty). We use the EMA model for evaluation. No test-time adaptation or fine-tuning is performed. 
+
+## B Full Ablation Studies 
+
+Table 7: Diffusion forcing ablation (7 tasks, 100 episodes each). ∆ relative to full LDP.                 
+
+> hb sbt bbh pec ab pcp sb3 Avg ∆
+> No DF −9−7−6−4−3+3+7−2.7
+
+Table 8: Latent dimension and training strategy ablations on beat block hammer (100 episodes).                
+
+> Variant Success (%) ∆
+> Full LDP ( K= 4 ,dz= 32 , 128-dim) 91 —
+> K= 4 ,dz= 64 (256-dim) 56 −35 Joint training (unfreeze decoder) ∼10 −81
+
+## C Per-Task Results 
+
+Table 9: Per-task success rates (%) with staircase δ = 0 (synchronous) vs. δ = 2 (staircase). Results from 100 evaluation episodes each.                                                        
+
+> Diff. Task Steps δ= 0 δ= 2 ∆
+> Easy
+> beat block hammer 400 65 91 +26 adjust bottle 400 85 86 +1 click bell 400 56 58 +2 press stapler 400 52 53 +1 lift pot 400 79 83 +4
+> Med.  place empty cup 500 78 80 +2 place bread skillet 500 35 38 +3 handover mic 600 92 95 +3 open laptop 700 47 51 +4
+> Hard  place cans plasticbox 800 69 71 +2 stack blocks two 800 43 51 +8 stack bowls two 900 59 65 +6
+
+Staircase sampling ( δ = 2 ) improves synchronous denoising ( δ = 0 ) on all 12 displayed tasks. The largest gains occur on coordination tasks: beat block hammer (+26) and stack blocks two (+8), while simple precision tasks (adjust bottle, press stapler) show minimal differences ( ≤1%). 
+
+## D Staircase Sampling Algorithm 
+
+Remark D.1 (Staircase Offset Heuristic) . Under diffusion forcing training, each token j ∈ { 1, . . . , K }
+
+receives an independent noise level tj ∼ U (0 , 1) . The expected range (max minus min) of K i.i.d. uniform samples is (K −1) /(K +1) . In staircase sampling with offset δ and step size ∆t = 1 /N , the noise level span across K tokens at any given step is δ(K − 1) /N . Equating training and inference ranges yields: 
+
+δ∗ = NK + 1 . (6) 13 For N = 10 , K = 4 : δ∗ = 2 , exactly matching the empirical optimum. This is a range-matching heuristic (equating only the first-order spread statistic) rather than a formal optimality proof; the exact agreement with the empirical optimum suggests this criterion captures the dominant factor. 
+
+## E Staircase Sampling Visualization 
+
+Table 10: Denoising progress of each token across sampling steps (staircase δ = 2 , N = 10 , K = 4 ). Rows show pre-update noise levels tj ; the update at step 15 brings all tokens to t = 0 .
+
+Step Token 1 Token 2 Token 3 Token 4 
+
+0 1.00 1.00 1.00 1.00 1 0.90 1.00 1.00 1.00 2 0.80 1.00 1.00 1.00 3 0.70 0.90 1.00 1.00 4 0.60 0.80 1.00 1.00 5 0.50 0.70 0.90 1.00 6 0.40 0.60 0.80 1.00 7 0.30 0.50 0.70 0.90 8 0.20 0.40 0.60 0.80 9 0.10 0.30 0.50 0.70 10 0.00 0.20 0.40 0.60 11 0.00 0.10 0.30 0.50 12 0.00 0.00 0.20 0.40 13 0.00 0.00 0.10 0.30 14 0.00 0.00 0.00 0.20 15 0.00 0.00 0.00 0.10 
+
+At any given step, adjacent tokens differ by approximately 0.2 in their noise level, mimicking the independent per-token noise distribution encountered during training. 
+
+## F Full rFID Results 
+
+Table 11: rFID across all 14 tasks. rFID(prior) is the Fr ´echet distance between the CVAE posterior 
+
+qϕ(z|a, c) and the observation-conditioned prior pψ (z|c); rFID(random) compares the posterior with 
+
+N (0, I). This diagnostic is computed on CVAE latent samples (12,800 per task). 
+
+Diff. Task Steps Succ. rFID(prior) rFID(rand.) Ratio 
+
+> Easy
+
+adjust bottle 400 85 15.9 203.9 12.8 ×
+
+beat block hammer 400 89 17.5 8363.9 477.5 ×
+
+click bell 400 58 31.0 151.4 4.9 ×
+
+press stapler 400 53 34.9 200.9 5.8 ×
+
+lift pot 400 83 57.4 170.8 3.0 ×
+
+> Med.
+
+place empty cup 500 79 40.1 179.5 4.5 ×
+
+place bread skillet 500 38 56.5 233.6 4.1 ×
+
+handover mic 600 95 34.5 215.0 6.2 ×
+
+open laptop 700 51 33.6 255.0 7.6 ×
+
+> Hard
+
+place cans plasticbox 800 71 72.9 206.2 2.8 ×
+
+stack blocks two 800 43 39.2 257.7 6.6 ×
+
+stack bowls two 900 65 175.4 196.3 1.1 ×
+
+hanging mug 900 13 43.8 309.6 7.1 ×
+
+blocks ranking size 1200 0 51.5 341.3 6.6 ×
+
+Average 50.3 806.1 16.0 ×
+
+The observation-conditioned prior consistently achieves 3−478 × lower rFID than the N (0, I)
+
+baseline, with the single exception of stack bowls two ( 1.1×). The unusually high rFID for beat block hammer’s random baseline ( 8363 .9) reflects that its posterior distribution is highly con-centrated and far from the origin, making the N (0, I) comparison particularly unfavorable. 14 G 28-Task Coordination Benchmark 
+
+We evaluate on a 28-task coordination subset selected by the following reproducible criteria: from the full 50-task RoboTwin 2.0 benchmark, we exclude (1) tasks where the primary challenge is single-arm precision control (click, rotate, shake, and similar tasks requiring <2 arm coordination phases), (2) narrow-slot insertion tasks, and (3) tasks with ≤3% success for all methods (indicating benchmark issues). The remaining 28 tasks focus on dynamic bimanual coordination, multi-step manipulation, and object rearrangement. Criteria were defined based on task structure before examining LDP results. Table 12: Success rates (%) on 28 coordination-focused RoboTwin 2.0 tasks (100 episodes). DP/DP3 from the official leaderboard [37]; Flow Policy from Zhang et al. [17]. Best in bold .                                                                                                                        
+
+> Task DP DP3 Flow LDP
+> handover block 10 70 16 95
+> beat block hammer 42 72 75 91
+> grab roller 98 98 98 95 handover mic 53 100 67 95 adjust bottle 97 99 100 86 lift pot 39 97 48 82 place empty cup 37 65 58 80
+> place burger fries 72 72 55 79
+> pick dual bottles 24 60 83 78 dump bin bigbin 49 85 80 71 place cans plasticbox 40 48 18 71
+> open microwave 561 770
+> place container plate 41 86 80 70 stack bowls three 63 57 068
+> move playingcard 47 68 64 54 press stapler 669 92 53 stack blocks two 724 13 51
+> put bottles dustbin 22 60 047 turn switch 36 46 50 40 scan object 931 35 19 place bread basket 14 26 18 15 place bread skillet 11 19 30 32
+> place dual shoes 813 714
+> hanging mug 817 613 blocks ranking rgb 0308
+> stack blocks three 0103
+> blocks ranking size 1200place mouse pad 0420
+> Average (28 tasks) 29.9 51.9 36.5 52.9
+
+On this 28-task coordination subset, LDP achieves the highest average (52.9%), outperforming DP3 (51.9%) and substantially surpassing Flow Policy (36.5%) and DP (29.9%). The excluded tasks are dominated by precision control (clicking, rotating, shaking) and narrow-slot placement where direct action-space diffusion provides finer control. This confirms our core finding: latent compression specifically benefits tasks requiring temporal coordination between arms. 
+
+## H Unconditional VAE Ablation 
+
+To validate that observation conditioning in the CVAE is essential (not just beneficial), we train a variant with conditioning mode=none —the encoder processes actions without any observation input, producing an unconditional latent space. Table 13: Effect of observation conditioning in the CVAE on downstream LDP performance. Same DiT architecture and training for both variants. 
+
+Task Uncond. VAE Cond. VAE (LDP) ∆
+
+beat block hammer 40 91 +51 handover block 49 95 +46 place empty cup 72 80 +8 
+
+Average 53.7 88.7 +35 
+
+15 Across three tasks, removing observation conditioning causes severe degradation. This confirms that observation conditioning is not merely beneficial but essential : without it, latent tokens must encode both scene context and action intent, vastly increasing the information content each token must carry and preventing flow matching from learning the transport map effectively. 
+
+## I Theoretical Analysis 
+
+Remark I.1 (Conditioning Concentrates the Per-Observation Target) . Consider the marginal latent distribution p(z) = Eo[p(z|o)] . By the law of total variance applied to this same encoder’s output marginalized over observations: 
+
+Eo[Tr Cov (z|o)] ≤ Tr Cov (z). (7) That is, the per-observation conditional distributions p(z|o) are on average more concentrated than the marginal p(z). For the downstream flow model—which generates p(z|o) for each given observation— this means it faces a lower-variance target than if it had to generate the full marginal. A concentrated target admits smoother, lower-curvature flow paths that are easier to learn from limited data. 
+
+Relation to our ablation: The formal bound above compares the same encoder’s conditional vs. marginal output. Our ablation (section H) compares two different encoders (conditioned vs. uncondi-tional), which is a stronger intervention: removing observation input changes both the concentration of p(z|o) and the latent semantics (the unconditional encoder must absorb scene information into latent tokens that the decoder must then decode without scene context). The observed 35.0% average degradation reflects both effects jointly. The rFID correlation ( r = −0.78 ) provides complementary evidence that concentration per se predicts success. 
+
+Clarification on information content: Observation conditioning does not reduce the information latent tokens carry about actions—the decoder receives no observation input and therefore requires latent tokens to encode the complete action sequence. What conditioning achieves is a reorganization of the latent space geometry: by providing the encoder with observation features as additional input, the same action-information content is organized into concentrated, regular per-observation clusters rather than a dispersed mixture. The flow model’s task complexity depends on the conditional distribution p(z|o) it must generate at each observation, not the global marginal p(z).
+
+Why does conditioning help so dramatically on coordination tasks? We identify two comple-mentary mechanisms. First, the unconditional encoder must encode both the scene context and the action intent into latent tokens, vastly increasing the information content each token must carry. With observation conditioning, scene context is provided as additional encoder input, and latent tokens need only encode the residual action variation given the current scene. Second, conditioning concentrates the per-observation distribution (as evidenced by the 3–478 × rFID reduction), simplifying the flow model’s generation target. These effects are confounded in our ablation—removing conditioning si-multaneously changes both concentration and latent semantics—but the rFID correlation ( r = −0.78 )provides evidence that concentration is a significant factor. Notably, for tasks with low action diversity (place empty cup), conditioning provides smaller benefit ( +8%), consistent with the hypothesis that the advantage scales with the complexity of the per-observation action distribution. 
+
+Latent space visualization. We observe that conditional latent spaces form tight, task-specific clusters (low rFID), while unconditional latents are dispersed across the full latent volume. 
+
+## J Real-World Experiment Details 
+
+Hardware Setup. As depicted in fig. 3, we validate on an Aloha-AgileX bimanual robot with two 6-DoF arms. Real-world visual observations are captured with a single Intel RealSense D455 camera mounted globally. The model is deployed on an NVIDIA RTX 4060 GPU for on-board action inference. The action space is defined as 6-DoF joint positions per arm (12-dim total). 16 Figure 3: Real-world experimental setup. The Aloha-AgileX bimanual platform with a globally-mounted Intel RealSense D455 camera for 3D point cloud acquisition. The workspace contains the objects used in the four evaluation tasks. 
+
+Data Collection. We collect expert demonstrations via teleoperation using a leader-follower setup, yielding 50 trajectories per task for training. Observation and action formats are identical to the simulation pipeline (1024-point clouds with XYZ+RGB, proprioceptive state). No data augmentation or domain randomization is applied. 
+
+Training Details. We use the same training configuration as the simulation experiments: CVAE trained for 400 epochs (batch size 256, Adam, lr = 10 −4), then DiT trained for 3000 epochs (batch size 256, AdamW, lr = 10 −4, cosine schedule, 500 warmup steps). The only difference from simulation training is the data source (real demonstrations vs. scripted). Training takes ∼10h per task on a single RTX 5880 Ada GPU. At inference, we use 10 ODE steps with staircase offset δ = 2 (16 total forward passes, 72.6 ms per action). 
+
+Evaluation Protocol. Each task is evaluated over 50 independent trials with randomized initial object positions (within a workspace region consistent with training). A trial is considered successful if the task goal is achieved within the step limit. No human intervention is allowed during execution. Table 14: Real-world success rates (%) over 50 trials per task on Aloha-AgileX.             
+
+> Task Success Description
+> Place cup onto platform 82% Pick cup from table, place on elevated platform Stack cubes (two) 70% Pick cube, stack precisely on another cube Handover bottle 80% Left arm picks bottle, passes to right arm Place dual bottles 74% Both arms pick and place bottles simultaneously
+> Average 76.5% —
+
+Tasks and Results. Analysis. All four tasks require temporally-coordinated bimanual actions—the same category where LDP excels in simulation. The 76.5% average success demonstrates that LDP’s shaped latent space and staircase sampling transfer effectively from simulation to real hardware without task-specific fine-tuning. The primary failure modes are: • Grasp failures : occasional missed grasps due to point cloud noise from reflective surfaces. • Timing errors : slight desynchronization between arms during handover, causing drops. • Placement imprecision : objects placed slightly off-target, falling from unstable positions. 17 cup 
+
+> platform
+> cube1
+> cube2
+> bottle
+> bottle1
+> bottle2
+
+Figure 4: Real-world deployment and task execution. LDP deployed on an Aloha-AgileX bimanual platform with a single Intel RealSense D455 camera. The four evaluation tasks—cup placement, block stacking, bottle handover, and dual-bottle placement—all require temporally coordinated bimanual actions. These failure modes are consistent with the simulation findings: LDP handles temporal coordination well but can struggle with sub-centimeter placement precision. The strong real-world performance (trained directly from 50 real demonstrations per task, without simulation pre-training or domain adaptation) suggests that the CVAE’s latent space captures task-relevant structure effectively even from limited real data. 
+
+## K Computational Cost 
+
+Table 15: Computational comparison across methods.                         
+
+> Method Params Train (h) Steps Latency (ms)
+> DP ∼256M ∼10 100 460 ACT ∼80M ∼3112 DP3 ∼256M ∼10 10 51.4 Flow Policy ∼256M ∼10 18.2
+> LDP ∼5M ∼10.5 16 72.6
+
+LDP trains in two stages: CVAE ( ∼0.5h/task) followed by DiT ( ∼10h/task), totaling ∼10.5 GPU-hours per task on a single NVIDIA RTX 5880 Ada. This is comparable to DP3 ( ∼10h) and ACT (∼3h); the additional CVAE stage represents only 5% overhead. At inference, LDP executes 16 forward passes in 72.6 ms—comparable to DP3 (51.4 ms, 10 steps) and significantly faster than DP (460 ms, 100 steps). The total model size is ∼5M parameters (CVAE ∼3M + DiT ∼2M), substantially smaller than DP3 ( ∼256M) due to operating in the compact latent space. We employ EMA with decay 0.75 (lower than the typical 0.999+) due to the small demonstration dataset (50 trajectories per task): higher decay causes the EMA model to lag excessively behind the rapidly-converging training signal. 18
