@@ -1,0 +1,623 @@
+Title: Echo-Infinity: Learning Evolving Memory for Real-Time Infinite Video Generation
+
+URL Source: https://arxiv.org/pdf/2606.04527v1
+
+Published Time: Thu, 04 Jun 2026 00:52:28 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# Echo-Infinity: Learning Evolving Memory for Real-Time Infinite Video Generation 
+
+## Yuxuan Bian 1, Zeyue Xue 2, Songchun Zhang 3, Shiyi Zhang 4, Weiyang Jin 5,
+
+## Yaowei Li 6, Junhao Zhuang 4, Haoran Li 7, Jie Huang 2, Haoyang Huang 2,
+
+## Nan Duan 2,†, Qiang Xu 1,†
+
+> 1
+
+The Chinese University of Hong Kong , 2Joy Future Academy, JD , 3The Hong Kong University of Science and Technology , 4Tsinghua University , 5The University of Hong Kong ,
+
+> 6
+
+Peking University , 7University of Science and Technology of China 
+
+> †
+
+Corresponding Authors 
+
+## Abstract 
+
+We present Echo-Infinity , an autoregressive (AR) framework towards real-time infinite video generation that employs a learnable evolving memory to dynamically filter, abstract, and compress any-length history at constant cost. Existing methods mainly curate memory with predefined KV-cache schedules, fixed-ratio heuristic compression, or inference-time RoPE adaptation. These designs inevitably lose historical information and amplify compounding errors due to their limited cache window and ignorance of autoregressive generation noise. Inspired by human memory consolidation, Echo-Infinity replaces handcrafted memory curation with learnable Memory Queries ,which are updated by attention and a gating mechanism when past frames are evicted from the local window. The queries are optimized end-to-end with the video diffusion transformers (DiTs), forming an evolving memory that supports arbitrary compression ratios with constant computation independent of video length. They also act as a generalizable generation prior, improving quality even when only the optimized initial state is used. We further introduce Unified Relative RoPE Recipe , which anchors the sink frames to start from id 0 and lets the newest frame id grow at most to the DiTs’ pretrained maximum temporal RoPE id fmax throughout training and inference, freeing the model from the finite RoPE constraint and closing the train-test RoPE extrapolation gap. In long and short video generation, Echo-Infinity achieves state-of-the-art performance, and, to our knowledge, demonstrates promising 24-hour ( >1.3 M frames) real-time rollouts for the first time, suggesting a practical path toward infinite video generation.  
+
+> Date:
+
+June 4, 2026  
+
+> Project Page:
+
+https://echo-team-joy-future-academy-jd.github.io/Echo-Infinity/  
+
+> Code:
+
+https://github.com/Echo-Team-Joy-Future-Academy-JD/Echo-Infinity 
+
+## 1 Introduction 
+
+Modern video diffusion transformers (DiTs) have advanced high-quality video generation [ 15 , 33 ]. Autore-gressive (AR) DiTs further enable real-time streaming [ 18 , 37 ], but long horizons expose two bottlenecks: prohibitive memory caused by unbounded history key-value (KV) caches and temporal rotary positional embedding (RoPE) indices exceeding the training range, causing degradation and overflow. 1                             
+
+> arXiv:2606.04527v1 [cs.MM] 3 Jun 2026 T=1 min T=2 min T=4.25 min
+> T= 60 min T= 360 min T=720 min T=1080 min T=1440 min
+> Prompt: Cinematic grainy photo, a white and orange tabby cat darts joyfully through a dense garden, chasing something unseen. Wide, happy eyes
+> scan the foliage as it runs along a narrow winding path. Shot from ground level with warm tones, dappled sunlight, shallow depth of field …
+> Echo -Infinity LongLive LongLive *
+> RoPE
+> Overflow!
+> T= 60 min T=180 min T=360 min T=540 min T=720 min
+> T=780 min T=90 0min T= 1080 min T=1260 min T=1440 min
+
+Figure 1 Echo-Infinity at a glance. Left: Echo-Infinity can generate extremely long videos in real-time over 24 hours (> 1.3 M frames) , while LongLive, constrained by the absolute RoPE, degrades dramatically for 4.25 minutes and then overflows. Even equipped with the relative RoPE in inference (LongLive ∗), its consistency still declines due to unsolved train-test RoPE extrapolation and limited long-term memory. Right : Echo-Infinity achieves overall state-of-the-art performance across various video generation benchmarks. 
+
+To address the unbounded KV-cache challenge, most existing work adopts passive, predefined strategies, which fall into three families (see Fig. 2). (1) Window Truncation: methods [ 27 , 37 ] keep only a bounded local window with a few sink frames, controlling memory cost but discarding distant history. (2) Hand-Crafted KV-cache Management: methods [ 8, 9, 21 , 28 ] retain selected evicted KVs by offline rules, but remain tied to fixed cache budgets and ignore the compounding error within history. (3) Heuristic Compression: methods [ 22 , 47 , 51 ]compress history into compact representations, yet often rely on separate objectives or predefined compression ratios/schedules rather than an end-to-end learned fixed-capacity memory. Human memory suggests a different design. Cognitive neuroscience [ 13 ] describes memory as hierarchical: 
+
+Fresh perceptions first enter a working buffer, then are selectively filtered, abstracted, and compressed into a compact long-term store. These observations suggest that long-horizon memory depends less on storing every past token and more on a compact, evolving state. We therefore make memory end-to-end learnable for long video generation by introducing learnable Memory Queries , jointly optimized with a pretrained DiT, as a long-term memory state. Whenever frames are evicted from the local window, these queries are refreshed by a cross-attention update followed by a sigmoid-gated residual, enabling filtering , abstraction , and compression 
+
+akin to human memory consolidation, and provide the ‘‘history echo’’ (see Fig. 2). Beyond memory, the risks of temporal RoPE extrapolation and overflow still exist. Concurrent methods [ 25 , 40 ]mitigate overflow only at inference time by rotating previous caches backward once the newest id reaches the pretrained maximum fmax . Because their models are still trained with absolute RoPE, the train-test mismatch remains. We introduce a Unified Relative RoPE Recipe that applies the same bounded relative-RoPE schedule during both training and inference, keeping all active temporal ids within the pretrained range. We present Echo-Infinity, a real-time autoregressive video generation framework toward infinite-horizon generation with an end-to-end optimized evolving memory state at constant cost (Fig. 1). At its core are the Memory Queries , a set of trainable tokens that preserves generation-relevant information as a compact evolving state alongside local KV caches and sink frames. When frames are evicted from the local window, the queries are refreshed by an attention update over evicted KV caches to extract relevant information, followed by a gated residual that controls memory overwriting, enabling filtering, abstraction, and compression of any-length history at constant cost. To avoid temporal RoPE overflow and train-test mismatch, we employ 
+
+Unified Relative RoPE Recipe : it anchors the sink frames at id 0, lets the newest frame grow up to the 2Sink                          
+
+> Local KV Cache
+> Evicted KV Cache
+> Noisy Chunk
+> Denoised Chunk
+> History KV Cache
+> Memory Query
+> Causal Video DiT
+> T
+> Evict Slide
+> (1) Window Truncation
+> Causal Video DiT
+> Save Schedule
+> (2) Hand -Crafted KV -cache Management
+> Causal Video DiT
+> Save
+> (3) Heuristic Compression
+> Causal Video DiT
+> Update Projection
+> (4) Ours ( Echo -Infinity )
+> Compress
+> …………
+> …………
+> …………
+> …………
+> ××××
+> ××
+> T+1
+> ××
+> TT+1
+> TT+1
+> TT+1
+> ×Figure 2 Memory Mechanisms in Long Video Generation.
+
+Different from handcrafted curation, Echo-Infinity proposes end-to-end trainable memory queries as the evolving long-term memory. 
+
+pretrained maximum fmax , and rotates older frames backward once fmax is reached, keeping all temporal RoPE ids within the pretrained range during both training and inference. We evaluate Echo-Infinity on long (30 s / 60 s / 240 s) and short (5 s) video benchmarks and obtain overall state-of-the-art performance (see §4.2, §4.3, and §4.4). In short-video generation, the optimized memory queries can also serve as a generalizable video generation prior even when memory updates are manually disabled. Furthermore, Echo-Infinity demonstrates promising day-scale real-time generation results over 24 hours and >1.3M frames at 18.5 FPS on a single NVIDIA H100, with only 10 .6% throughput overhead over a memory-free baseline. To summarize, our contributions are: 
+
+• We propose Echo-Infinity , an autoregressive framework towards real-time long-horizon video generation, replacing handcrafted memory curation with end-to-end trainable Memory Queries that filter, abstract, and compress arbitrary-length history at constant cost. 
+
+• We employ Unified Relative RoPE Recipe , which keeps every active temporal RoPE id within the trained range throughout training and inference, avoiding RoPE train-test extrapolation or overflow. 
+
+• We achieve generalizable and state-of-the-art performance on long, short, and interactive video generation. We further provide the first demonstration of promising results over 24-hour real-time video generation (>1.3M frames) , paving the way toward infinite video generation. 
+
+## 2 Related Work 
+
+2.1 Long Video Generation 
+
+Modern video diffusion models [ 7, 14 , 26 , 30 , 33 , 39 ] mostly use bidirectional DiTs, whose quadratic attention cost and bidirectional generation make them unsuitable for streaming long videos. Recent autoregressive methods [ 12 , 23 , 32 ], together with Diffusion Forcing [ 6], DMD distillation [ 42 , 43 ], and Self-Forcing [ 18 , 44 ], push video generation toward minute-scale and real-time streaming [ 11 , 27 , 37 , 46 ]. Echo-Infinity targets the remaining memory and positional bottlenecks for longer-horizon AR generation. 
+
+2.2 Memory Mechanisms in Long Video Generation 
+
+Current methods mainly address the unbounded KV cache based on specially designed memory mechanisms:  
+
+> (a) Window Truncation.
+
+These methods retain a bounded local window plus a few sink frames and discard others, leading to inevitable history loss [ 27 , 37 ]. (b) Hand-Crafted KV-cache Management. A second family augments the local window with rule-based scheduling that decides which evicted KVs to keep [ 8 , 9, 21 , 28 , 38 ,48 ]. For example, MemFlow [ 21 ] curates a memory bank by textual retrieval. However, these rules are tuned offline and remain bound by the given window length. (c) Heuristic Compression. Rather than selecting 3(a) Echo -Infinity Pipeline (b) Memory Query Update 
+
+Causal Video DiT    
+
+> Sink Frame
+> Local KV Cache Noisy Chunk Denoised Chunk
+> Memory Query Evicted KV Cache
+
+×
+
+## … Attention 
+
+> Gate
+> Merge
+
+"
+
+× × × × × × ×  
+
+> !"!"#$% #!"#$%
+
+210 543 543 …876 12 13 14 15 16 17 
+
+210 876 … 15 16 17 18 19 20 … 9 10 11 62 63 64 
+
+Growth Phase: 
+
+Mature Phase: 
+
+(c) Unified Relative 
+
+RoPE Recipe 
+
+! ! !
+
+!
+
+> Projection
+
+!
+
+!
+
+!Figure 3 Overview. Echo-Infinity introduces end-to-end trainable Memory Queries that filter, abstract, and compress evicted history KV caches through attention and gating, enabling evolving compression of arbitrarily long histories. To avoid temporal RoPE extrapolation during inference or even overflow, Echo-Infinity uses Relative RoPE 
+
+throughout training and inference, which anchors the sink frames to start from id 0 and caps the newest id by the backbone’s pretrained maximum id fmax (e.g., fmax = 20 for Wan2.1-1.3B [33]), closing the RoPE extrapolation gap. 
+
+evicted KVs, a third family replaces the evicted history with compressed representations [ 22 , 46 , 47 , 51 ]. Memorize-and-Generate [ 51 ] decouples memory compression and frame generation by compressing historical information into compact KVs via reconstruction, which are consumed by a separate generator. These methods improve the temporal context, but their compressed states are still tied to predefined compression ratios, compression schedules, or separate reconstruction/compression stages. VideoSSM [ 45 ] further introduces an SSM-based evolving global memory, but requires architecture-level state-space modules. In contrast, Echo-Infinity recurrently consolidates evicted causal KVs into a persistent memory state used directly as a plug-in KV source, learning what history to preserve end-to-end under the long-video generation objective while keeping the active memory footprint independent of sequence length. 
+
+2.3 Rotary Positional Embedding for Long Video Generation 
+
+Modern video DiTs apply 3D rotary positional embeddings (RoPE) independently along temporal, height, and width axes [ 31 ]. During autoregressive rollouts, the temporal index quickly exceeds the pretraining range (e.g., maximum 20 for Wan-2.1 [ 33 ]), causing quality collapse and overflow. Concurrent training-free methods [ 25 , 40 , 41 ] mitigate overflow at inference time with relative RoPE, but leave train-test inconsistency unresolved. Echo-Infinity eliminates this mismatch with a unified relative RoPE schedule that keeps every active temporal id within the same range in both training and inference. 
+
+## 3 Method 
+
+3.1 Preliminaries 
+
+Distribution Matching Distillation (DMD). DMD [ 42 , 43 ] distills a multi-step diffusion model into a few-step generator Gθ by matching the generated distribution pfake (x) to the real distribution preal (x) through reverse KL minimization over diffusion timesteps: 
+
+∇θ LDMD ≜ Et(∇θ DKL (pfake ,t (xt) ∥ preal ,t (xt))) 
+
+≈ −Et(∫ (sreal (Ψ(Gθ (ϵ), t ), t ) − sfake (Ψ(Gθ (ϵ), t ), t )) dGθ (ϵ)
+
+dθ dϵ) , (1) 4where ϵ ∼ N (0, I) and Ψ denotes forward diffusion at timestep t. The score function is as follows: 
+
+sreal (xt, t ) = ∇xt log preal ,t (xt) = − xt − αt μreal (xt, t )
+
+σ2
+
+> t
+
+, (2) where μreal is the denoised estimate and αt, σ t are noise-schedule parameters [ 17 , 24 ]. In DMD, the pre-trained 
+
+μreal is frozen, while μfake is learned from generator samples. 
+
+KV Cache and RoPE. In causal Video DiTs, at layer l, stored keys and values Klf ′ , V lf ′ for f ′ ≤ f form a KV cache that grows linearly with f and dominates memory in long inference. We split the cache into three tiers: a sink frames block of size NS as a persistent global anchor [ 35 , 37 ], a local window of size NW that keeps recent KV cache, and trainable and evolving memory queries that summarize evicted history. DiTs also employ 3-D RoPE [ 29 , 31 ]. Each frame has a temporal id f ∈ {0, . . . , f max , f max + 1, . . . }, which rotates queries and keys with phase Θ(f, h, w ), where fmax is the maximum index during training. 
+
+3.2 Overall Framework 
+
+Following previous works [ 18 , 37 ], Echo-Infinity builds on a two-stage DMD training strategy: standard-tuning (5s standard video generation without prompt switching), and the streaming long-tuning (60s long video generation with one prompt switching). We further introduce end-to-end trainable memory queries that support arbitrary compression ratios for the increasing KV cache, mimicking the filtering, abstraction, and compression of human long-term memory consolidation throughout the two stages. 
+
+Three-tier KV organization mirrors human memory. Following the cognitive-science motivation of §1, Echo-Infinity structures every layer’s KV cache into three compartments that mirror the human memory hierarchy. The sink frames block of size NS acts as a persistent global anchor, analogous to basic defining memories. The local window of size NW is a short-term working buffer for the most recent frames. A learnable and evolving memory query set Q = {q1, . . . , q NQ } stores the filtered, abstracted, and compressed long-term memories of all evicted history. As shown in Fig. 3, at every chunk-generation step (chunk size B, current frame index f∗), the sink frames / memory queries / local window and the current chunk tile the active RoPE temporal ids over [0, f max ]:
+
+[ 0, . . . , N S −1 ]´¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¸¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¶   
+
+> Sink (NSframes )
+
+∥ [ rcur start − NW − NQ, . . . , r cur start − NW − 1 ]´¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¸¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¶    
+
+> Memory Queries Q(NQframes )
+
+∥ [ rcur start − NW , . . . , r cur start − 1 ]´¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¸¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¶   
+
+> Local Window (NWframes )
+
+∥ [ rcur start , . . . , r cur end ]´¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¸¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¹¶   
+
+> Current Chunk (Bframes )
+
+, (3) where rcur end = min (f ∗ + B − 1, f max ), with fmax the maximum pretraining id. The remaining intervals are derived backward from rcur end , and Q appears only after KV eviction. 
+
+Generation Process. At iteration m for chunk Xm = {xf∗ , . . . , xf∗+B−1}, each transformer layer l has three steps. (i) Three-tier Attention : Xm attends to Kl 
+
+> sink
+
+∪ KQ ∪ Kl 
+
+> local
+
+and the corresponding values, with memory queries Q shared across layers (detailed in Fig. 3 (a)). (ii) Memory Update : the new chunk’s KVs enter the local window, while evicted KVs are routed to Q for filtering, abstraction, and compression (detailed in §3.3, Fig. 3 (b)). (iii) RoPE Rescheduling : all caches are reassigned ids under the relative RoPE schedule (detailed in §3.4, Fig. 3 (c)), keeping every active id within [0, f max ].
+
+3.3 Memory Queries 
+
+The core of Echo-Infinity is a compact set of learnable memory queries Q ∈ R1×NQ⋅S×d (S is the latent token number of a video frame), whose representation is optimized end-to-end during the DMD-based autoregressive video generation training [37, 50]. 
+
+Update on eviction. As in Fig. 3 (b), when the local window slides forward and a set of frames is evicted from the local KV cache window, we feed the corresponding KV cache {Kevict ∈ R1×B⋅S×d, V evict ∈ R1×B⋅S×d}
+
+of last layer, whose representations are closest to the pixel output and thus suitable for layer-shared memory 5Table 1 Single-Prompt 30s / 240s Long Video Evaluation on VBench-Long [ 20 ] / MovieGen [ 30 ]. Echo-Infinity outperforms baselines in generation scores and user preference, benefiting from end-to-end learned memory queries and the unified relative RoPE recipe. 
+
+Model #Params Throughput (FPS) ↑
+
+Evaluation scores on 30 s ↑ Evaluation scores on 240 s ↑
+
+Quality Semantic User Preference ( %) Quality User Preference ( %)LongLive [37] 1.3B 20.7 83.59 80.28 10.47 79.79 6.13 MemFlow [21] 1.3B 18.7 83.35 80.85 10.13 79.31 5.93 Memorize-and-Generate [51] 1.3B 21.7 83.69 81.01 14.73 75.49 2.13 
+
+∞-RoPE [40] 1.3B 17.0 83.38 74.67 5.13 79.99 14.13 
+
+Echo-Infinity (Ours) 1.3B 18.5 85.61 82.01 59.53 81.23 71.67 
+
+queries, into an encoder Enc with Lenc layers of cross-attention to refresh Q, followed by a sigmoid-gated residual that updates the state: ̃
+
+## Q = Enc (Q; Kevict ; Vevict ) , g = σ([ Q;̃ Q] Wgate ), Q ← g ⊙ Q + (1 − g) ⊙̃ Q, (4) where [⋅] denotes concatenation and Wgate ∈ R2d×d. End-to-end training guides the cross-attention and gate to select, abstract, and compress the most useful information from the evicted KV cache into the current Q,akin to the consolidation mechanisms of long-term human memory [13]. 
+
+Injection and end-to-end optimization. At each layer l, Q is projected into KQ/VQ by two linear maps 
+
+W Q 
+
+> k
+
+∈ Rd×d, W Q 
+
+> v
+
+∈ Rd×d (shared across layers), and concatenated with the sink and local KVs before causal attention, serving as a plug-in key/value source without changing the backbone structure. In stage 1 training (5 s), memory parameters {Q, Enc , W gate , W Q 
+
+> k
+
+, W Q 
+
+> v
+
+} are jointly optimized with Gθ under Eq. 1, with gradients propagated through all memory updates to the shared Q. For computational efficiency, during stage-2 long tuning, we detach the Q state and cached sink/local KVs only across 5-s sub-clip boundaries, while continuing to optimize trainable model and memory parameters within each sub-clip. We find that stage-1 training distills video priors into Q: even when Eq. 4 is disabled in short-video generation, the optimized Q still benefits generation (§4.4). Notably, since Q (NQ) and the evicted KV cache size ( B) are fixed, the extra memory-query cost remains constant throughout generation and does not grow with video length. 
+
+3.4 Unified Relative RoPE Recipe Algorithm 1 Echo-Infinity: single chunk step.                                                                                                            
+
+> Require: Per-layer cache C=(Ksink , V sink , K local , V local , K cur , V cur )
+> Require: Memory Qwith flag has _history
+> Require: Frame index f∗, chunk size B, window NW, prompt P
+> Ensure: Chunk x[f∗∶f∗+B−1]; updated C,Q,has _history
+> 1: r←CompRoPE (f∗, B, ∣sink ∣,∣Q∣,∣local ∣, f max )▷Eq. 3
+> where r=(rsink , r Q, r local , r cur )
+> 2: if has _history then
+> 3: KQ←RoPE (WQ
+> kQ, r Q),VQ←WQ
+> vQ
+> 4: else
+> 5: KQ, V Q←∅
+> 6: end if
+> 7: for l=1, . . . , L do
+> 8: Apply rsink , r local , r cur to Kl
+> sink , K l
+> local , K l
+> cur , Q l
+> cur
+> 9: Kl
+> all ←[Kl
+> sink ;KQ;Kl
+> local ;Kl
+> cur ],
+> 10: Vall ←[Vl
+> sink ;VQ;Vl
+> local ;Vl
+> cur ]
+> 11: x(l)←CausalAttn (Qlcur , K l
+> all , V l
+> all )
+> 12: end for
+> 13: Sample x[f∗∶f∗+B−1]from x(L)conditioned on P
+> 14: Append new K, V to Klocal , V local ; evict if ∣local ∣>NW
+> 15: if any frame evicted then
+> 16: Q←Update (Q;Kevict , V evict )▷Eqs. 4
+> 17: has _history ←True
+> 18: end if
+> 19: return x,C,Q,has _history
+
+Train-Test Mismatch. As DiT’s temporal RoPE id 
+
+r is trained only on {0, 1, . . . , f max }, naively generat-ing beyond fmax introduces unseen ids outside the trained region, leading to rapid degradation and even overflow. Our unified relative RoPE recipe tackles these by combining Eq. 3 with the below schedule throughout training and inference. 
+
+Relative RoPE Schedule. As seen in Fig. 3 (c), the schedule has two phases. (1) In the growth phase, 
+
+rcur end increases from ∣sink ∣ to fmax as chunks are gen-erated. (2) In the mature phase, rcur end stays at fmax .For each new chunk, all non-sink ids rotate backward from rcur end , equivalently shifting older frames forward by one unit, while the sink frames remain to start from 0. Thus, all temporal ids stay within [0, f max ]
+
+without overflow risks and train-test mismatch. Algorithm 1 summarizes one chunk-generation step of Echo-Infinity, combining the three-tier KV cache in §3.2, the memory-query update in §3.3, and the Relative RoPE schedule in §3.4. 6Echo -Infinity 
+
+T=0s T=48s T=96s T=144s T=192s T=240s 
+
+LongLive 
+
+MemFlow 
+
+Memorize -and -Generate 
+
+∞-RoPE 
+
+Prompt: An astronaut in a white, reflective spacesuit sprints through a narrow alley in Rio de Janeiro… Figure 4 240 s Long Video Generation Result Comparison. More visualizations are in the supplementary.   
+
+> Table 2 Multi-Prompt 60 s Interactive Evaluation on MemFlow [21]’s interactive video generation benchmark.
+
+Method Quality Score ↑
+
+CLIP Score ↑
+
+0–10 s 10–20 s 20–30 s 30–40 s 40–50 s 50–60 s LongLive [37] 79.38 34.08 32.09 32.03 31.55 30.88 30.49 MemFlow [21] 79.91 33.48 31.94 31.95 30.87 30.53 30.23 Memorize-and-Generate [51] 79.15 33.58 31.43 31.14 30.65 30.48 30.27 
+
+∞-RoPE [40] 79.22 33.15 32.47 31.41 30.46 30.29 30.17 
+
+Echo-Infinity (Ours) 81.71 34.10 32.42 31.99 31.18 30.83 30.74 
+
+## 4 Experiments 
+
+4.1 Implementation 
+
+We implement Echo-Infinity on Wan2.1-T2V-1.3B [ 33 ], which produces 5s clips at 16 FPS and 832 × 480 
+
+resolution. We first adapt the pretrained model into a few-step causal-attention model using a causal-forcing [ 50 ] DMD pipeline on VidProM [ 34 ] data, while enabling our Memory Queries and Unified Relative RoPE Recipe. We then perform streaming long tuning on a 60s sequence that contains a single prompt switch [ 37 ]. The memory encoder consists of Lenc =2 cross-attention layers with hidden dimension 1536 , 12 
+
+heads, and head dim 128 . We instantiate TQ=NQ(3) memory frames × S(1560 ) tokens per frame = 4680 query 7Echo -Infinity 
+
+T=0s T=6s T=12s T=18s T=24s T=30s 
+
+LongLive 
+
+MemFlow 
+
+Memorize -and -Generate 
+
+∞-RoPE 
+
+Prompt: A high -speed scene featuring a sleek black motorcycle accelerating down a winding asphalt road… Figure 5 30 s Long Video Generation Result Comparison. More visualizations are in the supplementary. 
+
+tokens. The local KV window stores NW =9 frames, the sink consists of NS =3 frames, and the pretrained DiT’s maximum temporal RoPE id is fmax =20 . More details are in §B. 
+
+4.2 Long Video Generation  
+
+> Protocol.
+
+We evaluate Echo-Infinity on 30 s and 240 s long-video generation following prior work [ 37 , 40 ]. For 
+
+30 s, we use the official VBench-Long prompt set [ 20 ] and aggregate its 16 metrics with official weights into quality and semantic scores. We also conduct a forced-choice user study, detailed in §E: 30 users evaluate 50 
+
+randomly sampled results with anonymous, randomized model order, and select the best video by overall quality and semantic (caption) alignment. We report each method’s selection rate as the user preference. For ultra-long generation, following prior work [ 40 , 41 ], we evaluate 240 s videos on 128 randomly sampled MovieGen prompts [ 30 ], and use aesthetic quality, background consistency, dynamic degree, imaging quality, motion smoothness, and subject consistency, aggregated into the quality score with official VBench-Long weights [20]. We also report user preference for semantic coherence and overall quality.  
+
+> Results.
+
+We mainly compare with recent DMD-based long and real-time autoregressive video diffusion methods [ 42 , 43 ], which are generally stronger than conventional autoregressive baselines such as SkyReels-V2 [ 7] and MAGI-1 [ 32 ]: LongLive [ 37 ], MemFlow [ 21 ], Memorize-and-Generate [ 51 ], and ∞-RoPE [ 40 ]. As shown in Tab. 1, Echo-Infinity performs best at both horizons with real-time throughput (18.5 FPS). It notably improves 30 s user preference ( 59.53 vs. 14.73 ), and the gains further grow at 240 s, improving quality from 79.99 to 81.23 and user preference from 14.13 to 71.67 . Figs. 4, 5 show our better long-range identity and scene coherence. As in Fig. 4, LongLive and MemFlow suffer from identity drift, with missing face masks, changing astronaut counts, and varying outfits. Memorize-and-Generate shows severe degradation at long 8T=4 h T=8 h T=12 h T=16 h T=20 h T=24 h 
+
+T=0 h T=0.2 h T=0.4 h T=0.6 h T=0.8 h T=1.0 h 
+
+Prompt -1: A young man with short, tousled brown hair is sprinting down a neon -lit city street … 
+
+Prompt -2: Fluffy golden retriever puppies playfully emerge from fresh snow, fur glistening in sunlight … Figure 6 1-Hour and 24-Hour Video Generation Result Comparison. Table 3 Single-Prompt 5s Video Evaluation on VBench’s official benchmark [19]. 
+
+Model #Params Throughput (FPS) ↑ Evaluation scores ↑
+
+Total Quality Semantic 
+
+Diffusion Models 
+
+LTX-Video [14] 1.9B 8.98 80.00 82.30 70.79 Wan-2.1 [33] 1.3B 0.78 84.26 85.30 80.09 
+
+Autoregressive Models 
+
+SkyReels-V2 [7] 1.3B 0.49 82.67 84.70 74.53 MAGI-1 [32] 4.5B 0.19 79.18 82.04 67.74 Self Forcing, chunk-wise [18] 1.3B 17.0 83.08 83.97 79.53 Causal Forcing, chunk-wise [50] 1.3B 17.0 83.94 84.59 81.35 
+
+Long Autoregressive Models 
+
+LongLive [37] 1.3B 20.7 83.29 84.09 80.06 MemFlow [21] 1.3B 18.7 83.62 84.52 80.02 Memorize-and-Generate [51] 1.3B 21.7 84.06 84.84 80.96 
+
+Echo-Infinity (w/o Memory Update) 1.3B 18.9 84.57 85.51 80.80 
+
+Echo-Infinity (w/ Memory Update) 1.3B 18.5 85.35 86.32 81.49 
+
+horizons, likely due to accumulated information loss under fixed-ratio history compression, while ∞-RoPE shows over-exposure and color shifts under unsolved RoPE train-test mismatch.  
+
+> Infinite Video Generation.
+
+With evolving learnable memory queries and a unified relative RoPE recipe that removes train-inference RoPE mismatch and fixed positional limits, Echo-Infinity naturally supports infinite video generation. We verify this by sampling 15 MovieGen prompts [ 30 ] and running real-time inference for 
+
+1 and 24 hours, as shown in Fig. 6. We compare the results generated from the same prompts at the two lengths. The results show that Echo-Infinity preserves stable visual quality and strong consistency from 1
+
+to 24 hours. We strongly encourage viewing our project page for qualitative visualization , since current quantitative protocols [20] are too compute-heavy to evaluate such extremely long videos. 9Prompt: A person is digging in a sunny, rural field. He is wearing a brown work jacket, blue jeans… 
+
+Echo -Infinity 
+
+T=0s T=1s T=2s T=3s T=4s T=5s 
+
+LongLive 
+
+MemFlow 
+
+Memorize -and -Generate 
+
+Causal Forcing Figure 7 5 s Short Video Generation Result Comparison. More visualizations are in the supplementary. 
+
+4.3 Interactive Long Video Generation 
+
+Our Memory Queries and unified relative RoPE recipe improve long-range quality and consistency, orthogonal to interactive generation optimization. Directly applied to multi-prompt 60 s interactive generation, they still improve long-horizon quality, as shown in Tab. 2 and Fig. 8. We follow MemFlow’s protocol [ 21 ] and evaluate on 100 narrative scripts, each with six successive 10-second prompts. We use VBench-Long metrics [ 20 ] for visual quality and CLIP scores [ 16 ] for clip-wise semantic adherence at 10-second intervals. Tab. 2 and Fig. 8 show that Echo-Infinity achieves the best overall quality and competitive prompt alignment. 
+
+4.4 Short Video Generation 
+
+We further evaluate Echo-Infinity on standard 5s video generation using official VBench prompts [ 19 ], comparing with open-source models of comparable scale [ 7, 18 , 21 , 33 , 37 , 50 , 51 ]. As shown in Tab. 3, Echo-Infinity without memory updates already outperforms all baselines with a total score of 84 .57 , showing that the optimized initial Q itself serves as an effective generation prior. Enabling memory updates further improves the total, quality, and semantic scores to 85 .35 , 86 .32 , and 81 .49 , respectively, by allowing the memory to adapt dynamically. As in the digging example of Fig. 7, Echo-Infinity generates plausible soil splashes after shovel motions, whereas other methods show weaker motion effects or less realistic interactions. 
+
+4.5 Ablation Studies 
+
+We ablate our core designs on 240 s video generation using 128 randomly sampled prompts from MovieGen [ 30 ]. As shown in Tab. 4, each design contributes to the final Echo-Infinity: (a) Memory Queries. Removing memory 10 Table 4 Ablation Studies. We ablate Echo-Infinity on 240 s generation of 128 MovieGen prompts. More ablation results and analysis are in §D due to page limit.                               
+
+> Model Subject Consistency ↑Background Consistency ↑Dynamic Degree ↑Aesthetic Quality ↑CLIP Score ↑
+> (a) w/o Memory Queries 96.15 95.27 64.78 58.60 32.78 (b) w/o Unified Relative RoPE Recipe 96.34 95.81 64.05 59.83 33.12 (c) w/ Self Forcing ODE init 96.85 96.12 52.04 58.49 34.07
+> Echo-Infinity (Ours) 96.58 95.93 68.61 58.67 34.19
+
+queries substantially degrades consistency and dynamic degree, due to lost historical information. (b) Unified Relative RoPE Recipe. Replacing relative RoPE with absolute RoPE degrades most quality and consistency metrics, as long video inference leads to unseen positional indices and causes out-of-distribution failures. (c) ODE Initialization. We employ Causal Forcing [ 50 ], which uses a refined ODE over Self Forcing [ 18 ]. Switching to Self Forcing yields similar performance, except for the expected dynamic degree drop due to its ODE limitation [50], demonstrating robustness to ODE initialization. 
+
+## 5 Conclusion 
+
+We presented Echo-Infinity, an end-to-end memory-learning framework towards real-time infinite video generation. Instead of handcrafted KV-cache schedules or fixed-ratio compression, Echo-Infinity learns compact evolving Memory Queries that filter, abstract, and compress arbitrary-length history at constant cost. Together with our Unified Relative RoPE Recipe, which keeps temporal RoPE indices within the trained range in both training and inference, Echo-Infinity removes two key bottlenecks of infinite video generation: unbounded memory growth and positional extrapolation. Extensive experiments show that Echo-Infinity achieves state-of-the-art performance on long, short, and interactive video generation, while showing promising results for over 24 hours and 1.3M frames in real time. We hope this work opens up possibilities for future infinite video generation with persistent memory, controllable long-range dynamics, and unbounded horizons. 
+
+Limitations and Future Works. Echo-Infinity has several limitations. (1) The memory queries and unified relative RoPE recipe are designed to improve the quality and consistency for long video generation. Optimizing them for interactive generation remains open. (2) Limited by the base model scale and generative capacity, Echo-Infinity may show reduced stability for hour-scale or longer videos with dynamic scenes. For future work, we believe: (1) Studying the semantics of memory queries could enable controllable retrieval-augmented video generation. (2) Distilling Echo-Infinity into a one-step model could improve real-time throughput. 11 References 
+
+[1] Jianhong Bai, Menghan Xia, Xiao Fu, Xintao Wang, Lianrui Mu, Jinwen Cao, Zuozhu Liu, Haoji Hu, Xiang Bai, Pengfei Wan, et al. ReCamMaster: Camera-controlled generative rendering from a single video. In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 14834–14844, 2025. [2] Yuxuan Bian, Xin Chen, Zenan Li, Tiancheng Zhi, Shen Sang, Linjie Luo, and Qiang Xu. Video-As-Prompt: Unified semantic control for video generation. arXiv preprint arXiv:2510.20888, 2025. [3] Yuxuan Bian, Ailing Zeng, Xuan Ju, Xian Liu, Zhaoyang Zhang, Wei Liu, and Qiang Xu. MotionCraft: Crafting whole-body motion with plug-and-play multimodal controls. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 39, pages 1880–1888, 2025. [4] Yuxuan Bian, Zhaoyang Zhang, Xuan Ju, Mingdeng Cao, Liangbin Xie, Ying Shan, and Qiang Xu. VideoPainter: Any-length video inpainting and editing with plug-and-play context control. In Proceedings of the Special Interest Group on Computer Graphics and Interactive Techniques Conference Papers, pages 1–12, 2025. [5] Tianle Cai, Yuhong Li, Zhengyang Geng, Hongwu Peng, Jason D Lee, Deming Chen, and Tri Dao. Medusa: Simple llm inference acceleration framework with multiple decoding heads. arXiv preprint arXiv:2401.10774 ,2024. [6] Boyuan Chen, Diego Marti Monso, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitzmann. Diffusion forcing: Next-token prediction meets full-sequence diffusion. In NeurIPS, 2024. [7] Guibin Chen, Dixuan Lin, Jiangping Yang, Chunze Lin, Junchen Zhu, Mingyuan Fan, Hao Zhang, Sheng Chen, Zheng Chen, Chengcheng Ma, et al. SkyReels-V2: Infinite-length film generative model. arXiv preprint arXiv:2504.13074, 2025. [8] Jintao Chen, Chengyu Bai, Junjun Hu, Xinda Xue, and Mu Xu. Grounded forcing: Bridging time-independent semantics and proximal dynamics in autoregressive video synthesis. arXiv preprint arXiv:2604.06939, 2026. [9] Shuo Chen, Cong Wei, Sun Sun, Ping Nie, Kai Zhou, Ge Zhang, Ming-Hsuan Yang, and Wenhu Chen. Context forcing: Consistent autoregressive video generation with long context. arXiv preprint arXiv:2602.06028, 2026. [10] Gheorghe Comanici, Eric Bieber, Mike Schaekermann, Ice Pasupat, Noveen Sachdeva, Inderjit Dhillon, Marcel Blistein, Ori Ram, Dan Zhang, Evan Rosen, et al. Gemini 2.5: Pushing the frontier with advanced reasoning, multimodality, long context, and next generation agentic capabilities. arXiv preprint arXiv:2507.06261, 2025. [11] Justin Cui, Jie Wu, Ming Li, Tao Yang, Xiaojie Li, Rui Wang, Andrew Bai, Yuanhao Ban, and Cho-Jui Hsieh. Self-forcing++: Towards minute-scale high-quality video generation. arXiv preprint arXiv:2510.02283, 2025. [12] Haoge Deng, Ting Pan, Haiwen Diao, Zhengxiong Luo, Yufeng Cui, Huchuan Lu, Shiguang Shan, Yonggang Qi, and Xinlong Wang. Autoregressive video generation without vector quantization. arXiv preprint arXiv:2412.14169, 2024. [13] John DE Gabrieli. Cognitive neuroscience of human memory. Annual review of psychology, 49(1):87–115, 1998. [14] Yoav HaCohen, Nisan Chiprut, Benny Brazowski, Daniel Shalem, Dudu Moshe, Eitan Richardson, Eran Levin, Guy Shiran, Nir Zabari, Ori Gordon, et al. LTX-Video: Realtime video latent diffusion. arXiv preprint arXiv:2501.00103, 2024. [15] Yoav HaCohen, Benny Brazowski, Nisan Chiprut, Yaki Bitterman, Andrew Kvochko, Avishai Berkowitz, Daniel Shalem, Daphna Lifschitz, Dudu Moshe, Eitan Porat, et al. LTX-2: Efficient joint audio-visual foundation model. arXiv preprint arXiv:2601.03233, 2026. [16] Jack Hessel, Ari Holtzman, Maxwell Forbes, Ronan Le Bras, and Yejin Choi. CLIPScore: A reference-free evaluation metric for image captioning. In Proceedings of the 2021 conference on empirical methods in natural language processing, pages 7514–7528, 2021. [17] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in Neural Information Processing Systems, 33:6840–6851, 2020. [18] Xun Huang, Zhengqi Li, Guande He, Mingyuan Zhou, and Eli Shechtman. Self forcing: Bridging the train-test gap in autoregressive video diffusion. In Advances in Neural Information Processing Systems (NeurIPS), 2025. [19] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. VBench: Comprehensive benchmark suite for video generative models. 
+
+12 In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 21807–21818, 2024. [20] Ziqi Huang, Fan Zhang, Xiaojie Xu, Yinan He, Jiashuo Yu, Ziyue Dong, Qianli Ma, Nattapol Chanpaisit, Chenyang Si, Yuming Jiang, et al. VBench++: Comprehensive and versatile benchmark suite for video generative models. IEEE Transactions on Pattern Analysis and Machine Intelligence, 2025. [21] Sihui Ji, Xi Chen, Shuai Yang, Xin Tao, Pengfei Wan, and Hengshuang Zhao. MemFlow: Flowing adaptive memory for consistent and efficient long video narratives. arXiv preprint arXiv:2512.14699, 2025. [22] Jiaxiu Jiang, Wenbo Li, Jingjing Ren, Yuping Qiu, Yong Guo, Xiaogang Xu, Han Wu, and Wangmeng Zuo. LoViC: Efficient long video generation with context compression. arXiv preprint arXiv:2507.12952, 2025. [23] Yang Jin, Zhicheng Sun, Ningyuan Li, Kun Xu, Hao Jiang, Nan Zhuang, Quzhe Huang, Yang Song, Yadong Mu, and Zhouchen Lin. Pyramidal flow matching for efficient video generative modeling. arXiv preprint arXiv:2410.05954, 2024. [24] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based generative models. Advances in Neural Information Processing Systems, 35:26565–26577, 2022. [25] Youngrae Kim, Qixin Hu, C.-C. Jay Kuo, and Peter A. Beerel. MemRoPE: Training-free infinite video generation via evolving memory tokens. arXiv preprint arXiv:2603.12513, 2026. [26] Weijie Kong, Qi Tian, Zijian Zhang, Rox Min, Zuozhuo Dai, Jin Zhou, Jiangfeng Xiong, Xin Li, Bo Wu, Jianwei Zhang, et al. HunyuanVideo: A systematic framework for large video generative models. arXiv preprint arXiv:2412.03603, 2024. [27] Kunhao Liu, Wenbo Hu, Jiale Xu, Ying Shan, and Shijian Lu. Rolling forcing: Autoregressive long video diffusion in real time. In ICLR, 2026. [28] Xiaofeng Mao, Shaohao Rui, Kaining Ying, Bo Zheng, Chuanhao Li, Mingmin Chi, and Kaipeng Zhang. PackForcing: Short video training suffices for long video sampling and long context inference. arXiv preprint arXiv:2603.25730, 2026. [29] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF international conference on computer vision, pages 4195–4205, 2023. [30] Adam Polyak, Amit Zohar, Andrew Brown, Andros Tjandra, Animesh Sinha, Ann Lee, Apoorv Vyas, Bowen Shi, Chih-Yao Ma, Ching-Yao Chuang, et al. MovieGen: A cast of media foundation models. arXiv preprint arXiv:2410.13720, 2024. [31] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. RoFormer: Enhanced transformer with rotary position embedding. Neurocomputing, 568:127063, 2024. [32] Hansi Teng, Hongyu Jia, Lei Sun, Lingzhi Li, Maolin Li, Mingqiu Tang, Shuai Han, Tianning Zhang, WQ Zhang, Weifeng Luo, et al. MAGI-1: Autoregressive video generation at scale. arXiv preprint arXiv:2505.13211, 2025. [33] Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianx-iao Yang, et al. Wan: Open and advanced large-scale video generative models. arXiv preprint arXiv:2503.20314, 2025. [34] Wenhao Wang and Yi Yang. VidProM: A million-scale real prompt-gallery dataset for text-to-video diffusion models. Advances in Neural Information Processing Systems, 37:65618–65642, 2024. [35] Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models with attention sinks. arXiv preprint arXiv:2309.17453, 2023. [36] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388, 2025. [37] Shuai Yang, Wei Huang, Ruihang Chu, Yicheng Xiao, Yuyang Zhao, Xianbang Wang, Muyang Li, Enze Xie, Ying-Cong Chen, Yao Lu, Song Han, and Yukang Chen. LongLive: Real-time interactive long video generation. In ICLR, 2026. [38] Yang Yang, Tianyi Zhang, Wei Huang, Jinwei Chen, Boxi Wu, Xiaofei He, Deng Cai, Bo Li, and Peng-Tao Jiang. Anchor forcing: Anchor memory and tri-region RoPE for interactive streaming video diffusion. arXiv preprint arXiv:2603.13405, 2026. 
+
+13 [39] Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, et al. CogVideoX: Text-to-video diffusion models with an expert transformer. arXiv preprint arXiv:2408.06072, 2024. [40] Hidir Yesiltepe, Tuna Han Salih Meral, Adil Kaan Akan, Kaan Oktay, and Pinar Yanardag. Infinity-RoPE: Action-controllable infinite video generation emerges from autoregressive self-rollout. arXiv preprint arXiv:2511.20649, 2025. [41] Jung Yi, Wooseok Jang, Paul Hyunbin Cho, Jisu Nam, Heeji Yoon, and Seungryong Kim. Deep forcing: Training-free long video generation with deep sink and participative compression. arXiv preprint arXiv:2512.05081 ,2025. [42] Tianwei Yin, Michaël Gharbi, Taesung Park, Richard Zhang, Eli Shechtman, Fredo Durand, and William T Freeman. Improved distribution matching distillation for fast image synthesis. Advances in neural information processing systems, 37:47455–47487, 2024. [43] Tianwei Yin, Michaël Gharbi, Richard Zhang, Eli Shechtman, Fredo Durand, William T Freeman, and Taesung Park. One-step diffusion with distribution matching distillation. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 6613–6623, 2024. [44] Tianwei Yin, Qiang Zhang, Richard Zhang, William T Freeman, Fredo Durand, Eli Shechtman, and Xun Huang. From slow bidirectional to fast autoregressive video diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 22963–22974, 2025. [45] Yifei Yu, Xiaoshan Wu, Xinting Hu, Tao Hu, Yangtian Sun, Xiaoyang Lyu, Bo Wang, Lin Ma, Yuewen Ma, Zhongrui Wang, et al. VideoSSM: Autoregressive long video generation with hybrid state-space memory. arXiv preprint arXiv:2512.04519, 2025. [46] Lvmin Zhang and Maneesh Agrawala. Packing input frame context in next-frame prediction models for video generation. arXiv preprint arXiv:2504.12626, 2025. [47] Lvmin Zhang, Shengqu Cai, Muyang Li, Chong Zeng, Beijia Lu, Anyi Rao, Song Han, Gordon Wetzstein, and Maneesh Agrawala. Pretraining frame preservation for lightweight autoregressive video history embedding. arXiv preprint arXiv:2512.23851, 2025. [48] Zengqun Zhao, Yanzuo Lu, Ziquan Liu, Jifei Song, Jiankang Deng, and Ioannis Patras. Relax forcing: Relaxed kv-memory for consistent long video generation. arXiv preprint arXiv:2603.21366, 2026. [49] Dian Zheng, Ziqi Huang, Hongbo Liu, Kai Zou, Yinan He, Fan Zhang, Lulu Gu, Yuanhan Zhang, Jingwen He, Wei-Shi Zheng, et al. VBench-2.0: Advancing video generation benchmark suite for intrinsic faithfulness. arXiv preprint arXiv:2503.21755, 2025. [50] Hongzhou Zhu, Min Zhao, Guande He, Hang Su, Chongxuan Li, and Jun Zhu. Causal forcing: Autoregressive diffu-sion distillation done right for high-quality real-time interactive video generation. arXiv preprint arXiv:2602.02214, 2026. [51] Tianrui Zhu, Shiyi Zhang, Zhirui Sun, Jingqi Tian, and Yansong Tang. Memorize-and-generate: Towards long-term consistency in real-time video generation. arXiv preprint arXiv:2512.18741, 2025. 
+
+14 In this appendix, we first provide additional qualitative visualizations of Echo-Infinity on 30 s, 240 s, and 60 sinteractive long video generation (§A). We then detail the implementation of Echo-Infinity, including the memory-encoder architecture, optimization recipe, and training schedule (§B), and review related work on long video generation, memory mechanisms, and rotary positional embeddings (§C). Building on the experiments in the main paper, we report extended ablations on each component of Echo-Infinity (§D) and describe the protocol of our forced-choice user study (§E). We also include additional discussion of our limitations and future work (§F). Finally, we discuss the broader societal impacts (§G). 
+
+## A More Visualizations 
+
+To further demonstrate Echo-Infinity’s performance, we provide more visualization cases (long interactive video generation, and more 240s / 30s video generation) in Fig. 8, Fig. 9, and Fig. 10. We strongly encourage viewing our project page for qualitative visualization. 
+
+## B Implementation Details 
+
+We implement Echo-Infinity on Wan2.1-T2V-1.3B [ 33 ], which produces 5s clips at 16 FPS and 832 × 480 
+
+resolution. We first adapt the pretrained model into a few-step causal-attention model using a causal-forcing [ 50 ] DMD pipeline on VidProM [ 34 ] data, while enabling our Memory Queries and Unified Relative RoPE Recipe. Notably, all KV caches are stored in their pre-RoPE states, allowing the subsequent unified relative RoPE recipe to rotate them directly to the desired RoPE IDs when they are used in the DiT causal attention or memory queries update. We then perform streaming long tuning on a 60s sequence that contains a single prompt switch following LongLive’s protocol [ 37 ]. By default, we use chunk size B = 3, following the same setting as previous works [ 21 , 37 , 40 , 51 ]. The memory encoder consists of Lenc =2 cross-attention layers with hidden dimension 1536 , 12 heads, and head dim 128 . The gated residual is initialized with bias 
+
+2.0, so g ≈ 0.88 at training step 0. We instantiate TQ=NQ(3) memory frames × S(1560 ) tokens per frame 
+
+= 4680 query tokens. The local KV window stores NW =9 frames, the sink consists of NS =3 frames, and the pretrained DiT’s maximum temporal RoPE id is fmax =20 . Following LongLive [ 37 ], optimization uses AdamW for both fake generator and student model with learning rates lr fake = 1.0 × 10 −5 and lr student = 2.0 × 10 −6; we set β1,fake = 0.0, β2,fake = 0.999 for the fake generator and β1,student = 0.0, β2,student = 0.999 for the student. Training is conducted on 64 GPUs with one sample per GPU (global batch size = 64 ). We apply EMA to the student with decay 0.99 , starting at step 200 . For the 60 s setting, we train for 3,000 iterations. Memory-encoder parameters use a learning rate of 5× the generator’s. For interactive video generation, which is not the focus of this work, we inherit the recache operation from LongLive [ 37 ]. For our added memory queries, at each recache step, we update them using all local KV caches after recaching, yielding an analogous recache operation for the evolving memory queries and moving it toward the new prompt. 
+
+Compute. All training runs are conducted on 64 NVIDIA H200 GPUs with one sample per GPU. The first-stage causal-forcing DMD adaptation is trained for 400 iterations and takes about 3 hours. The second-stage streaming long tuning is trained for 3,000 iterations and takes about 12 hours. The main training run therefore uses about 960 H200 GPU-hours. Unless otherwise specified, throughput is measured on a NVIDIA H100. 
+
+Evaluation reproducibility. All benchmarks follow the standard protocols used in prior long-video generation and VBench/VBench-Long evaluations [ 19 , 20 , 37 , 40 ]. For all automatic evaluations, each prompt is generated with five random seeds, and we report the average score over seeds and prompts. For all baselines, we run with the same Wan2.1-T2V-1.3B backbone and their officially public checkpoints, same resolution, same number of sampling steps, same prompt sets, and the same hardware. 
+
+## C Related Works 
+
+C.1 Long Video Generation 
+
+Modern video diffusion models [ 7, 14 , 26 , 30 , 33 , 39 ] mostly adopt bidirectional Diffusion Transformers (DiTs) that jointly denoise an entire short clip and have obtained rapid progress in various downstream applications [ 1–15 4]. Their quadratic attention cost, together with the need to denoise the full clip before any frame can be emitted, makes this paradigm unsuitable for streaming long-video generation. Recent work turns to autoregressive paradigms [ 12 , 23 , 32 ] similar to large language models’ inference [ 5 , 10 , 36 ] that generate video chunk by chunk under causal attention. Building on Diffusion Forcing [ 6], which uses staircase streaming denoising, and Self-Forcing [ 18 , 44 ], which builds on DMD distillation [ 42 , 43 ], these methods push video generation toward minute-scale duration and real-time streaming [ 11 , 27 , 37 , 40 , 46 ]. Despite this progress, unbounded KV-cache growth and temporal RoPE train-test mismatch remain open challenges. 
+
+C.2 Memory Mechanisms in Long Video Generation 
+
+Current methods mainly address the unbounded KV cache based on specially designed memory mechanisms:  
+
+> (a) Window Truncation.
+
+These methods retain a bounded local window plus a few sink frames and discard others, leading to inevitable history loss [ 27 , 37 ]. (b) Hand-Crafted KV-cache Management. A second family augments the local window with rule-based scheduling that decides which evicted KVs to keep [ 8 , 9, 21 , 28 , 38 ,48 ]. For example, MemFlow [ 21 ] curates a memory bank by textual retrieval. However, these rules are tuned offline and remain bound by the given window length. (c) Heuristic Compression. Rather than selecting evicted KVs, a third family replaces the evicted history with compressed representations [ 22 , 46 , 47 , 51 ]. Memorize-and-Generate [ 51 ] decouples memory compression and frame generation by compressing historical information into compact KVs via reconstruction, which are consumed by a separate generator. LoViC [ 22 ]compresses long video-text context into latent context tokens with a separately trained autoencoder and feeds them to a DiT decoder. These methods improve the usable temporal context, but their compressed states are still tied to prescribed compression ratios, compression schedules, or separate reconstruction/compression stages. In contrast, Echo-Infinity recurrently consolidates evicted causal KVs into a persistent memory query state used directly as a plug-in KV source, learning what history to preserve end-to-end under the long-video generation objective while keeping the active memory footprint independent of sequence length. 
+
+Failure mode of fixed-ratio compression. Let T denote the number of generated frames and C denote a fixed compression ratio. If one compressed unit is retained for every C historical units, the compressed history still contains about ⌈T /C⌉ units, giving a memory footprint of 
+
+O(T /C).
+
+Thus, even after compression, the memory footprint remains unbounded as T → ∞. To keep the memory bounded by a constant budget M , the compression ratio would have to grow with the horizon, i.e., C = Ω(T /M ),which changes the operating point over time and becomes increasingly aggressive. Echo-Infinity avoids this fixed-ratio failure mode by adopting a fixed-capacity view: all evicted history is recurrently consolidated into 
+
+Q with TQ = NQS tokens. Once the sink size NS , local window size NW , chunk size B, and memory-query budget TQ are fixed, the active context size is 
+
+O(NS S + NW S + TQ + BS ) = O(1)
+
+with respect to the generated sequence length T . Therefore, the effective compression ratio can grow with video length, while the algorithm and memory budget remain unchanged. VideoSSM [ 45 ] instead compresses long-range history with a state-space global memory while retaining a local context window for recent motion and details. However, VideoSSM realizes this state through architecture-level SSM modules, whereas Echo-Infinity keeps the DiT attention blocks unchanged and injects layer-shared Memory Queries as a plug-in KV source. This makes our memory mechanism compatible with any pretrained attention backbone and our unified Relative RoPE recipe, while still providing fixed-size recurrent memory for arbitrary-length history. 
+
+C.3 Rotary Positional Embedding for Long Video Generation 
+
+Modern video DiTs apply 3D rotary positional embeddings (RoPE) independently along the temporal, height, and width axes [ 31 ]. However, under autoregressive rollouts, the temporal index grows beyond the bounded range seen in pretraining (e.g., a maximum of 20 for Wan-2.1 [ 33 ]), leading to rapid quality collapse and 16 Table 5 Ablation Studies. We ablate Echo-Infinity on 240 s generation of 128 MovieGen prompts.                                                
+
+> Model Subject Consistency ↑Background Consistency ↑Dynamic Degree ↑Aesthetic Quality ↑CLIP Score ↑
+> (a) w/o Memory Queries 96.15 95.27 64.78 58.60 32.78 (b) w/o Unified Relative RoPE Recipe 96.34 95.81 64.05 59.83 33.12 (c) w/ Self Forcing ODE init 96.85 96.12 52.04 58.49 34.07 (d) Memory Queries number NQ=194.72 94.03 67.39 57.84 33.62 (e) Memory Queries number NQ=596.44 96.08 69.47 58.81 34.05 (f) w/o Gate 95.31 94.62 68.43 58.49 34.02
+> Echo-Infinity (Ours) 96.58 95.93 68.61 58.67 34.19
+
+eventual overflow. Some concurrent training-free methods on frozen backbones [ 25 , 40 , 41 ] observe these challenges but only mitigate the overflow risk at inference time by adopting relative RoPE, leaving the train-test inconsistency unsolved. These test-time patches do not change the index distribution the backbone saw during training, so the gap persists in the weights. To our knowledge, Echo-Infinity is the first to eliminate the temporal RoPE mismatch during both training and inference, using a unified relative RoPE schedule that keeps every active temporal index within the same range in all stages. 
+
+## D Ablation Studies 
+
+We ablate our core designs on 240 s video generation using 128 randomly sampled prompts from MovieGen [ 30 ]. Results are summarized in Tab. 5. As shown in Tab. 5, each design contributes to the final Echo-Infinity: (a) Memory Queries. Removing memory queries substantially degrades consistency and dynamic degree, as historical information is inevitably lost. (b) Unified Relative RoPE Recipe. Replacing relative RoPE with the original absolute RoPE degrades most quality and consistency metrics, since absolute RoPE requires unseen positional indices at inference time and causes severe out-of-distribution generalization failure. (c) ODE Initialization. We build on Causal Forcing [ 50 ], which uses a refined ODE solver over Self Forcing [ 18 ]. Switching to Self Forcing yields similar performance, except for the expected dynamic-degree drop due to its ODE limitation [ 50 ], demonstrating robustness to ODE initialization. (d) Memory Query Number. Our default setting uses NQ = 3 memory-query frames. Using only 1
+
+frame performs much worse, likely because too few memory queries cannot capture sufficient long-term history, leading to incomplete, unstable memory that confuses the current generation under the same training budget. Increasing to 5 frames gives only marginal gains while reducing inference speed (from 18 .5 FPS to 17 .8 FPS). 
+
+(e) Gate Mechanism. The memory-query update in Eq. 4 (§3.3) uses a sigmoid gate to interpolate between the previous memory state Q and the newly encoded ̃ Q. Replacing it with a residual update, i.e., Q ← Q +̃ Q,noticeably reduces subject and background consistency, while dynamic degree, aesthetic quality, and CLIP score remain nearly stable. Without the gate, each eviction injects ̃ Q into Q without selectively preserving history. This weakens memory as a persistent history representation and degrades long-term consistency. 
+
+## E User Study 
+
+We conduct a forced-choice user study to evaluate human preference for 30s/240s long-video generation. For each evaluated duration, we randomly sample 50 prompts from the corresponding benchmark. For each prompt, we collect one generated video from each method under the same prompt and duration setting, forming one result group. We recruit 30 video generation researchers to evaluate all result groups. In each trial, participants are shown the generated videos from all methods in anonymized and randomized order, without access to model names. Participants are asked to select the single best video by jointly considering overall visual quality, temporal consistency , motion naturalness, and caption alignment. The display order is randomized independently for each trial and each participant to reduce positional bias. For 30s videos, participants are required to watch each video in full before making a selection. For 240s videos, to keep the evaluation workload feasible while still exposing participants to both early and late rollout behavior, participants are required to watch at least 
+
+60 seconds in total from each video. Specifically, the first 10 seconds and the final 10 seconds, i.e., 230 –240 s, 17 must be watched in full. For the middle segment, i.e., 10 –230 s, participants are allowed to freely control the progress bar and inspect segments of interest, but are required to watch at least 40 additional seconds before making a selection. This protocol ensures that participants evaluate both the initial visual quality and the end-of-rollout consistency, while keeping the total annotation time practical for 240s videos. For each method, we compute its user preference rate as the percentage of times its result is selected: 
+
+Pref (m) = 1
+
+N U 
+
+> N
+
+∑
+
+> i=1
+> U
+
+∑
+
+> u=1
+
+1[wi,u = m] × 100% ,
+
+where N = 50 is the number of prompt-level result groups, U = 30 is the number of participants, and wi,u 
+
+denotes the method selected by participant u for prompt i. Thus, each duration contains 1500 total votes. The exact instruction shown to participants is: 
+
+> You will see one text prompt and multiple anonymized videos generated from the same prompt. The model names are hidden, and the video order is randomized. Please compare all videos and select the single best video by jointly considering overall visual quality, temporal consistency, motion naturalness, and caption alignment. For 30-second trials, please watch each video in full before making your selection. For 240-second trials, please watch at least 60 seconds in total from each video. In particular, the first 10 seconds and the final 10 seconds, i.e., 230–240 seconds, must be watched in full. For the middle part, i.e., 10–230 seconds, you may freely use the progress bar to inspect segments of interest, but please watch at least 40 additional seconds before making your selection. Please pay attention to long-range subject identity, background consistency, motion coherence, and whether the video remains aligned with the text prompt.
+
+The evaluation interface shows only the text prompt and anonymized videos in randomized order. The preference records used for analysis contain only anonymous forced-choice selections and do not include personal or sensitive information. If administrative information is required for compensation, it is handled separately from the evaluation interface and is not linked to the anonymous preference records. 
+
+## F Limitations and Future Works. 
+
+Echo-Infinity has several limitations. (1) The memory queries and unified relative RoPE recipe are designed to improve quality and consistency for long/infinite video generation. Optimizing them specifically for interactive video generation remains open. (2) Limited by the base model scale and generative capacity, Echo-Infinity may show reduced stability for hour-scale or longer videos with highly dynamic scenes. (3) Quantitative evaluation of ultra-long videos remains an open challenge. Existing video-generation benchmarks and metrics [ 19 , 20 , 49 ] are mainly designed for short- or minute-scale videos, and do not yet provide targeted and efficient measurements for hour-scale or day-scale temporal consistency, such as identity drift, layout drift, repetition, and prompt forgetting. Since designing such an evaluation suite is orthogonal to our memory-learning framework, we complement existing 30s/240s quantitative evaluations with extensive qualitative ultra-long results on our project page, and leave principled quantitative ultra-long evaluation to future work. For future work, we believe: (1) Studying the semantics of memory queries could enable controllable retrieval-augmented video generation. (2) Distilling Echo-Infinity into a one-step model could improve real-time throughput while preserving long-term consistency. (3) Developing efficient and targeted metrics for ultra-long video generation could better quantify hour-scale and day-scale consistency. 
+
+## G Broader Impacts 
+
+Positive impacts. Echo-Infinity contributes two core designs to long-video generation: end-to-end learnable Memory Queries that filter, abstract, and compress arbitrary-length history with constant per-step cost, and a unified Relative RoPE recipe that aligns the training and inference distributions of temporal RoPE indices. Together, they support coherent long-video generation up to hour-scale in real time, enabling applications such as long-form storytelling, immersive education, accessibility tooling, and interactive content creation. 18 Negative impacts. Like other capable video generation models, Echo-Infinity could be misused for disinforma-tion, non-consensual likeness generation, or impersonation; its ability to produce coherent multi-hour videos without quality degradation may further amplify the scale of such misuse. 
+
+Mitigation. We recommend pairing any public release with provenance signals such as watermarks that interoperate with current synthetic-media detectors, and with usage policies that prohibit non-consensual personal-identity generation. Our training relies only on publicly released prompt collections (VidProM [ 34 ]and MovieGen [ 30 ]); we do not collect personally identifying data, and the model does not make decisions about specific individuals or groups. For higher-risk deployment scenarios such as interactive long video with prompt switching, we further suggest gated or staged release with explicit misuse-monitoring channels. 19 Echo -Infinity      
+
+> 0-10s 10 -20s 20 -30s 30 -40s 40 -50s 50 -60s
+> LongLive
+> MemFlow
+> Memorize -and -Generate
+> ∞-RoPE
+
+## 0-10s: A little boy in a blue T -shirt stands on a lush green lawn, arms relaxed at his sides, 
+
+## smiling at the camera, natural fresh realistic style. 
+
+## 10 -20s: A little boy in a blue T -shirt starts to step forward, lightly running, with his arms 
+
+## swinging naturally. The grass and blue sky remain unchanged. 
+
+## 20 -30s: A little boy in a blue T -shirt runs faster, leaning slightly forward, arms swinging 
+
+## naturally, feet lightly off the ground. The background remains the same grassy lawn. 
+
+## 30 -40s: A little boy in a blue T -shirt jumps into the air, knees bent, arms raised, performing a 
+
+## light jump. The grass and sky stay consistent. 
+
+## 40 -50s: A little boy in a blue T -shirt lands and continues running forward, arms swinging 
+
+## naturally, smiling as he enjoys the run. The background remains the same. 
+
+## 50 -60s: A little boy in a blue T -shirt stops running, hands on his hips with a smile, body 
+
+## leaning slightly forward, sunlight falling on the grass, natural fresh realistic style. Figure 8 60 s Interactive Long Video Generation Comparison. 
+
+> 20
+
+T=0s T=48s T=96s T=144s T=192s T=240s 
+
+A subtle and elegant Japanese -style woman is seated by the window of a speeding train …
+
+FPV drone shot through a vibrant underwater suburb, coral -lined streets teeming with tropical fish …
+
+A realistic medium shot of an astronaut in a sleek white spacesuit walking through a narrow passage …Figure 9 240 s Long Video Generation Visualization. Gwen Stacy reading a book, Van Gogh style. In this vivid and detailed painting, Gwen Stacy …
+
+A realistic, detailed scene featuring a person standing next to a kitchen sink. The person has brown hair … 
+
+A realistic, serene outdoor scene featuring a small, brown wildcat and a vibrant blue bird … 
+
+T=0s T=6s T=12s T=18s T=24s T=30s  
+
+> Figure 10 30 s Long Video Generation Visualization.
+
+21

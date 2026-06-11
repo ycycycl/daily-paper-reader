@@ -1,0 +1,403 @@
+Title: vla.cpp: A Unified Inference Runtime for Vision-Language-Action Models
+
+URL Source: https://arxiv.org/pdf/2606.08094v1
+
+Published Time: Tue, 09 Jun 2026 00:36:31 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# vla.cpp: A Unified Inference Runtime for Vision–Language–Action Models 
+
+Khanh D. Nguyen 1, Hung T. Ho 1, Chinh T. Nguyen 1, Thanh Q. Duong 1,Linh D. Le 1, Duy M. H. Nguyen 4,5,6 , Vien A. Ngo 1,2 , An T. Le 1,2,3, ∗
+
+> 1
+
+VinRobotics, Vietnam 2Center for AI Research, VinUniversity, Vietnam 
+
+> 3
+
+Intelligent Autonomous Systems, TU Darmstadt, Germany 
+
+> 4
+
+Max Planck Research School for Intelligent Systems, Germany 
+
+> 5
+
+University of Stuttgart, Germany 6German Research Center for Artificial Intelligence 
+
+Abstract: Vision–Language–Action (VLA) policies are typically shipped as Python/PyTorch stacks that assume a workstation-class GPU, a mismatch for the hardware on which robots actually run. We present vla.cpp , a portable C++ inference runtime built on llama.cpp . To our knowledge it is the first ggml -class engine to natively serve the flow-matching and diffusion VLA inference pattern, in which a cached vision–language prefix is consumed by a cross-attending ac-tion expert integrated over several solver steps. A single runtime serves seven architectures spanning five backbone and four action-head families behind one request/response protocol, with each model packaged as a self-contained bundle. On LIBERO-Object, the engine matches a state-of-the-art checkpoint to within one episode out of 200, and runs BitVLA at 100% success in 1.3 GiB of memory. The same bundle runs unchanged across three hardware tiers, from a consumer GPU down to an 8 GB embedded module. A cross-hardware roofline analysis shows that batch-1 VLA inference is compute-bound, so utilization rather than bandwidth is the deployment lever; an IMMA ladder GEMM derived from this analysis cuts BitVLA per-step latency by 4.5×. We then frame an on-robot stress test on an ALOHA arm that isolates the latency constraint under which a learned VLA must replan against a moving target on the hardware it was trained for. Code, demo videos, and the reproducible benchmark scaffold are available at 
+
+https://fai-modelopt-tech.github.io/vla-cpp.github.io/ .
+
+Keywords: Robot systems, Robot foundation models, Model deployment 
+
+## 1 Introduction 
+
+A vision–language–action (VLA) model is a robot policy that maps camera images and a natural-language instruction directly to robot actions. Most modern open VLAs [ 1, 2, 3 ] share a computational structure: a pretrained vision–language model (VLM) encodes the images and instruction into a multimodal prefix , and a separate flow-matching or diffusion action head cross-attends to that prefix and iteratively denoises an action chunk of several future actions (Section 3.1). The robot replays the chunk open-loop before querying again, which raises control throughput but leaves the later actions generated from an already-stale observation. These policies are almost always released as Python/PyTorch stacks that presume a workstation-class GPU, whereas a robot’s onboard computer is typically a memory-constrained embedded module, most often a Jetson Orin, whose unified memory starts at 8 GB and is shared with the operating system, camera pipeline, and the rest of the autonomy stack. For large language models (LLM) this shortfall is met by portable inference engines [ 4, 5] that compile a model into a compact, self-
+
+> ∗
+
+Corresponding author: An T. Le, an@robot-learning.de 
+
+> arXiv:2606.08094v1 [cs.RO] 6 Jun 2026
+
+contained artifact, complemented by single-vendor compiler stacks [ 6 , 7 ] on the latest accelerators; graph-capture runtimes such as torch.compile amortize launch overhead but do not support the dynamic cross-attention cache lifecycle of a flow-matching head and have limited Jetson support. None of these supports the VLA inference pattern across many architectures and heterogeneous edge hardware, which is the gap vla.cpp fills. We present vla.cpp , a C++ inference runtime built on llama.cpp . It adds the components a VLM runtime omits: a cross-attention key/value cache reused across solver steps, and flow-matching and diffusion action heads. A single binary serves seven VLA architectures that span five vision–language backbones and four action-head families. Each model is packaged as one self-contained bundle file. A C++ server exchanges observations and action chunks with a lightweight client over a compact binary protocol, so the same engine drives either a simulator or a physical robot without modification. The system currently builds for CUDA and CPU, and its backend-agnostic structure accommodates further targets, such as mobile NPUs. Our contributions are a portable inference engine for VLA models and two empirical findings from building and evaluating it. 1. A unified VLA inference runtime. We present vla.cpp , to our knowledge the first ggml -class C++ engine to natively implement cross-attention into a cached VLM prefix across iterative denoising steps for flow-matching and diffusion action heads. A single binary and one bundle format support seven architectures across five backbones and four action-head families, including the first end-to-end serving of the full BitVLA stack (ternary backbone, vision tower, and action head) in a ggml -class engine with a custom tensor-core ternary GEMM. 2. A measured cross-hardware characterization of single-request VLA inference. On three real deployment tiers we show that the end-to-end forward is dominated by its high-intensity, compute-bound vision–language prefix, while the low-token action expert is memory-bound (consistent with the component analysis of 8); this separates footprint from latency and identifies the two operative deployment levers as arithmetic-unit utilization and memory capacity, rather than bandwidth. Acting on the utilization lever, an IMMA tensor-core kernel reduces BitVLA per-step latency by 4.5×.3. The behavioral sensitivity of multimodal towers under reduced precision. We characterize how a single reduced-precision choice silently shifts vision-tower position embeddings and displaces real-world actions, how flow matching compounds this effect, and why deployment should be parity-gated and fail-loud. On LIBERO-Object the engine reproduces a strong reference checkpoint to within one episode out of 200 and runs ternary BitVLA at 100% success in 1.3 GiB, unchanged from a consumer GPU to an 8 GB module. Profiling across three tiers (an RTX 3060, a Jetson AGX Orin, and a Jetson Orin Nano), we find that on the smallest module memory capacity, not latency, is the binding constraint. We then test the system end-to-end on a physical ALOHA arm, where the controller must repeatedly replan against an evolving workspace, against a reference PyTorch server on the same module. 
+
+## 2 Related Work 
+
+Early generalist VLAs such as OpenVLA [ 9 ] treat control as autoregressive generation, discretizing each action dimension into tokens that a vision–language model emits one at a time. A second and now dominant design replaces the token decoder with a continuous action head that is conditioned on the multimodal prefix and trained by flow matching or diffusion [ 10 ]. This design produces smooth, high-rate action chunks without a quantization grid. π0 [1] and SmolVLA [ 2 ] attach a flow-matching expert to a pretrained backbone, GR00T N1.x [ 3 ] pairs a VLM with a diffusion-transformer head, and Evo-1 [ 11 ] couples an InternVL3 backbone to a cross-attention flow-matching head. BitVLA [ 12 ]is, to our knowledge, the first VLA to quantize the backbone to ternary (1.58-bit) weights for an exceptionally small footprint, yet no dedicated inference engine accompanied its release. These 2models differ in backbones and heads but share the inference pattern of Section 3.1, which our runtime targets. The drive toward deployable VLAs has produced a rapidly growing body of efficiency techniques, recently surveyed in [ 13 ]. Complementary to model-architecture efficiency, recent work addresses the deployment pipeline directly. LiteVLA-Edge [ 14 ] and its CPU sibling [ 15 ] apply post-training quantization via llama.cpp to run a compact VLA on edge hardware (approximately 6.6 Hz on the Jetson AGX Orin), demonstrating the viability of the GGUF ecosystem for VLA inference. However, they support a single architecture with an autoregressive output and do not implement the cross-attention cache lifecycle required by flow-matching or diffusion heads. NanoVLA [ 16 ]reduces model cost through routing and vision–language decoupling, achieving large speedups but requiring a specialized training procedure. A parallel line builds serving infrastructure around existing policies: VLAgents [ 17 ] exposes a unified protocol over PyTorch policies, OxyGen [ 18 ] unifies KV-cache management for a mixture-of-transformers VLA, and the Reflex deployment tool [ 19 ]ports several VLAs to Jetson Orin with parity checks against PyTorch. These unify an interface or a 
+
+cache around existing PyTorch runtimes; vla.cpp instead is a single self-contained C++ binary that natively executes heterogeneous architectures from GGUF bundles, a distinction we make precise in Table 1. VLA-Perf [ 8] builds an analytical roofline model and reports the vision and language towers as compute-bound while the low-token action expert is memory-bound; concurrent edge characterizations reach the same two-phase conclusion [ 20 , 21 ]. We measure this split end-to-end on three real devices: the several-hundred-token prefix dominates the single-request forward in our deployed configurations, so the wall-clock-relevant phase is compute-bound, while the action expert is memory-bound and its share grows with the solver-step count. This motivates both the kernel-utilization lever we pursue and the orthogonal pipelining and step-reduction levers of recent work [ 22 , 23 ]. OpenVLA-OFT [ 24 ] addresses the speed problem from the training side, reporting 
+
+26 × throughput via action chunking and fine-tuning. Our work differs in scope: a unified runtime serving multiple architectures unchanged, paired with a measured cross-hardware roofline and an on-device kernel optimization. To deploy LLM on edge devices, a family of portable inference engines packages a model into a single compact file and executes it on hardware accelerators or CPUs. The most prominent of these is 
+
+llama.cpp [ 4], built on the ggml tensor library. MLC-LLM [ 25 ] and vLLM [ 5] pursue the same portability goal with different backends. ggml itself is a dependency-free C/C++ tensor library that compiles to a single small binary and runs the same model on heterogeneous hardware without any vendor-specific toolchain. This portability, together with the open-source nature of the surrounding ecosystem, makes llama.cpp the most widely deployed of these engines and motivates our decision to build on it rather than on a single-vendor compiler stack. The ggml ecosystem also defines two components central to our work: GGUF, a self-contained file format that bundles weights, tokenizer, and metadata; and mtmd , the multimodal extension that executes a vision encoder and projects its output into the language model’s embedding space. We build upon both components. However, 
+
+llama.cpp was designed for token-by-token text generation: it provides no mechanism to retain a fixed multimodal context that is consulted many times across iterative denoising, nor any component that produces continuous motion from such a context. Neither llama.cpp nor its peers therefore implements the flow-matching or diffusion action head, the cross-attention into a cached prefix, or the chunked control loop that a VLA requires. On the accelerator side, high-performance toolchains such as NVIDIA TensorRT-LLM [ 7] and TensorRT Edge-LLM [ 6] compile a single model into an optimized engine, and the latter can serve a flow-matching policy on the newest Jetson part. However, each such toolchain compiles one model into one engine; TensorRT-LLM in particular offers only preview/community support on the widely deployed Orin parts and switches frameworks across device generations. We therefore regard these stacks as complementary on the portability axis rather than competing: each optimizes a single model for one vendor’s newest hardware, whereas our objective is one portable runtime serving many VLA architectures across heterogeneous, older edge modules (Table 1). Our natural point of comparison is the reference PyTorch implementation from which practitioners typically start. 3Table 1: Why common serving stacks are complementary, not competing, for the VLA inference pattern on edge. ✓ supported; × not supported; ◦ partial or per-model, per-device engineering. 
+
+Portable Dynamic cross- Flow/diffusion Official Cross-tier, Stack bundle attn. KV cache action head Orin no recompile TensorRT-LLM [7] × ◦ × ◦ ×
+
+TensorRT Edge-LLM [6] × ◦ ◦ ◦ ×
+
+ONNX Runtime / Torch-TensorRT × × × ◦ ×
+
+MLC-LLM [25] ◦ × × ◦ ×
+
+llama.cpp AR-VLA [14] ✓ × × ✓ ✓
+
+vla.cpp (ours) ✓ ✓ ✓ ✓ ✓Client: Python      
+
+> Robot/Simulator
+> - Observation
+> - Configuration
+> - Statistics
+> - Instruction
+> vla.cpp Runtime (C++)
+> Model Bundle
+> llama.cpp (ggml backend)
+> Hardware Backends
+> CUDA CPU (AVX/NEON)
+> - model.gguf
+> - mmproj-model.gguf
+> Protobuf +
+> ZeroMQ
+> (Request)
+> Protobuf +
+> ZeroMQ
+> (Response)
+> Unified
+> Protocol
+> Cross-attn
+> KV Cache
+> Solver
+> Loop
+> Ternary
+> Kernel
+> One Runtime One protocol One bundle format Seven Architectures
+
+Figure 1: Architecture of vla.cpp . A stateless C++ server loads one GGUF bundle, runs the VLA inference pattern on each Protobuf observation, and returns a denormalized action chunk over ZeroMQ; a thin Python client owns closed-loop control and drives a simulator or robot. 
+
+## 3 The vla.cpp Engine 
+
+3.1 Background: the VLA inference pattern 
+
+We first make the inference pattern precise, as it differs from both autoregressive generation and standard LLM serving. A VLA forward has two stages. A prefix stage encodes the images, instruction, and state into a multimodal feature sequence in one bidirectional pass; like LLM prefill, it processes several hundred tokens at once and is compute-bound. An action stage then runs a flow-matching or diffusion head that, over T solver steps, cross-attends to the cached prefix and integrates a continuous action vector; unlike LLM decoding, it emits no tokens and reuses the prefix keys and values across all steps. The head outputs an action chunk of na actions replayed open-loop before the next observation, which raises throughput but ages the later actions relative to the world (Section 4.7). Two hardware terms recur: the target Jetson Orin modules are NVIDIA Tegra systems-on-chip whose CPU and GPU share one unified memory pool (from 8 GB), and low-bit integer matrix multiply runs either on the CUDA cores via the dp4a intrinsic or on the dedicated integer matrix-multiply–accumulate (IMMA) tensor cores, which reach far higher throughput. 
+
+3.2 System architecture 
+
+vla.cpp runs as two processes (Figure 1). A C++ server loads the model once and holds it resident; on each request it decodes an observation (camera images, language instruction, proprioceptive state) from a Protobuf message, executes the inference pattern, denormalizes the actions into robot units using statistics carried in the bundle, and returns the chunk. The server is deliberately stateless :control-history concerns such as blending overlapping chunks, handling stale observations, and safe-holding when inference is late reside on the client, typically Python for interoperability with existing robotics and simulator code. The two sides communicate over ZeroMQ [ 26 ] with a Protobuf [ 27 ]schema, chosen for low loopback latency, language-agnostic bindings, and a typed contract generated from one schema file. Each model is a single GGUF bundle holding the language model, action head, 4Algorithm 1 Canonical VLA inference in vla.cpp 
+
+Require: Observation (I, ℓ, s ): images, instruction, proprioception  
+
+> 1:
+
+h ← VLM-P REFIX (I, ℓ, s ) {bidirectional attention } 
+
+> 2:
+
+Cache cross-attention keys/values from h 
+
+> 3:
+
+a0 ∼ N (0 , I) {or uniform for diffusion } 
+
+> 4:
+
+for t = 1 , . . . , T do  
+
+> 5:
+
+at ← ACTION HEAD (at−1, h, t ) {cross-attend to cached h} 
+
+> 6:
+
+end for  
+
+> 7:
+
+ˆa ← DENORMALIZE (aT ) 
+
+> 8:
+
+return action chunk ˆa
+
+normalization statistics, and architecture configuration; the vision encoder is embedded or supplied as a companion multimodal file. 
+
+3.3 From VLM to VLA 
+
+A VLA decomposes into a vision encoder, a language model, and an action head; the first two form a vision–language model already supported by llama.cpp and its multimodal extension, which 
+
+vla.cpp reuses for the prefix. Serving the action head faithfully requires closing four gaps that a text runtime leaves open (Appendix A): (i) exposing the language model’s full final-layer hidden states, not just logits, as the cross-attention source; (ii) encoding the prefix under a bidirectional 
+
+mask, since the causal mask of a text decoder would silently corrupt every cached key and value; (iii) an explicit cross-attention cache lifecycle that computes the prefix keys and values once and reuses them across all solver steps, which the language-model KV-cache abstraction does not provide; and (iv) denormalizing the predicted chunk with the model’s own statistics, a common silent source of incorrect motion. Building on this foundation, vla.cpp implements the action heads of all seven architectures, spanning five vision–language backbones (SmolVLM2, PaliGemma, the ternary BitNet–SigLIP stack of BitVLA, InternVL3, and the Eagle/Cosmos-Reason backbones of the GR00T series) and four action-head families (the flow-matching expert shared by π0 and SmolVLA, Evo-1’s cross-attention flow-matching head, the diffusion-transformer head of the GR00T series, and BitVLA’s natively ternary head). All architectures are expressed against one canonical control flow (Algorithm 1), so adding an architecture means mapping its components onto that flow rather than writing a new engine. 
+
+## 4 Experiments 
+
+4.1 Setup 
+
+We evaluate all seven architectures on the full libero object suite [ 28 ] (ten tasks × twenty episodes 
+
+= 200 per architecture), counting any non-completed episode as a failure. We also run GR00T-N1.6 on the WidowX (bridge) tasks of SimplerEnv [ 29 ] as a second simulator and embodiment (Appendix F). We profile each model on three tiers: a consumer RTX 3060, an embedded Jetson AGX Orin, and a memory-constrained 8 GB Orin Nano, the latter two sharing a unified CPU/GPU memory pool. Our reference throughout is the PyTorch eager implementation that ships with each model. 
+
+4.2 Behavioral fidelity 
+
+Table 2 reports success, latency, and footprint for all seven architectures on the consumer GPU. Every architecture reproduces the behavior of its reference checkpoint. BitVLA reaches a perfect 200 of 200 episodes. This model is also the closest-matching architecture that differs from its reference Python checkpoint by a single episode out of 200. These results confirm that the engine is faithful to the reference implementations rather than merely fast. The per-task, per-episode comparison against 5Table 2: Behavioral fidelity and single-request profile on the RTX 3060, full libero object suite (200 episodes/arch). step : wall-clock per environment step (amortized over chunk replay); inf :server-side forward; na: chunk length; brackets are 95% Wilson intervals.                                                        
+
+> Model Backbone naSR (%) step (ms) inf (ms) VRAM (MiB) SmolVLA SmolVLM2 490.5 [86, 94] 28.16 54.8 1410
+> π0PaliGemma 32 87.5 [82, 91] 9.74 207.2 5548 BitVLA BitNet–SigLIP 8100.0 [98, 100] 37.85 235.9 1312
+> Evo-1 InternVL3 894.5 [90, 97] 63.60 131.0 1564 GR00T-N1.5 Eagle/Cosmos 16 96.0 [92, 98] 14.17 147.0 4866 GR00T-N1.6 Eagle/Cosmos 16 86.5 [81, 91] 10.29 83.6 6048 GR00T-N1.7 Eagle/Cosmos 16 98.0 [95, 99] 10.26 84.1 6302
+
+each reference checkpoint, the reference-checkpoint provenance (exact weights, configuration, and harness), and the SimplerEnv (WidowX) results appear in Appendices B and F. Success tracks chunk length and backbone rather than raw forward cost: π0 is the cheapest per step yet the least accurate, since replaying many actions between observations lets the scene drift from the plan. Our claim is behavioral parity with the reference, not new task capability, so a near-saturated suite is still informative: its low variance makes a one-episode gap meaningful, even though such scores are known to overstate generalization [ 30 , 31 ]. Appendix B gives the full Spatial, Goal, and Long suites with Wilson intervals and the per-task, per-episode comparison against each reference. 
+
+4.3 Engine speedup over the PyTorch reference 
+
+Section 4.2 confirms that vla.cpp reproduces the reference checkpoint’s behavior on the consumer GPU. We now show that it also runs that checkpoint substantially faster than the released PyTorch reference. Holding model weights, BF16 precision, and the simulator fixed and varying only the runtime, vla.cpp runs SmolVLA at 28 .16 ms per environment step (as observed by the lerobot 
+
+loop) against 223 .96 ms for the PyTorch reference, a 7.95 × speedup, at essentially the same peak VRAM ( 1410 vs 1406 MiB) and with success rates matching within sampling noise. Appendix C extends this comparison to additional architectures and to a graph-captured PyTorch configuration, isolating the portion of the gap attributable to the runtime rather than to eager-mode kernel dispatch. The gap follows from how each engine maps the same forward onto the GPU. A single-request SmolVLA forward is hundreds of short CUDA kernels; under PyTorch eager execution each dis-patches from Python, so host-side launch overhead occupies the device and the arithmetic units idle for much of every step. vla.cpp inherits from llama.cpp a static graph captured once at load time and replayed each forward, paying the per-kernel host cost at capture rather than per call. With the IMMA kernel of Section 4.5, this is a second instance in which single-request speed is set by how fully the arithmetic units stay occupied (there by upgrading the kernel, here by amortizing launch overhead), and the two effects compose. 
+
+4.4 Memory bottleneck on small modules 
+
+Table 3 carries the same models down the three tiers. Per-step latency rises smoothly toward the Orin Nano (roughly three to ten times, by architecture) and stays within a real control loop’s chunk budget for the lighter models. The decisive effect, however, is capacity: only five of the seven architectures load on the 8 GB Nano. GR00T-N1.6/N1.7 do not fit: their ≈ 6 GiB of resident weights exhaust the unified pool shared with the OS, camera pipeline, and simulator. GR00T-N1.5 and π0 fit only with the simulator offloaded to another machine. The physical size of the weights saturates the pool well before computation becomes the bottleneck, so footprint, not latency, determines what can be deployed on an inexpensive module. 6Table 3: Per-step latency (ms) across the three tiers and resident footprint on the 8 GB Orin Nano. 
+
+> †
+
+Simulator offloaded to a second machine (co-resident server, client, and simulator exceed 8 GB), so latency includes a network hop. ∗Does not fit: weights exhaust the 8 GB pool.                                 
+
+> Model RTX 3060 AGX Orin Orin Nano Nano peak RSS (MiB) SmolVLA 28.16 65.41 141.81 2031 BitVLA 37.85 101.11 355.65 2199 Evo-1 63.60 131.01 458.84 2135 GR00T-N1.5 14.17 28.78 84.76 †5975
+> π09.74 27.90 39.10 †6068 GR00T-N1.6 10.29 26.70 ∗—GR00T-N1.7 10.26 26.84 ∗—
+
+4.5 Cross-hardware roofline and the utilization lever 
+
+BitVLA makes the separation between footprint and speed especially clear. Packing its ternary weights into a two-bit layout cuts the on-disk model from 5.6 to 1.34 GiB and the load-time high-water mark from 11.1 to 1.15 GiB, enough to load on the Nano, yet leaves latency unchanged: both layouts feed identical values to the same kernel. The roofline [ 32 ] (Figure 2) explains why. A single observation is one forward pass over several hundred prefix tokens, not a token-by-token decode: each backbone weight is reused across those tokens, so the prefix computation is firmly compute-bound, far from the bandwidth wall. The low-token action expert that consumes the prefix is, by contrast, memory-bound; consistent with VLA-Perf [ 8] and independent edge characterizations [ 20 ], its arithmetic intensity is low and its wall-clock share grows with the solver-step count. In our deployed configurations, with a several-hundred-token prefix over few steps, the compute-bound prefix dominates the forward, the regime this roofline characterizes. We plot the GDDR-backed RTX 3060 and AGX Orin; on the LPDDR Orin Nano it is the 8 GB capacity , not bandwidth, that bounds which models load (Sec. 4.4), so we confine the prefix-compute-bound statement to the GDDR tiers. Ternary quantization shrinks bytes per weight, not multiply–accumulate operations: it lets the model fit, with no speedup of its own. The choice of arithmetic unit, not weight format, then determines latency. The reference bitnet.cpp 
+
+GPU kernel [ 33 , 34 ] runs its W2A8 (two-bit weight, eight-bit activation) dot products on the CUDA cores via the dp4a intrinsic, which leaves idle the dedicated integer matrix-multiply–accumulate (IMMA) tensor cores, the units that deliver peak throughput on our devices. We rebuilt BitVLA’s ternary matmul to run on the IMMA tensor cores while reading the same packed weights. Tensor-core kernels for low-bit weights are well studied on server GPUs [ 35 , 36 , 37 ]; our contribution is a 
+
+portable , ggml -class W2A8 tensor-core GEMM that serves a VLA action expert unchanged across all three tiers, against the dp4a path that is the de facto ternary baseline. It cuts BitVLA per-step latency from 172 .8 to 37 .85 ms on the RTX 3060 ( 4.6×) and 406 .6 to 101 .11 ms on the AGX Orin (4.0×), and 4.5× in isolation, with bit-identical outputs and unchanged 100% success. Moving the same operations onto higher-throughput units recovers a 4× gain that no weight-layout change could deliver, the prediction that follows when utilization, not bandwidth, is the bottleneck for this kernel. Appendix D gives the per-component breakdown (vision, language, action expert) and anchors each operating point to the analytical roofline. 
+
+4.6 Reduced-precision fragility in multimodal encoders 
+
+Faithful deployment is not only a matter of speed: a single reduced-precision choice can silently change behavior. In the vision tower, the patch position-embedding index rounds differently in 32-and 16-bit floating point, so deploying the model in half precision while computing this index in single precision selects a different embedding row for almost every patch. The mismatch shifts the encoded prefix enough to displace the predicted action chunk by up to max |∆| ≈ 1.97 in robot space (the difference between grasping the target and reaching past it), while no component reports an error. Because a flow-matching head integrates a learned field over several steps, the perturbation 710 1 10 2 10 3      
+
+> FLOP/byte
+> 10 0
+> 10 1
+> TFLOP/s
+> ridge I = 71 memory bound
+> compute bound
+> RTX 3060
+> 5%
+> 50%
+> 23%
+> 4%
+> 46%
+> 67% 67%
+> 5%
+> 10 110 210 3
+> FLOP/byte
+> 10 0
+> 10 1
+> TFLOP/s
+> ridge I = 104 memory bound
+> compute bound
+> AGX Orin
+> 3%
+> 27%
+> 11%
+> 2%
+> 27%
+> 31% 31%
+> 3%
+> BitVLA (vla.cpp kernel)
+> BitVLA (bitnet.cpp kernel)
+> SmolVLA
+> pi0
+> Evo-1
+> GR00T N1.5
+> GR00T N1.6
+> GR00T N1.7
+> roofline = min(compute, BW × I)
+
+Figure 2: Roofline placement of single-request VLA inference (LIBERO-Object sweep) on the RTX 3060 (sm 86; 25.6 TFLOP/s FP16, 360 GB/s) and Jetson AGX Orin (sm 87; 21.3 TFLOP/s, 204.8 GB/s). Each dot is one model at its operational intensity (FLOPs/byte) versus achieved throughput (estimated FLOPs over measured server-side time per call); the label is the achieved fraction of device peak, and the gap to the roof is the remaining utilization headroom. accumulates rather than cancels. Making the index precision-aware restores agreement (position-embedding relative error 0.32 → 0.003 ) and recovers the task. The mechanism of reduced-precision collapse is documented for language and vision towers [ 38 , 39 ]; our contribution is to quantify it in robot action space and to make numerical parity a build-time, fail-loud property: every block, from the vision encoder to a full denoising step, is gated against the reference, so a regression that would surface only as subtly incorrect motion fails at build time rather than on the robot. Appendix E reports the per-model success deltas and the growth of the displacement with solver-step count. 
+
+4.7 Real-robot stress test 
+
+A real ALOHA arm executes two manipulation tasks of differing horizon: Task 1 picks several blocks into a white box; Task 2 places trash into a box and then a banana on a dish. Both require replanning against an evolving workspace, so the per-chunk inference latency sets how stale the observation behind each chunk is by the time it executes. We compare vla.cpp against the released PyTorch reference for GR00T-N1.6, the variant we fine-tuned on ALOHA demonstrations, running the same checkpoint in BF16 on the same module, so any difference reflects the runtime, not the weights. Open-loop, the ported policy matches the reference to a mean absolute joint error of 0.0056 (≈ 0.3% 
+
+of the joint range, at the precision floor). Closed-loop, both engines run the same synchronous loop with an eight-step chunk of which the first seven execute before replanning, so the observation ages by the full inference latency before its first action reaches the arm. Mean per-chunk inference is 
+
+≈ 470 ms for vla.cpp versus ≈ 620 ms for PyTorch; with ≈ 840 ms of chunk execution in both cases, the replan period is about 1.3 s ( 0.76 Hz) versus 1.5 s ( 0.68 Hz). Over twenty trials per task across five workspace configurations (Table 4), vla.cpp reaches 35 /40 
+
+(87 .5% ) against 16 /40 (40 .0% ) for the PyTorch baseline; the 95% Wilson intervals, [73 .9, 94 .6]% 
+
+versus [26 .3, 55 .4]% , do not overlap. The gap is widest on the longer-horizon Task 1, where the baseline times out under retry, and successful trials also finish faster ( 49 vs 71 s on Task 1; 28 vs 
+
+30 s on Task 2). Both effects follow the staleness mechanism: at ≈ 470 rather than ≈ 620 ms per chunk, each chunk is planned against an observation ≈ 150 ms fresher, and the advantage compounds across a long horizon. This connects to the chunking trade-off studied by Diffusion Policy [ 10 ], ACT [ 40 ], and Bidirectional Decoding [ 41 ]; FASTER [ 42 ], Real-Time Chunking [ 43 ], and per-step correction [ 44 ] mitigate it at the policy or scheduling level, whereas reducing per-chunk latency in the runtime is a complementary, architecture-agnostic mitigation that holds numerical parity fixed. 8Table 4: Closed-loop performance on the ALOHA left arm with GR00T-N1.6 in BF16. Both engines run the same checkpoint with an eight-step prediction chunk of which seven actions are executed before replanning.                                 
+
+> Task 1: blocks →box Task 2: trash +banana Engine SR Task time SR Task time Inference / chunk PyTorch baseline 3/20 (15% )71 s13 /20 (65% )30 s∼620 ms
+> vla.cpp 18 /20 (90 %)49 s17 /20 (85 %)28 s∼470 ms
+
+## 5 Conclusion 
+
+We presented vla.cpp , a portable C++ runtime that serves the flow-matching and diffusion VLA inference pattern for seven architectures from one binary and one bundle format, faithful enough to reproduce reference behavior and compact enough to run a ternary policy in 1.3 GiB on an 8 GB module. Two findings outlast the implementation: the single-request forward is dominated by a compute-bound vision–language prefix while the action expert stays memory-bound, separating footprint from latency into utilization and capacity levers; and reduced precision in a multimodal tower can silently displace real-robot actions, motivating continuously gated, fail-loud numerical parity. 
+
+Limitations. While vla.cpp provides a highly portable, C++ runtime optimized for edge hardware, it has several key limitations. Notably, it lacks a dynamic weight-staging mechanism, which restricts its broad architectural support on highly resource-constrained devices like the 8 GB Jetson Orin Nano, where larger models exhaust the unified memory pool and require the simulator to be offloaded to an external machine. Furthermore, its native low-bit quantization is currently limited to the ternary configurations of BitVLA. Finally, the runtime reveals a high sensitivity to reduced-precision configurations (such as FP16) within multimodal encoders, where even minor vision-tower rounding discrepancies can silently compound across flow-matching solver steps and displace physical robot actions, necessitating strict build-time gating to avoid failure. 
+
+## References 
+
+[1] Physical Intelligence. π0: A Vision-Language-Action Flow Model. https://github.com/P hysical-Intelligence/openpi , 2024. [2] M. Shukor et al. SmolVLA: A Vision-Language-Action Model for Affordable and Efficient Robotics. arXiv preprint arXiv:2506.01844 , 2025. [3] NVIDIA. Isaac GR00T N1.x: Open Foundation Models for Generalist Robots. https: //github.com/NVIDIA/Isaac-GR00T , 2025. [4] G. Gerganov et al. llama.cpp. https://github.com/ggml-org/llama.cpp , 2023. [5] W. Kwon et al. Efficient Memory Management for Large Language Model Serving with PagedAttention. In Proc. SOSP , 2023. arXiv:2309.06180. [6] NVIDIA. TensorRT Edge-LLM: An open-source c++ sdk for llm and vlm inference on edge platforms. https://github.com/NVIDIA/TensorRT-Edge-LLM , 2026. Accessed: 2026-05-28. [7] NVIDIA. TensorRT-LLM: An open-source library for optimizing large language model infer-ence. https://github.com/NVIDIA/TensorRT-LLM , 2026. Accessed: 2026-05-28. [8] W. Jiang, J. Clemons, K. Sankaralingam, and C. Kozyrakis. How Fast Can I Run My VLA? Demystifying VLA Inference Performance with VLA-Perf. arXiv preprint arXiv:2602.18397 ,2026. 9[9] M. J. Kim et al. OpenVLA: An Open-Source Vision-Language-Action Model. arXiv preprint arXiv:2406.09246 , 2024. [10] C. Chi, Z. Xu, S. Feng, E. Cousineau, Y. Du, B. Burchfiel, R. Tedrake, and S. Song. Diffusion Policy: Visuomotor Policy Learning via Action Diffusion. In Robotics: Science and Systems (RSS) , 2023. arXiv:2303.04137. [11] MINT-SJTU. Evo-1: Lightweight Vision-Language-Action Model with Preserved Semantic Alignment. arXiv preprint arXiv:2511.04555 , 2025. [12] H. Wang et al. BitVLA: 1-bit Vision-Language-Action Models for Robotics Manipulation. 
+
+arXiv preprint arXiv:2506.07530 , 2025. [13] Z. Yu, B. Wang, P. Zeng, H. Zhang, J. Zhang, L. Gao, J. Song, N. Sebe, and H. T. Shen. A Survey on Efficient Vision-Language-Action Models. arXiv preprint arXiv:2510.24795 , 2025. [14] J. Williams, K. D. Gupta, R. George, and M. Sarkar. LiteVLA-Edge: Quantized On-Device Multimodal Control for Embedded Robotics. arXiv:2603.03380, 2026. [15] J. Williams, K. D. Gupta, R. George, and M. Sarkar. Lite VLA: Efficient Vision-Language-Action Control on CPU-Bound Edge Robots. arXiv:2511.05642, 2025. [16] J. Chen, J. Wang, L. Chen, C. Cai, and J. Lu. NanoVLA: Routing Decoupled Vision-Language Understanding for Nano-sized Generalist Robotic Policies. arXiv:2510.25122, 2025. [17] T. J ¨ulg, K. Gamal, N. Nilavadi, others, and W. Burgard. VLAgents: A Policy Server for Efficient VLA Inference. arXiv:2601.11250, 2026. [18] X. Li, H. Tang, X. Ding, W. Wang, T. Cao, and Y. Liu. OxyGen: Unified KV Cache Management for VLA Inference under Multi-Task Parallelism. arXiv:2603.14371, 2026. [19] FastCrest. Reflex: Deployment Infrastructure for Vision-Language-Action Models. https: //fastcrest.com , 2026. Source-available product; PyTorch-parity deployment of 
+
+π0/π0.5/SmolVLA/GR00T to Jetson Orin. [20] M. Vishwanathan, S. Subramanian, and A. Raghunathan. Characterizing VLA Models: Identi-fying the Action Generation Bottleneck for Edge AI Architectures. arXiv:2603.02271, 2026. [21] K. Zhou, Q. Chen, D. Peng, et al. Characterizing Vision-Language-Action Models across XPUs: Constraints and Acceleration for On-Robot Deployment. arXiv:2604.24447, 2026. [22] Y. Dai, H. Gu, T. Wang, et al. ActionFlow: A Pipelined Action Acceleration for Vision Language Models on Edge. arXiv:2512.20276, 2025. [23] H. Wang, J. Xu, J. Pan, Y. Zhou, et al. SpecPrune-VLA: Accelerating Vision-Language-Action Models via Action-Aware Self-Speculative Pruning. arXiv:2509.05614, 2025. [24] M. J. Kim et al. Fine-Tuning Vision-Language-Action Models: Optimizing Speed and Success. 
+
+arXiv preprint arXiv:2502.19645 , 2025. [25] MLC team. MLC-LLM: Universal LLM Deployment Engine with ML Compilation. https: //llm.mlc.ai , 2024. [26] iMatix. ZeroMQ: An Open-Source Universal Messaging Library. https://zeromq.org ,2007. [27] Google. Protocol Buffers. https://protobuf.dev , 2008. [28] B. Liu et al. LIBERO: Benchmarking Knowledge Transfer for Lifelong Robot Learning. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2023. 10 [29] X. Li et al. Evaluating Real-World Robot Manipulation Policies in Simulation. arXiv preprint arXiv:2405.05941 , 2024. SimplerEnv. [30] X. Zhou, Y. Xu, G. Tie, et al. LIBERO-PRO: Towards Robust and Fair Evaluation of Vision-Language-Action Models Beyond Memorization. arXiv:2510.03827, 2025. [31] S. Fei, S. Wang, J. Shi, others, and X. Qiu. LIBERO-Plus: In-depth Robustness Analysis of Vision-Language-Action Models. arXiv:2510.13626, 2025. [32] S. Williams, A. Waterman, and D. Patterson. Roofline: An Insightful Visual Performance Model for Multicore Architectures. Communications of the ACM , 52(4):65–76, 2009. doi: 10.1145/1498765.1498785. [33] Microsoft. bitnet.cpp: Official Inference Framework for 1-bit LLMs. https://github.com /microsoft/BitNet , 2024. [34] J. Wang, H. Zhou, T. Song, S. Cao, others, and F. Wei. Bitnet.cpp: Efficient Edge Inference for Ternary LLMs. In Annual Meeting of the Association for Computational Linguistics (ACL) ,2025. arXiv:2502.11880. [35] L. Wang, L. Ma, S. Cao, Q. Zhang, J. Xue, et al. Ladder: Enabling Efficient Low-Precision Deep Learning Computing through Hardware-aware Tensor Transformation. In USENIX Symposium on Operating Systems Design and Implementation (OSDI) , 2024. [36] Microsoft. BitBLAS: A Library to Support Mixed-Precision Matrix Multiplications for Quan-tized LLM Deployment. https://github.com/microsoft/BitBLAS , 2024. [37] E. Frantar, R. L. Castro, J. Chen, T. Hoefler, and D. Alistarh. MARLIN: Mixed-Precision Auto-Regressive Parallel Inference on Large Language Models. In ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming (PPoPP) , 2025. arXiv:2408.11743. [38] J. Yuan, H. Li, X. Ding, others, and Z. Liu. Give Me FP32 or Give Me Death? Challenges and Solutions for Reproducible Reasoning. arXiv:2506.09501, 2025. [39] P. Qi, Z. Liu, X. Zhou, others, and M. Lin. Defeating the Training-Inference Mismatch via FP16. arXiv:2510.26788, 2025. [40] T. Z. Zhao, V. Kumar, S. Levine, and C. Finn. Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware. In Robotics: Science and Systems (RSS) , 2023. ACT/ALOHA; arXiv:2304.13705. [41] Y. Liu, J. I. Hamid, A. Xie, Y. Lee, M. Du, and C. Finn. Bidirectional Decoding: Improving Action Chunking via Guided Test-Time Sampling. In International Conference on Learning Representations (ICLR) , 2025. arXiv:2408.17355. [42] Y. Lu, Z. Liu, X. Fan, Z. Yang, J. Hou, J. Li, K. Ding, and H. Zhao. FASTER: Rethinking Real-Time Flow VLAs. arXiv preprint arXiv:2603.19199 , 2026. [43] K. Black, M. Y. Galliker, and S. Levine. Real-Time Execution of Action Chunking Flow Policies. arXiv preprint arXiv:2506.07339 , 2025. [44] K. Sendai, M. Alvarez, T. Matsushima, Y. Matsuo, and Y. Iwasawa. Leave No Observation Behind: Real-time Correction for VLA Action Chunks. arXiv:2509.23224, 2025. 11 A From Architecture to Implementation 
+
+A.1 The served architectures 
+
+Table 5 summarizes the seven architectures vla.cpp serves. They span four vision-encoder and six language-model architectures across the seven models, yet differ in the action head along exactly the two-form split above: six iterative heads, one single-pass head. BitVLA’s single-pass regression head has no solver loop. The GR00T N1.5 and N1.6 vision backbones are the SigLIP2-400M encoders inside the Eagle-2.5 and Eagle3-VL VLM, respectively. GR00T-N1.7 uses the native ViT of the Cosmos-Reason2. Table 5: The seven served architectures. FM = flow-matching; AltVL = AlternateVL. T is the number of solver steps the iterative action head integrates per action chunk. The single-pass BitVLA head has no solver loop.                                         
+
+> Model Vision backbone Language backbone Action head Params T
+> SmolVLA SigLIP-So400m SmolLM2-360M FM cross-attn expert 450M 10 Evo-1 InternViT-300M Qwen2.5-0.5B cross-attn DiT 770M 32 BitVLA BitSigLIP-L BitNet-2B MLP regression 2.4B -
+> π0SigLIP-So400m Gemma-2B FM joint-attn expert 3B 10 GR00T-N1.5 SigLIP2-400M Qwen3-1.7B AltVL DiT +self-attn 3B 4GR00T-N1.6 SigLIP2-400M Qwen3-1.7B AltVL DiT 3B 4GR00T-N1.7 Qwen3-VL ViT Qwen3-VL AltVL DiT +self-attn 3B 4
+
+A.2 Implementation of the Prefix Extension 
+
+The runtime targets the two-stage structure of Section 3.1: a vision-language backbone encodes a cached multimodal prefix, and a separate action head consumes it to produce an action chunk. The prefix is exposed, masked, and cached inside the ggml graph. 1. Exposing full hidden states. A text runtime returns only logits or a pooled embedding. We tap the final-layer hidden-state tensor of the language model before the output projection and route the full [tokens × d] sequence to the action head as the cross-attention source. 2. Bidirectional prefix mask. The prefix is encoded with a bidirectional attention mask rather than the causal mask used for decoding, so images, instruction, and state attend freely. We construct the mask at graph-build time from the segment layout of each request. 3. Cross-attention cache lifecycle. The prefix keys and values are computed once per ob-servation and reused across all solver steps. We allocate a dedicated cross-attention cache, distinct from the language-model self-attention KV cache, that persists for the lifetime of one denoising integration and is released when the action chunk is returned. The action head comes in two forms, both served behind the same prefix interface. Most families use an iterative head that cross-attends to the prefix and integrates a chunk over several solver steps: the flow-matching experts of π0 and SmolVLA, the cross-attention flow head of Evo-1, and the diffusion-transformer head of the GR00T series. BitVLA uses the other form, a single-pass regression head that emits the chunk in one forward pass. The cache lifecycle thus amortizes prefix reuse across solver steps for iterative heads and degenerates to a single read for the single-pass head, with no change to the prefix path. This is why BitVLA recurs throughout the evaluation: its contribution is the first end-to-end ternary stack in a ggml -class engine and the custom tensor-core ternary GEMM of Section 4.5, exercising the footprint and kernel axes rather than the iterative-head axis of the other six. 12 B Per-Task Agreement Across LIBERO Suites 
+
+Table 6 reports success rate with 95% Wilson confidence intervals on the libero spatial ,
+
+libero goal , and libero 10 suites alongside libero object , for the architecture-wise experi-ments. Consistent with the reference-matching statement of Section 4.2, the relevant quantity is the gap to the reference, not the absolute rate. Saturated suites bound run-to-run variance and make a one-episode gap meaningful. On all but one suite the runtime and reference confidence intervals overlap, so the two are statistically indistinguishable. The single exception is GR00T-N1.7 on Object task, where both policies are near ceiling (runtime 97 .0% , reference 99 .8% ) and the intervals are narrow enough that a residual 2.8-point gap separates them. The gap is small relative to the reference’s own run-to-run spread on the harder suites and does not appear on Spatial, Goal, or Long, so we read it as a near-saturation difference of a few episodes rather than a systematic fidelity loss. Table 6: Experimental results across the four LIBERO suites (SR in % with 95% Wilson intervals in brackets). vla.cpp is our runtime and ref is the reference checkpoint reproduced under consistent configuration. 
+
+BitVLA GR00T-N1.7 Suite vla.cpp ref vla.cpp ref Spatial 94.5 [90.4, 96.9] 93.6 [91.1, 95.4] 96.0 [92.3, 98.0] 97.3 [95.7, 98.4] 
+
+Object 100.0 [98.1, 100.0] 99.6 [98.6, 99.9] 97.0 [93.6, 98.6] 99.8 [99.1, 100.0] 
+
+Goal 92.5 [88.0, 95.4] 91.6 [88.8, 93.7] 97.5 [94.3, 98.9] 98.0 [96.5, 98.9] 
+
+Long 83.5 [77.7, 88.0] 85.8 [82.5, 88.6] 89.0 [83.9, 92.6] 91.7 [89.2, 93.6] 
+
+## C Optimized and Cross-Stack Baselines 
+
+Section 4.3 compares vla.cpp against the released eager-mode PyTorch reference. Table 7 adds (i) additional architectures and (ii) a graph-captured PyTorch configuration ( torch.compile with a static cache), isolating the share of the speedup attributable to the runtime rather than to eager-mode kernel dispatch. This configuration is reported only where the full forward path lowers into a compiled region; for the architectures whose backbone cannot be captured (discussed at the end of this section) the entry is left empty. We were unable to build an end-to-end engine for the iterative cross-attention action head with the single-vendor compiler stacks on the Orin parts. The capability matrix in the Table 1 records why each stack does not provide an apples-to-apples baseline for this inference pattern. Table 7: Per-step latency (ms): eager PyTorch, graph-captured PyTorch ( torch.compile with a static cache), and vla.cpp . The RTX 5070 rows are the median over 100 timed steps; the GR00T-N1.6 row is the per-step latency of the on-robot ALOHA run (per-chunk inference over an eight-step chunk; Table 4). A dash ( −) marks an architecture for which no fully graph-captured configuration is available. 
+
+Model Device PyTorch (eager) PyTorch (graph-captured) vla.cpp 
+
+SmolVLA RTX 5070 175.99 76.26 74.11 
+
+GR00T-N1.7 RTX 5070 101.67 - 101.38 
+
+GR00T-N1.6 AGX Orin 77.5 - 58.8 
+
+The three architectures fall into two regimes: the two compact backbones where the runtime delivers a clear compute-only speedup, and the large backbone where it matches eager mode. The forward-computation latencies are reported at the server side, excluding the small ZMQ transport overhead that the deployed runtime additionally incurs. For SmolVLA the runtime delivers a 2.4× compute-only speedup over eager PyTorch and edges out the graph-captured configuration ( 74 .1 vs 76 .3 ms). This confirms that most of the gain is structural 13 rather than an artifact of eager kernel dispatch. GR00T-N1.7 is the more demanding case and matches eager mode’s result: vla.cpp lands at 101 .4 ms, statistically level with eager PyTorch ( 101 .7 ms). On the embedded AGX Orin, the GR00T-N1.6 row reports the per-step latency of the on-robot ALOHA run. In this case, vla.cpp reaches 58 .8 ms against 77 .5 ms for eager PyTorch ( 470 ms vs 620 ms per eight-step chunk), the gap that drives the closed-loop success difference analyzed in Table 4. For GR00T-N1.7 the graph-captured baseline is left empty for a structural reason rather than because of insufficient tuning. Its Qwen3-VL backbone routes self-attention through an external FlashAtten-tion CUDA extension rather than through native, traceable ATen operators. Two properties of that path defeat both capture mechanisms. First, the kernel is opaque to torch.compile : TorchDynamo cannot trace into the external operator and inserts a graph break at its boundary, so the backbone never lowers into a single compiled region and falls back to eager dispatch. Second, the variable-length attention path computes its cumulative-sequence-length metadata ( cu seqlens ) on the host and launches kernels over data-dependent, dynamic shapes with host-to-device synchronization. These operations are not permitted inside a CUDA-graph capture region, which requires fully static shapes and no host synchronization. Only the action head satisfies these constraints, as it consists of dense, static-shape attention and GEMMs over a fixed horizon and four denoiser steps. Capturing it in isolation, however, leaves the dominant backbone in eager mode and does not yield a meaningfully different end-to-end latency. Both stacks are therefore bottlenecked by the same large backbone, and the runtime’s broader advantage for this architecture remains its deployment footprint, portability across the Orin tiers, and the ternary and flow-expert paths it uniquely supports. 
+
+## D Per-Component Roofline Breakdown 
+
+Table 8 decomposes the single-request forward path of π0, a representative large-backbone deploy-ment, into two phases: the compute-bound prefix, which combines the vision encoder and the language-model prefill, and the memory-bound action expert. Both stages of the prefix are dense many-token passes with high weight reuse, which places them in the compute-bound regime. For each phase we report the measured latency share, the operational intensity, and the regime relative to the device balance point. This makes explicit the two-phase structure discussed in Section 4.5. We instrument three architectures that span the backbone-size range, SmolVLA, GR00T-N1.6, and π0,and report their per-phase split in Table 9. The prefix phase accounts for the majority of the forward across all three models. It does so decisively for the large-backbone π0 (∼75% ), and by a narrower margin for the compact SmolVLA and GR00T-N1.6 ( ∼52% each). For the two compact models the memory-bound action expert grows to a near-equal share ( ∼48% ), because its cost rises with the solver-step count and, for GR00T-N1.6, with a 32-layer cross-attention DiT (Table 9). Because the device balance point (the ridge of the roofline) differs across hardware, both the per-phase latency split and, near the balance point, the regime assignment can shift between tiers. However, the operational intensity of each phase is a property of the computation itself and is device-independent. It is this quantity that places the dense prefix far above and the action expert far below the balance point on the devices we measure. Table 8: Per-phase latency share and operational intensity (FLOPs/byte) for π0 (PaliGemma-3B backbone + flow action expert, 10 solver steps), a representative large-backbone deployment, on the RTX 5070. The compute-bound prefix dominates the forward, while the memory-bound action expert’s share grows linearly with the solver-step count ( ≈ 5.4 ms/step measured).               
+
+> Phase Latency share (%) Op. intensity (FLOPs/B) Regime Prefix (vision +LM) 75 ∼256 -530 compute-bound Action expert 25 ∼50 memory-bound Total forward path 100 -prefix-dominated
+
+14 Table 9 makes the model-dependence concrete. For π0 the prefill and the per-step denoise are separated by varying T and linear-fitting the fused inference graph ( inference (T ) = prefill + T ·
+
+per-step ). For SmolVLA the runtime reports the two phases directly. The compute-bound prefix is the larger phase for every model. It dominates decisively for the large-backbone π0 and for the single-pass BitVLA. For the compact SmolVLA (ten solver steps) and GR00T-N1.6, the margin is narrow, and the memory-bound action expert approaches an equal share. GR00T-N1.6 reaches this near-equal split even at only four solver steps because of its heavy 32 -layer cross-attention DiT. Both the shares and the regime assignment are device-dependent near the balance point (Sec. 4.5); each phase’s operational intensity is not. Table 9: Per-phase latency share (% of the forward compute) across four architectures, measured on the RTX 5070 (median over timed iterations, two camera views). T is the number of solver steps the iterative action head integrates per chunk (Table 5); the single-pass BitVLA head is marked −. The prefix phase combines the vision encoder and the language-model prefill.                          
+
+> Model Language backbone Size TPrefix Action expert SmolVLA SmolLM2-360M 450M 10 52 48 GR00T-N1.6 Qwen3-1.7B 3B 452 48
+> π0Gemma-2B 3B 10 75 25 BitVLA BitNet-2B 2.4B -99.5 0.5
+
+BitVLA is the extreme of this decomposition. As mentioned in Appendix A, its single-pass action head has no solver loop. The prefix phase, formed by its one-shot 30 -layer BitNet prefill together with the vision encoder, is therefore ∼99 .5% of the forward, and the action head ∼0.5% (RTX 5070, measured). This is the cleanest instance of the prefix-compute-bound regime: nearly the entire forward is the high-arithmetic-intensity prefix that the kernel optimization targets. 
+
+## E Reduced-Precision Ablation 
+
+This appendix expands the reduced-precision finding of Section 4.6. The vision encoder selects a row of a position-embedding table using an index computed from the patch grid, and the rounding of this index differs between 32-bit and 16-bit floating point: a value just below one rounds down in single precision but up in half precision. For SmolVLA, the model is deployed in half precision while the position index is still computed in single precision. This mismatch selects a different embedding row for almost every patch, which shifts the encoded prefix. The shift is large enough to displace the predicted action chunk by up to approximately 1.97 in the policy’s denormalized action units (Table 10). These units are the 7-DoF libero object command, a delta end-effector pose plus a gripper signal recovered by the policy’s mean/std unnormalization, and they are dimensionless rather than metric. With per-degree-of-freedom action standard deviations of 0.34 -0.44 (translation), 
+
+0.04 -0.08 (rotation), and ≈1.0 (gripper), a displacement of 1.97 is a near-full-scale ( ∼2σ) error concentrated on the gripper channel. The command saturates to the opposite extreme rather than drifting, which is why the grasp fails outright. This displacement is the difference between grasping the target object and reaching past it: the libero object task never completed, yet no component of the pipeline reported an error. Making the index precision-aware restored numerical agreement, dropping the position-embedding relative error from 0.32 to 0.003 and recovering the task. The mechanism of reduced-precision collapse and its downstream behavioral effects are themselves documented for language and vision encoders [ 38 , 39 ]. Our contribution is to quantify it in robot action space and to gate against it. To separate a property of reduced precision in general from a property of the specific operation, Table 11 contrasts SmolVLA with GR00T-N1.6. GR00T-N1.6’s vision encoder carries an analogous position-embedding step that is continuous rather than discrete. When its input resolution differs from the native grid, it resizes the position-embedding table by bilinear interpolation instead of selecting a row by a computed index. For each model we report libero object success at the mismatched 15 versus precision-aware configuration, together with the growth of the action-chunk displacement with solver-step count. Table 10: Effect of the SmolVLA vision-encoder position-index precision on the encoded prefix and on libero object task completion. A single rounding difference, invisible to an error-free run, moves the action chunk far enough to miss the object.             
+
+> Position-index precision pos.-embed rel. err. action chunk max |∆|task completes Mismatched (half model, single index) 0.32 1.97 no Precision-aware (matched) 0.003 <10 −2yes
+
+Table 11: Precision-causality ablation on libero object (10 episodes/configuration, task 0). The catastrophic failure is specific to the discrete position-index selection: SmolVLA’s success collapses and its action displacement compounds with solver steps, whereas GR00T-N1.6’s continuous interpo-lation perturbs the position table by only ∼0.1% and is behaviorally inert.                    
+
+> Model Vision position op SR (mismatched) SR (aware) action max |∆|vs. steps SmolVLA discrete index 20.0 90.0 0.26 →1.05 (grows) GR00T-N1.6 continuous interp. 100.0 100.0 ∼0.003 (flat)
+
+The comparison localizes the failure to the kind of operation, not to reduced precision as such. SmolVLA’s position index is a discrete table lookup, so a single rounding difference selects a wrong row. This is a discontinuous jump in the encoded prefix that the flow-matching solver then amplifies: the mismatched-versus-aware action displacement grows from 0.26 at one Euler step to 1.05 at eight, while task success falls from 90% to 20% . This growth is not solver noise. Across the same range of solver steps, the precision-aware policy’s own discretization error decreases toward its refined solution, so the two configurations converge to two distinct fixed points. The perturbation is therefore a systematic bias that the integrator settles into, rather than a transient. GR00T-N1.6’s bilinear table resize is by contrast a continuous operation. Evaluating it in half versus single precision moves the position table by only ∼0.1% relative, an effect further attenuated by the bf16-resident weights. It leaves the action chunk unchanged across solver steps and does not flip a single episode ( 100% in both configurations). Catastrophic precision sensitivity therefore requires an operation that rounds across a discrete boundary, whereas continuous operations on the same encoded quantity degrade gracefully. The distinction is directly actionable for a runtime: index, argmax , and bucketize selections must be made precision-aware and gated, whereas the surrounding continuous algebra tolerates reduced precision. 
+
+## F SimplerEnv (WidowX) Results 
+
+As a second simulator and embodiment, we evaluate GR00T-N1.6 on the WidowX (bridge) tasks of SimplerEnv at a 252-pixel vision resolution. GR00T-N1.6 reaches 80% on the “put carrot on plate” task and 70% on the “put spoon on towel” task. The two more complex tasks, “stack the green block on the yellow block” and “put eggplant in the yellow basket”, yield lower success rates. This pattern matches the reference policy’s own difficulty profile, consistent with the parity claim of Section 4.2. 
+
+## G Replan Interval and the Latency-Staleness Trade-off 
+
+The closed-loop argument of Section 4.7 rests on a trade-off between inference cost and observation freshness, set by how many steps of a predicted action chunk are executed before the policy re-plans. We make this trade-off explicit by varying the replan interval S, the number of executed steps per inference call, for SmolVLA on the libero object suite, deployed on the Jetson Orin Nano. All other factors are held fixed: a single seed, an identical observation pipeline, fp16 weights with precision-aware index gating, and 50 episodes per setting. Small S re-plans often and acts on fresh 16 1 2 4 8 16 32 50    
+
+> Replan interval S(executed steps per inference call)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Task success (%)
+> Task success Control rate
+> stable plateau
+> open-loop
+> collapse
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 120
+> Control rate (Hz)
+
+Figure 3: Replan-interval study for SmolVLA on libero object (Jetson Orin Nano, 50 
+
+episodes/setting). Task success (left axis, 95% Wilson intervals) is stable across the shaded plateau and collapses once execution becomes fully open-loop at S=50 . The amortized control rate (right axis) rises almost linearly with S.Table 12: Replan-interval study for SmolVLA on libero object (Jetson Orin Nano, 50 
+
+episodes/setting). S is the executed steps per inference call; latency is per call, the control rate is amortized over the executed steps, and success carries a 95% Wilson interval. 
+
+S Lat. median (ms) Lat. p95 (ms) Control rate (Hz) Success (%) 1 358.4 370.5 2.8 82.0 [69.2, 90.2] 
+
+2 352.7 363.4 5.7 86.0 [73.8, 93.0] 
+
+4 356.6 383.2 11.2 94.0 [83.8, 97.9] 
+
+8 391.7 429.9 20.4 88.0 [76.2, 94.4] 
+
+16 447.0 463.3 35.8 98.0 [89.5, 99.6] 
+
+32 456.7 466.8 70.1 80.0 [67.0, 88.8] 
+
+50 457.0 467.9 109.4 38.0 [25.9, 51.8] 
+
+observations at high inference cost; large S executes the chunk open-loop and acts on increasingly stale observations. Table 12 reports the result. The effective control rate rises almost linearly with S, from 2.8 Hz at 
+
+S=1 to 109 Hz at S=50 , because each inference call amortizes over more executed steps while its own latency stays within a narrow band ( 353 -457 ms). Per-call latency is roughly flat for small S
+
+and rises by about a quarter for the longest intervals, consistent with longer uninterrupted execution between cache refreshes. Task success is statistically stable across a broad plateau of intervals from 
+
+S=1 to S=32 , where the per-setting confidence intervals all overlap, and then collapses at S=50 to 
+
+38% ([25 .9, 51 .8] ), far below every other setting. The collapse coincides with the point where the policy executes its entire chunk without a single intermediate observation, confirming that the failure is driven by observation staleness rather than by inference cost. Figure 3 plots the two axes together and shows the plateau and the open-loop collapse directly. Two consequences follow for deployment. First, a wide range of replan intervals is safe, so a runtime can trade inference frequency for throughput over the plateau without sacrificing task success, which is the headroom the asynchronous execution of Section 4.7 exploits. Second, fully open-loop execution of a long chunk is not safe, which is the same mechanism behind the lower accuracy of the long-horizon π0 configuration in Table 2: a long action chunk consumed without re-planning drifts from the observation it was conditioned on. The practical guidance is to replan within the plateau rather than at the chunk boundary. 17

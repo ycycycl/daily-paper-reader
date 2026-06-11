@@ -1,0 +1,959 @@
+Title: Coarse-to-Fine Compositional Diffusion for Long-Horizon Planning
+
+URL Source: https://arxiv.org/pdf/2606.00837v1
+
+Published Time: Tue, 02 Jun 2026 01:13:15 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Coarse-to-Fine Compositional Diffusion for Long-Horizon Planning 
+
+Byoungwoo Park 1,2 Utkarsh A. Mishra 2 Jaemoo Choi 2 Juho Lee 1 Yongxin Chen 21KAIST 2Georgia Institute of Technology 
+
+https://CoFi-diffusion.github.io/ 
+
+## Abstract 
+
+Diffusion models provide strong priors for generating structured data, but many tasks require outputs beyond the scale on which these models are typically trained. Compositional generation addresses this by composing overlapping local plans from a pretrained short-horizon prior into a long-horizon output. However, stan-dard composition primarily enforces agreement between neighboring local plans, yielding local consistency without directly specifying the global structure of the full composition. As a result, locally compatible plans may still form an im-plausible route, task sequence, or temporal evolution. Existing methods improve global coherence by repeatedly propagating local consistency signals or by adding inference-time optimization, but these procedures become expensive as the number or dimensionality of local plans increases. We propose Coarse-to-Fine Composi-tional Diffusion (CoFi), an inference-time sampler that separates global structure formation from local detail refinement. CoFi first aligns local denoised estimates around a shared coarse structure, producing a global scaffold that captures the long-range task-level arrangement. It then diffuses this scaffold to an intermediate noise level and denoises it with the same pretrained local prior, restoring local fine structure while preserving the scaffold-induced global coherence. Across long-horizon robotic planning, panoramic image generation, and long video generation, CoFi not only improves both global coherence and local sample quality over prior compositional baselines, but also requires 2–8× fewer denoiser evaluations. 
+
+## 1 Introduction Global Plan 
+
+> Local Plan
+
+Figure 1: The global plan Y is obtained by composing over-lapping local plans Xi.Diffusion models provide strong priors for generating structured data (Ho et al., 2020; Song et al., 2021), but many tasks require outputs beyond the scale on which these models are typically trained. For example, a robot may need to reach a distant goal by chaining short feasible motions into a long plan (Luo et al., 2026). Directly training a model for such long-horizon outputs is often impractical, since long-horizon data are scarce and the modeling cost grows quickly with sequence length or spatial extent (Du and Kaelbling, 2024). Compositional generation offers a practical alternative. In-stead of training a long-horizon model, it generates overlapping local plans from a pretrained short-horizon prior and composes them into a single long-horizon plan (Zhang et al., 2023; Mishra et al., 2023) as shown in Figure 1. The same pretrained local prior can therefore be reused beyond its original generation scale, and the local plans can be generated in parallel. A typical approach to composition is to encourage neighboring local plans to agree at their shared overlaps during the reverse diffusion process (Zhang et al., 2026). This local coupling reduces boundary mismatch and produces smooth transitions between adjacent local plans, which we refer to       
+
+> Preprint.
+> arXiv:2606.00837v1 [cs.RO] 30 May 2026 A white vintage SUV with a black roof rack speeds up a steep dirt road on a mountain slope ... viewed from behind ... dust ki cks up from the tires ...
+> sunlight casts a warm glow ... tall redwood and pine trees line the road ... rugged hills, distant mountains, and a clear blu e s ky with wispy clouds...
+> Start Goal Open (drawer )
+> Start
+> Goal
+> Move (cube )Close (window )
+> Start Goal Open (drawer )Place (cube )Close (drawer )
+
+Long video generation 
+
+Long -horizon planning   
+
+> Frame 68 Frame 136 Frame 273 Frame 214 Frame 1
+
+Figure 2: Scaling short-horizon priors by composition. A long structured global plan is built by composing overlapping local plans from a pretrained short-horizon prior. The goal is not only to enforce local consistency (e.g., smooth transitions between adjacent local plans), but also to preserve 
+
+global coherence (e.g., a plausible route, task sequence, or subject identity over the full horizon). We aim for a simple and effective inference-time sampler that satisfies both desired properties. as local consistency . However, local consistency does not guarantee global coherence : A composition can match every overlap and still lack a plausible task-level structure across the full horizon. For example, adjacent local plans may connect smoothly at their boundary yet follow incompatible routes that never reach the goal. In long videos, consecutive clips may align at their overlap while the subject’s identity gradually drifts over time. A compositional sampler must therefore satisfy a stronger requirement than boundary matching alone: adjacent local plans should remain mutually compatible, while their composition should induce a globally plausible long-horizon structure. Existing methods attempt to improve the global coherence by making the local consistency signal propagate more broadly across the local plans. Some methods repeat the overlap coupling multiple times within each denoising step, so that information can be passed from one segment to the next over longer distances (Mishra et al., 2026). Other methods introduce inference-time optimization, often using a task-level objective or reward function, to directly adjust the local plans toward a more globally coherent composition (Lee et al., 2023; Kim et al., 2025). While both strategies can improve 
+
+global coherence , they become expensive as the number of the local plans or the dimensionality of each segment increases. This limitation motivates the following design question: 
+
+Can we design a simple and effective compositional diffusion sampler that ensures both local consistency and global coherence without expensive inner iterations or optimization? 
+
+In this paper, we propose a simpler solution: instead of repeatedly propagating local consistency signals through neighboring overlaps, we first align the local denoised estimates around a shared coarse structure . This stage exposes all local plans to a common global signal, promoting global coherence , but it can also suppress plan-specific fine details. We therefore treat the resulting coarse structure as a scaffold rather than as the final sample. To restore the suppressed local structure, we diffuse the scaffold forward to an intermediate noise level and denoise it again with the same pretrained local prior, analogous to (Meng et al., 2022). Intuitively, the first stage determines the task-level arrangement of the composition, while the second stage restores local fine structure. We call this procedure Coarse-to-Fine Compositional Diffusion (CoFi ), an inference-time composition sampler for long-horizon generation with pretrained short-horizon priors. This two-stage design directly constructs a global scaffold, while adding only a partial second denoising pass for refinement. We evaluate CoFi on long-horizon robotic planning, panoramic image generation, and long video generation. Across these domains, CoFi improves both global coherence and local sample quality over prior compositional baselines, while requiring 2–8× fewer denoiser evaluations than baseline. 22 Preliminaries 
+
+Compositional generation We consider the problem of constructing a long-horizon structured 
+
+global plan Y ∈ Rd from a collection of short-horizon local plans X ∈ Rm. Direct samples from the full long-horizon distribution p(Y ) are scarce, whereas short local behaviors are available and can be modeled reliably. We therefore assume access to a pretrained generative prior over local plans: 
+
+Xi = [ x2i−1, x 2i, x 2i+1 ], i = 1 , . . . , N, (1) where N is the number of plans. Here, the long-horizon structure arises through shared boundary factors between consecutive plans. Let L and R denote linear selectors that extract the left and right 
+
+boundary factors of Xi, respectively: 
+
+L(Xi) = x2i−1, R(Xi) = x2i+1 , ∀i = 1 , . . . , N − 1 (2) A valid composition requires neighboring local plans to agree on their shared overlapping boundary, 
+
+L(Xi+1 ) = R(Xi) = x2i+1 , ∀i = 1 , . . . , N − 1 (3) This induces a chain over sequence of the unique factors , resulting the long-horizon global plan: 
+
+Y = Compose (X1, . . . , X N ) = [ x1, x 2, . . . , x 2N +1 ]. (4) More generally, Compose (·) : Rm×N → Rd merges the overlapping local plans into a single global objective, either by using agreed boundary factors (Luo et al., 2026) or by averaging overlapped regions (Zhang et al., 2023; Mishra et al., 2023). This merge step handles local consistency , but it does not determine the global structure of the composed plan. Even when every adjacent pair agrees at the overlap, the full plan Y can still drift over long horizons in style, identity, or task-level structure. We refer to this nonlocal requirement as global coherence .
+
+Local diffusion prior In this paper, we focus on a diffusion prior for the local plan. Let X0 ∈ Rm
+
+denote a local plan drawn from pdata . Following (Ho et al., 2020), the forward process is given by 
+
+q(Xt | X0) = N  Xt; √¯αtX0, (1 − ¯αt)I , (5) where ¯αt := Qts=1 (1 − βs), with βs ∈ (0 , 1) . In other words, Xt = √¯αtX0 + √1 − ¯αtϵ so that Xt
+
+can be viewed as progressively interpolating between the clean local plan X0 and Gaussian noise 
+
+ϵ ∼ N (0 , I ). This places diffusion models within the broader view of stochastic interpolants and flow-based generative dynamics (Albergo et al., 2025; Lipman et al., 2023). The reverse process is approximated with a neural network ϵθ (Xt, t ) ≈ − √1 − ¯αt∇ log pt(Xt) and sampling proceeds through a reverse transition parameterized by DDIM framework (Song et al., 2021): 
+
+Xt−1 = DDIM θ ( ˆX0|t, t ) := √¯αt−1 ˆX0|t +
+
+q
+
+1 − ¯αt−1 − σ2 
+
+> t
+
+ϵθ (Xt, t ) + σtz, z ∼ N (0 , I m), (6) 
+
+ˆX0|t := 1√ ¯αt (Xt + (1 − ¯αt)∇ log pt(Xt)) ≈ 1√ ¯αt
+
+ Xt − √1 − ¯αtϵθ (Xt, t ) (7) where σt = η
+
+q 1− ¯αt−1 
+
+> 1−¯αt
+
+q
+
+1 − ¯αt 
+
+> ¯αt−1
+
+. This formulation is useful for compositional generation, since the reverse process admits direct inference-time modification through additional guidance terms. It is worth noting that, if we apply the reverse transition in (6) independently to each local plan, the induced model factorizes as QNi=1 pt(Xit ), and ignores that the local plans should be different views of the same global plan Yt. The resulting samples can be plausible as individual local plans, but still disagree at their overlaps or fail to form a coherent long-horizon object after composition. 
+
+Guided Compositional Diffusion The ideal reverse process would sample from a locally consistent and yet globally coherent distribution over global plan Yt, rather than from independent local priors 
+
+QNi=1 pt(Xit ). In principle, one would like to guide the reverse process with an objective that captures both desired properties. A natural way to couple the local reverse processes is to tilt by a reward: 
+
+p(Yt) ∝ ert(Yt)QNi=1 p(Xit ), (8) where composition reward rt penalizes invalid compositions. Ideally, this reward would capture both 
+
+local consistency among neighboring local plans Xit and global coherence of the composed global plan Yt. However, designing such a reward is difficult because these requirements are qualitatively different: local consistency is pairwise and overlap-based, whereas global coherence is nonlocal and depends on the structure of the entire composition ( i.e., plausible task-level plan). 3Global Plan  
+
+> Local Plan Guided Compositional Diffusion
+
+Figure 3: Local guidance reduces boundary mismatch but leaving the global coherence under-specified. This makes the direct design of a tractable (and differentiable) compositional reward rt for both desired properties nontrivial, especially in high-dimensional plan spaces. For this reason, existing guided compositional samplers usually replace rt with local surrogates rt(Yt) := PNi=1 ˆrt
+
+ Xit , X i+1 
+
+> t
+
+. For example, a composition technique (Zhang et al., 2026) imposes boundary agreement on the predicted clean plans ˆX0|t in (7). In our notation, this corresponds to an overlap reward: 
+
+ˆrt
+
+ Xit , X i+1 
+
+> t
+
+ = − R( ˆXi
+
+> 0|t
+
+) − L( ˆXi+1 0|t ) 2
+
+. (9) Additionally, the Bethe-style composition (Zhang et al., 2023; Mishra et al., 2023) can be viewed as another local surrogate, where the gradient of the surrogate reward ˆrt is approximated using the two adjacent score: 
+
+∇ˆrt
+
+ Xit , X i+1 
+
+> t
+
+ ≈ − 12
+
+∇ log pt
+
+ R(Xit )|Xit
+
+ + ∇ log pt
+
+ L(Xi+1  
+
+> t
+
+)|Xi+1 
+
+> t
+
+ , (10) These local surrogates provide a tractable guidance signal for the gradient of the global composition reward rt(Yt) in (8). In practice, the local reverse transition in (6) is guided by the surrogate reward: 
+
+Xit−1 = DDIM θ ( ˆXi
+
+> 0|t
+
+, t ) + σt∇ˆrt(Xit , X i+1  
+
+> t
+
+), (11) where DDIM (·, ·) denotes the unguided reverse transition in (6). This guidance is cheap and explicit, but it only communicates information through adjacent overlaps. It can reduce boundary mismatch, but it does not directly determine the coarse global structure of Yt.
+
+## 3 Coarse-to-Fine Compositional Diffusion 
+
+In this section, we introduce CoFi, a simple and effective inference-time diffusion framework for compositional generation with pretrained local priors. CoFi follows a coarse-to-fine design: it first constructs a coarse global scaffold that captures the long-range arrangement, and then refines this scaffold with the same pretrained local diffusion prior to recover fine local details .Most tractable guidance objectives (Mishra et al., 2023; Zhang et al., 2026) introduced in Section 2 act through local consistency as illustrated in Figure 3, with canonical choices such as the Bethe approximation in (10). They encourage neighboring local plans to agree, but they do not directly specify whether the full composition has a plausible task-level structure. A single local guidance step in (11) only couples adjacent overlaps, leaving distant local plans weakly coordinated. Recent methods address this limitation by repeating the local coupling inside the sampling process. For example, CDGS (Mishra et al., 2026) improves global coherence through inner iterations. These steps can be viewed as a form of iterative message passing: information first moves between neighboring local plans, and repeated updates gradually expand the effective communication range across the chain. This is effective, but the cost grows with the number of local plans and becomes especially large for high-dimensional compositions such as visual planning. In this paper, we aim to develop a simple procedure that remains computationally efficient while satisfying both local consistency and global coherence. To do so, we replace repeated local message passing with a shared scaffold over the local denoised estimates. This gives all local plans access to a common coarse signal, forming a global scaffold. Because the global arrangement has already been outlined, refinement only needs to restore local fine structure rather than propagate global constraints again. We therefore diffuse the scaffold forward to an intermediate noise level t⋆ ∈ { 1, 2, . . . , T } and denoise it again using the local guided step in (11). This diffusion refinement step follows the same principle as (Meng et al., 2022): keep the coarse structure, then let the diffusion prior restore details. 
+
+Coarse global plan construction. We first define the scaffold alignment update that produces the coarse global scaffold. For each denoising step t, the clean estimate for each local plan ˆXi 
+
+> 0|t
+
+may be individually plausible, yet still fail to induce a coherent global composition. We therefore seek a coarse estimate that retains the shared global structure while attenuating plan-specific variation. 4Algorithm 1 Coarse Scaffold Construction 
+
+Input: local denoiser ϵθ , local guidance reward ˆrt
+
+Initialize local plans X1 
+
+> T
+
+, . . . , X NT ∼ N (0 , I )
+
+for t = T, · · · , 1 do for i = 1 , · · · , N do in parallel 
+
+Compute Tweedie estimate ˆXi 
+
+> 0|t
+
+using (7) Estimate ¯Xi 
+
+> 0|t
+
+using (13) Update Xit−1 using guided step in (14) 
+
+end for end for 
+
+Compose coarse global plan Y c 
+
+> 0
+
+using (15). 
+
+Output: coarse global plan Y c
+
+> 0
+
+Algorithm 2 Structure-Preserving Refinement 
+
+Input: coarse global plan Y c 
+
+> 0
+
+, refinement timestep t⋆,local denoiser ϵθ , local guidance reward ˆrt
+
+Get noised scaffold Y r 
+
+> t⋆
+
+by noising Y c 
+
+> 0
+
+using (16) Let {Xi, r 
+
+> t⋆
+
+}Ni=1 be the local views induced by Y r
+
+> t⋆
+
+for t = t⋆, · · · , 1 do for i = 1 , · · · , N do in parallel 
+
+Compute Tweedie estimate ˆXi, r 
+
+> 0|t
+
+using (7) Update Xi, r 
+
+> t−1
+
+using the guided step in (11) 
+
+end for end for 
+
+Compose refined global plan Y r 
+
+> 0
+
+using (15). 
+
+Output: final global plan Y r
+
+> 0
+
+To do so, the coarse estimate should satisfy two competing requirements: for each local plan Xi, it should remain close to the denoised estimate ˆXi 
+
+> 0|t
+
+so that local plausibility is preserved, while at the same time admitting a decomposition into a shared global component and plan-specific residuals. To formalize this trade-off, we define a simplified scaffold alignment objective for each local plan: 
+
+min  
+
+> Z1,··· ,Z N
+> N
+
+X
+
+> i=1
+
+h
+
+∥Zi − ˆXi
+
+> 0|t
+
+∥2 + γt∥Zi − ¯Z∥2i
+
+, ¯Z := 1
+
+N
+
+PNi=1 Zi (12) where γt controls the trade-off between local fidelity and shared component. The first term preserves local plausibility, whereas the second promotes a shared global scaffold across local plans. Since (12) is a quadratic problem, its minimizer admits the closed-form solution below, which interpolates each local estimate toward the shared scaffold. Let Zi,⋆ := ¯Xi 
+
+> 0|t
+
+be the minimizer of (12). Then: 
+
+¯Xi 
+
+> 0|t
+
+= (1 − λt) ¯X0|t + λt ˆXi
+
+> 0|t
+
+, ¯X0|t := 1
+
+N
+
+PNi=1 ˆXi 
+
+> 0|t
+
+(13) where λt := 11+ γt ∈ [0 , 1] . If λt = 1 (i.e., γt = 0 in (12)), the scaffold term has no effect and 
+
+¯Xi 
+
+> 0|t
+
+= ˆXi
+
+> 0|t
+
+. If λt = 0 (i.e., γt → ∞ in (12)), all local estimates collapse to the shared scaffold 
+
+¯X0|t. In other words, each optimal coarse estimate ¯Xi 
+
+> 0|t
+
+is obtained by shrinking the local denoised estimate ˆXi 
+
+> 0|t
+
+toward the shared scaffold mean. The shared global component ¯X0|t is preserved, while the plan-specific residual ˆXi 
+
+> 0|t
+
+− ¯X0|t is attenuated by a factor of λt. We then replace the local denoised estimate ˆXi 
+
+> 0|t
+
+in (11) with scaffold alignment ¯Xi 
+
+> 0|t
+
+for global coherency: 
+
+Xit−1 = DDIM θ ( ¯Xi
+
+> 0|t
+
+, t )
+
+| {z }
+
+> global
+
++ σt∇ˆrt(Xit , X i+1  
+
+> t
+
+)
+
+| {z }
+
+> local
+
+, (14) As a result, the reverse process in (14) is biased toward a globally aligned but locally coarse scaffold. This is precisely the role of the coarse global plan: it suppresses incompatible local variation while preserving the long-range structure shared across local plans, leaving fine local detail to the subsequent refinement stage. Repeating this update from t = T to t = 0 gives a coarse-structured global plan: 
+
+Y c 
+
+> 0
+
+= Compose (X10 , . . . , X N 
+
+> 0
+
+). (15) Here, the superscript c denotes the coarse stage. The resulting coarse global plan Y c 
+
+> 0
+
+captures the global arrangement of the composition, but may lack fine local detail because the scaffold construction stage softens local fine details by the timestep-dependent factor λt.
+
+Structure-preserving diffusion refinement. Starting from the coarse global plan Y c 
+
+> 0
+
+, we re-inject noise at an intermediate timestep t⋆ and run a second reverse diffusion pass. The purpose of this stage is to recover locally plausible detail under the pretrained diffusion prior while preserving the global arrangement induced by the coarse scaffold. More concretely, the coarse global plan determines 
+
+where the global structure should lie, whereas the second reverse diffusion pass determines how the 5Table 1: Quantitative results on compositional planning. We report OGBench (Park et al., 2025) success rates over 100 evaluation episodes averaged across 5 seeds. Best results are highlighted. Env Size GCBC GCIVL GCIQL HIQL GSC CD CDGS CoFi 
+
+Pointmaze Stitch Medium 23 ±18 70 ±14 21 ±9 74 ±6 100 ±0 100 ±0 100 ±0 100 ±0
+
+Large 7±5 12 ±6 31 ±2 13 ±6 100 ±0 100 ±0 100 ±0 100 ±0
+
+Giant 0±0 0±0 0±0 0±0 29 ±3 68 ±3 82 ±4 96 ±2
+
+Antmaze Stitch Medium 45 ±11 44 ±6 29 ±6 94 ±1 96 ±2 97 ±2 97 ±1 97 ±2
+
+Large 3±3 18 ±2 7±2 67 ±5 66 ±2 86 ±2 88 ±2 88 ±2
+
+Giant 0±0 0±0 0±0 21 ±2 20 ±1 65 ±3 84 ±3 85 ±3
+
+Scene Play - 5±1 42 ±4 51 ±4 38 ±3 8±2 13 ±1 51 ±2 63 ±3
+
+final composition should appear at the local level. Formally, after the coarse stage produces the global plan Y c 
+
+> 0
+
+in (15), we diffuse it forward to an intermediate timestep t⋆ ∈ { 1, 2, . . . , T }:
+
+Y r 
+
+> t⋆
+
+= √¯αt⋆ Y c 
+
+> 0
+
++ √1 − ¯αt⋆ ε, ε ∼ N (0 , I d). (16) The forward noising step in (16) is applied to the coarse global scaffold Y c 
+
+> 0
+
+, rather than separately to each local plan Xi
+
+> 0
+
+. If the local plans were noised independently, each plan would receive its own perturbation, which could break the alignment produced by the scaffold construction stage in (14). Noising the global scaffold with a shared noise ε in (16) avoids this issue: the local plans are induced from the same prior Y r 
+
+> t⋆
+
+and start as compatible views of a shared global plan. It restores local fine structure (Meng et al., 2022) while keeping the reverse process anchored to the global plan in (15). After this structure-preserving noising step, we continue the reverse process locally. Let Xi, r 
+
+> t⋆
+
+denote the i-th local plan induced by the refined global plan Y r 
+
+> t⋆
+
+. Starting from t⋆, each local plan follows the guided composition in (11). We summarize the two-stage sampling procedure in Algorithms 1 & 2. 
+
+## 4 Experiments 
+
+We evaluate CoFi on three compositional generation domains: (1) long-horizon robotic planning, (2) panoramic image generation, and (3) long video generation. We adopt the experimental protocol of Mishra et al. (2026) and use the same pretrained diffusion models, datasets, and evaluation metrics. • Robotic planning. We evaluate on OGBench (Park et al., 2025), which includes stitch and play datasets for PointMaze , AntMaze , and Scene manipulation tasks. The stitch datasets contain short maze trajectories, while the play datasets contain unstructured interaction data. Neither directly solves the evaluation tasks, so successful planning requires composing short fragments into a longer plan. We report success rates over 100 episodes averaged across 5 seeds. For maze tasks, we follow Luo et al. (2026) and use distance-based replanning. • Panoramic images. We use Stable Diffusion 2.0 (Rombach et al., 2022) as the local image prior. Each panorama is generated by composing 9 overlapping 512 ×512 patches into a 512 ×4608 
+
+image with 50% overlap. We evaluate 14 prompts and report Intra-LPIPS (Zhang et al., 2018), Intra-Style loss (Gatys et al., 2016), and CLIP score (Radford et al., 2021). • Long videos. We use CogVideoX-2B (Yang et al., 2025) as the local video prior. The base model natively generates short clips of 50 frames, and we extend it to 273 frames at 720 p by composing 
+
+9 temporal chunks with 50% overlap. We evaluate 8 prompts using VBench (Huang et al., 2024), reporting subject consistency, temporal flickering, aesthetic quality, and prompt alignment. 
+
+Baselines. We compare with both non-compositional and compositional baselines. For robotic planning, we include goal-conditioned methods, GCBC (Lynch et al., 2020; Ghosh et al., 2021), GCIVL, GCIQL (Kostrikov et al., 2021), and HIQL (Park et al., 2023), as well as compositional methods, GSC (Mishra et al., 2023), CD (Luo et al., 2026), and CDGS (Mishra et al., 2026). For panoramic image generation, we compare with Multi-Diffusion (Bar-Tal et al., 2023) (the image-domain analogue of GSC), SyncDiffusion (Lee et al., 2023), and CDGS. For long video generation, we compare with Gen-L-Video (Wang et al., 2023) (the video-domain analogue of GSC), and CDGS. We also report CogVideoX-2B at its native short horizon of 50 frames as a video reference. 6last supper with cute corgis. 
+
+> CDGS CoFi  Sync -Diff
+
+Figure 5: Panoramic image generation. The coarse-to-fine procedure maintains a consistent global style across distant chunks. Baselines show abrupt changes or gradual style drift over the panorama. 
+
+Compositional long-horizon robotic planning. Table 1 reports success rates on OGBench (Park et al., 2025). The medium and large PointMaze settings are saturated by existing com-positional methods, so the harder Giant and Scene-Play tasks are more informative. On 
+
+PointMaze-Giant , we achieve 96% success, improving over CDGS by 14% , suggesting that the scaffold construction stage helps resolve long-range inconsistency in maze-like tra-jectory composition. On AntMaze-Giant , we obtain 85% , comparable to CDGS at 84% .  
+
+> Scaffold Renoise Refinement
+
+Figure 4: Robotic Planning. A coarse scaffold route is refined into a plausible task-level trajectory. Here, the strongest compositional baselines already find reasonable global routes, and the remaining failures likely come from inverse-dynamics tracking (Luo et al., 2026). On Scene-Play , we improve over CDGS from 51% to 63% , where the gain suggests that the coarse scaf-fold stage provides a more stable scaffold for highly multimodal play data. Non-compositional baselines degrade sharply in the harder long-horizon settings. For example, on 
+
+PointMaze-Giant , while compositional methods remain effective compared to non-compositional baselines obtain 0% success. Figure 4 shows a generated plan from CoFi on PointMaze-Giant .The scaffold construction stage captures the global route but may still produce wall-crossing artifacts. The subsequent refinement stages refine the plan into a globally aligned trajectory. Table 2: Quantitative results on panoramic image generation. We compose 9 overlapping 512 × 512 
+
+local patches into a 512 ×4608 panorama and evaluate patch consistency and text alignment on generated panorama. Best results are highlighted. 
+
+Style Semantic 
+
+Method LPIPS ↓ Style-L ↓ CLIP-S ↑
+
+GSC (Multi-Diff) 0.72 ±0.08 2.96 ±0.24 31.77 ±2.14 
+
+Sync-Diff 0.60 ±0.05 1.36 ±1.07 32.40 ±1.85 
+
+CDGS 0.65 ±0.05 1.71 ±1.03 32.67 ±1.92 
+
+CoFi (Ours) 0.48 ±0.08 0.72 ±0.54 33.18 ±1.84 
+
+Panoramic image generation. Table 2 and Figure 5 summarize the panorama generation results. We achieve the best scores across all three metrics among the compared meth-ods. In particular, relative to CDGS, our method reduces Intra-LPIPS from 0.65 to 
+
+0.48 and Intra-Style loss from 1.71 to 0.72 ,while also improving CLIP score from 32 .67 
+
+to 33 .18 . These gains indicate that the gen-erated patches remain more consistent in color, texture, and overall style across the full panorama, without sacrificing text-image alignment. Qualitatively, our method pro-duces panoramas with a more stable global style and fewer abrupt transitions across patch boundaries. Unlike SyncDiffusion, which relies on an additional perceptual optimization loop during sampling, our method achieves strong coherence through the same coarse-to-fine pro-cedure used in the planning experiments. This indicates that the proposed method improves global coherence while preserving prompt-relevant local details and semantic fidelity. 7Frame 68   
+
+> A cute happy panda in a small red jacket and tiny hat sits on a wooden stool in a serene bamboo forest, strumming a miniature ac oustic guitar and singing
+> ... nearby pandas watch and clap along ... sunlight filters through bamboo near a small stream and vibrant green foliage. Rea lis m, lifelike.
+> Frame 136 Frame 273 Frame 214
+> CDGS CoFi
+> Frame 1
+
+Figure 6: Long video generation. The coarse-to-fine procedure preserves subject appearance and scene structure over long temporal ranges. Baseline shows temporal drift along distant frames. Table 3: Quantitative results on long video generation. We compose 50 -frame short-horizon CogVideoX-2B videos into a 273 -frame long-horizon video and evaluate Vbench on generated long-horizon videos. The 50 -frame video serves as a reference. Best results are highlighted. 
+
+Temporal Frame Semantic 
+
+Method Subject ↑ Flickering ↑ Aesthetic ↑ Prompt ↑
+
+CogVideoX 50frames 95.91 97.36 63.10 25.51 CogVideoX 273frames 90.24 98.44 49.44 21.78 GSC (Gen-L-Video) 89.51 96.89 60.12 25.13 CDGS 91.67 97.16 58.90 26.13 
+
+CoFi (Ours) 94.11 97.27 62.36 26.86 
+
+Long video generation. Table 3 and Figure 6 report the long video generation results. We improve subject consistency from 91 .67 with CDGS to 94 .11 , approaching the native 50 -frame CogVideoX reference at 95 .91 . This is the key metric in this setting, since temporal composition often fails through subject drift over long horizons. We also improve aesthetic quality from 58 .90 with CDGS to 62 .36 , close to the native short-horizon reference at 63 .10 , and obtain the best prompt alignment among compositional baselines at 26 .86 . These results suggest that the refinement stage recovers local visual detail after the coarse global structure is fixed, rather than relying on expensive search throughout sampling. Temporal flickering is similar across compositional methods. Although the native 273 -frame CogVideoX extension obtains the highest flickering score, this metric does not fully capture long-range subject drift or semantic inconsistency. As shown in Figure 6, the coarse-to-fine procedure better preserves subject appearance and scene layout across the full video.      
+
+> Planning Image Video 680 1400
+> NFE
+> 40
+> 60
+> 80
+> 100
+> Success Rate (%)
+> GSC
+> CoFi
+> CDGS 2.1x
+> 765 5976
+> NFE
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> 0.75
+> Intra-LPIPS
+> GSC
+> CoFi
+> CDGS
+> 8x
+> 810 6516
+> NFE
+> 0.88
+> 0.90
+> 0.92
+> 0.94
+> 0.96
+> Subject
+> GSC
+> CoFi
+> CDGS
+> 8x
+
+Figure 7: NFE–performance Pareto comparison. We com-pare performance against the NFE across the three domains. CoFi improves CDGS with 2–8× fewer NFE , substantially reducing computational overhead while improving global coherence and local sample quality. 
+
+Inference cost. Figure 7 compares the number of function evaluations (NFE) across the three domains. GSC is the cheapest because it uses lo-cal guidance without resampling or search, but the global structure re-mains under-specified. CDGS adds in-ner iterations, population search, and pruning to improve global coherence, which makes the cost grow quickly as the number of local plans increases. This is especially costly for panorama and video generation, where many high-dimensional chunks must be coordinated. In contrast, CoFi separates global and local re-finement. The scaffold construction stage uses the same denoiser evaluations as GSC, and the refinement stage adds only t⋆ extra steps. The total cost is therefore T + t⋆, giving a small overhead over GSC while requiring 2–8× fewer function evaluations than CDGS. 8Global Scaffold  
+
+> Local Refinement
+> 31.16 32.41 32.85
+
+Figure 8: Effect of scaffold schedule. We compare strong scaffold alignment (left) with constant λt = 0 .8, (middle) the scheduled λt in Figure 9, and (right) no scaffold alignment with constant λt = 1 . The top row shows the coarse scaffold Y c 
+
+> 0
+
+, and the bottom row shows the refinement Y r 
+
+> 0
+
+. Numbers below the images report the CLIP score. Diffusion step t 
+
+> 0.8
+> 0.9
+> 1.0
+> t
+> t= 1
+> Linear decay
+> Cosine decay
+
+Figure 9: Smaller λt gives stronger scaffold alignment. We use stronger alignment at early diffusion steps to align local plans around a shared coarse mode, and gradually increase λt → 1.           
+
+> Planning Image Video 00.6 T0.8 TT
+> t
+> 90
+> 95
+> 100
+> Success Rate
+> 00.5 T0.7 TT
+> t
+> 0
+> 1
+> Intra-Style
+> 00.6 T0.8 TT
+> t
+> 0.89
+> 0.948
+> 0.953
+> Subject Cons.
+> 30
+> 35
+> CLIP
+> 0.55
+> 0.60
+> Aesthetic
+
+Figure 10: Effect of refinement depth t⋆. We vary t⋆ to measure the trade-off between global structure preservation and local detail recovery . Image metrics compare Intra-Style ( global ) with CLIP ( local ), while video metrics compare subject consistency ( global ) with frame-level aesthetic quality ( local ). The colored × denote generation from w/o scaffold alignment ( i.e., Y r 
+
+> t⋆=T
+
+∼ N (0 , I d)
+
+in (16)) and intermediate t⋆ ∈ [0 .5T, 0.8T ] values form a sweet spot across domains. 
+
+Ablation Study. We study the role of the scaffold alignment coefficient λt in (14). Smaller λt
+
+pulls local denoised estimates more strongly toward the shared scaffold, whereas λt = 1 leaves them unchanged. As shown in Figure 8, a fixed λt = 0 .8 over-smooths the scaffold, while λt = 1 removes scaffold construction and yields the lowest CLIP score of 31 .16 . We therefore use the scheduled λt
+
+shown in Figure 9, which applies stronger scaffold alignment at early denoising steps and gradually relaxes it. This schedule balances global coherence and local detail, producing a coherent coarse scaffold Y c 
+
+> 0
+
+whose refined output Y r 
+
+> 0
+
+achieves the highest CLIP score of 32 .85 .We next examine the refinement depth t⋆ in (16), which controls the strength of the scaffold constraint during the second stage. Smaller t⋆ preserves the global structure Y c 
+
+> 0
+
+but limits the the refinement stage to correct local artifacts. Larger t⋆ allows the local prior to modify local details more sub-stantially, but increases the risk that the sample deviates from the global scaffold Y c 
+
+> 0
+
+. As shown in Figure 10, both extremes are suboptimal. At t⋆ = 0 (i.e., w/o refinement in Algorithm 2), coarse-stage artifacts persist, showing degraded local quality (lower CLIP and aesthetic scores) despite strong global coherence, whereas at t⋆ = T (i.e., w/o scaffold alignment in Algorithm 1), the global scaffold is discarded entirely, showing poor global coherence (higher style loss and lower subject consistency). Intermediate values t⋆ ∈ [0 .5T, 0.8T ] consistently yield the best balance between global structure preservation and local detail recovery across all three domains. 
+
+## 5 Conclusion 
+
+We introduced CoFi, an inference-time sampler that decomposes compositional generation into a consensus-based coarse stage and a structure-preserving refinement stage. By separating global structure formation from local detail recovery, we improve both global coherence and local quality over existing compositional baselines across robotic planning, panoramic image generation, and long video generation, while requiring 2–8× fewer denoiser evaluations. 
+
+Limitations. The quality of the composed output is bounded by the expressiveness of the pre-trained local prior, and the consensus schedule λt and refinement depth t⋆ require per-domain selection. Moreover, the current consensus applies uniform weighting to all local plans, which may be suboptimal when segments differ in structural importance. 9References 
+
+Michael Albergo, Nicholas M Boffi, and Eric Vanden-Eijnden. Stochastic interpolants: A unifying framework for flows and diffusions. Journal of Machine Learning Research , 26(209):1–80, 2025. Omer Bar-Tal, Lior Yariv, Yaron Lipman, and Tali Dekel. Multidiffusion: Fusing diffusion paths for controlled image generation. arXiv preprint arXiv:2302.08113 , 2023. Yilun Du and Leslie Pack Kaelbling. Position: Compositional generative modeling: A single model is not all you need. In Forty-first International Conference on Machine Learning , 2024. Leon A Gatys, Alexander S Ecker, and Matthias Bethge. Image style transfer using convolutional neural networks. In Proceedings of the IEEE conference on computer vision and pattern recognition ,pages 2414–2423, 2016. Dibya Ghosh, Abhishek Gupta, Ashwin Reddy, Justin Fu, Coline Manon Devin, Benjamin Eysen-bach, and Sergey Levine. Learning to reach goals via iterated supervised learning. In Interna-tional Conference on Learning Representations , 2021. https://openreview.net/forum?id= rALA0Xo6yNJ .Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. Vbench: Comprehensive benchmark suite for video generative models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21807–21818, 2024. Subin Kim, Seoung Wug Oh, Jui-Hsien Wang, Joon-Young Lee, and Jinwoo Shin. Tuning-free multi-event long video generation via synchronized coupled sampling. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 6418–6429, 2025. Ilya Kostrikov, Ashvin Nair, and Sergey Levine. Offline reinforcement learning with implicit q-learning. arXiv preprint arXiv:2110.06169 , 2021. Yuseung Lee, Kunho Kim, Hyunjin Kim, and Minhyuk Sung. Syncdiffusion: Coherent montage via synchronized joint diffusions. Advances in Neural Information Processing Systems , 36:50648– 50660, 2023. Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching for generative modeling. In The Eleventh International Conference on Learning Repre-sentations , 2023. https://openreview.net/forum?id=PqvMRDCJT9t .Yunhao Luo, Utkarsh Aashu Mishra, Yilun Du, and Danfei Xu. Generative trajectory stitching through diffusion composition. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. https://openreview.net/forum?id=VCTt5DXiBe .Corey Lynch, Mohi Khansari, Ted Xiao, Vikash Kumar, Jonathan Tompson, Sergey Levine, and Pierre Sermanet. Learning latent plans from play. In Conference on robot learning , pages 1113–1132. Pmlr, 2020. Chenlin Meng, Yutong He, Yang Song, Jiaming Song, Jiajun Wu, Jun-Yan Zhu, and Stefano Ermon. SDEdit: Guided image synthesis and editing with stochastic differential equations. In Interna-tional Conference on Learning Representations , 2022. https://openreview.net/forum?id= aBsCjcPu_tE .Utkarsh Aashu Mishra, Shangjie Xue, Yongxin Chen, and Danfei Xu. Generative skill chaining: Long-horizon skill planning with diffusion models. In Conference on Robot Learning , pages 2905–2925. PMLR, 2023. Utkarsh Aashu Mishra, David He, Yongxin Chen, and Danfei Xu. Compositional diffusion with guided search for long-horizon planning. In The Fourteenth International Conference on Learning Representations , 2026. https://openreview.net/forum?id=b8avf4F2hn .10 Seohong Park, Dibya Ghosh, Benjamin Eysenbach, and Sergey Levine. Hiql: Offline goal-conditioned rl with latent states as actions. Advances in Neural Information Processing Systems , 36:34866– 34891, 2023. Seohong Park, Kevin Frans, Benjamin Eysenbach, and Sergey Levine. OGBench: Benchmarking offline goal-conditioned RL. In The Thirteenth International Conference on Learning Representa-tions , 2025. https://openreview.net/forum?id=M992mjgKzI .Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervision. In International conference on machine learning , pages 8748–8763. PmLR, 2021. Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj ¨orn Ommer. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF confer-ence on computer vision and pattern recognition , pages 10684–10695, 2022. Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In Interna-tional Conference on Learning Representations , 2021. https://openreview.net/forum?id= St1giarCHLP .Fu-Yun Wang, Wenshuo Chen, Guanglu Song, Han-Jia Ye, Yu Liu, and Hongsheng Li. Gen-l-video: Multi-text to long video generation via temporal co-denoising. arXiv preprint arXiv:2305.18264 ,2023. Zhuoyi Yang, Jiayan Teng, Wendi Zheng, Ming Ding, Shiyu Huang, Jiazheng Xu, Yuanming Yang, Wenyi Hong, Xiaohan Zhang, Guanyu Feng, Da Yin, Yuxuan.Zhang, Weihan Wang, Yean Cheng, Bin Xu, Xiaotao Gu, Yuxiao Dong, and Jie Tang. Cogvideox: Text-to-video diffusion models with an expert transformer. In The Thirteenth International Conference on Learning Representations ,2025. https://openreview.net/forum?id=LQzN6TRFg9 .Jonathan S Yedidia, William Freeman, and Yair Weiss. Generalized belief propagation. Advances in neural information processing systems , 13, 2000. Jonathan S Yedidia, William T Freeman, and Yair Weiss. Constructing free-energy approximations and generalized belief propagation algorithms. IEEE Transactions on information theory , 51(7): 2282–2312, 2005. Qinsheng Zhang, Jiaming Song, Xun Huang, Yongxin Chen, and Ming-Yu Liu. Diffcollage: Parallel generation of large content with diffusion models. In 2023 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 10188–10198. IEEE, 2023. Richard Zhang, Phillip Isola, Alexei A Efros, Eli Shechtman, and Oliver Wang. The unreasonable effectiveness of deep features as a perceptual metric. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 586–595, 2018. Yixin Zhang, Yunhao Luo, Utkarsh Aashu Mishra, Woo Chul Shin, Yongxin Chen, and Danfei Xu. Compositional visual planning via inference-time diffusion scaling. In The Fourteenth Interna-tional Conference on Learning Representations , 2026. https://openreview.net/forum?id= EEONns7ae4 .11 A Derivation of the Closed-Form Coarse Estimate 
+
+We derive the closed-form solution of the coarse alignment objective in (12). For notational clarity, we drop the time index t and write ˆXi := ˆXi 
+
+> 0|t
+
+for the Tweedie estimate of the i-th local plan. Let 
+
+γ > 0 denote the regularization strength and define 
+
+f (Z1, . . . , Z N ) = 
+
+> N
+
+X
+
+> i=1
+
+h
+
+∥Zi − ˆXi∥2 + γ ∥Zi − ¯Z∥2i
+
+, ¯Z := 1
+
+> N
+
+PNi=1 Zi. (17) 
+
+Proof of (13). Since (17) is a sum of convex quadratics in (Z1, . . . , Z N ), the objective is strictly convex and admits a unique global minimizer. We derive the first-order optimality conditions below. Let δij denote the Kronecker delta. Differentiating (17) with respect to Zj and applying the chain rule with ∂ ¯Z/∂Z j = 1 
+
+> N
+
+Im yields 
+
+12
+
+∂f ∂Z j =  Zj − ˆXj  + γ
+
+> N
+
+X
+
+> i=1
+
+ Zi − ¯Z
+
+δij − 1
+
+> N
+
+
+
+. (18) By construction, PNi=1 (Zi − ¯Z) = 0. Expanding the summation in (18) and applying this identity, we obtain 12
+
+∂f ∂Z j =  Zj − ˆXj  + γ Zj − ¯Z. (19) Setting (19) to zero and solving for Zj :
+
+(1 + γ) Zj = ˆXj + γ ¯Z =⇒ Zj = λ ˆXj + (1 − λ) ¯Z, where λ := 11+ γ . (20) Summing both sides of (20) over j = 1 , . . . , N and dividing by N gives ¯Z = λ ¯X + (1 − λ) ¯Z,where ¯X := 1
+
+> N
+
+PNi=1 ˆXi. Rearranging yields λ ¯Z = λ ¯X, and hence 
+
+¯Z⋆ = ¯X. (21) Substituting (21) into (20) produces the minimizer Zj,⋆ = λ ˆXj + (1 − λ) ¯X, which coincides with (13) upon restoring the time index t and setting λt := 1 /(1 + γt).
+
+## B Experimental Details 
+
+We adopt the experimental protocol of Mishra et al. (2026) and use the same pretrained diffusion models, datasets, and evaluation metrics. Below we provide the hyperparameter settings specific to our method. 
+
+B.1 Compositional Long-Horizon Robotic Planning Task description. We evaluate on OGBench (Park et al., 2025), which provides offline datasets for goal-conditioned robotic tasks. The agent must navigate from a given start state to a goal state, and the offline dataset contains only short trajectory segments that do not individually solve the evaluation tasks. Successful planning therefore requires composing multiple short segments into a coherent long-horizon plan that reaches the goal while respecting environment constraints. • PointMaze (Stitch ): A 2D point agent navigates through a maze from a start position to a goal position. The observation and goal spaces are both 2D (XY position). We evaluate on Medium ,
+
+Large , and Giant map sizes, where increasing scale requires more composed segments and longer navigation paths through the maze. • AntMaze (Stitch ): An 8-DoF ant robot navigates through the same maze layouts as PointMaze .Although the full observation is 29-dimensional, planning is performed in the 2D XY subspace, and a learned inverse-dynamics model maps the planned waypoints back to the full action space for execution. 12 PointMaze-M (N = 3 )    
+
+> PointMaze-L (N= 6 )
+> PointMaze-G (N= 8 )
+
+Figure 11: PointMaze trajectory examples. Each row shows five evaluation tasks at increasing maze scale. Each color denotes a distinct local plan segment. • Scene (Play ): A tabletop manipulation task with a robot gripper and multiple objects. The planning space is 14-dimensional, selected from the full 40-dimensional observation: gripper 3D position (indices 12–14), two object 3D positions (indices 19–21, 26–29), object orientations (indices 32–33, 36, 38), and contact states (indices 8–11). The environment defines 5 predefined tasks, each specifying a distinct start and goal configuration that requires the gripper to reach, grasp, and reposition one or more objects on the table. Unlike the maze tasks where the agent must find a collision-free path through a static environment, Scene-Play requires coordinating gripper motion with object interaction, and the offline play dataset contains unstructured exploration rather than goal-directed demonstrations. We evaluate 20 trials per task for a total of 100 episodes per seed. During execution, contact dimensions (indices 8–11) are snapped to binary values {0, 1} to match the discrete nature of contact events in the training data. Table 4 summarizes the per-environment configuration, including the observation and goal dimensions, local plan horizon and overlap length, default number of composed segments N , replanning distance threshold, and maximum environment steps. 
+
+Guidance cost. The local guidance cost in (11) is the overlap mean-squared error between the predicted clean boundaries of adjacent segments: 
+
+ˆrt(Xit , X i+1  
+
+> t
+
+) = −c R( ˆXi
+
+> 0|t
+
+) − L( ˆXi+1 0|t ) 2
+
+, (22) where c = 5 .0. This gradient-based guidance is used in both the coarse stage (Algorithm 1) and the refinement stage (Algorithm 2). After each denoising step, the composed global trajectory is obtained by exponentially blending adjacent segments in their overlap regions (Luo et al., 2026). Concretely, 13 Table 4: Environment specifications for robotic planning. Environment obs dim goal dim horizon overlap N replan thres max steps 
+
+PointMaze-Medium 2 2 160 56 3 1.0 1000 
+
+PointMaze-Large 2 2 160 56 6 1.0 1000 
+
+PointMaze-Giant 2 2 160 56 8 1.0 1000 
+
+AntMaze-Medium 29 2 160 56 3 4.0 1000 
+
+AntMaze-Large 29 2 160 56 6 4.0 1000 
+
+AntMaze-Giant 29 2 160 56 9 4.0 2000 
+
+Scene-Play 40 14 128 48 8 2.0 1500 for an overlap of length L, the blended trajectory at position ℓ ∈ { 0, . . . , L − 1} is 
+
+Blend (ℓ) = w(ℓ) · R(Xi) +  1 − w(ℓ) · L(Xi+1 ), w(ℓ) = e−βℓ/ (L−1) − e−β
+
+1 − e−β , (23) where β = 2 .0 is used. 
+
+Diffusion model and hyperparameters. We use the same pretrained 1D U-Net diffusion models from Luo et al. (2026); Mishra et al. (2026), trained on the OGBench offline datasets with 512 
+
+diffusion steps. Each local plan covers a trajectory segment of 160 (maze) or 128 (scene) timesteps, and N overlapping segments are composed to cover the full start-to-goal trajectory. At inference time, we use T = 100 DDIM steps with stochasticity η = 1 .0. For the coarse stage, we use a ramped λt
+
+schedule: λt starts at λ0 = 0 .2 and linearly increases to 1.0. The refinement depth is set to t⋆ = 0 .7T
+
+for Maze . We generate a batch of 40 candidate trajectories per planning problem and select the one with the lowest overlap MSE. 
+
+Evaluation protocol. We report success rates over 100 evaluation episodes averaged across 5 ran-dom seeds. Each evaluation episode samples a random start-goal pair from the OGBench evaluation set. An episode is considered successful if the agent reaches within a threshold distance of the goal within the maximum number of environment steps (see Table 4). For non-compositional baselines (GCBC, GCIVL, GCIQL, HIQL), we use the results reported in Mishra et al. (2026). 
+
+Replanning and execution. For maze tasks, we follow Luo et al. (2026) and use distance-based replanning: the agent replans when it deviates beyond the threshold distance (see Table 4) from the current planned trajectory. Actions are extracted from the planned waypoints using a learned inverse-dynamics model that maps consecutive observation pairs to low-level actions. For Scene-Play , the agent replans up to 10 times with a distance threshold of 2.0, and the planned trajectory is executed for up to 1500 environment steps per episode. 
+
+Per-task trajectory examples. Figures 11 and 12 show composed trajectories generated by our method on each maze environment across different evaluation tasks, and Figure 13 shows rollout keyframes for the five Scene-Play manipulation tasks. Each color denotes a distinct local plan segment, with overlapping boundaries between adjacent segments. The start position is marked with 
+
+◦ and the goal with ⋆. As the maze scale increases from Medium to Giant , the number of composed segments N grows accordingly, and the coarse stage becomes increasingly important for maintaining a globally coherent route. 
+
+B.2 Bethe Approximation for Compositional Diffusion Factor graph formulation. Recall from Section 2 that the global plan Y = [ x1, x 2, . . . , x 2N +1 ]
+
+is composed of N overlapping local plans Xi = [ x2i−1, x 2i, x 2i+1 ], where each adjacent pair 
+
+(Xi, X i+1 ) shares a boundary factor x2i+1 . This structure naturally defines a factor graph: each local plan Xi corresponds to a factor node with local prior pt(Xit ), and each shared boundary x2i+1 
+
+> t
+
+corresponds to a variable node connecting the two adjacent factors. The joint distribution over the 14 AntMaze-M (N = 3 )    
+
+> AntMaze-L (N= 6 )
+> AntMaze-G (N= 9 )
+
+Figure 12: AntMaze trajectory examples. Each row shows five evaluation tasks at increasing maze scale. Each color denotes a distinct local plan segment. global plan factorizes over the factor graph as 
+
+pt(Yt) ∝
+
+> N
+
+Y
+
+> i=1
+
+pt(Xit ). (24) Since the local plans overlap, this product double-counts the shared boundary variables. The Bethe free energy (Yedidia et al., 2000, 2005) corrects for this overcounting by subtracting the marginal log-densities at the shared boundaries: 
+
+log pt(Yt) ≈
+
+> N
+
+X
+
+> i=1
+
+log pt(Xit ) − 
+
+> N−1
+
+X
+
+> i=1
+
+log pt(x2i+1  
+
+> t
+
+). (25) The first sum aggregates the local log-densities (one per factor node), and the second sum removes the overcounted overlap marginals (one per shared variable node). This is the standard Bethe approximation applied to the chain-structured factor graph. Differentiating (25) with respect to the shared boundary x2i+1  
+
+> t
+
+yields the compositional score: 
+
+∇x2i+1 
+
+> t
+
+log pt(Yt) ≈ ∇ log pt
+
+ R(Xit ) | Xit
+
+| {z }
+
+> from left factor
+
++ ∇ log pt
+
+ L(Xi+1  
+
+> t
+
+) | Xi+1 
+
+> t
+
+| {z }
+
+> from right factor
+
+− ∇ log pt(x2i+1  
+
+> t
+
+),
+
+(26) where R(Xit ) = L(Xi+1  
+
+> t
+
+) = x2i+1  
+
+> t
+
+is the shared boundary. When the overlap marginal pt(x2i+1  
+
+> t
+
+)
+
+is approximated as uniform or absorbed into the local scores, this reduces to the form in (10): an average of the two conditional scores from the left and right factors. 15 Start Goal 
+
+> Task 1
+> Task 2
+> Task 3
+> Task 4
+> Task 5
+
+Figure 13: Scene-Play rollout examples. Each row shows keyframes from a successful rollout for one of the five predefined manipulation tasks. The robot gripper must reach, grasp, and reposition objects on the table according to the task-specific goal configuration. 
+
+B.3 Panoramic Image Generation Task description. Given a text prompt, the task is to generate a wide panoramic image ( 512 × 4608 )that maintains consistent style, color, and semantic content across the full spatial extent. The pretrained Stable Diffusion 2.0 (Rombach et al., 2022) model generates 512 × 512 images natively, so producing a panorama requires composing N = 9 overlapping patches with 50% spatial overlap. 
+
+Guidance. Local consistency across adjacent patches is enforced via the Bethe approximation in (10). Concretely, in the shared spatial overlap between patches Xi and Xi+1 , the fused denoised estimate is obtained by ramp blending rather than uniform averaging. At spatial position ℓ within an overlap of width W :
+
+ˆXfused  
+
+> 0|t
+
+(ℓ) = w(ℓ) · ˆXi 
+
+> 0|t
+
++  1 − w(ℓ) · ˆXi+1 0|t , w(ℓ) = 1 − ℓW , (27) which linearly transitions from the left patch to the right. This ramp blending produces smoother boundary transitions than equal-weight averaging. Global coherence is achieved through the coarse mean regularization in (13). 
+
+Hyperparameters. We use T = 50 DDIM steps with classifier-free guidance scale 7.5. For the coarse stage, we set λ0 = 0 .2 with a linear ramp schedule that increases λt to 1.0. The clean estimate 
+
+ˆXi 
+
+> 0|t
+
+is obtained from the fused (overlap-averaged) denoised output. We use sampled directional noise in the coarse stage, meaning each local plan receives independently sampled noise for the DDIM direction term rather than sharing a common noise realization. For the refinement stage, we 16 Coarse Refinement 
+
+> landscape
+> dolomites
+> babbling-brook
+> misty-fog
+> cartoon
+> skiers
+> anime
+> futuristic
+> silhouette
+> palm-trees
+> grassland
+> castle
+> coral-reef
+> corgis
+
+Figure 14: Panoramic image results. Per-prompt coarse scaffold and refined output (full prompts in Appendix B.8). set t⋆ = 0 .7T (refinement begins from step 15 ) with stochasticity η = 1 .0 and ramp blending. We generate 5 random seeds per prompt and report the mean and standard deviation across seeds. 
+
+Metrics. Intra-LPIPS (Zhang et al., 2018) measures the mean pairwise LPIPS perceptual distance between all pairs of non-overlapping 512 × 512 crops within a single panorama, capturing local style consistency across distant spatial regions. Intra-Style loss (Gatys et al., 2016) computes the mean pairwise Gram-matrix distance between VGG features (layers relu1 2 , relu2 2 , relu3 3 ,
+
+relu4 3 ) of these crops, measuring global style coherence. CLIP score (Radford et al., 2021) evaluates text-image alignment between the prompt and the full generated panorama using the ViT-B/32 CLIP model. 17 Per-prompt results. We evaluate on 14 text prompts with 5 random seeds each. Figure 14 shows the coarse scaffold and the refined output for all prompts. 
+
+B.4 Long Video Generation Task description. Given a text prompt, the task is to generate a temporally coherent long video (273 frames at 720 p) that preserves subject identity and scene structure over a much longer horizon than the pretrained model natively supports. CogVideoX-2B (Yang et al., 2025) generates 50 -frame clips, so producing a long video requires composing N = 9 temporal chunks with 50% overlap. 
+
+Guidance. As in the image domain, local temporal consistency across adjacent chunks is enforced via the Bethe approximation in (10) with ramp blending in the shared temporal overlap. At temporal position ℓ within an overlap of L frames: 
+
+ˆXfused  
+
+> 0|t
+
+(ℓ) = w(ℓ) · ˆXi 
+
+> 0|t
+
++  1 − w(ℓ) · ˆXi+1 0|t , w(ℓ) = 1 − ℓL . (28) Global temporal coherence is achieved through the coarse mean regularization in (13). 
+
+Hyperparameters. We use T = 50 DDIM steps with classifier-free guidance scale 6.0. The coarse stage uses λ0 = 0 .2 with the same linear ramp schedule as the image setting. Unlike the image setting, we use noise-bar directional noise (rather than independently sampled noise) in the coarse stage: all local chunks share a common noise realization in the DDIM direction term, which we find critical for maintaining temporal coherence across chunk boundaries. The coarse mean decay follows a cosine schedule λt = λ0 · cos   π t 
+
+> 2T
+
+, which provides a smoother transition from strong to weak regularization compared to linear decay. For the refinement stage, we set t⋆ = 0 .7T with stochasticity η = 1 .0.
+
+Metrics. We use VBench (Huang et al., 2024) to evaluate long video quality across four dimensions. 
+
+Subject consistency measures the mean pairwise DINO feature similarity of the main subject across uniformly sampled frame pairs, capturing whether the subject’s appearance is preserved over the full video duration. Temporal flickering evaluates frame-to-frame visual stability by measuring the mean absolute pixel difference between consecutive frames. Aesthetic quality applies a learned aesthetic predictor to individual frames and reports the mean score. Prompt alignment measures text-video correspondence via CLIP similarity between the text prompt and uniformly sampled frames. 
+
+Per-prompt results. We evaluate on 8 text prompts with 8 random seeds each. Figure 15 shows sampled frames from the coarse scaffold and the refined output for all prompts. 
+
+B.5 Baseline Configurations 
+
+For all compositional baselines, we use the implementations and hyperparameters from CDGS 12 (Mishra et al., 2026). GSC (Mishra et al., 2023) (and its image/video analogues Mul-tiDiffusion (Bar-Tal et al., 2023) and Gen-L-Video (Wang et al., 2023)) applies local guidance without resampling or search. SyncDiffusion 3 (Lee et al., 2023) adds a perceptual optimization loop at each denoising step. CDGS (Mishra et al., 2026) uses population-based resampling with likelihood-based pruning across inner iterations. 
+
+B.6 Compute Resources 
+
+All experiments are conducted on a single NVIDIA A6000 GPU (48GB VRAM). For robotic planning, composing N = 9 segments with T = 100 DDIM steps requires approximately 2 GB of GPU memory. For panoramic image generation, composing a 512 × 4608 panorama from 9 patches with T = 50 steps requires approximately 16 GB. For long video generation, composing 273 frames from 9 temporal chunks with T = 50 steps requires approximately 23 .5 GB    
+
+> 1https://github.com/UtkarshMishra04/CDGS_imgvideo under Apache 2.0 license.
+> 2https://github.com/UtkarshMishra04/CDGS_ogbench under MIT license.
+> 3https://github.com/KAIST-Visual-AI-Group/SyncDiffusion under MIT license.
+
+18 Coarse Refinement          
+
+> frame 1 frame 69 frame 137 frame 205 frame 273 frame 1 frame 69 frame 137 frame 205 frame 273
+> suv
+> panda
+> balloons
+> toy-ship
+> young-woman
+> white-jeep
+> F-150
+> baking-cake
+
+Figure 15: Long video results. Per-prompt coarse scaffold and refined output. Each strip shows frames 1, 69, 137, 205, 273 of the 273 -frame composed video (full prompts in Appendix B.8). 
+
+B.7 NFE Analysis 
+
+We compare the number of function evaluations (NFE) across methods. Let T denote the total diffusion steps and N the number of local plans. • GSC : Each denoising step requires one forward pass per local plan. Total NFE = T · N .• CDGS : Each denoising step involves K inner iterations with a population of size P . Total NFE 
+
+= K · T · P · N , where typical values are K ∈ [5 , 10] and P ∈ [4 , 8] .• Ours : The coarse stage runs T steps and the refinement stage runs t⋆ additional steps, each with one forward pass per local plan. Total NFE = ( T + t⋆) · N . With t⋆ = 0 .3T , this gives 1.3T · N .The ratio of CDGS to our NFE is K·P 
+
+> 1.3
+
+. For typical CDGS settings ( K = 3 , P = 4 ), this gives approximately 9.2×, consistent with the 2–8× reduction reported in the main text (the exact ratio depends on domain-specific CDGS configurations). 
+
+B.8 Full Prompt Lists Panoramic image prompts. We evaluate on the following 14 text prompts: • landscape : “A beautiful landscape with mountains and a river” • dolomites : “A photo of the dolomites with red lava flowing through the valley” • babbling-brook : “A photo of lush forest with a babbling brook” • misty-fog : “A photo of a forest with a misty fog” • cartoon : “Cartoon panorama of spring summer beautiful nature” 19 • skiers : “A photo of a snowy mountain peak with skiers” • anime : “Natural landscape in anime style illustration” • futuristic : “Skyline of a futuristic city with flying cars” • silhouette : “Silhouette wallpaper of a dreamy scene with shooting stars” • palm-trees : “A beach with palm trees” • grassland : “A photo of a grassland with animals” • castle : “A cinematic view of a castle in the sunset” • coral-reef : “A photo of a beautiful ocean with coral reef” • corgis : “last supper with cute corgis” 
+
+Long video prompts. We evaluate on the following 8 text prompts: • suv : “The camera follows behind a white vintage SUV with a black roof rack as it speeds up a steep dirt road surrounded by pine trees on a steep mountain slope, dust kicks up from its tires, the sunlight shines on the SUV as it speeds along the dirt road, casting a warm glow over the scene. The dirt road curves gently into the distance, with no other cars or vehicles in sight. The trees on either side of the road are redwoods, with patches of greenery scattered throughout. The car is seen from the rear following the curve with ease, making it seem as if it is on a rugged drive through the rugged terrain. The dirt road itself is surrounded by steep hills and mountains, with a clear blue sky above with wispy clouds.” • panda : “A cute happy panda, dressed in a small, red jacket and a tiny hat, sits on a wooden stool in a serene bamboo forest. The panda’s fluffy paws strum a miniature acoustic guitar, producing soft, melodic tunes, move hands, singings. Nearby, a few other pandas gather, watching curiously and some clapping in rhythm. Sunlight filters through the tall bamboo, casting a gentle glow on the scene. The panda’s face is expressive, showing concentration and joy as it plays. The background includes a small, flowing stream and vibrant green foliage, enhancing the peaceful and magical atmosphere of this unique musical performance.” • balloons : “A group of colorful hot air balloons take off at dawn in Cappadocia, Turkey. Dozens of balloons in various bright colors and patterns slowly rise into the pink and orange sky. Below them, the unique landscape of Cappadocia unfolds, with its distinctive ‘fairy chimneys’ – tall, cone-shaped rock formations scattered across the valley. The rising sun casts long shadows across the terrain, highlighting the otherworldly topography.” • toy-ship : “A detailed wooden toy ship with intricately carved masts and sails is seen gliding smoothly over a plush, blue carpet that mimics the waves of the sea. The ship’s hull is painted a rich brown, with tiny windows. The carpet, soft and textured, provides a perfect backdrop, resembling an oceanic expanse. Surrounding the ship are various other toys and children’s items, hinting at a playful environment. The scene captures the innocence and imagination of childhood, with the toy ship’s journey symbolizing endless adventures in a whimsical, indoor setting.” • young-woman : “A young woman with beautiful and clear eyes and blonde hair standing and white dress in a forest wearing a crown. She seems to be lost in thought, and the camera focuses on her face. The video is of high quality, and the view is very clear. High quality, masterpiece, best quality, highres, ultra-detailed, fantastic.” • white-jeep : “A woman walks away from a white Jeep parked on a city street at night, then ascends a staircase and knocks on a door. The woman, wearing a dark jacket and jeans, walks away from the Jeep parked on the left side of the street, her back to the camera; she walks at a steady pace, her arms swinging slightly by her sides; the street is dimly lit, with streetlights casting pools of light on the wet pavement; the camera follows the woman from behind as she walks up a set of stairs towards a building with a green door; she reaches the top of the stairs and turns left, continuing to walk towards the building; she reaches the door and knocks on it with her right hand.” • F-150 : “At sunset, a modified Ford F-150 Raptor roared past on the off-road track. The raised suspension allowed the huge explosion-proof tires to flip freely on the mud, and the mud splashed on the roll cage.” • baking-cake : “A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window.” 20

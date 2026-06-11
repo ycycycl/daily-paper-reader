@@ -1,0 +1,338 @@
+Title: DSA: Dynamic Step Allocation for Fast Autoregressive Video Generation
+
+URL Source: https://arxiv.org/pdf/2606.04432v1
+
+Published Time: Thu, 04 Jun 2026 00:41:09 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# DSA: Dynamic Step Allocation for Fast Autoregressive Video Generation 
+
+## Thanh-Tung Le 1,2* Yunhan Zhao 3 Menglei Chai 2 Zhengyang Shen 2 Zhe Cao 2
+
+## Danhang Tang 2 Xiaohui Xie 1 Deying Kong 21University of California, Irvine 2Google 3Google DeepMind An adorable kangaroo wearing purple overalls and cowboy boots taking a pleasant stroll in Johannesbu. 
+
+> A rocket blasting off from the launch pad, accelerating rapidly into the sky.
+> A couple runs through a sudden downpour, laughing and splashing in puddles as they try to find shelter.
+> The number of diffusion steps adaptively changes at different frame.
+
+Figure 1. Our method can dynamically adjust the number of diffusion steps when generating different frames and achieve real-time autoregressive video generation, reaching 22.63 FPS with sub-second latency on H100 GPUs. 
+
+## Abstract 
+
+Video diffusion transformers have achieved state-of-the-art visual quality, but their high inference cost remains a ma-jor bottleneck for real-time applications. Recent distillation frameworks produce autoregressive video diffusion mod-els with reduced latency, yet these models still use a fixed number of denoising steps per frame, wasting computation on predictable frames and under-refining challenging ones. We present DSA , a confidence-guided adaptive computa-tion framework for AR video diffusion. DSA introduces a lightweight confidence head, trained jointly with the gener-ator under a distribution-matching distillation objective, to estimate per-frame denoising reliability. At inference, this confidence signal dynamically adjusts the number of diffu-sion steps: simple frames terminate early for speed, while complex frames receive additional refinement. Our method requires no extra video data, no heuristics, and little archi-tectural modification. Experiments show that DSA achieves real-time autoregressive video generation, reaching 22.63 FPS with sub-second latency on H100 GPUs, while main-taining competitive or superior VBench quality compared to recent autoregressive and bidirectional video diffusion mod-els. Our results demonstrate that confidence-guided adap-tive sampling provides an effective and practical path to-ward interactive video generation. 
+
+> arXiv:2606.04432v1 [cs.CV] 3 Jun 2026
+
+## 1. Introduction 
+
+Diffusion models [18, 53] have become the dominant paradigm in generative modeling, surpassing VAEs [25, 46], GANs [12, 24], and autoregressive models [7, 8] in generation quality. Their success spans diverse domains, including image [47, 48], video [2, 52], 3D [34, 43], and audio [19, 27] synthesis, as well as image [1, 17] and video [44, 60] editing. Recent Diffusion Transformers (DiTs) [37, 42] further advance scalability and general-ization beyond UNet-based diffusion models [47], mark-ing a new direction for Generative AI. However, DiTs remain computationally demanding in both memory and inference, especially with large token counts as seen in high-resolution or long video generation. This high re-source requirement, speculated to underlie the limited de-ployment of models like Sora [35, 41], has motivated ef-forts to improve efficiency, including latent diffusion [47], step distillation [50, 64], caching [15, 38, 59], architecture search [29, 66], token reduction [4, 28], and region-based generation [22, 40]. In video generation, particularly for interactive applica-tions, not only generation speed and temporal consistency but also inference latency are critical factors [20]. While caching-based acceleration [23, 33] methods help reduce computation in bidirectional foundation models, their re-liance on expensive full-context attention makes them less suitable for real-time applications. In contrast, autoregres-sive video diffusion models generate frames sequentially with causal attention, enabling efficient streaming. Recent studies [20, 65] attempt to distill bidirectional foundation video diffusion models into autoregressive vari-ants, enabling the use of KV-caching for step-wise denois-ing over short temporal segments. This design facilitates efficient streaming and interactive generation. Notably, Self Forcing (SF) [20] introduces autoregressive self-rollout with KV-caching during both training and inference, effec-tively distilling bidirectional diffusion into few-step autore-gressive diffusion while balancing computational efficiency and visual fidelity. Despite these advances, prior AR models rely on a fixed number of denoising steps per frame, regardless of how easy or difficult the frame is to generate. However, video se-quences naturally vary in temporal complexity: predictable or low-motion frames require minimal refinement, while frames containing rapid motion or structural changes ben-efit from additional denoising. Using a uniform sampling budget thus wastes computation on trivial frames and under-serves challenging ones. We address this limitation with DSA , short for Dynamic 
+
+Step Allocation for Fast Autoregressive Video Generation, a confidence-guided adaptive computation method for accel-erating autoregressive video diffusion. A lightweight confi-dence network, trained jointly with the transformer during distillation, predicts chunk-wise difficulty and adjusts sam-pling accordingly at inference. Unlike previous caching-based approaches [23, 33], our method requires neither ad-ditional video data for finetuning nor handcrafted heuristics. Instead, it leverages the distribution-matching distillation framework [63, 64], which allows joint optimization of the transformer and confidence network using text data alone. Extensive experiments demonstrate that DSA enables real-time autoregressive video generation. Distilled from both Wan-1.3B and Wan-14B models [57], DSA achieves on av-erage 22.63 FPS on an H100 GPU in throughput, while re-taining competitive visual quality, measured in VBench [21] benchmark. Our main contributions include the following: • A confidence-guided adaptive sampling framework for autoregressive video diffusion, which dynamically ad-justs the number of denoising steps per frame using a lightweight confidence head trained jointly with the dif-fusion transformer, requiring no extra data, no heuristics, and little architectural changes. • A unified distillation approach combining Distribution-Matching Distillation with a quality-aware confidence ob-jective, enabling efficient few-step autoregressive genera-tion that achieves real-time performance while matching or surpassing the visual quality of state-of-the-art bidirec-tional and autoregressive video diffusion models. 
+
+## 2. Related works 
+
+2.1. Autoregressive/Bidirectional Diffusion Models for Video Generation 
+
+Early video generation methods primarily used GANs [12], either generating full videos with convolutional models [5, 49] or producing frames sequentially with recurrent archi-tectures [11, 30, 32]. GANs have also been adopted for dis-tilling video diffusion models [31, 39, 61]. Because GAN generators follow the same procedure during training and inference, they naturally avoid exposure bias—a principle we leverage by directly aligning the generator’s output dis-tribution with the target data. Modern video generation has since shifted toward diffusion and autoregressive models for their scalability: diffusion models denoise all frames jointly using bidirectional attention [2, 3, 14, 16], while autore-gressive models use next-token prediction and generate spa-tiotemporal tokens sequentially at inference [6, 26, 45]. 
+
+2.2. Distribution Matching Distillation from Bidi-rectional to Autoregressive Video Generation 
+
+A major direction for accelerating video diffusion models is distillation from large multi-step foundation models into efficient few-step students [63, 64]. Yin et al. [63, 64] introduced Distribution Matching Distillation (DMD) for compressing multi-step image diffusion models, and sub-Causal DiT  
+
+> 0.8 0.9 0.7
+> 0.7
+> Causal DiT
+
+a) Self Forcing Training  b) Joint Confidence Training (ours) 
+
+> 0.9 Figure 2. Training paradigms comparison between the Self Forcing [20] and our method. Left figure is taken from [20]. The Self Forcing approach performs autoregressive self-rollout during training, denoising the next frame based on previous context frames generated by itself. Our method further generates the confidence score during the roll-out and conditions the denoising on the confidence score as well.
+
+sequent works extended DMD to video generation [20, 65]. CausVid [65] proposed asymmetric distillation—training a causal student using a bidirectional teacher—while Self-Forcing [20] further reduced train–test mismatch through rolling KV cache training. Our approach is closest to Self-Forcing but introduces a novel adaptive sampling strategy that significantly improves sampling speed without sacrific-ing generation quality. 
+
+## 3. Method 
+
+In this section, we first review autoregressive video diffu-sion and the Self Forcing (SF) distillation framework in Sec 3.1, highlighting how few-step AR diffusion with KV caching enables efficient causal generation. We then intro-duce our key extension, i.e., jointly modeling video frames and per-frame confidence scores, allowing the generator to assess its own denoising reliability during the rollout in Sec 3.2. Next, we describe our confidence-augmented dif-fusion formulation, including the confidence head architec-ture and our quality-aware confidence loss that aligns confi-dence with generation quality under the DMD training ob-jective. Finally, we present our confidence-guided inference algorithm, which adaptively adjusts the number of denois-ing steps per frame, yielding significant computational sav-ings while maintaining temporal coherence and visual fi-delity in Sec 3.3. 
+
+3.1. Preliminaries 
+
+Autoregressive (AR) video diffusion models combine diffusion-based synthesis quality with autoregressive tem-poral causality. They factorize the video frame distribu-tion x1: N = (x1, . . . , x N ) into conditional distributions 
+
+p(x1: N ) = QNi=1 p(xi|x<i ), modeling each term via diffu-sion. Each frame is generated by denoising Gaussian noise conditioned on previous frames, capturing long-range tem-poral dependencies while maintaining visual quality. Gen-eration can occur frame-by-frame or in temporal chunks to balance context and efficiency [55, 65]. Autoregressive video diffusion models use frame-wise or chunk-wise de-noising with Teacher Forcing (TF) or Diffusion Forcing (DF) [54] paradigms. Specifically, each frame xi is cor-rupted by the forward process qti|0(xiti | xi
+
+> 0
+
+) such that xiti =Ψ( xi, ϵ i, t i) = αti xi + σti ϵi, where αti , σ ti are pre-defined noise schedules within a finite time horizon ti ∈ [0 , 1000] 
+
+and ϵi ∼ N (0 , I ). TF learns to predict clean frames from ground-truth context, while DF uses noise-corrupted con-text to simulate inference. Formally, TF models the con-ditional distribution for the ith frame at noise level tj as 
+
+p(xitj |x<i  
+
+> 0
+
+), where all conditional history frames are the ground-truth clean frames from the training data. On the other hand, DF models tj as p(xitj |x<i t≥0), where the history frames are the ground-truth frames corrupted with indepen-dent noise levels. Since training relies on ground-truth his-tories while inference relies on the model’s own predictions, a train–test gap known as exposure bias arises [51, 65]. Self Forcing [20], an autoregressive distillation method, directly addresses this mismatch through autoregressive self-rollout during training: each frame is denoised based on previously self-generated outputs, mirroring inference. For computational tractability, SF uses few-step diffusion with gradient truncation, backpropagating only through the final denoising step per frame. Randomly sam-pling denoising steps per iteration distributes supervision across intermediate steps, improving stability and effi-ciency. The method also incorporates KV-caching dur-ing training, previously used only at inference, to maintain causal memory across frames without specialized attention masks. Crucially, SF enables holistic, video-level super-vision by aligning generated video distributions pθ (x1: N )
+
+with real data pdata (x1: N ) through distribution-matching objectives. Rather than optimizing per-frame denoising losses, it applies divergence measures between entire video distributions, such as Distribution Matching Distillation (DMD) [64], Score Identity Distillation (SiD) [67], and GAN [12]. This holistic formulation enforces temporal con-sistency and mitigates exposure bias by training under the model’s own generative distribution. Our method is built upon SF with DMD objective. We aim to further improve sampling speed while maintaining high visual quality. To achieve this, we propose an approach that efficiently per-forms adaptive computation during the generation process. 
+
+3.2. Joint AR Modeling of Frames and Confidence 
+
+To enable adaptive computation during video generation, we extend the SF training framework by introducing per-frame confidence signals. Our core motivation is to train the model to assess its own generation quality in real-time, thus allowing the diffusion process to dynamically adjust the number of denoising steps based on convergence during inference. We model the joint generation of video frames and their corresponding reliability scores within the same AR rollout. Specifically, as illustrated in Fig. 2, for a se-quence of N frames, we factorize the joint probability as 
+
+pθ (x1: N , c 1: N ) = 
+
+> N
+
+Y
+
+> i=1
+
+pθ (xi, c i | x<i , c <i ), (1) where xi represents the i-th frame and ci ∈ R denotes a scalar confidence score, where the history confidence c<i 
+
+are implicitly embedded via KV-cache of previous frames. This factorization parallels SF’s chain rule for frames but augments it with confidence estimates, maintaining the es-tablished causal conditioning structure and KV-cache se-mantics while providing the necessary signals for adaptive step control. 
+
+Few-Step AR Diffusion with Confidence Head. We de-fine the autoregressive model distribution through a se-quence of denoising transitions applied to an initial Gaus-sian latent. Specifically, the conditional distribution for frame xi is implicitly parameterized as: 
+
+pθ (xi 
+
+> 0
+
+| x<i , c <i ) ≜  fθ,t 1 ◦ fθ,t 2 ◦ · · · ◦ fθ,t T
+
+(xitT ), (2) where fθ,t j (xitj ) = Ψ  Gθ (xitj , t j , x <i  
+
+> 0
+
+, c <i ), ϵ tj−1 , t j−1
+
+,
+
+xitT ∼ N (0 , I ), and the generator outputs both the denoised prediction and its confidence: 
+
+(ˆ xi 
+
+> 0,t j
+
+, c itj ) = Gθ (xitj , t j , x <i  
+
+> 0
+
+, c <i ). (3) To predict whether the diffusion process has converged sufficiently so that it can terminate early, we modify the diffusion transformer to produce an additional confidence logit, as shown in Fig. 3. Cross-attention is applied at three specific stages of the generator’s transformer back-bone. Specifically, we extract and process features from DiT blocks 13, 21 and 29. Each block utilizes a single learnable token as the query to cross-attend to all visual to-kens, producing a concise token output. These outputs are channel-concatenated, normalized, and projected to yield a single scalar logit, which is finally converted to a confidence score via the sigmoid function. Crucially, unlike [31] that relies on a separate critic network, we autoregressively ex-tract logits directly from the generator’s backbone. This de-sign enables the simultaneous output of the denoised frame 
+
+xi 
+
+> 0
+
+and its confidence score ci with negligible computational overhead, facilitating efficient, dynamic sampling at infer-ence time. DiT     
+
+> Noised
+> Latent Conditioning
+> Layer Norm
+> Linear and Reshape
+> Noise
+> Cross
+> Attn
+> Cross
+> Attn
+> Cross
+> Attn
+> Concat
+> Norm
+> Linear
+> SiLU
+> Linear and Sigmoid
+> Confidence
+> Score
+> Visual Tokens
+> from DiT
+> Learnable
+> Tokens
+> Norm Norm
+> VKQ
+> QK- Norm
+> Attention
+> O Proj
+> Norm
+> Linear
+> GELU
+> Linear
+
+Figure 3. Model architecture for confidence score. Cross-attention is performed between learnable tokens and the visual tokens from the transformer backbone. After that, the tokens are mapped to a scalar confidence score. 
+
+During training, both xi 
+
+> 0
+
+and ci are employed as the au-toregressive context, and their KV embeddings are stored in the cache for subsequent frames. This yields a causal con-ditioning structure shared between training and inference. 
+
+Quality-Aware Confidence Loss. To ensure that the con-fidence score accurately reflects the generation quality, thereby acting as a reliable proxy for step adaptation, we propose a quality-aware confidence loss. With a slight abuse of notation, let ˆxG := [ˆ x10, ˆx20, ..., ˆxn 
+
+> 0
+
+] be the set of predicted frames and c := [ c0, c 1, ..., c n] be the correspond-ing confidence scores predicted by the generator. We de-fine the target distribution sequence via a teacher model as ˆxR := Rϕ(xit, t )ni=0 , where xit = Ψ( xi
+
+> 0
+
+, ϵ t, t ) is the noisy latent for the i-th frame, and Rϕ(·) is the score function es-timated by the pre-trained teacher diffusion model, referred to as the real score network [63]. The training loss for the confidence head is then formulated as 
+
+L = c ⊙ sg [d(ˆ xG, ˆxR)] − λ log c, (4) where sg[ ·] denotes the stop-gradient operator, λ is a regu-larization coefficient [56], and d(·) is the L2 distance metric between the generated and teacher-predicted samples. The loss is averaged over the sequence of predicted frames. The final training objective incorporates both the above confidence loss and the standard DMD loss. Intuitively, whereas the DMD loss [63, 64] forces the generator to match the teacher by minimizing the residual between ˆxG
+
+and ˆxR, our confidence loss leverages this residual to cali-brate the confidence score c, ensuring that it accurately re-flects the generation divergence. When the student model generates high quality frames, i.e., the ˆxG closely matches 
+
+ˆxR, the model is incentivized to produce high confidence score to reduce the regularization penalty. In contrast, sig-nificant deviations between ˆxG and ˆxR would result in lower predicted confidence. This joint optimization ensures that the generator learns self-calibrated uncertainty, empow-ering the sampler to adaptively reduce diffusion steps when high confidence is achieved during inference. 
+
+3.3. Autoregressive Diffusion Inference with Confidence-Guided Dynamic Diffusion Steps 
+
+During inference, our model generates frames autoregres-sively, adhering to the same causal rollout used in train-ing. For each frame i, the generator Gθ predicts both the denoised frame ˆxi 
+
+> 0
+
+and its confidence logit ci, initialized from Gaussian noise xitT ∼ N (0 , I ). The confidence score acts as an internal reliability estimate that dynamically de-termines how many denoising steps to perform. Specifically, the model first produces (ˆ xi
+
+> 0
+
+, c i) at timestep 
+
+tT . Given the confidence, we could simply use a fixed threshold to decide the number of steps the model should run for each frame. However, this is suboptimal since we observe that the threshold varies by frames and by videos. Therefore, we opt for a method that can dynamically decide how many steps we should run per frame of each video. We observe that the quality of subsequent frames largely de-pends on the quality of previous frames since model is run in autoregressive manner. Furthermore, cleaner frames have higher confidence score than the artifact frames, consistent with our training goal mentioned in Section 3.2. Therefore, if the predicted confidence ci is lower than that of the pre-vious frame, the model continues denoising with progres-sively smaller timesteps tT −1, . . . , t 1 until the output sta-bilizes. High-confidence frames thus require fewer refine-ment steps, while low-confidence ones receive additional 
+
+Algorithm 1 Autoregressive Diffusion Inference with Confidence-Guided Dynamic Diffusion Steps                                                                                                
+
+> Require: KV cache of size Lframes
+> Require: Denoise timesteps {t1, . . . , t T}
+> Require: Number of generated frames M
+> Require: AR diffusion model Gθ(returns both prediction and confidence, and KV embeddings via GKV
+> θ)
+> 1: Initialize model output Xθ←[ ]
+> 2: Initialize KV cache K ← [ ]
+> 3: Initialize previous confidence prev c ←1.0
+> 4: for i= 1 to Mdo
+> 5: Initialize xitT∼ N (0 , I )
+> 6: ˆxi
+> 0, c i←Gθ(xitT;tT,K)
+> 7: if sigmoid (ci)<prev c then
+> 8: for j=T−1downto 1do
+> 9: Sample ϵ∼ N (0 , I )
+> 10: xitj−1←Ψ(ˆ xi
+> 0, ϵ, t j−1)
+> 11: ˆxi
+> 0, c i←Gθ(xitj−1;tj−1,K)
+> 12: end for
+> 13: end if
+> 14: prev c ←sigmoid (ci)
+> 15: ki←GKV
+> θ(ˆ xi
+> 0; 0 ,K)
+> 16: if |K| =Lthen
+> 17: K.pop (0) ▷Evict oldest entry
+> 18: end if
+> 19: K.append (ki)
+> 20: Xθ.append (ˆ xi
+> 0)
+> 21: end for
+> 22: return Xθ
+
+denoising for improved fidelity. This adaptive scheme en-ables efficient, quality-aware video synthesis without sac-rificing temporal coherence. Following [20], a rolling KV cache is maintained to propagate temporal context across frames. After generation, the resulting sequence Xθ =[ˆ x10, . . . , ˆxM 
+
+> 0
+
+] forms the final video. Algorithm 1 summarizes the procedure. By leveraging confidence for dynamic sampling, our inference achieves adaptive compute allocation, significantly reducing average sampling cost while maintaining high-quality results. 
+
+## 4. Experiments 
+
+In this section, we first describe our experimental setup, including model initialization, training procedure, dataset preparation, and optimization details. We then outline the evaluation metrics used to assess real-time performance and visual quality, focusing on throughput, latency, and VBench scores. Next, we compare our distilled mod-els against both foundation autoregressive diffusion mod-els and prior distillation-based approaches, demonstrating substantial improvements in speed and competitive or supe-rior quality across multiple dimensions. Finally, we conduct ablation studies to analyze the effect of adaptive sampling, showing that confidence-guided step selection consistently Table 1. Comparison with relevant baselines. Our models, distilled from Wan-1.3B and Wan-14B teachers, achieve the highest through-put and competitive or superior VBench scores while maintaining sub-second latency. Compared to foundation AR diffusion models, e.g. SkyReels-V2, MAGI-1 [9, 55], our approach is over an order of magnitude faster. Relative to distillation-based baselines, e.g. CausVid, Self Forcing [20, 65], DSA delivers similar or improved visual quality with substantially higher FPS. Red cells denote best and yellow cells denote second-best. Model #Params Throughput (FPS) Latency (s) Evaluation scores ↑                                                        
+
+> Aesthetic Quality Spatial Rel. Temporal Style Quality Score Semantic Score Total Score
+> Autoregressive Diffusion Models †
+> SkyReels-V2 [9] 1.3B 0.49 112 –––84.70 74.53 82.67 MAGI-1 [55] 4.5B 0.19 282 –––82.04 67.74 79.18
+> Autoregressive Distillation Models
+> CausVid [65] 1.3B 15.30 0.90 65.01 71.16 24.16 83.97 79.08 82.99 Self Forcing [20] 1.3B 15.30 0.90 65.84 80.12 24.33 84.89 80.20 83.95 Ours (1.3B-Teacher) 1.3B 22.63 0.91 64.72 76.87 24.13 84.75 79.67 83.73 Ours (14B-Teacher) 1.3B 22.01 0.91 67.02 84.82 24.12 84.50 81.73 83.95
+> †Results taken from [20].
+
+outperforms fixed-step baselines by achieving higher qual-ity at significantly lower computational cost. 
+
+4.1. Experimental Details 
+
+We implement our method using Wan2.1-T2V-1.3B [57] as the base model. Following prior work [20, 65], we ini-tialize with causal attention masking using 16K ODE so-lution pairs sampled from the base model. Text prompts for both initialization and training are drawn from a filtered and LLM-augmented version of VidProM [58]. Different from Self-Forcing [20], our approach employs dynamic-step diffusion with chunk-wise autoregressive generation, producing 3 latent frames per chunk. We perform optimiza-tion using the DMD objective [63, 64] combined with our confidence loss (Equation 4), with regularization coefficient 
+
+λ = 0 .2. Training runs for 1000 steps with batch size 128 on NVIDIA H100 GPUs. We use AdamW [36] optimiza-tion with learning rates of 2.0 × 10 −6 for the generator and 
+
+4 × 10 −7 for the critic, updating the generator every 5 critic steps. 
+
+4.2. Evaluation Metrics 
+
+We evaluate our method using VBench [21] to assess visual quality and semantic alignment. Following [20], our eval-uation measures both throughput and first-frame latency to comprehensively characterize real-time performance, with all benchmarks performed on NVIDIA H100 GPU. 
+
+4.3. Comparison with Existing Baselines 
+
+We evaluate our distilled models—derived from Wan-1.3B and Wan-14B—against leading autoregressive video dif-fusion approaches. SkyReels-V2 [9] and MAGI-1 [55] represent foundation AR video diffusion models trained with Diffusion Forcing, while CausVid [65] and Self-Forcing [20] are distillation-based methods initialized from Wan-1.3B. As shown in Table 1, our models consistently match or surpass both foundation AR models and prior AR distillation methods in terms of quality and efficiency. The version distilled from Wan-1.3B achieves the high-est throughput (22.63 FPS), while the Wan-14B–distilled model delivers the strongest overall accuracy, leading in Aesthetic Quality, Spatial Relationship, and Semantic Score. In contrast, foundation AR models like SkyReels-V2 and MAGI-1 run substantially slower with much higher latency. Among distillation-based AR approaches, while Self-Forcing attains strong visual fidelity, our models retain comparable or better quality while offering significantly higher speed. Qualitatively (Figure 4), CausVid exhibits error accumu-lation, resulting in oversaturation over time. Our method produces slightly sharper visuals than SkyReels-V2 while being 46x faster in throughput and 120x faster in latency, and generates more realistic results than Self-Forcing while being 1.5x faster. Some failure cases are presented in Figure 5. Complex physical interactions, such as those between noodles and chopsticks, remain challenging. Similarly, accurately ren-dering the reflection of a bird’s beak requires sophisticated physical priors and remains difficult for the current model. 
+
+4.4. Ablation Studies 
+
+We conduct an ablation study on how our adaptive method performs compared to a fixed number of denoising steps, as in conventional methods. Table 2 compares fixed-step sampling with our adaptive strategy using the num-ber of function evaluations (NFE), throughput (FPS), and CausVid Self-Forcing Ours Skyreel-v2 
+
+tFigure 4. Qualitative results comparison between our method and the SOTA methods. CausVid shows noticeable error accumulation, leading to oversaturated and drifting frames over time. Our method produces sharper and more stable visuals than SkyReels-V2 while being 46x faster in throughput and 120x faster in latency, and it generates more realistic and temporally consistent results than Self-Forcing while running 1.5x faster. Figure 5. Illustration of some failure cases. Table 2. Ablation Study on Number of Fixed Denoising Steps.                      
+
+> While fixed-step methods are constrained by the speed-quality trade-off, our confidence-guided adaptive sampling identifies a su-perior operating point. It achieves a high VBench Total Score of 83.95 while maintaining high throughput (22.01 FPS), outper-forming both low-step and high-step fixed baselines. Method NFE ↓FPS ↑Total Score ↑
+> 1-step 14 27.75 79.27 2-step 21 22.97 82.77 3-step 28 19.63 83.66 4-step 35 16.33 83.94 Ours (Adaptive) 23 22.01 83.95
+
+VBench Total Score. Fixed-step methods exhibit the stan-dard speed–quality trade-off: reducing the number of steps improves throughput but noticeably harms quality, while increasing the steps recovers quality at the cost of sub-stantially slower inference. Our adaptive method avoids this compromise by dynamically adjusting the number of sampling steps based on model confidence. As a result, it achieves the highest overall quality (83.95) while main-taining significantly higher throughput (22.01 FPS) than the multi-step baselines. This demonstrates that our adaptive sampling identifies an effective sweet spot, preserving high fidelity without incurring the computational cost of fixed high-step sampling. 
+
+## 5. Discussion and Conclusion 
+
+5.1. Limitation 
+
+While DSA significantly improves efficiency in throughput, its performance degrades on long-horizon video generation. Similar to prior autoregressive diffusion models, temporal drift and accumulated errors become more pronounced as the sequence extends, leading to reduced fidelity and se-mantic consistency. Addressing this limitation is an impor-tant direction for future work. Recent advances in long-context modeling [13] offer promising avenues for extend-ing our adaptive framework to longer videos. Integrating these techniques with confidence-guided sampling may fur-ther enhance stability and enable high-quality generation over extended time spans. 
+
+5.2. Conclusion 
+
+We presented DSA , a confidence-guided adaptive sampling framework for autoregressive video diffusion. By predict-ing per-frame denoising reliability, our method dynamically allocates computation and achieves real-time performance while maintaining competitive visual quality. Experiments show substantial speedups over recent AR and bidirectional diffusion models, with up to 22.63 FPS and sub-second la-tency on H100 GPUs. Although long-horizon generation remains challenging, our results indicate that adaptive com-putation is a promising direction for efficient video diffu-sion. References 
+
+[1] Omri Avrahami, Ohad Fried, and Dani Lischinski. Blended latent diffusion. ACM Transactions on Graphics , 42(4): 149:1–149:11, 2023. 2 [2] Andreas Blattmann, Tim Dockhorn, Sumith Kulal, Daniel Mendelevitch, Maciej Kilian, Dominik Lorenz, Yam Levi, Zion English, Vikram Voleti, Adam Letts, et al. Stable video diffusion: Scaling latent video diffusion models to large datasets. arXiv preprint arXiv:2311.15127 , 2023. 2 [3] Andreas Blattmann, Robin Rombach, Huan Ling, Tim Dock-horn, Seung Wook Kim, Sanja Fidler, and Karsten Kreis. Align your latents: High-resolution video synthesis with la-tent diffusion models. In Proceedings of the IEEE/CVF con-ference on computer vision and pattern recognition , pages 22563–22575, 2023. 2 [4] Daniel Bolya and Judy Hoffman. Token merging for fast stable diffusion. In Proceedings of the IEEE/CVF Confer-ence on Computer Vision and Pattern Recognition Work-shops , pages 4599–4603, 2023. 2 [5] Tim Brooks, Janne Hellsten, Miika Aittala, Ting-Chun Wang, Timo Aila, Jaakko Lehtinen, Ming-Yu Liu, Alexei Efros, and Tero Karras. Generating long videos of dynamic scenes. Advances in Neural Information Processing Systems ,35:31769–31781, 2022. 2 [6] Jake Bruce, Michael D Dennis, Ashley Edwards, Jack Parker-Holder, Yuge Shi, Edward Hughes, Matthew Lai, Aditi Mavalankar, Richie Steigerwald, Chris Apps, et al. Ge-nie: Generative interactive environments. In Forty-first Inter-national Conference on Machine Learning , 2024. 2 [7] Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T. Freeman. Maskgit: Masked generative image transformer. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 11315– 11325, 2022. 2 [8] Huiwen Chang, Han Zhang, Jarred Barber, AJ Maschinot, Jose Lezama, Lu Jiang, Ming-Hsuan Yang, Kevin Murphy, William T. Freeman, Michael Rubinstein, Yuanzhen Li, and Dilip Krishnan. Muse: Text-to-image generation via masked generative transformers. In International Conference on Ma-chine Learning , pages 4055–4075, 2023. 2 [9] Guibin Chen, Dixuan Lin, Jiangping Yang, Chunze Lin, Junchen Zhu, Mingyuan Fan, Hao Zhang, Sheng Chen, Zheng Chen, Chengcheng Ma, Weiming Xiong, Wei Wang, Nuo Pang, Kang Kang, Zhiheng Xu, Yuzhe Jin, Yupeng Liang, Yubing Song, Peng Zhao, Boyuan Xu, Di Qiu, De-bang Li, Zhengcong Fei, Yang Li, and Yahui Zhou. Skyreels-v2: Infinite-length film generative model, 2025. 6 [10] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christo-pher R´ e. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in neural information processing systems , 35:16344–16359, 2022. 1 [11] Emily L Denton et al. Unsupervised learning of disentangled representations from video. Advances in neural information processing systems , 30, 2017. 2 [12] Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sherjil Ozair, Aaron Courville, and Yoshua Bengio. Generative adversarial networks. Commu-nications of the ACM , 63(11):139–144, 2020. 2, 4 [13] Albert Gu and Tri Dao. Mamba: Linear-time sequence mod-eling with selective state spaces. In First conference on lan-guage modeling , 2024. 8 [14] Agrim Gupta, Lijun Yu, Kihyuk Sohn, Xiuye Gu, Meera Hahn, Fei-Fei Li, Irfan Essa, Lu Jiang, and Jos´ e Lezama. Photorealistic video generation with diffusion models. In 
+
+European Conference on Computer Vision , pages 393–411. Springer, 2024. 2 [15] Amirhossein Habibian, Amir Ghodrati, Noor Fathima, Guil-laume Sautiere, Risheek Garrepalli, Fatih Porikli, and Jens Petersen. Clockwork diffusion: Efficient generation with model-step distillation. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition ,pages 8352–8361, 2024. 2 [16] Yoav HaCohen, Nisan Chiprut, Benny Brazowski, Daniel Shalem, Dudu Moshe, Eitan Richardson, Eran Levin, Guy Shiran, Nir Zabari, Ori Gordon, et al. Ltx-video: Realtime video latent diffusion. arXiv preprint arXiv:2501.00103 ,2024. 2 [17] Amir Hertz, Ron Mokady, Jay Tenenbaum, Kfir Aberman, Yael Pritch, and Daniel Cohen-Or. Prompt-to-prompt image editing with cross attention control. In International Confer-ence on Learning Representations , 2023. 2 [18] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising dif-fusion probabilistic models. In Advances in Neural Informa-tion Processing Systems , pages 6840–6851, 2020. 2 [19] Rongjie Huang, Jiawei Huang, Dongchao Yang, Yi Ren, Luping Liu, Mingze Li, Zhenhui Ye, Jinglin Liu, Xiang Yin, and Zhou Zhao. Make-an-audio: Text-to-audio gen-eration with prompt-enhanced diffusion models. In Inter-national Conference on Machine Learning , pages 13916– 13932, 2023. 2 [20] Xun Huang, Zhengqi Li, Guande He, Mingyuan Zhou, and Eli Shechtman. Self forcing: Bridging the train-test gap in autoregressive video diffusion. arXiv preprint arXiv:2506.08009 , 2025. 2, 3, 5, 6, 1 [21] Ziqi Huang, Yinan He, Jiashuo Yu, Fan Zhang, Chenyang Si, Yuming Jiang, Yuanhan Zhang, Tianxing Wu, Qingyang Jin, Nattapol Chanpaisit, et al. Vbench: Comprehensive bench-mark suite for video generative models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 21807–21818, 2024. 2, 6 [22] Kumara Kahatapitiya, Adil Karjauv, Davide Abati, Fatih Porikli, Yuki M. Asano, and Amirhossein Habibian. Object-centric diffusion for efficient video editing. arXiv preprint arXiv:2401.05735 , 2024. 2 [23] Kumara Kahatapitiya, Haozhe Liu, Sen He, Ding Liu, Menglin Jia, Chenyang Zhang, Michael S Ryoo, and Tian Xie. Adaptive caching for faster video generation with diffu-sion transformers. In Proceedings of the IEEE/CVF Interna-tional Conference on Computer Vision , pages 15240–15252, 2025. 2 [24] Tero Karras, Samuli Laine, and Timo Aila. A style-based generator architecture for generative adversarial networks. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 4401–4410, 2019. 2 [25] Diederik P. Kingma and Max Welling. Auto-encoding varia-tional bayes. In International Conference on Learning Rep-resentations , 2014. 2 [26] Dan Kondratyuk, Lijun Yu, Xiuye Gu, Jos´ e Lezama, Jonathan Huang, Grant Schindler, Rachel Hornung, Vigh-nesh Birodkar, Jimmy Yan, Ming-Chang Chiu, et al. Videopoet: A large language model for zero-shot video gen-eration. In International Conference on Machine Learning ,pages 25105–25124, 2024. 2 [27] Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and Bryan Catanzaro. Diffwave: A versatile diffusion model for audio synthesis. In International Conference on Learning Representations , 2021. 2 [28] Xirui Li, Chao Ma, Xiaokang Yang, and Ming-Hsuan Yang. Vidtome: Video token merging for zero-shot video editing. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 7486–7495, 2024. 2 [29] Yanyu Li, Huan Wang, Qing Jin, Ju Hu, Pavlo Chemerys, Yun Fu, Yanzhi Wang, Sergey Tulyakov, and Jian Ren. Snap-fusion: Text-to-image diffusion model on mobile devices within two seconds. Advances in Neural Information Pro-cessing Systems , 36, 2024. 2 [30] Zhengqi Li, Qianqian Wang, Noah Snavely, and Angjoo Kanazawa. Infinitenature-zero: Learning perpetual view generation of natural scenes from single images. In Eu-ropean conference on computer vision , pages 515–534. Springer, 2022. 2 [31] Shanchuan Lin, Xin Xia, Yuxi Ren, Ceyuan Yang, Xuefeng Xiao, and Lu Jiang. Diffusion adversarial post-training for one-step video generation. In International Conference on Machine Learning , 2025. 2, 4 [32] Andrew Liu, Richard Tucker, Varun Jampani, Ameesh Makadia, Noah Snavely, and Angjoo Kanazawa. Infinite na-ture: Perpetual view generation of natural scenes from a sin-gle image. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 14458–14467, 2021. 2[33] Feng Liu, Shiwei Zhang, Xiaofeng Wang, Yujie Wei, Haonan Qiu, Yuzhong Zhao, Yingya Zhang, Qixiang Ye, and Fang Wan. Timestep embedding tells: It’s time to cache for video diffusion model. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 7353–7363, 2025. 2 [34] Ruoshi Liu, Rundi Wu, Basile Van Hoorick, Pavel Tok-makov, Sergey Zakharov, and Carl Vondrick. Zero-1-to-3: Zero-shot one image to 3d object. In Proceedings of the IEEE/CVF International Conference on Computer Vision ,pages 9298–9309, 2023. 2 [35] Yixin Liu, Kai Zhang, Yuan Li, Zhiling Yan, Chujie Gao, Ruoxi Chen, Zhengqing Yuan, Yue Huang, Hanchi Sun, Jian-feng Gao, et al. Sora: A review on background, technology, limitations, and opportunities of large vision models. arXiv preprint arXiv:2402.17177 , 2024. 2 [36] Ilya Loshchilov and Frank Hutter. Decoupled weight de-cay regularization. In International Conference on Learning Representations , 2019. 6 [37] Nanye Ma, Mark Goldstein, Michael S. Albergo, Nicholas M. Boffi, Eric Vanden-Eijnden, and Saining Xie. Sit: Exploring flow and diffusion-based generative models with scalable interpolant transformers. arXiv preprint arXiv:2401.08740 , 2024. 2 [38] Xinyin Ma, Gongfan Fang, and Xinchao Wang. Deepcache: Accelerating diffusion models for free. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 15762–15772, 2024. 2 [39] Xiaofeng Mao, Zhengkai Jiang, Fu-Yun Wang, Jiangning Zhang, Hao Chen, Mingmin Chi, Yabiao Wang, and Wen-han Luo. Osv: One step is enough for high-quality image to video generation. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 12585–12594, 2025. 2[40] Yotam Nitzan, Zongze Wu, Richard Zhang, Eli Shechtman, Daniel Cohen-Or, Taesung Park, and Micha¨ el Gharbi. Lazy diffusion transformer for interactive image editing. In Eu-ropean Conference on Computer Vision , pages 55–72, 2024. 2[41] OpenAI. Video generation models as world simula-tors. https://openai.com/research/video-generation - models - as - world - simulators ,2024. 2 [42] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF Inter-national Conference on Computer Vision , pages 4172–4182, 2023. 2 [43] Ben Poole, Ajay Jain, Jonathan T. Barron, and Ben Milden-hall. Dreamfusion: Text-to-3d using 2d diffusion. In Inter-national Conference on Learning Representations , 2023. 2 [44] Chenyang Qi, Xiaodong Cun, Yong Zhang, Chenyang Lei, Xintao Wang, Ying Shan, and Qifeng Chen. Fatezero: Fus-ing attentions for zero-shot text-based video editing. In 
+
+Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 15886–15896, 2023. 2 [45] Shuhuai Ren, Shuming Ma, Xu Sun, and Furu Wei. Next block prediction: Video generation via semi-autoregressive modeling. arXiv preprint arXiv:2502.07737 , 2025. 2 [46] Jason Tyler Rolfe. Discrete variational autoencoders. arXiv preprint arXiv:1609.02200 , 2016. 2 [47] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj¨ orn Ommer. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 10684–10695, 2022. 2 [48] Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay Whang, Emily Denton, Kamyar Ghasemipour, Raphael Gontijo Lopes, Burcu Karagol Ayan, Tim Salimans, et al. Photorealistic text-to-image diffusion models with deep language understanding. In Advances in Neural Information Processing Systems , pages 36479–36494, 2022. 2 [49] Masaki Saito, Eiichi Matsumoto, and Shunta Saito. Tempo-ral generative adversarial nets with singular value clipping. In Proceedings of the IEEE international conference on com-puter vision , pages 2830–2839, 2017. 2 [50] Axel Sauer, Dominik Lorenz, Andreas Blattmann, and Robin Rombach. Adversarial diffusion distillation. In European Conference on Computer Vision , pages 87–103, 2024. 2 [51] Florian Schmidt. Generalization in generation: A closer look at exposure bias. arXiv preprint arXiv:1910.00292 , 2019. 3 [52] Uriel Singer, Adam Polyak, Thomas Hayes, Xi Yin, Jie An, Songyang Zhang, Qiyuan Hu, Harry Yang, Oron Ashual, Oran Gafni, et al. Make-a-video: Text-to-video generation without text-video data. arXiv preprint arXiv:2209.14792 ,2022. 2 [53] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denois-ing diffusion implicit models. In International Conference on Learning Representations , 2021. 2 [54] Kiwhan Song, Boyuan Chen, Max Simchowitz, Yilun Du, Russ Tedrake, and Vincent Sitzmann. History-guided video diffusion. In International Conference on Machine Learning ,2025. 3 [55] Hansi Teng, Hongyu Jia, Lei Sun, Lingzhi Li, Maolin Li, Mingqiu Tang, Shuai Han, Tianning Zhang, WQ Zhang, Weifeng Luo, et al. Magi-1: Autoregressive video genera-tion at scale. arXiv preprint arXiv:2505.13211 , 2025. 3, 6 [56] Sheng Wan, Tung-Yu Wu, Wing H Wong, and Chen-Yi Lee. Confnet: predict with confidence. In 2018 IEEE Interna-tional Conference on Acoustics, Speech and Signal Process-ing (ICASSP) , pages 2921–2925. IEEE, 2018. 5 [57] Team Wan, Ang Wang, Baole Ai, Bin Wen, Chaojie Mao, Chen-Wei Xie, Di Chen, Feiwu Yu, Haiming Zhao, Jianxiao Yang, et al. Wan: Open and advanced large-scale video gen-erative models. arXiv preprint arXiv:2503.20314 , 2025. 2, 6, 1 [58] Wenhao Wang and Yi Yang. Vidprom: A million-scale real prompt-gallery dataset for text-to-video diffusion mod-els. Advances in Neural Information Processing Systems , 37: 65618–65642, 2024. 6, 1 [59] Felix Wimbauer, Bichen Wu, Edgar Schoenfeld, Xiaoliang Dai, Ji Hou, Zijian He, Artsiom Sanakoyeu, Peizhao Zhang, Sam Tsai, Jonas Kohler, et al. Cache me if you can: Accel-erating diffusion models through block caching. In Proceed-ings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 6211–6220, 2024. 2 [60] Jay Zhangjie Wu, Yixiao Ge, Xintao Wang, Stan Weixian Lei, Yuchao Gu, Yufei Shi, Wynne Hsu, Ying Shan, Xiaohu Qie, and Mike Zheng Shou. Tune-a-video: One-shot tuning of image diffusion models for text-to-video generation. In 
+
+Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 7589–7599, 2023. 2 [61] Yushu Wu, Zhixing Zhang, Yanyu Li, Yanwu Xu, Anil Kag, Yang Sui, Huseyin Coskun, Ke Ma, Aleksei Lebedev, Ju Hu, et al. Snapgen-v: Generating a five-second video within five seconds on a mobile device. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 2479– 2490, 2025. 2 [62] An Yang, Baosong Yang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Zhou, Chengpeng Li, Chengyuan Li, Dayiheng Liu, Fei Huang, et al. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115 , 2024. 1 [63] Tianwei Yin, Micha¨ el Gharbi, Taesung Park, Richard Zhang, Eli Shechtman, Fredo Durand, and Bill Freeman. Im-proved distribution matching distillation for fast image syn-thesis. Advances in neural information processing systems ,37:47455–47487, 2024. 2, 5, 6 [64] Tianwei Yin, Micha¨ el Gharbi, Richard Zhang, Eli Shecht-man, Fredo Durand, William T. Freeman, and Taesung Park. One-step diffusion with distribution matching distillation. In 
+
+Proceedings of the IEEE/CVF Conference on Computer Vi-sion and Pattern Recognition , pages 6613–6623, 2024. 2, 4, 5, 6 [65] Tianwei Yin, Qiang Zhang, Richard Zhang, William T Free-man, Fredo Durand, Eli Shechtman, and Xun Huang. From slow bidirectional to fast autoregressive video diffusion mod-els. In Proceedings of the Computer Vision and Pattern Recognition Conference , pages 22963–22974, 2025. 2, 3, 6, 1 [66] Yang Zhao, Yanwu Xu, Zhisheng Xiao, and Tingbo Hou. Mobilediffusion: Subsecond text-to-image generation on mobile devices. In arXiv preprint arXiv:2311.16567 , 2023. 2[67] Mingyuan Zhou, Huangjie Zheng, Zhendong Wang, Mingzhang Yin, and Hai Huang. Score identity distillation: Exponentially fast distillation of pretrained diffusion models for one-step generation. In Forty-first International Confer-ence on Machine Learning , 2024. 4 DSA: Dynamic Step Allocation for Fast Autoregressive Video Generation 
+
+# Supplementary Material 
+
+## 6. Implementation details 
+
+Our implementation builds on open-source Wan2.1 [57] and Self-Forcing [20] frameworks, using FlashAttention-3 [10] for DSA . We follow the Wan2.1 [57] flow-matching param-eterization with a shifted time schedule and a 4-step uni-form inference schedule, following [20]. Text prompts are curated from the VidProM [58] dataset, filtered for quality and safety, and expanded using Qwen2.5-7B-Instruct [62]; all VBench evaluations also employ rewritten prompts for consistency with Wan2.1. Training is performed on H100 GPUs (80GB), typically with per-GPU batch size 1 and gra-dient accumulation as needed to reach batch size of 128 . We initialized the real score network and critic network using pretrained weight of the base model. We train DSA using the combination of DMD loss and confidence loss given in Sec-tion 3. For DMD, the gradient of reverse Kullback-Leibler divergence is given by: 
+
+∇θ Et[DKL (pθ,t ∥pdata ,t )] = (5) 
+
+− Et, ˆxt∼qt|0(ˆ xt|ˆx),ˆx∼pθ (ˆ x)
+
+
+
+(sreal (ˆ xt, t ) − sfake (ˆ xt, t )) ∂ ˆx∂θ 
+
+
+
+,
+
+where sreal (·, t ) is the score function for pdata ,t , approxi-mated by a pretrained diffusion model fϕ(·, t ), also referred to as the real score network, and sfake (·, t ) is the score func-tion for pθ,t and is learned through a critic network fψ (·, t )
+
+via the standard diffusion loss. The gradient in Eqn. (5) is equivalent to the following loss function: 
+
+LDMD (θ) = Et, ˆxt,ˆx
+
+ 12 ∥ˆx − sg [ˆ x − (fψ (ˆ xt, t ) − fϕ(ˆ xt, t ))] ∥2
+
+
+
+,
+
+(6) where sg[ ·] denotes the stop gradient operator. Regarding confidence loss 4, we choose a regularization coefficient λ = 0 .02 .
+
+## 7. Additional results 
+
+We report all 16 VBench metrics and compare them against CausVid [65] and Self-Forcing [20]. As shown in Figure 6, 
+
+DSA matches or surpasses existing models in both visual quality and temporal consistency across the full set of met-rics, while maintaining efficient generation speed. Addi-tional qualitative results are provided in Figure 7, demon-strating the high visual fidelity of our method. We also in-clude video samples in the supplemental material. 
+
+Figure 6. VBench scores comparison We compare DSA with CausVid [65] and Self-Forcing [20] in 16 VBench scores. Figure 7. Additional qualitative results from DSA
