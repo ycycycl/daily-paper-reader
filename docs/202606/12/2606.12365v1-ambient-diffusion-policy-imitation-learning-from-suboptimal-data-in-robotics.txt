@@ -1,0 +1,3610 @@
+Title: Ambient Diffusion Policy: Imitation Learning from Suboptimal Data in Robotics
+
+URL Source: https://arxiv.org/pdf/2606.12365v1
+
+Published Time: Thu, 11 Jun 2026 01:27:57 GMT
+
+Number of Pages: 52
+
+Markdown Content:
+# Ambient Diffusion Policy: Imitation Learning from Suboptimal Data in Robotics 
+
+Adam Wei ∗ Nicholas Pfaff † Thomas Cohn † Arif Kerem Dayı Constantinos Daskalakis Giannis Daras Russ Tedrake 
+
+https://ambient-diffusion-policy.github.io/ 
+
+MIT 
+
+Figure 1: Training Algorithm for Ambient Diffusion Policy. High-quality data can be used during training at all diffusion times. Suboptimal data is restricted to training at low or high diffusion times t ∈ [0 , t max ) ∪
+
+(tmin , T ]. Task visualizations. We evaluate Ambient Diffusion Policy on four types of action suboptimality, six different tasks, and scale to the Open X-Embodiment (OXE) [1]. 
+
+Abstract: We propose Ambient Diffusion Policy, a simple and principled method for imitation learning from suboptimal data in robotics. High-quality, task-specific robot data is expensive and time-consuming to collect, while suboptimal datasets with lower-quality or out-of-distribution demonstrations are abundant. Existing methods that co-train on both data sources in robotics often fail to separate the meaningful and the harmful features in the suboptimal samples. In contrast, our method extracts only the useful features by introducing a new axis to co-training in robotics: noise-dependent data usage . Ambient Diffusion Policy restricts the contribution of suboptimal data during training to only the high and low diffusion times. To rigorously justify our approach, we first observe that robot action data exhibits a spectral power law . This induces two important properties on the optimal Diffusion Policy that we exploit: a global-to-local hierarchy and 
+
+locality . We theoretically formalize this discussion using a simplified model. Our experiments validate Ambient Diffusion Policy on four types of suboptimal action data (noisy trajectories, sim-to-real gap, task mismatch, and large-scale data mixtures) across six tasks. The results show that it effectively learns from arbitrary sources of suboptimal data. Notably, it outperforms existing co-training baselines by up to 33% when scaled to Open X-Embodiment—a large dataset with heterogeneous data quality and unstructured distribution shifts. Overall, Ambient Diffusion Policy increases the utility of suboptimal demonstrations and expands the set of usable data sources in robotics. 
+
+> ∗
+
+Corresponding author: weiadam@mit.edu . †Equal contribution. 
+
+> arXiv:2606.12365v1 [cs.RO] 10 Jun 2026
+
+1 Introduction 
+
+The training corpus of nearly every large-scale robot policy spans different tasks, real and simulated environments, embodiments, and even modalities [2, 3, 4, 5, 1, 6, 7, 8, 9]. One reason for this data heterogeneity is that high-quality, task-specific robot data is expensive and time-consuming to collect; it requires skilled teleoperators and well-tuned low-level controllers. In contrast, suboptimal data is abundant. Any real-world data collection effort naturally produces failures and trajectories of differing quality [10, 1, 8, 11]. Out-of-distribution (OOD) data sources are also plentiful and widely available [1, 8]. These include simulation [12, 13], cross-embodied data [1], and ego-centric video [14, 15]. Practitioners often draw from data sources of varying quality [1, 8, 5, 16, 11] to create massive pretraining sets, yet methods for learning from arbitrary suboptimal or shifted distributions are underexplored in robotics [5, 2, 12, 16]. We propose a simple and principled method for training robot policies that can leverage suboptimal and OOD datasets. The simplest way to handle heterogeneous datasets with mixed quality is to discard the lowest-quality samples [5, 2, 17, 18], but this data filtering is wasteful: even suboptimal samples contain useful learning signal [19]. The most common alternative in robotics is to “co-train” on every-thing while down-weighting suboptimal datasets [2, 3, 4, 5, 6, 12, 13]. However, training a model to sample from a mixture with low-quality distributions fundamentally biases the policy [20, 10]. Finetuning is a complementary method [2, 11, 18, 4], but can be insufficient alone (Section 7.5). Our key intuition is that suboptimal and high-quality samples differ in some features, but align in others. For example, non-expert teleoperators may share the same high-level plan as experts, but exhibit less precise manipulation skills. Conversely, pick-and-place data may be useful for grasping primitives, but encode the wrong task. We turn this intuition into an algorithm by observing that robotic data exhibits a spectral power law [21]. We show that this spectral structure induces a global-to-local hierarchy in action diffusion and a locality property [22] in the optimal denoisers. Concretely, Diffusion Policy [23] learns high-level planning at high noise and motion primitives at low noise. Thus, a policy can selectively learn useful features from suboptimal data by using it only at noise levels where it aligns with the target distribution. This unlocks a new design axis for co-training in robotics: noise-dependent data usage .To this end, we propose Ambient Diffusion Policy , a principled algorithm for training Diffusion Policies on suboptimal robot data. Each suboptimal sample can only contribute to training at the high or low diffusion times where it aligns with the target data. Our method extends the Ambient Diffusion Omni framework [24, 19] (or “Ambient” for short), which has been applied to computer vision and protein design [25]. Our contributions are as follows: • Properties of Robot Data. We empirically demonstrate that robot action data exhibits a spec-tral power law, which induces a global-to-local hierarchy and locality in action diffusion. These properties make Ambient Diffusion Omni well-suited for robotics (Section 4). • Ambient Diffusion Policy. We propose a simple and principled method for learning from suboptimal data that requires just a single change to Diffusion Policy’s data sampler (Section 6). • Generality. Ambient outperforms baselines when training on three common types of action suboptimality: noisy demonstrations, sim-to-real gap, and task mismatch (Section 7). • Scale. When trained on Open X-Embodiment [1]—a large dataset with mixed data quality and unstructured distribution shifts—Ambient outperforms the co-training baseline by up to 33% 
+
+on two real-world tasks. Additionally, Ambient continues to improve as we scale the amount of suboptimal data in the training mixture, whereas co-training plateaus (Section 8). • Theory. We prove that for a simple theoretical model, the spectral power law implies fast con-traction through noise (Theorem 1) and locality (Theorem 2) of the optimal policies. These contributions justify our algorithm and advance the theoretical foundations of the broader Am-bient Diffusion framework (Section 5). 22 Related Work 
+
+Dataset Re-weighting. The prevailing method for training on heterogeneous datasets in robotics is to re-weight each dataset’s contribution to the loss [2, 3, 4, 5, 6, 7, 12, 13, 26]. In our problem setting, this method would optimize the loss 
+
+Lco-training (θ) = α LDp (θ) + (1 − α) LDq (θ), (1) where LDp and LDq denote the loss on the target and suboptimal datasets, and α ∈ [0 , 1] is the re-weighting parameter. In the remainder of the paper, we use “co-training” to refer to this standard approach. A core challenge is weight selection for each dataset [7, 5, 27, 28, 29, 16, 30]. But even with the optimal weights, training a policy to sample from a mixture with suboptimal distributions biases the policy [20, 10]. Our method avoids this issue by only training on suboptimal samples in specific intervals of the diffusion process. Importantly, these intervals have precise interpretations and can be automatically annotated. 
+
+Data Filtering. A related method is data filtering, which rejects suboptimal samples entirely [5, 2, 17, 31, 32]. Our experiments and prior work [19, 11, 10] show that data filtering is wasteful. For example, Dexora [17] improves policy performance by discarding 80% of its training demonstrations using a kinematic smoothness heuristic. Section 7.1 shows the opposite for Ambient Diffusion Policy: training on additional non-smooth demonstrations improves performance while retaining the policy’s smoothness. Similarly, OpenVLA’s Magic Soup++ mixture [5] includes only 27 of the datasets in OXE [1]; Section 8 shows that our method can still extract useful learning signal from the discarded datasets. 
+
+Learning from Suboptimal or OOD Data. Prior works studied learning from corrupted data [33, 24, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]; however, many require multiple training runs [45, 46, 47] or rely on knowing the form of the corruption. The latter is unrealistic in robotics. For example, the sim-to-real gap has no closed-form description. Recent works in robotics have also begun exploring training methods for suboptimal data. π0.7 [10] labels data quality and LDA-1B [48] relegates low-quality trajectories to an auxiliary dynamics objective. Other approaches learn invariant representations between the target and suboptimal data [49, 50], but are challenging to scale [12]. Tangkaratt et al. [20] and Liu et al. [51] propose methods for robust imitation learn-ing; however, they focus on ignoring corrupted samples instead of learning from them. They also require over half the data to be high-quality. Concurrent work explored a similar idea to ours for hand-tracking data [52]. In contrast, our method learns from arbitrary mixtures of suboptimal action data, scales to large real-world datasets [1], has theoretical grounding, and is simple to implement. 
+
+3 Background 
+
+3.1 Robot Imitation Learning and Diffusion Policy 
+
+Given a dataset Dp = {(O(i), A (i))}np 
+
+> i=1
+
+of observation-action pairs, imitation learning aims to train a policy π(A | O) that approximates the conditional distribution p(A | O) [23]. Here, A and O
+
+represent chunks of future actions and recent observations [53]. Diffusion Policy [23] samples from 
+
+π(A | O) with a conditional denoising process over the action space [54]. Concretely, it learns a family of denoisers {hθ (At, O, t )}t∈[0 ,T ] that predict the clean action A0 from a noisy version 2
+
+At = A0 + σ(t) Z, Z ∼ N (0 , I ), (2) where T is a sufficiently large constant, σ(t) is a strictly increasing function known as the noise schedule, and σ(0) = 0 . For brevity, we write σt := σ(t).These denoisers are trained by minimizing the denoising loss [54] (or a reparametrization of it, as in flow matching [56]): 
+
+L(θ) = Et, (O,A 0), A t|A0
+
+∥hθ (At, O, t ) − A0∥2 , (3)  
+
+> 2Diffusion Policy [23] uses a variance-preserving implementation. We present it from the variance-exploding perspective to lighten notation. The two perspectives are equivalent up to a change of variables [55]; see Appendix B.
+
+3where t ∼ U [0 , T ], (O, A 0) ∼ D p, and At is sampled from Eq. (2). For a sufficiently expressive hθ ,the minimizer of Eq. (3) is the conditional expectation h∗ 
+
+> θ
+
+(At, O, t ) = E[A0 | At, O ]. Given access to the conditional expectations, one can sample from the target distribution π(A | O) by running a reverse diffusion process [23, 54, 57]. Appendix E.2 provides implementation details for Diffusion Policy. 
+
+3.2 Problem Setting 
+
+Suppose we have access to a (small) dataset, Dp = {(O(i), A (i))}np
+
+> i=1
+
+, from a target distribution, p,and a much larger dataset, Dq = {(O(i), A (i))}nq
+
+> i=1
+
+, from a shifted or suboptimal distribution, q. As discussed in the Introduction, this is a common problem setting in robotics. 
+
+Problem Statement: Our goal is to leverage the vast pool of suboptimal samples in Dq to improve the estimation of the denoisers, Ep[A0 | At, O ], on the user-defined target distribution. The definitions of p and q can be arbitrary. In general, Dp is a dataset that a practitioner considers “high-quality” for a downstream application. In this paper, we define Dp as expert demonstrations on the target robot, environment, and task; however, our framework applies equally well to any other definition, including heuristic measures [58] or human labels [10]. In Section 7, we construct Dq to contain controlled distribution shifts. In Section 8, we scale Dq to Open X-Embodiment (OXE) [1]. 
+
+3.3 Ambient Diffusion Omni 
+
+This Problem Statement is not unique to robotics. Ambient Diffusion Omni was proposed by Daras et al. [19] to address a similar problem in the vision domain. Their key idea is to allow suboptimal samples from q to be used only at certain diffusion times during training. The algorithm assigns two parameters to samples from Dq , denoted tmin and tmax . Samples from Dq can only contribute to the learning at diffusion times t ∈ [0 , t max ) ∪ (tmin , T ].The algorithm leverages noise as a contraction mechanism : for any distributions p and q supported on a subset of Rd with diameter D, the authors show that 
+
+dTV (pt, q t) ≤ dTV (p, q ) · D
+
+2σt
+
+, (4) where dTV is the Total Variation distance, pt = p ⊛ N (0 , σ tI), and qt = q ⊛ N (0 , σ tI).Simply put, noise erases distribution differences, i.e. p and q contract towards one another. Hence, there exists a sufficiently high diffusion time, tmin , for which noisy actions from both the high-quality and suboptimal distributions become effectively indistinguishable. Consequently, Dq can safely contribute to training at high noise when t ∈ (tmin , T ]. The utility of q is highest when tmin 
+
+is small (i.e. when p and q contract quickly). We discuss sufficient conditions for fast contraction and justification for using Dq for t ∈ [0 , t max ) in subsequent sections. Section 4 examines structural properties of action data that make this method well-suited for robotics. Section 5 theoretically formalizes the discussion in both Section 4 and prior work [19, 25]. Section 6 outlines our algorithm. Despite the in-depth motivation, the resulting method is remark-ably simple: it requires a single change to the Diffusion Policy [23] data sampler. We conclude with experiments that demonstrate the generality and scalability of our method. 
+
+4 Distributional Properties of Robot Data 
+
+We empirically show that robot data exhibits a spectral power law . This spectral structure is special for two reasons. First, it is not universal: it is absent in natural audio [59, 60], stellar spectra [61], and Poisson point processes [62]. Second, we show that it makes Ambient Diffusion effective: it implies a global-to-local hierarchy (Figure 2), fast contraction through noise (Theorem 1), and a locality property (Theorem 2). Hence, Ambient Diffusion is well-suited for robotics. 4Figure 2: The spectral power law induces a global -to-local hierarchy in action diffusion. This is analogous to the “coarse-to-fine” hierarchy in image diffusion [60]. (a) t ≥ t2 (global planning): 
+
+the policy commits to a high-level path through the maze. t < t 2 (local refinement): it refines the plan to be collision-free at t1 and smooth at t0. (b) t3: the policy plans to move a block to the right bin. t2: it plans which block to grasp. t < t 2: it refines the grasping motion. 10 1 10 0          
+
+> Frequency (Hz)
+> 10 3
+> 10 2
+> 10 1
+> 10 0
+> Power Spectral Density
+> Sf, mean =1.47
+> Average PSD (Delta Actions, Normalized) OXE Mixture
+> x
+> y
+> z
+> Axis Angle ( x)
+> Axis Angle ( y)
+> Axis Angle ( z)
+> Gripper
+> f1.47 (fit)
+
+(a) Spectral power law in robot action data. The power spectral density for OXE [1], a collection of 2.4M robot episodes across 70+ datasets, follows a power law. Figure 11 shows that this spectral power law is a more general property of robot data. 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15    
+
+> Action Index i
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> h(8) / A(i)
+> t F [Normalized Sensitivity]  Denoiser Locality: OXE
+> Target: i= 8
+> 0
+> 20
+> 40
+> 60
+> 80
+> Diffusion Time  t
+
+(b) Locality in robot action data. Visualizing the sensitivity of the 8th action estimate to its neighbor-ing actions (Eq. (83)). At low noise, the 8th action estimate is most sensitive to its temporal neighbors. 
+
+4.1 Spectral Power Law in Robotics 
+
+The power spectral density (PSD) of a signal measures its energy at each frequency component, f .The signal exhibits a spectral power law if its PSD decays approximately as |f |−α, where α > 0. In other words, its energy is concentrated in low-frequency components. A formal definition extended to random vectors is presented in Definition 1. Figures 3a and 11 show that robot action data exhibits a spectral power law .
+
+Implications for Diffusion Policy [23]: When a spectral power law exists, Dieleman [60] showed that denoisers generate low-frequency features at high noise, and high-frequency features at low noise. Figure 4 illustrates that in robotics, low frequencies encode global features (e.g. the high-level plan), while high frequencies encode local features (e.g. grasping primitives and smoothness). Thus, Diffusion Policies exhibit a global-to-local hierarchy: they learn global planning at high noise and local motion primitives at low noise. Appendix D provides further experimental evidence. This hierarchy unlocks a new design axis for co-training algorithms in robotics: noise-dependent data usage . Diffusion Policies learn different features of the actions at each noise level; thus, sub-optimal samples should only contribute to training at noise levels where p and q align. 
+
+Implications for Ambient Diffusion Policy: Due to the spectral power law, adding Gaussian noise to robot data acts as a high-frequency mask (Figure 4). Thus, if differences between p and q are 5Figure 4: The spectral power law makes Gaussian noise act as a high-frequency mask. (a) 
+
+Noisy trajectory visualizations. (b) PSD analysis for the noisy trajectories in the x-dimension at each diffusion time: the gray regions indicate masked frequencies, which have low SNR. As t increases, adding Gaussian noise destroys the signal in the trajectory, starting from the local (high-frequency) features first. This effect is visible in both the noisy trajectories and the PSD plots. concentrated in a high-frequency tail (i.e. low-level actions), then tmin will be small. We formalize this in Theorem 1. By only learning from suboptimal samples when t > t min , policies can learn the useful global features in Dq and ignore the local suboptimality (which is masked by noise). Fortunately, the suboptimality in many robot datasets is in the local actions. For instance, non-expert and expert demonstrations may aim to achieve the same goal, but differ in the quality of the low-level motions. Similarly, in sim-to-real co-training or cross-embodied data, the high-level plan may be shared while the precise contact dynamics or feasible motions may differ. 
+
+4.2 Locality in Robotics 
+
+A denoiser exhibits “locality” if its output at each coordinate depends primarily on a small receptive field in the noisy input [22, 19]. 3 In robotics, this means that each action output from the denoiser is most sensitive to its temporal neighbors in the noisy input. In Theorem 2, we prove that the spectral power law can imply locality in the optimal denoisers. Indeed, Figure 3b empirically identifies this phenomenon in robotics. Intuitively, this is because these denoisers focus on resolving local motion primitives, so they do not need to attend to distant actions in the input. Now suppose that p and q share the same local motion primitives but differ globally. Due to locality, there exists a sufficiently small tmax such that for all t < t max , p and q agree within the receptive field of the optimal denoiser. Section 5 formalizes this statement. Section 7.4 leverages locality to learn local grasping primitives from data at low noise, even when its task-level structure is incorrect. 
+
+Remark: A spectral power law and locality exists in all the examined robot datasets (Table 4). This suggests that these are general properties of robot data. Section 6 provides methods for estimating 
+
+tmin and tmax to leverage these properties in Ambient Diffusion Policy. 
+
+> 3As in Lukoianov et al. [22], “locality” is a property of the data which is inherited by the optimal denoiser at low noise. We use the term “locality” loosely as both a property of the data and the resulting denoisers.
+
+65 Theoretical Foundations 
+
+We prove two theorems that extend the theoretical foundations of Ambient Diffusion and rigorously justify our method for robotics. Prior works [19] empirically identify the spectral power law and locality as important properties. We prove that for a simplified model, the former implies both 
+
+fast contraction through noise (Theorem 1) and locality of the optimal denoiser (Theorem 2). This establishes the spectral power law as the single fundamental property underlying the framework. Both theorems are proved for zero-mean stationary Gaussians. We adopt this setting for two reasons: 
+
+1) it simplifies the bounds, and 2) it is a natural model for latent-space diffusion, which has been proposed in robotics [63], and is common in generative modeling more broadly [64]. Extending the analysis to general distributions is left to future work. Proofs are presented in Appendix A. We begin by formally defining the spectral power law for general random vectors. 
+
+Definition 1 (Spectral Power Law) . Let X be a zero-mean, stationary random vector on RN , and let 
+
+SX (f ) := E|(FX)( f )|2 denote its power spectral density in the orthonormal Fourier basis. We say that the distribution of X follows a spectral power law if there exist a constant C > 0, a rolloff exponent α > 1, and a cutoff frequency f0 ≥ 1 such that the high-frequency spectrum satisfies: 
+
+SX (f ) = C|f |−α for all |f | ≥ f0.
+
+The exact spectral behavior below the cutoff f0 is permitted to be arbitrary but bounded. 
+
+5.1 Contraction Through Noise 
+
+Theorem 1 states that a spectral power law and low-frequency alignment between p and q imply fast contraction through noise. Moreover, this contraction is independent of the original distance .
+
+Theorem 1 (Spectral Power Law implies fast contraction through noise) . Let p0 = N (0 , Σp) and 
+
+q0 = N (0 , Σq ) be zero-mean stationary Gaussians on RN with power spectra Sp, S q . Fix a cutoff frequency f ⋆ ≥ 1, an exponent α > 12 , and a constant C > 0. Assume: 1. (Low-frequency agreement.) Sp(f ) = Sq (f ) for every f ≤ f ⋆.2. (Power-law tail.) max( Sp(f ), S q (f )) ≤ Cf −α for every f such that f ⋆ < f ≤ ⌊ N/ 2⌋.Let pt := p0 ∗ N (0 , σ 2 
+
+> t
+
+I) and qt := q0 ∗ N (0 , σ 2 
+
+> t
+
+I). If 
+
+σ2 
+
+> t
+
+≥ C(f ⋆)−α, (⋆)
+
+then 
+
+dKL (pt∥qt) ≤ 4C2
+
+(2 α − 1) σ4 
+
+> t
+
+(f ⋆)2α−1 dTV (pt, q t) ≤√2Cσ2
+
+> t
+
+p(2 α − 1)( f ⋆)2α−1 .
+
+In contrast, Eq. (4) depends on the original TV distance (which can be arbitrarily close to 1) and decays only as 1/σ . For our simple theoretical model, the spectral power law enables fast contraction and, consequently, high utilization of the suboptimal data in Ambient Diffusion. 
+
+5.2 Spectral Power Law Implies Locality 
+
+The next theorem shows that the spectral power law implies locality for the optimal denoiser at low noise levels. 
+
+Theorem 2 (Spectral Power Law implies locality of the optimal denoiser) . Let X0 ∼ N (0 , Σ) be a zero-mean stationary Gaussian on RN whose power spectrum S(f ) follows a spectral power law with constant C > 0 and exponent α > 1. Let Xt = X0 + σtZ be the variance-exploding noisy observation, and h⋆t (x) := E[X0 | Xt = x] denote the MMSE optimal denoiser. 
+
+7Let Mi be a circulant mask that sets to zero all coordinates of the input x at a circular distance strictly greater than L from index i. Then, for any mask size 1 ≤ L ≤ ⌊ N/ 2⌋, the absolute error in the i-th coordinate between the full optimal denoiser and the masked denoiser is bounded by: 
+
+(h⋆t (x)) i − (h⋆t (Mix)) i ≤ αN ∥x∥∞
+
+8L .
+
+In short, at low noise levels the optimal denoiser is functionally myopic: it can reconstruct the signal by observing only a local spatial neighborhood, safely ignoring the global structure of the input. This is precisely the property that Ambient Diffusion Policy exploits to learn local action primitives from suboptimal data, even when its global structure is incorrect (Section 7.4). 
+
+6 Ambient Diffusion Policy: Method 
+
+Since robot data exhibits a spectral power law, learning from suboptimal data in robotics with Am-bient is empirically and theoretically justified. We now present our algorithm: Ambient Diffusion Policy. It has two phases: a) data annotation, and b) training. 
+
+6.1 Phase 1: Dataset annotation 
+
+This phase annotates tmax and tmin for the suboptimal samples from Dq . The simplest method is to perform a hyperparameter sweep. A more principled solution is to use a classification network. In particular, σtmin corresponds to the minimal amount of noise required to make the distributions pt
+
+and qt indistinguishable [19]. Hence, one way to find this noise level is to train a classifier, cϕ(At, t )
+
+that predicts the probability that the noisy action At came from pt (as opposed to qt). Then, tmin is the minimum noise level required to fool the classifier into classifying samples from qt as samples from pt (i.e. the classifier cannot reliably distinguish pt and qt). Formally, for some small τ > 0,we assign 
+
+tmin = inf {t : E(O,A 0)∼q, A t|A0 [cϕ∗ (At, t )] > 0.5 − τ }. (5) Figure 13 visualizes this method for τ = 0 .05 ; details are in the Appendix. If the classifier is well-trained, we show that this annotation method guarantees distributional closeness between pt and qt
+
+for t > t min (Theorem 4). This classifier can also be used to annotate samples at different granularities (e.g. one tmin per dataset vs one tmin per sample); Appendix G.3 and Figure 19f provide additional details. A similar classifier-based approach can be used to annotate tmax [19], although we do not use it in this paper. 
+
+6.2 Phase 2: Training 
+
+The training loop for Ambient Diffusion Policy is the same as Diffusion Policy [23] with one re-quired change: a custom data sampler. The custom sampler first draws a batch of diffusion times 
+
+t(i) ∼ U [0 , T ]. Afterward, it draws admissible samples from Dp ∪ D q . Samples from Dp are always admissible; suboptimal samples from Dq are admissible only if t(i) ∈ [0 , t max ) ∪ (tmin , T ]. Fig-ure 1 visualizes the intervals where each dataset can contribute to training. Inference is identical to Diffusion Policy. We defer the full training pseudocode to Appendix E.1 to prevent implementation details from obscuring the essence of the method. 
+
+Variants of Ambient Diffusion Policy. Ambient Diffusion Policy provides an (optional) alterna-tive loss function [24], which is discussed in Appendix C. Additionally, there is a variation of the algorithm that uses the classifier from Phase 1 for rejection sampling at training-time. We provide pseudocode and theoretical justification in Appendix E.3 and leave experimental verification of this variant to future work. 8Table 1: Maze and Neural Motion Planning results (1000 trials each). In both settings, Ambient Diffusion Policy achieves the highest success rate and is substantially smoother than co-training. 
+
+Training Algo. Success Rate ↑ Smoothness ↓
+
+(Eq. (84)) Data Filtering 57 .5+3 .1 
+
+> −3.1
+
+% 31 .9
+
+Co-train (α∗ = 0 .019 ) 99 .4+0 .4 
+
+> −0.7
+
+% 62 .2
+
+Ambient (σt∗ 
+
+> min
+
+= 0 .074 ) 99 .5+0.3 
+
+> −0.7
+
+% 31 .0
+
+(a) 2D maze. 
+
+Training Algo. Success Rate ↑ Smoothness ↓
+
+(Eq. (84)) Data Filtering 46 .0+3 .1 
+
+> −3.1
+
+% 3.9
+
+Co-train (α∗ = 0 .091 ) 59 .9+3 .1 
+
+> −3.1
+
+% 42 .7
+
+Ambient (σt∗ 
+
+> min
+
+= 0 .025 ) 65 .9+2.9 
+
+> −3.0
+
+% 31 .4
+
+(b) 7-DoF neural motion planning. 20 30 40 50 60 70 80    
+
+> Average Squared Acceleration
+> 0.90
+> 0.92
+> 0.94
+> 0.96
+> 0.98
+> 1.00
+> Success Rate
+> Success Rate vs Smoothness
+> Ambient ( tmin sweep)
+> Co-training ( sweep)
+> RRT Only
+> Better
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> tmin
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+(a) 2D maze. 0 10 20 30 40 50 60     
+
+> Average Squared Acceleration
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> Success Rate
+> Success Rate vs Smoothness
+> Ambient ( tmin sweep)
+> Co-training ( sweep)
+> RRT Only
+> Trajopt Only
+> Better
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> tmin
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+(b) 7-DoF neural motion planning. 
+
+Figure 6: The “smoothness vs success rate” Pareto frontier for Ambient (blue) dominates co-training (red) in both the (a) maze and (b) neural motion planning experiments. This trade-off is controlled by σtmin for Ambient and α for co-training. 
+
+7 Controlled Experiments 
+
+We evaluate Ambient Diffusion Policy on three distribution shifts in robot action data to illustrate its generality: noisy trajectories, sim-to-real gap, and task mismatch. This section compares our method against data filtering, co-training, and finetuning. Appendix F provides experimental details. 
+
+7.1 Noisy Trajectories 
+
+Figure 5: GCS (left) vs RRT (right) data. The high-quality GCS [65] trajectories are smoother and shorter than their RRT [66] counterparts. Consider a 2D point robot that must navigate between random start and goal positions in a maze environment (Figure 1a). A policy roll-out is successful if it reaches an ϵ-ball around the goal within a time limit without collision. We measure a policy’s global understanding of the maze using success rate, and its local 
+
+smoothness using average squared acceleration (Eq. (84)). 
+
+Dp contains 50 smooth trajectories from GCS [65]; Dq contains 5,000 cheaper but jittery tra-jectories from RRT [66]. Figure 5 visualizes the datasets. This mimics real-world sources of suboptimality, such as teleoperation with low-quality hardware or noisy control stacks [67]. The policy trained with data filtering is smooth, but performs poorly (Table 1a). Co-training and Ambient both perform well ( 99 .0%+ success), but the Ambient Diffusion Policy is 2 × smoother. This is because RRT’s jittery behavior is a local property; thus, excluding it from training at low dif-fusion times prevents the policy from learning its non-smooth behavior. Figure 14 (Appendix G.1) 9Table 2: Main planar pushing results (200 trials). All Ambient variations outperform co-training [12].                  
+
+> Training Algo. Data Filtering Co-training [12] Ambient (tmin per dataset) Ambient (tmin per datapoint) Ambient + Locality (σtmax = 0 .025 )Success Rate ↑56 .5+7 .0
+> −7.2%84 .5+4 .7
+> −5.8%87 .0+4 .3
+> −5.5%93 .5+3.0
+> −4.4%92 .0+3 .4
+> −4.7%
+
+visualizes the rollouts. Lastly, training on Dq trades smoothness for better data coverage and suc-cess rates. Ambient’s Pareto frontier for this trade-off strictly dominates the co-training baseline (Figure 6a). 
+
+Ablation: We claim that pt ≈ qt for t > t min . If this were true, then we should be able to train an effective policy without using Dp for t > t min . To test this, we train a policy that exclusively trains on Dq for t ∈ (tmin , T ] and Dp for t ∈ [0 , t min ]. Remarkably, it matches the performance of the Ambient Diffusion Policy, with a success rate of 99 .0% and a squared acceleration of 29 .9.
+
+7.2 Neural Motion Planning 
+
+We extend the maze experiment to neural motion planning [68, 69, 70] with a 7-DoF robot arm in a cluttered environment (Figure 1b). The setup and metrics are analogous to the 2D maze, except that start and goal configurations are sampled around objects and shelves, and the planner predicts the entire plan open-loop. Appendix Table 7 compares the two setups. The main results in Table 1b and Figure 6b mirror the 2D maze experiments: Ambient achieves the highest success rate while remaining substantially smoother than co-training. The full experimental details and ablations are in Appendix G.2. 
+
+Implications for Neural Motion Planning (NMP). Most neural motion planners [71, 69] are trained on large datasets of sampling-based trajectories (akin to Dq ) since they are inexpensive to generate. Unfortunately, sampling-based trajectories are non-smooth [66]; thus, these approaches choose to prioritize data scale over quality. Our results suggest that an NMP trained with Ambient can enjoy the best of both worlds: augmenting the existing sampling-based datasets with a small amount of high-quality data could yield planners that are both general and smooth. 
+
+7.3 Sim-to-Real Distribution Shift 
+
+We evaluate Ambient Diffusion Policy on sim-and-real co-training using the planar pushing setup from [12] (Figure 1c), a canonical task in robot imitation learning. Our experiments use the sim-and-target problem from Wei et al. [12] as a controlled proxy for the sim-and-real problem. 
+
+Dp consists of 50 teleoperated demonstrations in the target environment; Dq consists of 2000 trajec-tories generated by a motion planner [72] in the simulated environment. We use the same datasets from Wei et al. [12] to enable direct comparisons with their method. A policy rollout is successful if it pushes the T to the target pose within a time limit. Table 2 reports the success rate for three variations of Ambient Diffusion Policy that annotate tmin 
+
+at two granularities: per dataset (with a parameter sweep) and per datapoint (with the classifier approach). We explore intermediate granularities, scaling laws, and more ablations in Appendix G.3. All Ambient variations outperform the best co-trained policy [12]. Annotating tmin per datapoint performs the best because even within a single dataset, the utility of each datapoint can vary. As before, Ambient learns from suboptimal simulation data by leveraging the diffusion hierarchy. Dp
+
+and Dq share the same high-level strategy; thus, Dq is safe to use at high noise. Locality ( tmax > 0)does not help since Dp and Dq exhibit different low-level contact dynamics. 10 Table 3: Main block sorting results ( ∼800 blocks). Only Ambient Diffusion Policy (Locality) performs well on all metrics.                                            
+
+> Training Algo. Data Filtering DqOnly Co-train (α∗= 0 .9)Locality (σt∗
+> max = 0 .46 )Logic ↑98 .6+0.8
+> −1.5%3.0+1 .6
+> −1.2%26 .0+3 .4
+> −3.2%98 .2+0 .8
+> −1.2%Motion ↑61 .9+3 .4
+> −3.5%83 .0+2 .5
+> −2.8%87 .2+2 .2
+> −2.5%95 .0+1.4
+> −1.7%Success Rate ↑61 .0+3 .4
+> −3.5%2.5+1 .3
+> −1.0%22 .7+3 .1
+> −2.9%93 .3+1.6
+> −2.0%0.0 0.2 0.4 0.6 0.8 1.0
+> Logic Metric
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Motion Metric
+> Motion vs Logic Pareto Frontier
+> Locality ( tmax sweep)
+> Co-training ( sweep)
+> pOnly
+> qOnly
+> Better
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> tmax
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Figure 7: Left: Performance metrics vs σtmax . The logic metric plateaus before σt∗ 
+
+> max
+
+= 0 .46 and deteriorates rapidly afterwards; the opposite is true for the motion metric. Thus, the policy learns 
+
+local motion-level features for t ∈ [0 , t ∗
+
+> max
+
+) and global logic-level features for t ∈ (t∗
+
+> max
+
+, T ]. Right: 
+
+Unlike co-training, Ambient achieves a near-optimal trade-off between logic and motion metrics. 
+
+7.4 Task Mismatch 
+
+Ambient can leverage “locality” to learn local action primitives (e.g., grasping) from data collected on a different task. Consider the block sorting task in Figure 1d. The robot must sort red and blue blocks into the left and right bins, respectively. This requires two distinct skills: motion (grasping and placing blocks) and logic (selecting the correct bin). We design a metric to evaluate each skill: • Motion metric: # blocks placed # total blocks . This metric is independent of logical reasoning because the numerator counts any placed block, regardless of logical correctness. • Logic metric: # blocks placed correctly # blocks placed . This metric is independent of pick-and-place ability because the denominator only counts successfully placed blocks. The overall success rate is # blocks placed correctly # total blocks , the product of the two metrics. Dp contains 50 demon-strations with the correct sorting. Dq contains 200 demonstrations with the opposite sorting. To isolate the effect of locality, we set tmin = 0 and sweep tmax for Dq .Table 3 presents the results. Co-training performs poorly because training on Dq at all diffusion times teaches the policy both the useful motion primitives and the incorrect logic. Ambient Diffusion Policy solves this problem by restricting Dq to t ∈ [0 , t max ). As illustrated in Figures 2 and 7, the policy learns motion primitives at low diffusion times without attending to the (incorrect) task-level structure of the demonstrations. This results in near-perfect scores on both metrics simultaneously. 
+
+Ablations: We present two ablations in Appendix G.4. 1) we add a one-hot encoding indicating the sorting direction to the policies. Ambient still outperforms the co-training. 2) we train a policy that exclusively uses Dq for t ∈ [0 , t max ) and Dp for t ∈ [tmax , T ]. This is the locality -version of the ablation in the 2D maze experiment. The resulting policy achieves a logic and motion score of 
+
+97 .9% and 93 .8% , reinforcing our claim that action diffusion is hierarchical. 11 Motion Planner Sim-and-Real Bin Sorting 
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate  better
+> Maze
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> Avg. Squared Accel.
+> better
+
+Finetuning Comparison    
+
+> Co-training Ambient Co-training + Finetune Ambient + Finetune
+
+Figure 8: Left: success rate of policies finetuned from different base policies. Right: smoothness of finetuned policies in the maze experiment. We compare smoothness instead of success rate since all policies achieved 99.0%+ success rate. 
+
+7.5 Finetuning Comparison 
+
+Finally, we compare against the finetuning baseline. For each experiment, we finetune the best co-trained policy and the best Ambient policy on Dp; implementation details are in Appendix I.1. Figure 8 suggests three findings. First, finetuning an Ambient base policy consistently outperforms finetuning a co-trained base policy. Second, the Ambient base policy can often outperform the 
+
+finetuned co-trained policy. Third, finetuning an Ambient base policy does not always help. We hypothesize that the Ambient policies already ignore undesirable features in the suboptimal data. 
+
+8 Scaling Experiments: Open X-Embodiment 
+
+Having shown the generality of Ambient Diffusion Policy, we now scale to Open X-Embodiment (OXE) [1]. OXE is a large collection of real-world data with heterogeneous quality and unstructured distribution shifts. Our goal is to extract useful learning signal from as much of this “suboptimal” data as possible. The experiments evaluate Ambient Diffusion Policy on two real-world tasks. 
+
+1) Table Cleaning (Figure 1e): the robot must open the drawer, place objects inside, and close the drawer. The diversity of the test-time objects (unseen during training) makes this challenging. Performance is measured with the task completion rubric in Table 11. 
+
+2) Tower Building (Figure 1f): the robot must stack blocks in alternating directions and colors as high as possible. This task requires precise manipulation since placement errors compound as the tower grows. Performance is measured by the number of blocks placed before toppling the tower. The training procedure for both tasks is identical. Dp consists of a small number of demonstrations for each task. Dq is one of two subsets of the Open X-Embodiment (OXE) dataset: 1) Magic Soup++ (MS++) , 27 datasets from OXE used by OpenVLA [5], or 2) Custom OXE (COXE) , 48 datasets from OXE that contain MS++ as a subset. tmin and tmax are annotated according to Phase 1 of the method. We note that COXE was curated to be as inclusive as possible; details are in Appendix H.1. Lastly, for both co-training and Ambient, we re-weight each dataset’s sampling probability at every diffusion time. Let wi denote the weight for dataset i, and St denote the indices of datasets that are permissible at diffusion time t. The sampling probability of dataset i at diffusion time t is 
+
+˜w(i) 
+
+> t
+
+=
+
+
+
+wi
+
+P 
+
+> j∈St
+
+wj
+
+if i ∈ St
+
+0 otherwise 
+
+. (6) 12 MS++ COXE        
+
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Success Rate
+> 0.68 0.70
+> 0.75
+> 0.80
+> 0.71
+> 0.82 0.83
+> Table Cleaning
+> p: 50 demos
+> MS++ COXE
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Success Rate  0.81
+> 0.75
+> 0.85
+> 0.78
+> 0.82
+> 0.87
+> 0.83
+> Table Cleaning
+> p: 150 demos
+> COXE
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> 15.0
+> Average Blocks Placed
+> 8.20
+> 11.35
+> 14.50 15.15
+> Tower Building
+> 35 Clean Demos
+> Data Filtering Co-training Ambient Ambient + Locality
+
+Figure 9: When scaled to OXE, Ambient Diffusion Policy outperforms data filtering and co-training by up to 15% on table cleaning and 84% on tower building (20 trials per policy). In co-training, St contains all datasets for all t ∈ [0 , T ]; in Ambient, St depends on each dataset’s 
+
+tmin and tmax (see Figures 21 and 22). Re-weighting marginally improves the Ambient policies but is not required; in contrast, it is necessary for co-training (see Section 8.2). 
+
+8.1 Main Results Table Cleaning ( Dp with 50 demos): Data filtering achieves 68 .2% task completion; co-training adds just 2-3% and plateaus when Dq scales from MS++ to COXE. On the other hand, the best Am-bient Diffusion Policy outperforms co-training by 12% and improves when Dq scales from MS++ to COXE. Adding locality ( tmax > 0) appears to provide further gains. 
+
+Table Cleaning ( Dp with 150 demos): When Dp is large, data filtering improves to 80 .1% , and training on suboptimal data provides less relative value. However, for many real-world tasks, col-lecting enough data in Dp could be prohibitively expensive [73]. Nonetheless, Ambient continues to outperform co-training by up to 10% . Adding locality did not improve performance in this setting. We hypothesize that when Dp is large, the policy can learn the relevant motion primitives from Dp,making data from Dq unnecessary or even harmful with the wrong choice of tmax . This is consistent with the classifier annotation method, which would have assigned tmax = 0 to nearly all datasets. 
+
+Tower Building ( Dp with 35 demos): On average, the Ambient Diffusion Policies build up to 84% 
+
+and 33% taller than the data filtering and co-training baselines, respectively (Figure 9). Including 
+
+Dq at low diffusion times appears to improve performance. 
+
+8.2 Ablations Dataset Re-weighting: Figure 10 ablates the effect of re-weighting in Eq. (6) on co-training and Ambient. Re-weighting improves policy performance on the table cleaning task by 3–9% . On the other hand, re-weighting is necessary for co-training: the unweighted co-trained policies were too unsafe to evaluate on hardware. This contrast highlights another practical advantage of Ambient: the training algorithm is inherently less sensitive to dataset weights because Dq is only used when 
+
+pt ≈ qt. Co-training uses Dq at all diffusion times, making the weights critical and fragile. 
+
+Additional Ablations: We present two further ablations in Appendix H.2. 1) Finetuning the OXE policies on Dp produced no statistically significant change in performance (Appendix I.2), consistent with the controlled experiments (Section 7.5). 2) On table cleaning, the Ambient Diffusion Policies require 25-40% fewer grasps and less time per object than their co-trained counterparts. 13 Magic Soup++ Custom OXE   
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+> N/A
+> 0.70 0.75 0.72
+> N/A
+> 0.71
+> 0.82
+> 0.73
+
+Re-weighting Ablation: Table Cleaning 
+
+> p: 50 demos
+> Co-training
+> Co-training (unweighted)
+> Ambient
+> Ambient (unweighted)
+
+Figure 10: Ambient is significantly less sensitive to dataset re-weighting than co-training. The Ambient Diffusion Policy performed at most 9% worse without re-weighting. The co-trained poli-cies were too dangerous to evaluate without re-weighting. 
+
+9 Limitations and Future Work 
+
+Ambient Diffusion Policy does not yet handle distribution shifts in the observation space. We ex-plore two initial attempts in Appendix J. The classifier-based annotation method for tmin and tmax 
+
+is theoretically grounded, but does not always outperform a (costly) hyperparameter sweep. Better annotation methods could improve performance. In addition, the theory in Section 5 is limited to Gaussians; extending the results to a broader class of distributions could provide further insights. Lastly, our method is more computationally expensive than data filtering since it trains on more data, but in most cases, its benefits are worthwhile. Ambient Diffusion Policy requires the user to partition their data into Dp and Dq . The algorithm itself poses no restrictions on this partitioning, but it is an important design decision for downstream performance. This paper defines Dp as data from the target task and environment, but the right choice depends on the goal. For task-specific training or finetuning, our definition is appropriate; for pretraining a generalist policy, prior work suggests that Dp should contain diverse and high-quality demonstrations [74, 58]. The former suggests that we could expand our finetuning dataset to include suboptimal data. The latter requires a more principled understanding of data quality in robotics [58, 75]. Both settings are exciting directions for future work. 
+
+10 Conclusion 
+
+High-quality robot data is scarce, making it essential to learn from suboptimal data sources. But even as data collection scales, suboptimal data will continue to grow alongside high-quality data. Thus, the problem of learning from suboptimal data sources is not a temporary artifact of today’s data scarcity, but rather a fundamental and persistent challenge in robot imitation learning. The dominant approach for addressing this problem is to filter the worst data and co-train on the rest via re-weighting; but filtering is wasteful, and co-training teaches a policy the meaningful and the harmful parts of suboptimal distributions. In this paper, we propose Ambient Diffusion Policy, a principled method for training on suboptimal demonstrations. Neighboring fields have recognized the power of noise-dependent data usage [19, 25]. Our key experimental and theoretical insight is that this training paradigm is also well-suited for robotics. Our method makes no assumptions about the nature of the action suboptimality, outperforms existing baselines, and greatly expands the set of useful data sources for robot imitation learning. With Ambient Diffusion Policy, the question shifts from which data sources should be used, to when each should be used in the diffusion process. 14 Acknowledgments 
+
+We thank Pablo Parrilo, Asuman ¨ Ozda˘ glar, Abhinav Agarwal, Cole Becker, Ananth Kumar Srini-vasan, Sarthak Kaingade, Max Wilcoxson, and the Robot Locomotion Group for fruitful discussions. We thank John Marangola for help with the hardware setup. This work was supported by the National Science Foundation Graduate Research Fellowship Pro-gram under Grant No. 2141064, and the Natural Sciences and Engineering Research Council of Canada CGS D-587703. Any opinions, findings, and conclusions or recommendations expressed in this material are those of the author(s) and do not necessarily reflect the views of the National Science Foundation. We thank MIT Supercloud [76] for providing computational resources. 
+
+References 
+
+[1] O. X.-E. Collaboration, A. O’Neill, A. Rehman, A. Gupta, A. Maddukuri, A. Gupta, A. Padalkar, A. Lee, A. Pooley, A. Gupta, A. Mandlekar, A. Jain, A. Tung, A. Bewley, A. Her-zog, A. Irpan, A. Khazatsky, A. Rai, A. Gupta, A. Wang, A. Kolobov, A. Singh, A. Garg, A. Kembhavi, A. Xie, A. Brohan, A. Raffin, A. Sharma, A. Yavary, A. Jain, A. Balakr-ishna, A. Wahid, B. Burgess-Limerick, B. Kim, B. Sch¨ olkopf, B. Wulfe, B. Ichter, C. Lu, C. Xu, C. Le, C. Finn, C. Wang, C. Xu, C. Chi, C. Huang, C. Chan, C. Agia, C. Pan, C. Fu, C. Devin, D. Xu, D. Morton, D. Driess, D. Chen, D. Pathak, D. Shah, D. B¨ uchler, D. Ja-yaraman, D. Kalashnikov, D. Sadigh, E. Johns, E. Foster, F. Liu, F. Ceola, F. Xia, F. Zhao, F. V. Frujeri, F. Stulp, G. Zhou, G. S. Sukhatme, G. Salhotra, G. Yan, G. Feng, G. Schiavi, G. Berseth, G. Kahn, G. Yang, G. Wang, H. Su, H.-S. Fang, H. Shi, H. Bao, H. B. Amor, H. I. Christensen, H. Furuta, H. Bharadhwaj, H. Walke, H. Fang, H. Ha, I. Mordatch, I. Ra-dosavovic, I. Leal, J. Liang, J. Abou-Chakra, J. Kim, J. Drake, J. Peters, J. Schneider, J. Hsu, J. Vakil, J. Bohg, J. Bingham, J. Wu, J. Gao, J. Hu, J. Wu, J. Wu, J. Sun, J. Luo, J. Gu, J. Tan, J. Oh, J. Wu, J. Lu, J. Yang, J. Malik, J. Silv´ erio, J. Hejna, J. Booher, J. Tompson, J. Yang, J. Salvador, J. J. Lim, J. Han, K. Wang, K. Rao, K. Pertsch, K. Hausman, K. Go, K. Gopalakrishnan, K. Goldberg, K. Byrne, K. Oslund, K. Kawaharazuka, K. Black, K. Lin, K. Zhang, K. Ehsani, K. Lekkala, K. Ellis, K. Rana, K. Srinivasan, K. Fang, K. P. Singh, K.-H. Zeng, K. Hatch, K. Hsu, L. Itti, L. Y. Chen, L. Pinto, L. Fei-Fei, L. Tan, L. J. Fan, L. Ott, L. Lee, L. Weihs, M. Chen, M. Lepert, M. Memmel, M. Tomizuka, M. Itkina, M. G. Castro, M. Spero, M. Du, M. Ahn, M. C. Yip, M. Zhang, M. Ding, M. Heo, M. K. Srirama, M. Sharma, M. J. Kim, M. Z. Irshad, N. Kanazawa, N. Hansen, N. Heess, N. J. Joshi, N. Suenderhauf, N. Liu, N. D. Palo, N. M. M. Shafiullah, O. Mees, O. Kroemer, O. Bastani, P. R. Sanketi, P. T. Miller, P. Yin, P. Wohlhart, P. Xu, P. D. Fagan, P. Mitrano, P. Sermanet, P. Abbeel, P. Sun-daresan, Q. Chen, Q. Vuong, R. Rafailov, R. Tian, R. Doshi, R. Mart’in-Mart’in, R. Baijal, R. Scalise, R. Hendrix, R. Lin, R. Qian, R. Zhang, R. Mendonca, R. Shah, R. Hoque, R. Ju-lian, S. Bustamante, S. Kirmani, S. Levine, S. Lin, S. Moore, S. Bahl, S. Dass, S. Sonawani, S. Tulsiani, S. Song, S. Xu, S. Haldar, S. Karamcheti, S. Adebola, S. Guist, S. Nasiriany, S. Schaal, S. Welker, S. Tian, S. Ramamoorthy, S. Dasari, S. Belkhale, S. Park, S. Nair, S. Mir-chandani, T. Osa, T. Gupta, T. Harada, T. Matsushima, T. Xiao, T. Kollar, T. Yu, T. Ding, T. Davchev, T. Z. Zhao, T. Armstrong, T. Darrell, T. Chung, V. Jain, V. Kumar, V. Vanhoucke, V. Guizilini, W. Zhan, W. Zhou, W. Burgard, X. Chen, X. Chen, X. Wang, X. Zhu, X. Geng, X. Liu, X. Liangwei, X. Li, Y. Pang, Y. Lu, Y. J. Ma, Y. Kim, Y. Chebotar, Y. Zhou, Y. Zhu, Y. Wu, Y. Xu, Y. Wang, Y. Bisk, Y. Dou, Y. Cho, Y. Lee, Y. Cui, Y. Cao, Y.-H. Wu, Y. Tang, Y. Zhu, Y. Zhang, Y. Jiang, Y. Li, Y. Li, Y. Iwasawa, Y. Matsuo, Z. Ma, Z. Xu, Z. J. Cui, Z. Zhang, Z. Fu, and Z. Lin. Open X-Embodiment: Robotic learning datasets and RT-X mod-els. https://arxiv.org/abs/2310.08864 , 2023. [2] P. Intelligence, K. Black, N. Brown, J. Darpinian, K. Dhabalia, D. Driess, A. Esmail, M. Equi, C. Finn, N. Fusai, M. Y. Galliker, D. Ghosh, L. Groom, K. Hausman, B. Ichter, S. Jakubczak, T. Jones, L. Ke, D. LeBlanc, S. Levine, A. Li-Bell, M. Mothukuri, S. Nair, K. Pertsch, A. Z. Ren, L. X. Shi, L. Smith, J. T. Springenberg, K. Stachowicz, J. Tanner, Q. Vuong, H. Walke, 15 A. Walling, H. Wang, L. Yu, and U. Zhilinsky. π0.5: a vision-language-action model with open-world generalization, 2025. URL https://arxiv.org/abs/2504.16054 .[3] NVIDIA, :, J. Bjorck, F. Casta˜ neda, N. Cherniadev, X. Da, R. Ding, L. J. Fan, Y. Fang, D. Fox, F. Hu, S. Huang, J. Jang, Z. Jiang, J. Kautz, K. Kundalia, L. Lao, Z. Li, Z. Lin, K. Lin, G. Liu, E. Llontop, L. Magne, A. Mandlekar, A. Narayan, S. Nasiriany, S. Reed, Y. L. Tan, G. Wang, Z. Wang, J. Wang, Q. Wang, J. Xiang, Y. Xie, Y. Xu, Z. Xu, S. Ye, Z. Yu, A. Zhang, H. Zhang, Y. Zhao, R. Zheng, and Y. Zhu. Gr00t n1: An open foundation model for generalist humanoid robots, 2025. URL https://arxiv.org/abs/2503.14734 .[4] T. L. Team, J. Barreiros, A. Beaulieu, A. Bhat, R. Cory, E. Cousineau, H. Dai, C.-H. Fang, K. Hashimoto, M. Z. Irshad, M. Itkina, N. Kuppuswamy, K.-H. Lee, K. Liu, D. McConachie, I. McMahon, H. Nishimura, C. Phillips-Grafflin, C. Richter, P. Shah, K. Srinivasan, B. Wulfe, C. Xu, M. Zhang, A. Alspach, M. Angeles, K. Arora, V. C. Guizilini, A. Castro, D. Chen, T.-S. Chu, S. Creasey, S. Curtis, R. Denitto, E. Dixon, E. Dusel, M. Ferreira, A. Goncalves, G. Gould, D. Guoy, S. Gupta, X. Han, K. Hatch, B. Hathaway, A. Henry, H. Hochsztein, P. Horgan, S. Iwase, D. Jackson, S. Karamcheti, S. Keh, J. Masterjohn, J. Mercat, P. Miller, P. Mitiguy, T. Nguyen, J. Nimmer, Y. Noguchi, R. Ong, A. Onol, O. Pfannenstiehl, R. Poyner, L. P. M. Rocha, G. Richardson, C. Rodriguez, D. Seale, M. Sherman, M. Smith-Jones, D. Tago, P. Tokmakov, M. Tran, B. V. Hoorick, I. Vasiljevic, S. Zakharov, M. Zolotas, R. Ambrus, K. Fetzer-Borelli, B. Burchfiel, H. Kress-Gazit, S. Feng, S. Ford, and R. Tedrake. A care-ful examination of large behavior models for multitask dexterous manipulation, 2025. URL 
+
+https://arxiv.org/abs/2507.05331 .[5] K. Kim, Moo Jin andwo, Z. Pan, et al. Openvla: An open-source vision-language-action model. In arXiv preprint arXiv:2406.09246 , 2024. [6] F. Lin, K. Arora, J. Mercat, H. Nishimura, P. Shah, C. Xu, M. Zhang, M. Zolotas, M. Angeles, O. Pfannenstiehl, A. Beaulieu, and J. Barreiros. A systematic study of data modalities and strategies for co-training large behavior models for robot manipulation, 2026. URL https: //arxiv.org/abs/2602.01067 .[7] G. R. Team, S. Abeyruwan, J. Ainslie, J.-B. Alayrac, M. G. Arenas, T. Armstrong, A. Balakr-ishna, R. Baruch, M. Bauza, M. Blokzijl, S. Bohez, K. Bousmalis, A. Brohan, T. Buschmann, A. Byravan, S. Cabi, K. Caluwaerts, F. Casarini, O. Chang, J. E. Chen, X. Chen, H.-T. L. Chi-ang, K. Choromanski, D. D’Ambrosio, S. Dasari, T. Davchev, C. Devin, N. D. Palo, T. Ding, A. Dostmohamed, D. Driess, Y. Du, D. Dwibedi, M. Elabd, C. Fantacci, C. Fong, E. Frey, C. Fu, M. Giustina, K. Gopalakrishnan, L. Graesser, L. Hasenclever, N. Heess, B. Hernaez, A. Herzog, R. A. Hofer, J. Humplik, A. Iscen, M. G. Jacob, D. Jain, R. Julian, D. Kalashnikov, M. E. Karagozler, S. Karp, C. Kew, J. Kirkland, S. Kirmani, Y. Kuang, T. Lampe, A. Laurens, I. Leal, A. X. Lee, T.-W. E. Lee, J. Liang, Y. Lin, S. Maddineni, A. Majumdar, A. H. Michaely, R. Moreno, M. Neunert, F. Nori, C. Parada, E. Parisotto, P. Pastor, A. Pooley, K. Rao, K. Rey-mann, D. Sadigh, S. Saliceti, P. Sanketi, P. Sermanet, D. Shah, M. Sharma, K. Shea, C. Shu, V. Sindhwani, S. Singh, R. Soricut, J. T. Springenberg, R. Sterneck, R. Surdulescu, J. Tan, J. Tompson, V. Vanhoucke, J. Varley, G. Vesom, G. Vezzani, O. Vinyals, A. Wahid, S. Welker, P. Wohlhart, F. Xia, T. Xiao, A. Xie, J. Xie, P. Xu, S. Xu, Y. Xu, Z. Xu, Y. Yang, R. Yao, S. Yaroshenko, W. Yu, W. Yuan, J. Zhang, T. Zhang, A. Zhou, and Y. Zhou. Gemini robotics: Bringing ai into the physical world, 2025. URL https://arxiv.org/abs/2503.20020 .[8] AgiBot-World-Contributors, Q. Bu, J. Cai, L. Chen, X. Cui, Y. Ding, S. Feng, S. Gao, X. He, X. Hu, X. Huang, S. Jiang, Y. Jiang, C. Jing, H. Li, J. Li, C. Liu, Y. Liu, Y. Lu, J. Luo, P. Luo, Y. Mu, Y. Niu, Y. Pan, J. Pang, Y. Qiao, G. Ren, C. Ruan, J. Shan, Y. Shen, C. Shi, M. Shi, M. Shi, C. Sima, J. Song, H. Wang, W. Wang, D. Wei, C. Xie, G. Xu, J. Yan, C. Yang, L. Yang, S. Yang, M. Yao, J. Zeng, C. Zhang, Q. Zhang, B. Zhao, C. Zhao, J. Zhao, and J. Zhu. Agibot world colosseo: A large-scale manipulation platform for scalable and intelligent embodied systems, 2025. URL https://arxiv.org/abs/2503.06669 .16 [9] C. Chi, Z. Xu, C. Pan, E. Cousineau, B. Burchfiel, S. Feng, R. Tedrake, and S. Song. Universal manipulation interface: In-the-wild robot teaching without in-the-wild robots, 2024. URL 
+
+https://arxiv.org/abs/2402.10329 .[10] Physical Intelligence, B. Ai, A. Amin, R. Aniceto, A. Balakrishna, G. Balke, K. Black, G. Bokinsky, S. Cao, T. Charbonnier, V. Choudhary, F. Collins, K. Conley, G. Connors, J. Darpinian, K. Dhabalia, M. Dhaka, J. DiCarlo, D. Driess, M. Equi, A. Esmail, Y. Fang, C. Finn, C. Glossop, T. Godden, I. Goryachev, L. Groom, H. Habeeb, H. Hancock, K. Haus-man, G. Hussein, V. Hwang, B. Ichter, C. Jacobsen, S. Jakubczak, R. Jen, T. Jones, G. Kam-merer, B. Katz, L. Ke, M. Khadikov, C. Kuchi, M. Lamb, D. LeBlanc, B. LeCount, S. Levine, X. Li, A. Li-Bell, V. Lialin, Z. Liang, W. Lim, Y. Lu, E. Luo, V. Mano, N. Marwaha, A. Mongush, L. Murphy, S. Nair, T. Patterson, K. Pertsch, A. Z. Ren, G. Schelske, C. Sharma, B. Shi, L. X. Shi, L. Smith, J. T. Springenberg, K. Stachowicz, W. Stoeckle, J. Tang, J. Tan-ner, S. Tekeste, M. Torne, K. Vedder, Q. Vuong, A. Walling, H. Wang, J. Wang, X. Wang, C. Whalen, S. Whitmore, B. Williams, C. Xu, S. Yoo, L. Yu, W. Zhang, Z. Zhang, and U. Zhilinsky. π0.7: a steerable generalist robotic foundation model with emergent capabili-ties. Technical report, Physical Intelligence, 2026. URL https://pi.website/pi07 .[11] P. Intelligence, A. Amin, R. Aniceto, A. Balakrishna, K. Black, K. Conley, G. Connors, J. Darpinian, K. Dhabalia, J. DiCarlo, D. Driess, M. Equi, A. Esmail, Y. Fang, C. Finn, C. Glos-sop, T. Godden, I. Goryachev, L. Groom, H. Hancock, K. Hausman, G. Hussein, B. Ichter, S. Jakubczak, R. Jen, T. Jones, B. Katz, L. Ke, C. Kuchi, M. Lamb, D. LeBlanc, S. Levine, A. Li-Bell, Y. Lu, V. Mano, M. Mothukuri, S. Nair, K. Pertsch, A. Z. Ren, C. Sharma, L. X. Shi, L. Smith, J. T. Springenberg, K. Stachowicz, W. Stoeckle, A. Swerdlow, J. Tanner, M. Torne, Q. Vuong, A. Walling, H. Wang, B. Williams, S. Yoo, L. Yu, U. Zhilinsky, and Z. Zhou. π∗
+
+> 0.6
+
+:a vla that learns from experience, 2025. URL https://arxiv.org/abs/2511.14759 .[12] A. Wei, A. Agarwal, B. Chen, R. Bosworth, N. Pfaff, and R. Tedrake. Empirical analysis of sim-and-real cotraining of diffusion policies for planar pushing from pixels. arXiv preprint arXiv:2503.22634 , 2025. [13] A. Maddukuri, Z. Jiang, L. Y. Chen, S. Nasiriany, Y. Xie, Y. Fang, W. Huang, Z. Wang, Z. Xu, N. Chernyadev, et al. Sim-and-real co-training: A simple recipe for vision-based robotic ma-nipulation. arXiv preprint arXiv:2503.24361 , 2025. [14] K. Grauman, A. Westbury, L. Torresani, K. Kitani, J. Malik, T. Afouras, K. Ashutosh, V. Baiyya, S. Bansal, B. Boote, E. Byrne, Z. Chavis, J. Chen, F. Cheng, F.-J. Chu, S. Crane, A. Dasgupta, J. Dong, M. Escobar, C. Forigua, A. Gebreselasie, S. Haresh, J. Huang, M. M. Islam, S. Jain, R. Khirodkar, D. Kukreja, K. J. Liang, J.-W. Liu, S. Majumder, Y. Mao, M. Mar-tin, E. Mavroudi, T. Nagarajan, F. Ragusa, S. K. Ramakrishnan, L. Seminara, A. Somayazulu, Y. Song, S. Su, Z. Xue, E. Zhang, J. Zhang, A. Castillo, C. Chen, X. Fu, R. Furuta, C. Gon-zalez, P. Gupta, J. Hu, Y. Huang, Y. Huang, W. Khoo, A. Kumar, R. Kuo, S. Lakhavani, M. Liu, M. Luo, Z. Luo, B. Meredith, A. Miller, O. Oguntola, X. Pan, P. Peng, S. Pra-manick, M. Ramazanova, F. Ryan, W. Shan, K. Somasundaram, C. Song, A. Southerland, M. Tateno, H. Wang, Y. Wang, T. Yagi, M. Yan, X. Yang, Z. Yu, S. C. Zha, C. Zhao, Z. Zhao, Z. Zhu, J. Zhuo, P. Arbelaez, G. Bertasius, D. Crandall, D. Damen, J. Engel, G. M. Farinella, A. Furnari, B. Ghanem, J. Hoffman, C. V. Jawahar, R. Newcombe, H. S. Park, J. M. Rehg, Y. Sato, M. Savva, J. Shi, M. Z. Shou, and M. Wray. Ego-exo4d: Un-derstanding skilled human activity from first- and third-person perspectives, 2024. URL 
+
+https://arxiv.org/abs/2311.18259 .[15] S. Gao, W. Liang, K. Zheng, A. Malik, S. Ye, S. Yu, W.-C. Tseng, Y. Dong, K. Mo, C.-H. Lin, Q. Ma, S. Nah, L. Magne, J. Xiang, Y. Xie, R. Zheng, D. Niu, Y. L. Tan, K. R. Zentner, G. Kurian, S. Indupuru, P. Jannaty, J. Gu, J. Zhang, J. Malik, P. Abbeel, M.-Y. Liu, Y. Zhu, J. Jang, and L. J. Fan. Dreamdojo: A generalist robot world model from large-scale human videos, 2026. URL https://arxiv.org/abs/2602.06949 .17 [16] J. Hejna, C. Bhateja, Y. Jiang, K. Pertsch, and D. Sadigh. Re-mix: Optimizing data mixtures for large scale imitation learning, 2024. URL https://arxiv.org/abs/2408.14037 .[17] Z. Zhang, J. Pang, Z. Yang, K. Li, M. Liao, S. Zhang, G. Chi, J. Guo, H. ang Gao, M. Shi, D. Ge, Y. Mu, J. Gu, R. Chen, H. Dong, H. Xu, L. Yi, Y. Zhu, H. Zhao, P. Wang, S. Zhang, G. Yao, J. Chen, H. Li, and H. Zhao. Dexora: Open-source vla for high-dof bimanual dexterity, 2026. URL https://arxiv.org/abs/2605.18722 .[18] J. Wen, Y. Zhu, J. Li, Z. Tang, C. Shen, and F. Feng. Dexvla: Vision-language model with plug-in diffusion expert for general robot control, 2025. URL https://arxiv.org/abs/ 2502.05855 .[19] G. Daras, A. Rodriguez-Munoz, A. Klivans, A. Torralba, and C. C. Daskalakis. Ambient diffusion omni: Training good models with bad data. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview.net/forum? id=MVYz4GmcUH .[20] V. Tangkaratt, N. Charoenphakdee, and M. Sugiyama. Robust imitation learning from noisy demonstrations, 2021. URL https://arxiv.org/abs/2010.10181 .[21] A. Torralba and A. Oliva. Statistics of natural image categories. Network: Computation in Neural Systems , 14(3):391–412, 2003. [22] A. Lukoianov, C. Yuan, J. Solomon, and V. Sitzmann. Locality in image diffusion models emerges from data statistics, 2025. URL https://arxiv.org/abs/2509.09672 .[23] C. Chi, Z. Xu, S. Feng, E. Cousineau, Y. Du, B. Burchfiel, R. Tedrake, and S. Song. Diffusion policy: Visuomotor policy learning via action diffusion, 2024. URL https://arxiv.org/ abs/2303.04137 .[24] G. Daras, A. Dimakis, and C. C. Daskalakis. Consistent diffusion meets tweedie: Training exact ambient diffusion models with noisy data. In Forty-first International Conference on Machine Learning , 2024. URL https://openreview.net/forum?id=PlVjIGaFdH .[25] G. Daras, J. Ouyang-Zhang, K. Ravishankar, C. C. Daskalakis, A. Klivans, and D. J. Diaz. Ambient proteins - training diffusion models on noisy structures. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview. net/forum?id=Xll01vw606 .[26] S. Nasiriany, A. Maddukuri, L. Zhang, A. Parikh, A. Lo, A. Joshi, A. Mandlekar, and Y. Zhu. Robocasa: Large-scale simulation of everyday tasks for generalist robots, 2024. URL https: //arxiv.org/abs/2406.02523 .[27] S. Ben-David, J. Blitzer, K. Crammer, A. Kulesza, F. Pereira, and J. Vaughan. A theory of learning from different domains. Machine Learning , 79:151–175, 2010. [28] J. Hejna, S. Mirchandani, A. Balakrishna, A. Xie, A. Wahid, J. Tompson, P. Sanketi, D. Shah, C. Devin, and D. Sadigh. Robot data curation with mutual information estimators, 2025. URL 
+
+https://arxiv.org/abs/2502.08623 .[29] S. M. Xie, H. Pham, X. Dong, N. Du, H. Liu, Y. Lu, P. Liang, Q. V. Le, T. Ma, and A. W. Yu. Doremi: Optimizing data mixtures speeds up language model pretraining, 2023. URL 
+
+https://arxiv.org/abs/2305.10429 .[30] C. Agia, R. Sinha, J. Yang, R. Antonova, M. Pavone, H. Nishimura, M. Itkina, and J. Bohg. Cupid: Curating data your robot loves with influence functions, 2025. URL https://arxiv. org/abs/2506.19121 .18 [31] S. Goyal, P. Maini, Z. C. Lipton, A. Raghunathan, and J. Z. Kolter. Scaling laws for data filtering– data curation cannot be compute agnostic. In Proceedings of the IEEE/CVF Confer-ence on Computer Vision and Pattern Recognition (CVPR) , pages 22702–22711, June 2024. [32] J. Li, A. Fang, G. Smyrnis, M. Ivgi, M. Jordan, S. Gadre, H. Bansal, E. Guha, S. Keh, K. Arora, S. Garg, R. Xin, N. Muennighoff, R. Heckel, J. Mercat, M. Chen, S. Gururan-gan, M. Wortsman, A. Albalak, Y. Bitton, M. Nezhurina, A. Abbas, C.-Y. Hsieh, D. Ghosh, J. Gardner, M. Kilian, H. Zhang, R. Shao, S. Pratt, S. Sanyal, G. Ilharco, G. Daras, K. Marathe, A. Gokaslan, J. Zhang, K. Chandu, T. Nguyen, I. Vasiljevic, S. Kakade, S. Song, S. Sanghavi, F. Faghri, S. Oh, L. Zettlemoyer, K. Lo, A. El-Nouby, H. Pouransari, A. Toshev, S. Wang, D. Groeneveld, L. Soldaini, P. W. Koh, J. Jitsev, T. Kollar, A. G. Dimakis, Y. Carmon, A. Dave, L. Schmidt, and V. Shankar. Datacomp-lm: In search of the next generation of training sets for language models, 2025. URL https://arxiv.org/abs/2406.11794 .[33] A. Aali, M. Arvinte, S. Kumar, and J. I. Tamir. Solving inverse problems with score-based generative priors learned from noisy data. In 2023 57th Asilomar Conference on Signals, Systems, and Computers , page 837–843. IEEE, Oct. 2023. doi:10.1109/ieeeconf59524.2023. 10477042. URL http://dx.doi.org/10.1109/IEEECONF59524.2023.10477042 .[34] T. Chen, Y. Zhang, Z. Wang, Y. N. Wu, O. Leong, and M. Zhou. Denoising score distillation: From noisy diffusion pretraining to one-step high-quality generation, 2025. URL https: //arxiv.org/abs/2503.07578 .[35] G. Daras, H. Chung, C.-H. Lai, Y. Mitsufuji, J. C. Ye, P. Milanfar, A. G. Dimakis, and M. Delbracio. A survey on diffusion models for inverse problems, 2024. URL https: //arxiv.org/abs/2410.00083 .[36] K. Shah, A. Kalavasis, A. Klivans, and G. Daras. Does generation require memorization? creative diffusion models using ambient diffusion. In Forty-second International Conference on Machine Learning , 2025. URL https://openreview.net/forum?id=GGPM0z3dhU .[37] A. Rodr´ ıguez-Mu˜ noz, W. Daspit, A. Klivans, A. Torralba, C. Daskalakis, and G. Daras. Ambi-ent dataloops: Generative models for dataset refinement, 2026. URL https://arxiv.org/ abs/2601.15417 .[38] H. Lu, Q. Wu, and Y. Yu. SFBD: A method for training diffusion models with noisy data. In 
+
+Frontiers in Probabilistic Inference: Learning meets Sampling Workshop at ICLR , 2025. URL 
+
+https://openreview.net/pdf/8a1f8db4471b46d787ac9e685c15009b4566b5ed.pdf .[39] H. Lu, Y. Yu, and D. Lo. Sfbd-omni: Bridge models for lossy measurement restoration with limited clean samples, 2026. URL https://arxiv.org/abs/2512.17051 .[40] C. Y. Park, S. Shoushtari, H. An, and U. S. Kamilov. Measurement score-based diffusion model, 2025. URL https://arxiv.org/abs/2505.11853 .[41] C. Modi, J. Han, E. Vanden-Eijnden, and J. Bruna. Generative modeling from black-box cor-ruptions via self-consistent stochastic interpolants, 2026. URL https://arxiv.org/abs/ 2512.10857 .[42] B. Kawar, N. Elata, T. Michaeli, and M. Elad. Gsure-based diffusion model training with corrupted data, 2024. URL https://arxiv.org/abs/2305.13128 .[43] Y. Matsuzaki, S. Uchida, and S. Takezaki. Score: Clean image generation from diffusion models trained on noisy images, 2026. URL https://arxiv.org/abs/2604.09436 .[44] A. Bora, E. Price, and A. G. Dimakis. AmbientGAN: Generative models from lossy mea-surements. In International Conference on Learning Representations , 2018. URL https: //openreview.net/forum?id=Hy7fDog0b .19 [45] W. Bai, Y. Wang, W. Chen, and H. Sun. An expectation-maximization algorithm for training clean diffusion models from corrupted observations, 2024. URL https://arxiv.org/abs/ 2407.01014 .[46] D. Hosseintabar, F. Chen, G. Daras, A. Torralba, and C. Daskalakis. Diffem: Learning from corrupted data with diffusion models via expectation maximization, 2025. URL https:// arxiv.org/abs/2510.12691 .[47] F. Rozet, G. Andry, F. Lanusse, and G. Louppe. Learning diffusion priors from observations by expectation maximization, 2025. URL https://arxiv.org/abs/2405.13712 .[48] J. Lyu, K. Liu, X. Zhang, H. Liao, Y. Feng, W. Zhu, T. Shen, J. Chen, J. Zhang, Y. Dong, W. Cui, S. Qi, S. Wang, Y. Zheng, M. Yan, X. Shi, H. Li, D. Zhao, M.-Y. Liu, Z. Zhang, L. Yi, Y. Wang, and H. Wang. Lda-1b: Scaling latent dynamics action model via universal embodied data ingestion, 2026. URL https://arxiv.org/abs/2602.12215 .[49] S. Cheng, L. Ma, Z. Chen, A. Mandlekar, C. Garrett, and D. Xu. Generalizable domain adapta-tion for sim-and-real policy co-training, 2026. URL https://arxiv.org/abs/2509.18631 .[50] R. Punamiya, D. Patel, P. Aphiwetsa, P. Kuppili, L. Y. Zhu, S. Kareer, J. Hoffman, and D. Xu. Egobridge: Domain adaptation for generalizable imitation from egocentric human data, 2025. URL https://arxiv.org/abs/2509.19626 .[51] L. Liu, Z. Tang, L. Li, and D. Luo. Robust imitation learning from corrupted demonstrations, 2022. URL https://arxiv.org/abs/2201.12594 .[52] M. A. Pace, P. Dan, C. Ning, A. Bhardwaj, A. Du, E. W. Duan, W.-C. Ma, and K. Kedia. X-diffusion: Training diffusion policies on cross-embodiment human demonstrations, 2025. URL https://arxiv.org/abs/2511.04671 .[53] T. Z. Zhao, V. Kumar, S. Levine, and C. Finn. Learning fine-grained bimanual manipulation with low-cost hardware, 2023. URL https://arxiv.org/abs/2304.13705 .[54] J. Ho, A. Jain, and P. Abbeel. Denoising diffusion probabilistic models, 2020. URL https: //arxiv.org/abs/2006.11239 .[55] Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon, and B. Poole. Score-based generative modeling through stochastic differential equations, 2021. URL https://arxiv. org/abs/2011.13456 .[56] Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel, and M. Le. Flow matching for generative modeling, 2023. URL https://arxiv.org/abs/2210.02747 .[57] J. Song, C. Meng, and S. Ermon. Denoising diffusion implicit models, 2022. URL https: //arxiv.org/abs/2010.02502 .[58] S. Belkhale, Y. Cui, and D. Sadigh. Data quality in imitation learning, 2023. URL https: //arxiv.org/abs/2306.02437 .[59] P. Pestana, Z. Ma, J. Reiss, ´ A. Barbosa, and D. Black. Spectral characteristics of popular commercial recordings 1950-2010. 01 2013. [60] S. Dieleman. Diffusion is spectral autoregression, 2024. URL https://sander.ai/2024/ 09/02/spectral-autoregression.html .[61] D.F. Gray. The Observation and Analysis of Stellar Photospheres . Cambridge Univ. Press, third edition edition, Nov. 2005. [62] A. Papoulis and S. U. Pillai. Probability, Random Variables, and Stochastic Processes .McGraw-Hill, 4th edition, 2002. 20 [63] E. Bauer, E. Nava, and R. K. Katzschmann. Latent action diffusion for cross-embodiment manipulation, 2026. URL https://arxiv.org/abs/2506.14608 .[64] R. Rombach, A. Blattmann, D. Lorenz, P. Esser, and B. Ommer. High-resolution image syn-thesis with latent diffusion models, 2022. URL https://arxiv.org/abs/2112.10752 .[65] T. Marcucci, M. Petersen, D. von Wrangel, and R. Tedrake. Motion planning around obstacles with convex optimization. Science Robotics , 8(84):eadf7843, 2023. doi:10.1126/scirobotics. adf7843. URL https://www.science.org/doi/abs/10.1126/scirobotics.adf7843 .[66] S. M. LaValle. Rapidly-exploring random trees : a new tool for path planning. The annual research report , 1998. URL https://api.semanticscholar.org/CorpusID:14744621 .[67] L. Foland, T. Cohn, A. Wei, N. Pfaff, B. Chen, and R. Tedrake. How well do diffusion policies learn kinematic constraint manifolds?, 2025. URL https://arxiv.org/abs/2510.01404 .[68] M. Dalal, A. Mandlekar, C. Garrett, A. Handa, R. Salakhutdinov, and D. Fox. Imitating task and motion planning with visuomotor transformers, 2023. URL https://arxiv.org/abs/ 2305.16309 .[69] A. H. Qureshi, A. Simeonov, M. J. Bency, and M. C. Yip. Motion planning networks, 2019. URL https://arxiv.org/abs/1806.05767 .[70] J. Carvalho, A. T. Le, M. Baierl, D. Koert, and J. Peters. Motion planning diffusion: Learning and planning of robot motions with diffusion models, 2024. URL https://arxiv.org/abs/ 2308.01557 .[71] M. Dalal, J. Yang, R. Mendonca, Y. Khaky, R. Salakhutdinov, and D. Pathak. Neural mp: A generalist neural motion planner, 2024. URL https://arxiv.org/abs/2409.05864 .[72] B. P. Graesdal, S. Y. C. Chia, T. Marcucci, S. Morozov, A. Amice, P. A. Parrilo, and R. Tedrake. Towards tight convex relaxations for contact-rich manipulation, 2024. URL https://arxiv. org/abs/2402.10312 .[73] T. Z. Zhao, J. Tompson, D. Driess, P. Florence, K. Ghasemipour, C. Finn, and A. Wahid. Aloha unleashed: A simple recipe for robot dexterity, 2024. URL https://arxiv.org/abs/2410. 13126 .[74] Y. Hu, F. Lin, P. Sheng, C. Wen, J. You, and Y. Gao. Data scaling laws in imitation learning for robotic manipulation, 2025. URL https://arxiv.org/abs/2410.18647 .[75] A. Mandlekar, D. Xu, J. Wong, S. Nasiriany, C. Wang, R. Kulkarni, L. Fei-Fei, S. Savarese, Y. Zhu, and R. Mart´ ın-Mart´ ın. What matters in learning from offline human demonstrations for robot manipulation, 2021. URL https://arxiv.org/abs/2108.03298 .[76] A. Reuther, J. Kepner, C. Byun, S. Samsi, W. Arcand, D. Bestor, B. Bergeron, V. Gadepally, M. Houle, M. Hubbell, M. Jones, A. Klein, L. Milechin, J. Mullen, A. Prout, A. Rosa, C. Yee, and P. Michaleas. Interactive supercomputing on 40,000 cores for machine learning and data analysis. In 2018 IEEE High Performance extreme Computing Conference (HPEC) , page 1–6. IEEE, 2018. [77] Y. Polyanskiy and Y. Wu. Information theory: From coding to learning . Cambridge university press, 2025. [78] J. Zhang, Z. Zhou, H. Li, Y. Lai, W. Xia, H. Song, Y. Gong, and J. Mei. Hydra-dp3: Frequency-aware right-sizing of 3d diffusion policies for visuomotor control, 2026. URL https:// arxiv.org/abs/2605.01581 .[79] C. R. Garrett, R. Chitnis, R. Holladay, B. Kim, T. Silver, L. P. Kaelbling, and T. Lozano-P´ erez. Integrated task and motion planning, 2020. URL https://arxiv.org/abs/2010.01083 .21 [80] Y. Wang, Z. Wang, M. Nakura, P. Bhowal, C.-L. Kuo, Y.-T. Chen, Z. Erickson, and D. Held. Articubot: Learning universal articulated object manipulation policy via large scale simulation, 2025. URL https://arxiv.org/abs/2503.03045 .[81] H. Zhao, Y. Qi, B. Hu, Y. Zhu, Z. Chen, H. Tian, X. Zhu, O. Howell, H. Huang, R. Walters, D. Wang, and R. Platt. Generalizable hierarchical skill learning via object-centric representa-tion, 2025. URL https://arxiv.org/abs/2510.21121 .[82] N. Gireesh, Y. Ju, C. Xu, W. Liu, Y. Wan, and H. Wang. Hdflow: Hierarchical diffusion-flow planning for long-horizon tasks, 2026. URL https://arxiv.org/abs/2605.04525 .[83] R. Tedrake. Robotic Manipulation . 2024. URL http://manipulation.mit.edu .[84] J. J. Kuffner and S. M. LaValle. RRT-connect: An efficient approach to single-query path planning. In Proceedings 2000 ICRA. Millennium conference. IEEE international conference on robotics and automation. Symposia proceedings (Cat. No. 00CH37065) , volume 2, pages 995–1001. IEEE, 2000. [85] G. Izatt. Capturing Distributions over Worlds for Robotics with Spatial Scene Grammars .Ph.d. thesis, Massachusetts Institute of Technology, Cambridge, MA, May 2022. [86] N. Pfaff, H. Dai, S. Zakharov, S. Iwase, and R. Tedrake. Steerable scene generation with post training and inference-time search, 2025. URL https://arxiv.org/abs/2505.04831 .[87] P. E. Gill, W. Murray, and M. A. Saunders. Snopt: An sqp algorithm for large-scale constrained optimization. SIAM review , 47(1):99–131, 2005. [88] J. J. Kuffner and S. M. LaValle. Rrt-connect: An efficient approach to single-query path planning. In Proceedings 2000 ICRA. Millennium conference. IEEE international conference on robotics and automation. Symposia proceedings (Cat. No. 00CH37065) , volume 2, pages 995–1001. IEEE, 2000. [89] R. Geraerts and M. H. Overmars. Creating high-quality paths for motion planning. The inter-national journal of robotics research , 26(8):845–863, 2007. [90] R. Tedrake and the Drake Development Team. Drake: Model-based design and verification for robotics, 2019. URL https://drake.mit.edu .[91] A. W¨ achter and L. T. Biegler. On the implementation of an interior-point filter line-search algorithm for large-scale nonlinear programming. Mathematical programming , 106(1):25–57, 2006. [92] A. Khazatsky, K. Pertsch, S. Nair, A. Balakrishna, S. Dasari, S. Karamcheti, S. Nasiriany, M. K. Srirama, L. Y. Chen, K. Ellis, P. D. Fagan, J. Hejna, M. Itkina, M. Lepert, Y. J. Ma, P. T. Miller, J. Wu, S. Belkhale, S. Dass, H. Ha, A. Jain, A. Lee, Y. Lee, M. Memmel, S. Park, I. Radosavovic, K. Wang, A. Zhan, K. Black, C. Chi, K. B. Hatch, S. Lin, J. Lu, J. Mercat, A. Rehman, P. R. Sanketi, A. Sharma, C. Simpson, Q. Vuong, H. R. Walke, B. Wulfe, T. Xiao, J. H. Yang, A. Yavary, T. Z. Zhao, C. Agia, R. Baijal, M. G. Castro, D. Chen, Q. Chen, T. Chung, J. Drake, E. P. Foster, J. Gao, V. Guizilini, D. A. Herrera, M. Heo, K. Hsu, J. Hu, M. Z. Irshad, D. Jackson, C. Le, Y. Li, K. Lin, R. Lin, Z. Ma, A. Maddukuri, S. Mirchandani, D. Morton, T. Nguyen, A. O’Neill, R. Scalise, D. Seale, V. Son, S. Tian, E. Tran, A. E. Wang, Y. Wu, A. Xie, J. Yang, P. Yin, Y. Zhang, O. Bastani, G. Berseth, J. Bohg, K. Goldberg, A. Gupta, A. Gupta, D. Jayaraman, J. J. Lim, J. Malik, R. Mart´ ın-Mart´ ın, S. Ramamoorthy, D. Sadigh, S. Song, J. Wu, M. C. Yip, Y. Zhu, T. Kollar, S. Levine, and C. Finn. Droid: A large-scale in-the-wild robot manipulation dataset. 2024. [93] M. M. Hong, J. Zhang, A. Nagabandi, and A. Gupta. Tmrl: Diffusion timestep-modulated pretraining enables exploration for efficient policy finetuning, 2026. URL https://arxiv. org/abs/2605.12236 .22 [94] J. Ho and T. Salimans. Classifier-free diffusion guidance, 2022. URL https://arxiv.org/ abs/2207.12598 .23 Appendix: Table of Contents 
+
+A Ambient Diffusion: Theoretical Foundations 25 
+
+A.1 Spectral Power Law implies fast contraction through noise . . . . . . . . . . . . . 25 A.2 Spectral Power Law implies locality . . . . . . . . . . . . . . . . . . . . . . . . . 27 A.3 Theoretical Justification of the Classifier-Based Annotation . . . . . . . . . . . . . 30 
+
+B Variance-Preserving vs Variance Exploding Diffusion Processes 31 C VP Ambient Loss Derivation 32 D Characterization of Robot Action Data and Action Diffusion 34 E Pseudocode and Possible Extensions 36 
+
+E.1 Ambient Diffusion Policy Pseudocode . . . . . . . . . . . . . . . . . . . . . . . . 36 E.2 Diffusion Policy Implementation Details . . . . . . . . . . . . . . . . . . . . . . . 36 E.3 Future Direction: Classifier-Based Rejection Sampling . . . . . . . . . . . . . . . 37 
+
+F Experiments Overview 38 G Controlled Experiments 39 
+
+G.1 Noisy Trajectories: 2D Maze . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 39 G.2 Noisy Trajectories: Neural Motion Planning . . . . . . . . . . . . . . . . . . . . . 40 G.3 Sim-and-Real Co-training: Planar Pushing . . . . . . . . . . . . . . . . . . . . . . 43 G.4 Task Mismatch: Block Sorting . . . . . . . . . . . . . . . . . . . . . . . . . . . . 44 
+
+H Scaling Experiments: Open X-Embodiment 46 
+
+H.1 OXE Experiments . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 46 H.2 OXE Ablations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 47 
+
+I Finetuning 49 
+
+I.1 Implementation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 49 I.2 Table Cleaning (OXE) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 50 
+
+J Distribution Shifts in the Observation Space 50 
+
+J.1 Noising the Observations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 51 J.2 Classifier-Free Guidance . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 51 24 A Ambient Diffusion: Theoretical Foundations 
+
+This appendix provides the proofs of the theoretical results stated in Section 5: the spectral power law implies both fast contraction through noise (Theorem 1) and locality (Theorem 2) of the optimal denoiser. We then formally justify the classifier-based tmin annotation method from Phase 1 of our algorithm (Theorem 4). The Spectral Power Law (Definition 1) and the general TV-contraction bound of Eq. (4) are stated in Section 5. 
+
+Preliminaries. Given distributions P, Q , we recall the following information-theoretic diver-gences, used throughout this appendix: 
+
+dTV (P, Q ) = EQ 1 − dP dQ ,χ2(P ∥Q) = EQ
+
+ dP dQ 
+
+2
+
+− 1,
+
+LC( P, Q ) = 2 χ2 P 12 P + 12 Q .
+
+Pinsker’s inequality gives dTV (P, Q )2 ≤ 12 KL( P, Q ), and the LeCam inequality gives 
+
+dTV (P, Q )2 ≤ 12 LC( P, Q ). We refer the reader to [77] for further background. 
+
+A.1 Spectral Power Law implies fast contraction through noise 
+
+Proof of Theorem 1. We start by making the observation that since the Discrete Fourier Transform (DFT) is an invertible operation, it holds that: 
+
+dKL (pt∥qt) = d KL (F#pt∥F #qt). (7) We denote with F the DFT-matrix. Multiplying with F vectors that are distributed according to a zero-mean Gaussian gives another zero-mean Gaussian distribution with covariance: 
+
+ΣF#pt = Ex∼pt [( F x )( F x )∗] (8) 
+
+= F Ex∼pt [xx T ]F ∗ (9) 
+
+= F Σpt F ∗. (10) We have that Σpt = Σ p + σ2 
+
+> t
+
+I, where Σp is a circulant matrix (stationarity assumption). Hence, Σpt
+
+is also a circulant matrix, and thus it can be diagonalized as follows: 
+
+Σpt = F ∗(Λ p + σ2 
+
+> t
+
+I)F. (11) Hence, 
+
+ΣF#pt = F F ∗(Λ p + σ2 
+
+> t
+
+I)F F ∗ (12) 
+
+= Λ p + σ2 
+
+> t
+
+I. (13) Similarly, ΣF#qt = Λ q + σ2 
+
+> t
+
+I.Using the formula for the KL distance between two zero-mean, diagonal, multivariate Gaussians, we get: 
+
+dKL (pt∥qt) ≤ 12 
+
+> N−1
+
+X
+
+> i=0
+
+(Λ p)i,i + σ2
+
+> t
+
+(Λ q )i,i + σ2
+
+> t
+
+− ln 
+
+ (Λ p)i,i + σ2
+
+> t
+
+(Λ q )i,i + σ2
+
+> t
+
+
+
+− 1 (14) 
+
+= 12 
+
+> N−1
+
+X 
+
+> f=0
+
+Sp(f ) + σ2
+
+> t
+
+Sq (f ) + σ2
+
+> t
+
+− ln 
+
+ Sp(f ) + σ2
+
+> t
+
+Sq (f ) + σ2
+
+> t
+
+
+
+− 1 (15) 
+
+≤
+
+> ⌊N/ 2⌋
+
+X 
+
+> f >f ⋆
+
+Sp(f ) + σ2
+
+> t
+
+Sq (f ) + σ2
+
+> t
+
+− ln 
+
+ Sp(f ) + σ2
+
+> t
+
+Sq (f ) + σ2
+
+> t
+
+
+
+− 1, (16) 25 where in the last inequality we used the fact that the spectrum is symmetric around the Nyquist frequency and that p and q agree on all frequencies up to f ⋆.Let’s consider the function: g(r) = r − ln r − 1. We will start by showing that g(r) ≤ (r − 1) 2 for all r ∈ [1 /2, ∞).Let 
+
+h(r) = g(r) − (r − 1) 2 (17) 
+
+= r − ln r − 1 − r2 + 2 r − 1 (18) 
+
+= −r2 + 3 r − ln r − 2. (19) We hence have: 
+
+h′(r) = −2r + 3 − 1
+
+r (20) 
+
+= −2r2 + 3 r − 1
+
+r . (21) The determinant of the nominator is ∆ = 1 and there are two points that make h′(r) = 0 , which are: 
+
+r1 = 12 , r2 = 1 . (22) We have that h′(r) is negative for r > 1 and for r ∈ (0 , 1/2) . Hence, in [1 /2, ∞) the maximum of 
+
+h(r) is h(1) = 0 . Hence, the function h(r) is ≤ 0 for all r ∈ [1 /2, ∞).We now want to get some bounds on the quantity Sp(f )+ σ2  
+
+> t
+> Sq(f)+ σ2
+> t
+
+. First, note that: 
+
+Sp(f ) + σ2
+
+> t
+
+Sq (f ) + σ2
+
+> t
+
+≥ σ2
+
+> t
+
+max( Sp(f ), S q (f )) + σ2
+
+> t
+
+. (23) For all ⌊N/ 2⌋ ≥ f > f ⋆, we further have (by Power-law tail assumption) that: 
+
+max( Sp(f ), S q (f )) ≤ Cf −α, (24) which gives that: 
+
+Sp(f ) + σ2
+
+> t
+
+Sq (f ) + σ2
+
+> t
+
+≥ σ2
+
+> t
+
+Cf −α + σ2
+
+> t
+
+. (25) By assumption, we have that: 
+
+σ2 
+
+> t
+
+≥ C 1(f ⋆)α . (26) But: 
+
+Cf α < C
+
+(f ⋆)α , ∀f such that f ⋆ < f ≤ ⌊ N/ 2⌋. (27) Hence, 
+
+Cf −α < σ 2 
+
+> t
+
+. (28) Plugging this into Eq. (25), we get: 
+
+Sp(f ) + σ2
+
+> t
+
+Sq (f ) + σ2
+
+> t
+
+≥ 1/2. (29) 26 By combining Eq. 29 and the fact that g(r) ≤ (r − 1) 2 for all r ∈ [1 /2, ∞), we can write Eq. (16) as follows: 
+
+dKL (pt∥qt) ≤
+
+> ⌊N/ 2⌋
+
+X 
+
+> f >f ⋆
+
+ Sp(f ) − Sq (f )
+
+Sq (f ) + σ2
+
+> t
+
+2
+
+(30) 
+
+≤
+
+> ⌊N/ 2⌋
+
+X 
+
+> f >f ⋆
+
+ 2 max( Sp(f ), S q (f )) 
+
+σ2
+
+> t
+
+2
+
+(31) 
+
+≤
+
+> ⌊N/ 2⌋
+
+X 
+
+> f >f ⋆
+
+4 C2f −2α
+
+σ4
+
+> t
+
+(32) 
+
+= 4C2
+
+σ4
+
+> t
+> ⌊N/ 2⌋
+
+X 
+
+> f >f ⋆
+
+ 1
+
+f
+
+2α
+
+(33) 
+
+≤ 4C2
+
+σ4
+
+> t
+
+Z ∞ 
+
+> f⋆
+
+ 1
+
+f
+
+2α
+
+df (34) 
+
+= 4C2
+
+σ4 
+
+> t
+
+(2 α − 1)( f ⋆)2α−1 . (35) The TV distance bound follows from a direct application of Pinsker’s inequality. 
+
+A.2 Spectral Power Law implies locality 
+
+Proof of Theorem 2. Since X0 is distributed according to a Gaussian distribution, the MMSE opti-mal denoiser is a linear function, given as: 
+
+E[X0|Xt = x] = Σ(Σ + σ2 
+
+> t
+
+I)−1x. (36) From the stationarity assumption, Σ is a circulant matrix and so is the matrix Σ+ σ2 
+
+> t
+
+I. The inverse of a circulant matrix is another circulant matrix, and multiplying two circulant matrices gives another circulant matrix. Hence, the whole matrix Σ(Σ + σ2 
+
+> t
+
+I)−1 is circulant. Multiplication with a circulant matrix can be written as a circulant convolution; hence, we can express the optimal denoiser in the following equivalent way: 
+
+(E[X0|Xt = x]) i = 
+
+> N−1
+
+X
+
+> j=0
+
+kt(( i − j) mod N )xj , (37) where kt is the first column of the matrix Σ(Σ + σ2 
+
+> t
+
+I)−1. Let us now analyze how the prediction of the optimal denoiser changes when, instead of feeding the full input, we input a masked version 
+
+Mix of the input where Mi is a circulant mask. We have that: 
+
+error i = 
+
+> N−1
+
+X
+
+> j=0
+
+kt(( i − j) mod N )xj
+
+− 
+
+> N−1
+
+X
+
+> j=0
+
+kt(( i − j) mod N )Mixj (38) 
+
+= X
+
+> j:dist( i,j )>L
+
+kt(( i − j) mod N )xj , (39) 
+
+≤ || x|| ∞
+
+X
+
+> j:dist( i,j )>L
+
+kt(( i − j) mod N ) , (40) 27 where dist( i, j ) = min( |i − j|, N − | i − j|). Let m = ( i − j) mod N . First note that L + 1 ≤
+
+m ≤ ⌊ N/ 2⌋. Second, note that for each value m, there are two indices j that can give this value. Hence, we can rewrite the sum as: 
+
+error i ≤ || x|| ∞⌊N/ 2⌋
+
+X
+
+> m=L+1
+
+|kt(m)| + |kt(N − m)|. (41) We now need to analyze what the kernel kt is. We have defined this vector as the first column of the matrix Σ(Σ + σ2 
+
+> t
+
+I)−1. Because the matrix is circulant, we have that kt(m) = kt(N − m). Hence, 
+
+error i ≤ 2|| x|| ∞⌊N/ 2⌋
+
+X
+
+> m=L+1
+
+|kt(m)|. (42) By definition: 
+
+kt(m) = (Σ(Σ + σ2 
+
+> t
+
+I)−1e1)( m). (43) The matrix Σ(Σ + σ2 
+
+> t
+
+I)−1 is circulant, and hence it is diagonalized by the DFT. Hence, we have: 
+
+kt(m) = ( F ∗W F e 1)( m), (44) where W is the diagonal matrix with diagonal entries Wf,f = S(f ) 
+
+> S(f)+ σ2
+> t
+
+.We observe now that kt(m) is exactly the Inverse Discrete Fourier Transform of the Wiener filter. Hence, kt(m) can be equivalently written as: 
+
+kt(m) = 1
+
+N 
+
+> N−1
+
+X 
+
+> f=0
+
+Wf,f ei 2πf m N . (45) Because the original signal X0 is real-valued, its power spectrum and the resulting Wiener filter 
+
+Wf = Wf,f are symmetric around the Nyquist frequency, meaning WN −f = Wf . This conjugate symmetry perfectly cancels the imaginary sine components, allowing us to write the kernel entirely in terms of real cosines: 
+
+kt(m) = 1
+
+N 
+
+> N−1
+
+X 
+
+> f=0
+
+Wf cos 
+
+ 2πf m N
+
+
+
+. (46) To extract the spatial decay of this kernel as m increases, let ωm = 2πm N . We multiply both sides of the equation by the phase-shifting factor 2(1 − cos ωm):
+
+2(1 − cos ωm)kt(m)= 1
+
+N 
+
+> N−1
+
+X 
+
+> f=0
+
+Wf [2 cos( f ω m) − 2 cos( f ω m) cos( ωm)] . (47) Applying the standard trigonometric identity 2 cos( A) cos( B) = cos( A + B) + cos( A − B) to the second term gives: 
+
+2(1 − cos ωm)kt(m)= 1
+
+N 
+
+> N−1
+
+X 
+
+> f=0
+
+Wf
+
+h
+
+2 cos( f ω m) − cos(( f + 1) ωm)
+
+− cos(( f − 1) ωm)
+
+i
+
+. (48) Because the discrete spectrum is periodic ( WN = W0) and the cosine function is periodic over 
+
+N , we can shift the indices of summation for the (f + 1) and (f − 1) terms to group them by 28 the common cos( f ω m) factor. This perfectly regroups the sum into the central second difference 
+
+∆2Wf = Wf +1 − 2Wf + Wf −1:
+
+2(1 − cos ωm)kt(m) = − 1
+
+N 
+
+> N−1
+
+X 
+
+> f=0
+
+(∆ 2Wf ) cos( f ω m). (49) We now take the absolute value of both sides. For the left side, we apply the half-angle trigonometric identity 2(1 − cos ωm) = 4 sin 2   ωm
+
+> 2
+
+ = 4 sin 2   πm N
+
+. Since | cos( f ω m)| ≤ 1, it drops out of the right side: 
+
+4 sin 2  πm N
+
+
+
+|kt(m)| ≤ 1
+
+N 
+
+> N−1
+
+X 
+
+> f=0
+
+|∆2Wf |. (50) Crucially, the assumption that S(f ) follows a spectral power law dictates the structural behavior of this Wiener filter. For high frequencies f ≥ 1, the power law S(f ) = Cf −α ensures that 
+
+Wf monotonically and smoothly decays to zero. We can bound the discrete slope of this filter by analyzing its continuous extension W (f ) = CC+σ2   
+
+> tfα
+
+. Its derivative is: 
+
+W ′(f ) = −αCσ 2 
+
+> t
+
+f α−1
+
+(C + σ2 
+
+> t
+
+f α)2 . (51) By the Arithmetic Mean - Geometric Mean inequality, (C + σ2 
+
+> t
+
+f α)2 ≥ 4Cσ 2 
+
+> t
+
+f α. Substituting this into the derivative gives a strict bound on the slope: 
+
+|W ′(f )| ≤ αCσ 2 
+
+> t
+
+f α−1
+
+4Cσ 2 
+
+> t
+
+f α = α
+
+4f ≤ α
+
+4 . (52) The sequence of discrete first differences ∆Wf samples this continuous slope. Over the positive half of the spectrum, the slope starts near zero, reaches a maximum magnitude bounded by α/ 4,and gradually returns to zero. Because the function is convex in the tail, the second differences maintain a constant sign, allowing the absolute sum to telescope perfectly. The total absolute second variation for the positive half of the spectrum is therefore exactly bounded by twice the maximum slope, 2( α/ 4) = α/ 2. Due to the conjugate symmetry of the spectrum, the negative frequencies contribute an identical amount. Therefore, the total absolute second variation over the entire spectrum is strictly bounded by the power-law exponent:  
+
+> N−1
+
+X 
+
+> f=0
+
+|∆2Wf | ≤ α. (53) Substituting this variation bound back into our inequality yields: 
+
+4 sin 2  πm N
+
+
+
+|kt(m)| ≤ αN . (54) For the spatial domain m ≤ ⌊ N/ 2⌋, the argument πm N falls within the interval [0 , π/ 2] . In this domain, we can apply the linear lower bound for the sine function, sin( x) ≥ 2xπ , which gives 
+
+sin 2   πm N
+
+ ≥ 4m2  
+
+> N2
+
+. Substituting this yields: 
+
+4
+
+ 4m2
+
+N 2
+
+
+
+|kt(m)| ≤ αN =⇒ | kt(m)| ≤ αN 
+
+16 m2 . (55) We have thus proven that the optimal denoiser kernel decays spatially at a rate of O(1 /m 2). Re-turning to the error of the masked denoiser, we substitute this polynomial decay bound into the error sum: 
+
+error i ≤ 2∥x∥∞⌊N/ 2⌋
+
+X
+
+> m=L+1
+
+|kt(m)|≤ αN ∥x∥∞
+
+8
+
+> ⌊N/ 2⌋
+
+X
+
+> m=L+1
+
+1
+
+m2 . (56) 29 We can upper-bound this remaining discrete sum by the corresponding continuous integral over the spatial tail: 
+
+> ⌊N/ 2⌋
+
+X
+
+> m=L+1
+
+1
+
+m2 ≤
+
+Z ∞
+
+> L
+
+1
+
+y2 dy = 1
+
+L . (57) Hence, the approximation error of the masked denoiser is strictly bounded by: 
+
+error i ≤ αN ∥x∥∞
+
+8L . (58) This demonstrates that as the mask size L increases, the error drops off linearly, mathematically proving that the spectral power law forces the MMSE optimal denoiser to be spatially local. 
+
+A.3 Theoretical Justification of the Classifier-Based Annotation 
+
+We prove that the classifier-based tmin annotation method introduced in Phase 1 of Section 6 comes with a formal guarantee: suppose the classifier, fθ ,4 is ε-optimal and the threshold is τ . Then annotating tmin using the method described in Section 6 bounds the LeCam distance between the noisy distributions pt and qt (Theorem 4). Simply put, it guarantees that pt and qt are similar (i.e. contracted) for t > t min .
+
+Classifier threshold implies distributional closeness. Consider the population cross-entropy loss 
+
+LCE (f ) = −Ec,x [(1 − c) log(1 − f (x)) + c log f (x)] ,
+
+where we first sample c ∼ Bern(1 /2) and then sample x ∼ P if c = 1 or x ∼ Q otherwise. Let 
+
+M = 12 P + 12 Q denote the mixture. The optimal classifier is 
+
+f ∗ = arg min  
+
+> f
+
+LCE (f ), f ∗(x) = dP dP + dQ (x) = 12
+
+dP dM (x). (59) 
+
+Theorem 3 (Optimal classifier threshold implies distributional closeness) . Let f ∗ be the optimal classifier in Eq. (59) . Then 
+
+EQf ∗(x) = 12 − 12 LC( P, Q ).
+
+In particular, EQf ∗(x) ≥ 12 − τ implies LC( P, Q ) ≤ 2τ .Proof. We compute 
+
+EQf ∗ =
+
+Z dP dQ dP + dQ = 12
+
+Z (dP + dQ )2 − dP 2 − dQ 2
+
+dP + dQ .
+
+Then 
+
+EQf ∗ = 1 − 12
+
+Z dP 2
+
+dP + dQ − 12
+
+Z dQ 2
+
+dP + dQ .
+
+Noting R dP 2  
+
+> dP +dQ
+
+= 12 (χ2(P ∥M ) + 1) gives 
+
+EQf ∗ = 12 − 12 χ2(P ∥M ) − 12 χ2(Q∥M ).
+
+Using LC( P, Q ) = 2 χ2(P ∥M ) = 2 χ2(Q∥M ), we conclude 
+
+EQf ∗ = 12 − 12 LC( P, Q ).
+
+The threshold condition EQf ∗ ≥ 12 − τ then immediately gives LC( P, Q ) ≤ 2τ .      
+
+> 4Section 6 uses cϕto denote the classifier. We switched notation to fθfor the proofs since they use cto denote a Bernoulli random variable.
+
+30 We now extend this result to approximate classifiers trained on the cross-entropy loss. 
+
+Theorem 4 (Approximate classifier threshold implies distributional closeness) . Suppose fθ : Rd →
+
+[0 , 1] is an ε-optimal classifier, i.e. LCE (fθ ) ≤ L CE (f ∗) + ε. Then EQfθ (x) ≥ 12 − τ implies 
+
+LC( P, Q ) ≤ 2τ + 2 √ε.Proof. The cross-entropy loss admits the decomposition 
+
+LCE (f ) = Ex∼M d(f ∗(x)∥f (x)) + const ,
+
+where d(p∥q) = KL(Bern( p)∥Bern( q)) is the binary KL divergence. The ε-accuracy condition implies Ex∼M d(f ∗(x)∥f (x)) ≤ ε, and by non-negativity Ex∼Qd(f ∗(x)∥f (x)) ≤ 2ε. Applying Pinsker’s inequality and dTV (p, q ) = |p − q| for Bernoulli variables yields 
+
+Ex∼Q(fθ (x) − f ∗(x)) 2 ≤ ε. 
+
+By Jensen, Ex∼Qf ∗(x) ≥ Ex∼Qfθ (x) − √ε, so 
+
+Ex∼Qf ∗(x) ≥ 12 − τ − √ε. 
+
+Applying Theorem 3 recovers the claim. 
+
+B Variance-Preserving vs Variance Exploding Diffusion Processes 
+
+The paper presents Ambient Diffusion Policy from the variance-exploding perspective of diffu-sion [55] to lighten notation. Our implementation builds off the original Diffusion Policy [23] work, which uses a variance-preserving implementation. We first show that the two perspectives are equivalent up to a change of variables. The variance exploding (VE) and variance preserving (VP) forward processes are defined in Eq. (60) and (61) respectively [55]: 
+
+Xt = X0 + σVE (t) Z, (60) 
+
+Xt =
+
+q
+
+1 − σ2VP (t) X0 + σVP (t) Z, (61) where Z ∼ N (0 , I ), σVE (t) is an unbounded increasing function with σVE (0) = 0 , and σVP (t) is an increasing function with σVP (0) = 0 and σVP (T ) = 1 . Without loss of generality, we assume the data is normalized so that Var[ X0] = 1 .
+
+Proposition 1. The VP and VE processes are equivalent up to a time-dependent rescaling of space. Proof. Given a VE schedule σVE (t), define 
+
+σVP (t) := σVE (t)
+
+p1 + σ2VE (t) , c(t) := 
+
+q
+
+1 + σ2VE (t). (62) Under this mapping, 
+
+SNR VE (t) = 1
+
+σ2VE (t) = 1 − σ2VP (t)
+
+σ2VP (t) = SNR VP (t), (63) so both processes have the same SNR at every t. The rescaled VE variable, ˜Xt, satisfies 
+
+eXt := XVE 
+
+> t
+
+c(t) = XVP  
+
+> t
+
+. (64) Thus, the VP process is the VE process in normalized coordinates xVE  
+
+> t
+
+7 → xVE  
+
+> t
+
+/c (t) = xVP  
+
+> t
+
+.
+
+Proposition 2. The score functions of the VP and VE processes are related by: 
+
+sVP (ext, t ) = c(t) · sVE (c(t) ext, t ) . (65) 31 Proof. Let pVP  
+
+> t
+
+and pVE  
+
+> t
+
+denote the marginal densities of XVP  
+
+> t
+
+and XVE  
+
+> t
+
+respectively. Given the change of variables xVE  
+
+> t
+
+= c(t) xVP  
+
+> t
+
+, we have that pVP  
+
+> t
+
+(xVP  
+
+> t
+
+) = c(t)d pVE  
+
+> t
+
+(c(t) xVP  
+
+> t
+
+), where d is the dimension. Taking the gradient with respect to xVP  
+
+> t
+
+:
+
+sVP (xVP  
+
+> t
+
+, t ) = ∇xVP  
+
+> t
+
+log pVP  
+
+> t
+
+(xVP  
+
+> t
+
+)= ∇xVP  
+
+> t
+
+log pVE  
+
+> t
+
+(c(t) xVP  
+
+> t
+
+) +  : 0
+
+∇xVP  
+
+> t
+
+log c(t)d
+
+= c(t) · sVE  c(t) xVP  
+
+> t
+
+, t  , (66) where the last line follows from the chain rule. 
+
+Proposition 3. Let h∗ 
+
+> VE
+
+and h∗ 
+
+> VP
+
+denote the optimal denoisers for the VE and VP processes respec-tively. Then: 
+
+h∗
+
+> VP
+
+(xVP  
+
+> t
+
+, t ) = h∗
+
+> VE
+
+ c(t) xVP  
+
+> t
+
+, t  . (67) 
+
+Proof. By Tweedie’s formula, the optimal denoisers are related to the scores via: 
+
+h∗
+
+> VE
+
+(xVE  
+
+> t
+
+, t ) = xVE  
+
+> t
+
++ σ2VE (t) sVE (xVE  
+
+> t
+
+, t ), (68) 
+
+h∗
+
+> VP
+
+(xVP  
+
+> t
+
+, t ) = xVP  
+
+> t
+
++ σ2VP (t) sVP (xVP  
+
+> t
+
+, t )
+
+p1 − σ2VP (t) . (69) Substituting the score correspondence from Proposition 2 and the definition of c(t) in (62) yields the desired result. Therefore, any result derived in one framework translates to the other via c(t) = p1 + σ2VE (t).
+
+C VP Ambient Loss Derivation 
+
+In the original Ambient Diffusion work, Daras et al. [24] propose an alternative loss function, known as the Ambient loss. Unlike the denoising loss from DDPM [54], the Ambient loss assumes no access to the clean samples, x0, and instead uses xtmin as the prediction target. Nonetheless, it is minimized by the same denoiser as the DDPM loss. In the image domain, the Ambient loss has been shown to improve generalization. Daras et al. [24] derive the Ambient loss for VE diffusion. In this section, we derive it for VP diffusion. 
+
+Proposition 4. The ϵ-prediction VP Ambient loss for t > t min is given by 
+
+L(θ) = E
+
+ ϵθ (xt, t ) − σt(1 − σ2 
+
+> tmin
+
+)
+
+σ2 
+
+> t
+
+− σ2
+
+> tmin
+
+xt +
+
+σt
+
+q
+
+(1 − σ2 
+
+> t
+
+)(1 − σ2 
+
+> tmin
+
+)
+
+σ2 
+
+> t
+
+− σ2
+
+> tmin
+
+xtmin 
+
+> 22
+
+ , (70) 
+
+and minimized by ϵ∗ 
+
+> θ
+
+= E[Z | Xt = xt].Proof. Let Xt and Z be the random variables from the forward process in VP diffusion, Eq. (61). Then: 
+
+E[Z | Xt = xt] = xt − p1 − σ2 
+
+> t
+
+E[X0 | Xt = xt]
+
+σt
+
+. (71) By the double Tweedie identity from Daras et al. [24]: 
+
+E[X0 | Xt = xt] = 
+
+σ2
+
+> t
+
+q
+
+1 − σ2
+
+> tmin
+
+σ2 
+
+> t
+
+− σ2
+
+> tmin
+
+E[Xtmin | Xt = xt] − σ2
+
+> tmin
+
+p1 − σ2
+
+> t
+
+σ2 
+
+> t
+
+− σ2
+
+> tmin
+
+xt. (72) 32 Substituting Eq. (72) into Eq. (71) and rearranging gives: 
+
+E[Xtmin | Xt = xt] = αt E[Z | Xt = xt] + βt xt, (73) 
+
+αt := − σ2 
+
+> t
+
+− σ2
+
+> tmin
+
+σt
+
+q
+
+(1 − σ2 
+
+> t
+
+)(1 − σ2 
+
+> tmin
+
+)
+
+, (74) 
+
+βt := 1 − σ2
+
+> tmin
+
+q
+
+(1 − σ2 
+
+> t
+
+)(1 − σ2 
+
+> tmin
+
+)
+
+. (75) Define gθ (xt, t ) := αt ϵθ (xt, t ) + βt xt. Since t > t min , we have αt̸ = 0 and the map ϵθ 7 → gθ is a bijection. Thus, minimizing 
+
+E∥gθ (xt, t ) − xtmin ∥2 (76) over gθ is equivalent to minimizing over ϵθ . The minimizer of Eq. (76) is g∗ 
+
+> θ
+
+= E[Xtmin | Xt = xt],which by Eq. (73) implies ϵ∗ 
+
+> θ
+
+= E[Z | Xt = xt]. Rescaling the loss in Eq. (76) by α2 
+
+> t
+
+yields: 
+
+E
+
+"
+
+ϵθ (xt, t ) + βt
+
+αt
+
+xt − 1
+
+αt
+
+xtmin 
+
+> 22
+
+#
+
+, (77) which expands to the loss in the proposition. 
+
+Proposition 5. The x0-prediction VP Ambient loss for t > t min is given by 
+
+E
+
+ hθ (xt, t ) + σ2
+
+> tmin
+
+p1 − σ2
+
+> t
+
+σ2 
+
+> t
+
+− σ2
+
+> tmin
+
+xt −
+
+σ2
+
+> t
+
+q
+
+1 − σ2
+
+> tmin
+
+σ2 
+
+> t
+
+− σ2
+
+> tmin
+
+xtmin 
+
+> 22
+
+ , (78) 
+
+and minimized by h∗ 
+
+> θ
+
+= E[X0 | Xt = xt].Proof. Isolating E[Xtmin | Xt = xt] in the double Tweedie identity Eq. (72) gives: 
+
+E[Xtmin | Xt = xt] = ˜ αt E[X0 | Xt = xt] + ˜βt xt, (79) 
+
+˜αt := σ2 
+
+> t
+
+− σ2
+
+> tmin
+
+σ2
+
+> t
+
+q
+
+1 − σ2
+
+> tmin
+
+, ˜βt := σ2
+
+> tmin
+
+p1 − σ2
+
+> t
+
+σ2
+
+> t
+
+q
+
+1 − σ2
+
+> tmin
+
+. (80) Define ˜gθ (xt, t ) := ˜ αt hθ (xt, t ) + ˜βt xt. Since t > t min , then ˜αt̸ = 0 and the map hθ 7 → ˜gθ is a bijection. Thus, minimizing 
+
+E∥˜gθ (xt, t ) − xtmin ∥2 (81) over ˜gθ is equivalent to minimizing over hθ . The minimizer of Eq. (81) is ˜g∗ 
+
+> θ
+
+= E[Xtmin | Xt = xt],which by Eq. (79) implies h∗ 
+
+> θ
+
+= E[X0 | Xt = xt]. Rescaling the loss in Eq. (81) by ˜α2 
+
+> t
+
+yields: 
+
+E
+
+ hθ (xt, t ) + ˜βt
+
+˜αt
+
+xt − 1˜αt
+
+xtmin 
+
+> 22
+
+ , (82) which expands to the loss in the proposition. 
+
+Remark 1. Both losses reduce to the canonical MSE diffusion loss [54] when tmin = 0 .
+
+Remark 2. For both the ϵ- and x0-prediction losses, the rescaling factor, 1/α 2 
+
+> t
+
+(resp. 1/˜α2 
+
+> t
+
+), diverges as t → tmin . This can cause training instability. Following [19], we introduce a buffer B: a sample from Dq is only used at diffusion times satisfying t > t min and 1/α 2 
+
+> t
+
+< B (resp. 1/˜α2 
+
+> t
+
+< B ). The effect of B is studied in Figure 19e. 33 10 1 10 0         
+
+> Frequency (Hz)
+> 10 3
+> 10 2
+> 10 1
+> 10 0
+> Power Spectral Density
+> Sf, mean =1.82
+> Average PSD - maze_2D
+> x
+> y
+> f1.82 (fit)
+
+(a) Dp from Section 7.1 10 1 10 0          
+
+> Frequency (Hz)
+> 10 3
+> 10 2
+> 10 1
+> Power Spectral Density
+> Sf, mean =1.82
+> Average PSD - iiwa_motion_planning
+> q1
+> q2
+> q3
+> q4
+> q5
+> q6
+> q7
+> f1.82 (fit)
+
+(b) Dp from Appendix G.2 10 1 10 0           
+
+> Frequency (Hz)
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Power Spectral Density
+> Sf, mean =2.01
+> Average PSD - planar_pushing
+> x
+> y
+> f2.01 (fit)
+
+(c) Dp from Section 7.3 10 1 10 0          
+
+> Frequency (Hz)
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Power Spectral Density
+> Sf, mean =1.88
+> Average PSD - sim_planar_pushing
+> Dim 0
+> Dim 1
+> f1.88 (fit)
+
+(d) Dq from Section 7.3 10 1 10 0           
+
+> Frequency (Hz)
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> 10 0
+> Power Spectral Density
+> Sf, mean =2.27
+> Average PSD - bin_sorting
+> x
+> y
+> z
+> R11
+> R12
+> R13
+> R21
+> R22
+> R23
+> R31
+> R32
+> R33
+> Gripper
+> f2.27 (fit)
+
+(e) Dp from Section 7.4 10 1 10 0           
+
+> Frequency (Hz)
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> 10 0
+> Power Spectral Density
+> Sf, mean =2.17
+> Average PSD - table_cleaning
+> x
+> y
+> z
+> R11
+> R12
+> R13
+> R21
+> R22
+> R23
+> R31
+> R32
+> R33
+> Gripper
+> f2.17 (fit)
+
+(f) Dp from Section 8 
+
+Figure 11: A visualization of the average PSD for a diverse range of robot datasets; a spectral power law exists in all of them. Table 4 characterizes the datasets shown in (a)-(f) as well as the OXE dataset shown in Figure 3a. 
+
+D Characterization of Robot Action Data and Action Diffusion 
+
+Spectral Power Law: Figures 3a and 11 visualize the spectral power law for several robot datasets. These datasets include human teleop vs algorithmically generated actions, absolute vs delta actions, end effector vs joint space actions, different parameterizations of SE(3) end-effector poses, and data from different tasks. Remarkably, a spectral power law existed in all the datasets we tested. Table 4 outlines the characteristics of each dataset in more detail. The average PSD for each dataset was computed as follows. Given a dataset, we normalize the range of each action dimension to [-1,1]. For OXE, we instead normalized the 2% and 98% quartiles to [-1,1]. We do not normalize the rotation dimensions if they are represented in R9 format since these values already lie within [0,1] by construction. All the datasets were collected at 10 Hz; however, action frequencies in OXE vary. To ensure consistency, we set the frequency of OXE to 10 Hz by downsampling higher-frequency data and artificially speeding up lower-frequency data. We chose an action horizon of 100. For each action dimension, we compute the periodogram along the time axis. Finally, we average these periodograms across all action chunks in the dataset. Our plots exclude the DC component, which is often close to 0 due to the range normalization. These plots use a log-log scale; a power law, f −α, manifests as a straight line of slope −α.We fix the action frequency and horizon for consistency across datasets, but remark that the spectral power law emerges regardless of these choices. Concurrent work performed the analysis using the discrete cosine transform and obtained similar results [78]. 
+
+Region Classification Experiment (from Section 4.1): We test how well the global plan in A0 can be recovered from At using a learned classifier. We train the classifier on 5000 trajectories generated by GCS trajectory optimization [65] in the 2D maze. GCS decomposes the planning problem into discrete decisions (which regions of space to move through) and continuous decisions (the precise trajectory to follow within each region). Thus, the set of regions a trajectory passes through acts as a proxy for the global planning decisions, as it captures the topological structure of the maze. 34 Table 4: Characteristics of the datasets analyzed via power spectral density (PSD) in Figures 3a and 11. Despite their differences, all datasets exhibit a spectral power law. 
+
+Fig. Dataset Source Generation Action Space Action Type Rotation Rep. ¯α†
+
+Fig. 3a COXE [1] Dq (Sec. 8) Mixed Task space Delta Axis-angle -1.47 Fig. 11a GCS [65] Dp (Sec. 7.1) Algorithmic x-y Absolute N/A -1.82 Fig. 11b TrajOpt. Dp (App. G.2) Algorithmic Joint space Absolute N/A -1.82 Fig. 11c Planar pushing [12] Dp (Sec. 7.3) Human teleop x-y Absolute N/A -2.01 Fig. 11d Graesdal et al. [72] Dq (Sec. 7.3) Algorithmic x-y Absolute N/A -1.88 Fig. 11e Block sorting Dp (Sec. 7.4) Human teleop Task space Absolute R9 -2.27 Fig. 11f Table cleaning Dp (Sec. 8) Human teleop Task space Absolute R9 -2.17 
+
+† ¯α: mean fitted exponent across action dimensions, where S(f ) ∝ f α0 1 2 3 4 5    
+
+> x
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> y
+> 0
+> 1
+> 234
+> 5
+> 6
+> 78910
+> 11
+> 12
+> 13
+> 14
+> 15
+> 16
+> 17
+> 18
+> 19
+> Free-space convex decomposition (N=20)
+
+(a) Convex decomposition of the collision-free space. 0 1 2 3 4 5                         
+
+> x
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> y
+> 0
+> 1
+> 234
+> 5
+> 6
+> 78910
+> 11
+> 12
+> 13
+> 14
+> 15
+> 16
+> 17
+> 18
+> 19
+> global_plan_label =[0 1000010000101101011]
+> Visualization of intersected regions
+
+(b) Visualization of the discrete decisions in GCS. 0.2 0.4 0.6 0.8 1.0 
+
+> t
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Accuracy
+> = 0.878
+
+Test Accuracy vs Noise Level 
+
+> Threshold = 0.95
+
+(c) Prediction accuracy for the plan at different noise levels. 
+
+Figure 12: The backward process commits to a global plan at high noise. By σt = 0 .878 ,the global plan in A0 can already be recovered from At with 95% accuracy. Accuracy plateaus afterward. This indicates that the start of the backward process performs global planning. Figure 2 shows that the remainder of the backward process is devoted to local trajectory refinement. Concretely, we train a classifier cθ : A × R → R20 that takes as input (At, t ) and predicts the probability that A0 passes through each of the 20 convex regions 5. Figure 12b shows an example trajectory and its corresponding region labels. Figure 12c plots the average prediction accuracy at each noise level on a held-out test dataset: it saturates quickly as the noise decreases. This implies that nearly all the global planning information is diffused early in the backward process. Altogether, this experiment supports our claim that action diffusion exhibits a global-to-local hierarchy. 
+
+Related Work: Decomposing action generation hierarchically is a classic approach for solving problems in robotics [79]. Recent works have begun incorporating this idea into Diffusion Policy. Generally, these approaches factorize action generation into a high and low level policy [2, 3]; however, this factorization is often handcrafted and task-specific [80, 81, 82]. Our results show that a global-to-local action hierarchy emerges naturally from the spectral structure of the data. Thus, we hypothesize that with sufficient data, an end-to-end policy could potentially learn the “correct” hierarchy in the diffusion process without manual design. 
+
+Locality (Sensitivity Field from Figure 3b): Let h(8)  
+
+> θ
+
+denote an x0-predictor’s estimate of the 8th clean action and let A(i) 
+
+> t
+
+denote the i-th action in the noisy action chunk At. For each diffusion time 
+
+t, the sensitivity field is defined as: 
+
+St(i) := E(O,A 0)∼D 
+
+"
+
+∂h (8)  
+
+> θ
+
+(At, O, t )
+
+∂A (i) 
+
+> tF
+
+#
+
+, i ∈ [0 , 15] . (83) We normalize each sensitivity field so that max i St(i) = 1 at each diffusion time. Intuitively, St(i)
+
+measures the sensitivity of the 8th action estimate to the i-th noisy action at diffusion time t.
+
+> 5
+
+We intentionally exclude the start and goal conditioning from the classifier since those are sufficient for predicting the global plan. 
+
+35 E Pseudocode and Possible Extensions 
+
+E.1 Ambient Diffusion Policy Pseudocode 
+
+Given Dp, Dq , and annotations from Phase 1 in the Method section, we train an Ambient Diffusion Policy following Algorithm 1. At each step, we sample a batch of diffusion times t(i) i.i.d. 
+
+∼ U[0 , T ]
+
+and then draw admissible samples from Dp ∪ D q . We update the policy parameters, θ, to minimize the loss in C OMPUTE LOSS .COMPUTE LOSS executes the forward process and can use two choices for L. The first is the standard denoising loss, Ldenoising [54]. The second is the Ambient loss , Lambient , discussed in Appendix C. 6
+
+We present two versions of C OMPUTE LOSS for variance-exploding (Algorithm 2) and variance-preserving diffusion processes (Algorithm 3). 
+
+Algorithm 1 Ambient Diffusion Policy: Training 
+
+Require: Dp, Dq with (t(i)min , t (i)max ), L ∈ {L ambient , Ldenoising }, noise schedule σ(t), max time T ,batch size B, policy parameters θ
+
+1: repeat 
+
+2: Sample t(i) i.i.d. 
+
+∼ U [0 , T ] for i = 1 , . . . , B 
+
+3: Sample batch {(O(i), A (i)0 )}Bi=1 s.t. t(i) ∈ [0 , t (i)max ) ∪ (t(i)min , T ]
+
+4: ℓ ← 1
+
+> B
+
+PBi=1 COMPUTE LOSS 
+
+
+
+L, A (i)0 , O (i), t (i), t (i)max , t (i)min 
+
+
+
+5: Update θ on ℓ
+
+6: until converged 
+
+7: return πθ
+
+Algorithm 2 COMPUTE LOSS (variance-exploding) 
+
+Require: L, A0, O, t, tmax , tmin 
+
+1: if t ∈ [0 , t max ) or L = Ldenoising then 
+
+2: At ← A0 + σt Z, Z ∼ N (0 , I )
+
+3: return Ldenoising (At, A 0, O, t ) ▷ standard DDPM loss [54] 
+
+4: else ▷ t ∈ (tmin , T ] and L = LVE ambient 
+
+5: Sample Z1, Z 2
+
+> i.i.d.
+
+∼ N (0 , I )
+
+6: Atmin ← A0 + σtmin Z1
+
+7: At ← Atmin +
+
+q
+
+σ2 
+
+> t
+
+− σ2 
+
+> tmin
+
+Z2
+
+8: return LVE ambient (At, A tmin , O, t ) ▷ VE Ambient loss [24] 
+
+9: end if E.2 Diffusion Policy Implementation Details 
+
+Unless otherwise noted, policies are trained to predict the next 16 actions at 10 Hz with a fixed horizon for observations and actions. We execute the first 8 actions and predict new actions in an MPC-like fashion. Policies are conditioned on the 2 most recent observations. We consider a fixed horizon for observations and actions and assume that the learned policy is time-invariant , i.e. the conditional action distribution π(· | O) depends only on the most recent observations and not on the time t. The per-experiment observation and action spaces are summarized in Tables 5 and 6. We use the U-Net architecture from [23], but add the option for conditioning on a goal. When a policy is image-conditioned, we use the ResNet18 backbone for the vision encoder. We train the policy end-to-end with a cosine learning rate schedule. The noise schedule σ(t) is a cosine 
+
+> 6
+
+The Ambient loss was only used in the maze experiments (see Table 5). We tested the Ambient loss on the experiments in the OXE experiments and found it made no statistically significant difference; thus, we continued using the regular denoising loss for simplicity. 
+
+36 Algorithm 3 COMPUTE LOSS (variance-preserving) 
+
+Require: L, A0, O, t, tmax , tmin 
+
+1: if t ∈ [0 , t max ) or L = Ldenoising then 
+
+2: At ← p1 − σ2 
+
+> t
+
+A0 + σtZ, Z ∼ N (0 , I )
+
+3: return Ldenoising (At, A 0, O, t ) ▷ standard DDPM loss [54] 
+
+4: else ▷ t ∈ (tmin , T ] and L = LVP ambient 
+
+5: Sample Z1, Z 2
+
+> i.i.d.
+
+∼ N (0 , I )
+
+6: Atmin ←
+
+q
+
+1 − σ2 
+
+> tmin
+
+A0 + σtmin Z1
+
+7: At ←
+
+r 1−σ2
+
+> t
+> 1−σ2
+> tmin
+
+Atmin +
+
+r σ2 
+
+> t−σ2
+> tmin
+> 1−σ2
+> tmin
+
+Z2
+
+8: return LVP ambient (At, A tmin , O, t ) ▷ Eq. (70) ( ϵ-pred) or Eq. (78) ( x0-pred) 
+
+9: end if 0 20 40 60 80 100 
+
+Diffusion Time  
+
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> ( p) tmin = 18
+
+Classifier ( p) vs Diffusion Time  
+
+> Suboptimal Dataset
+> Threshold = 0.5 = 0.45
+
+Figure 13: Average classifier out-put for suboptimal samples in the 2D maze dataset (Section 7.1) at different diffusion times. As t
+
+increases, pt and qt become harder to distinguish. The dotted line is the threshold 0.5 − τ , which is crossed for tmin = 18 .schedule with T = 100 diffusion steps. We apply EMA to the training loop. Sampling is performed online using 10 steps of DDIM [57]. Predicted actions are linearly interpolated into piecewise linear trajectories and passed through a first-order low-pass filter before being sent to the robot. 
+
+E.3 Future Direction: Classifier-Based Rejection Sampling 
+
+This section proposes a similar algorithm to Ambient Diffusion Policy based on rejection sampling. We provide theoretical foundations for this method, but do not experimentally verify it. This is an exciting direction for future work. Recall that we trained a classifier that outputs the probability that a noisy action chunk came from pt
+
+(as opposed to qt). Algorithm 4 samples (approximately) from P given only access to samples from the mixture M = 12 P + 12 Q and the classifier. Proposition 6 bounds the total variation between the sampled distribution and P . By using the classifier for rejection sampling, we can train denoisers for P despite leveraging data from an auxiliary source Q. In the proofs, we use fθ to denote the classifier instead of cϕ from Section 6. 37 Algorithm 4 Rejection sampling via classifier 
+
+Require: Noisy classifier fθ (x, σ ), mixture distribution M = 12 P + 12 Q, noise distribution ρσ 
+
+> 1:
+
+Sample σ ∼ ρσ 
+
+> 2:
+
+while True do  
+
+> 3:
+
+Sample X ∼ M 
+
+> 4:
+
+Xσ ← ADD NOISE (X, σ ) 
+
+> 5:
+
+Sample c ∼ Bern( fθ (Xσ , σ ))  
+
+> 6:
+
+if c = 1 then  
+
+> 7:
+
+return (σ, X σ ) 
+
+> 8:
+
+end if  
+
+> 9:
+
+end while Proposition 6 (Rejection sampling guarantee) . Suppose fθ is uniformly ε-optimal across σ:
+
+LCE (f | σ) ≤ L CE (f ∗ | σ) + ε, ∀σ. 
+
+For any σ ≥ 0, let Pσ be the noisy distribution of X ∼ P , and let ˆPσ be the distribution of Xσ
+
+output by Algorithm 4. Then 
+
+dTV ( ˆPσ , P σ ) ≤ O(√ε).
+
+Proof. We drop the subscript σ and write P ≡ Pσ , Q ≡ Qσ . Let m(x) denote the mixture density. The true distribution P satisfies p(x) = 2 m(x)f ∗(x), while the rejection-sampled density is 
+
+ˆp(x) = m(x)fθ (x)
+
+Z , Z = EX∼M [fθ (X)] ,
+
+where Z is the acceptance rate. By Pinsker applied to the cross-entropy gap, EX∼M [( f ∗(X) −
+
+fθ (X)) 2] ≤ ε/ 2, so by Jensen 
+
+δ ≜ EX∼M |fθ (X) − f ∗(X)| ≤ pε/ 2.
+
+This gives |Z − 12 | ≤ δ, hence Z ≥ 12 − δ. The total variation between ˆP and P is 
+
+dTV ( ˆP , P ) = 12
+
+Z m(x)fθ (x)
+
+Z − 2m(x)f ∗(x) dx 
+
+= EX∼M
+
+fθ (X) − 2Zf ∗(X)2Z .
+
+By the triangle inequality, 
+
+fθ (X) − 2Zf ∗(X)2Z ≤ |fθ (X) − f ∗(X)|
+
+2Z + f ∗(X)2Z |1 − 2Z|.
+
+Taking the expectation over M and using EX∼M [f ∗(X)] = 12 and |1 − 2Z| ≤ 2δ:
+
+dTV ( ˆP , P ) ≤ δ
+
+2Z + 2δ
+
+4Z = δZ ≤ 2δ
+
+1 − 2δ .
+
+For ε < 2/9 we have 1 − 2δ > 1/3, hence 
+
+dTV ( ˆP , P ) ≤ 6pε/ 2 = O(√ε).
+
+F Experiments Overview 
+
+Tables 5 and 6 summarize the datasets, distribution shifts, observation and action spaces, hyperpa-rameters, loss functions, and evaluation details for all main experiments in Sections 7 and 8 respec-tively; ablation parameters may differ. Importantly, we swept hyperparameters for each baseline to ensure a fair comparison. 38 Binary success metrics are reported with 95% Clopper-Pearson confidence intervals. Otherwise, error bars are standard error intervals. For each training run, we save 5-10 checkpoints and report the performance of the best-performing one. While the initial exposition of our algorithm was presented with variance-exploding diffusion, our implementation uses variance-preserving diffusion (i.e. σ(T ) = 1 ). Table 5: Experimental configurations for the four generality experiments. Parameters vary for the ablations. 
+
+Maze Neural Motion Planning Sim-and-Real Co-training Block Sorting Dataset Details  Dp GCS [65] Trajectory Optimization [83] Joystick Teleop [12] VR Teleop 
+
+Dq RRT [66] BiRRT [84] Contact-Rich Planner [72] VR Teleop 
+
+|D p| (Num. Demos.) 50 100,000 50 50 
+
+|D q | (Num. Demos.) 5000 1,000,000 2000 200 
+
+Nature of shift Low-quality/ noisy trajectories Low-quality/ noisy trajectories Sim-to-real gap Task mismatch 
+
+> Policy I/O
+
+Observation space Proprio Proprio EE position Scene camera Wrist camera EE pose (xyz, R9) Gripper state Scene camera Blocks camera Wrist camera 
+
+Action space x-y position Joint angles 
+
+R7
+
+x-y pusher position EE command (xyz, R9, gripper) 
+
+> Parameters
+
+σt∗ 
+
+> min
+
+∈ [0 , 1] 0.074 (sweep) 0.025 (sweep) varies see Table 2 N/A (sweep) 
+
+σt∗ 
+
+> max
+
+∈ [0 , 1] N/A N/A 0(sweep) 0.46 (sweep) 
+
+α∗ ∈ [0 , 1] for co-training 0.019 (sweep) 0.091 (sweep) 0.25 (sweep) 0.9 (sweep) 
+
+> Loss
+
+Loss prediction target x0 ϵ x0 ϵ
+
+Loss function Lambient Ldenoising Ldenoising Ldenoising 
+
+> Eval.
+
+Num. trials 1,000 1,000 200 200 ( 800 blocks) 
+
+G Controlled Experiments 
+
+G.1 Noisy Trajectories: 2D Maze Data Generation: The GCS [65] trajectories were generated using third-order Bezier curves, first-order continuity constraints, and a maximum of 10 rounded paths. Both the GCS and the RRT datasets were generated with a velocity constraint of 1m/s in the x and y directions and 0.1m of obstacle padding. The maze environment is 5m by 5m. 
+
+Evaluation: During each trial, we sample the start and goal uniformly in the padded collision-free configuration space; the robot is initialized at the start configuration. A trial is successful if the robot can navigate to a 0.15m ball around the end configuration without collision within 30s of simulation time. We performed 1000 trials per policy. We compute the smoothness metric as the average squared acceleration of the policy’s rollout. Con-cretely, we fit a cubic spline to the rollout and evaluate 
+
+Smoothness = 1
+
+> T
+
+Z T
+
+> 0
+
+∥a(t)∥22 dt, (84) where a(t) is the acceleration of the spline at time t. We only report smoothness for the successful rollouts, for three reasons: 1) failed rollouts have orders of magnitude higher accelerations that 39 Table 6: Experimental configurations for the two OXE scaling experiments. Parameters vary for the ablations. 
+
+Table Cleaning Tower Building Dataset Details  Dp VR Teleop VR Teleop 
+
+Dq
+
+OXE [1] OXE [1] 
+
+|D p| (Num. Demos.) 50 & 150 35 
+
+|D q | (Num. Demos.) 1,279,774 (MS++) 1,402,606 (COXE) 1,402,606 (COXE) 
+
+Nature of shift Unstructured Unstructured 
+
+> Policy I/O
+
+Observation space 
+
+EE pose (xyz, R9) Gripper state Table camera Drawer camera 2x Wrist camera EE pose (xyz, R9) Gripper state Table camera Tower camera 2x Wrist camera 
+
+Action space 
+
+Delta pose (xyz, axis-angle, gripper) Delta pose (xyz, axis-angle, gripper) 
+
+> Parameters
+
+σt∗ 
+
+> min
+
+∈ [0 , 1] See Figure 21 (classifier) See Figure 22 (classifier) 
+
+σt∗ 
+
+> max
+
+∈ [0 , 1] 0.167 (no sweep) 0.09 (no sweep) 
+
+α∗ ∈ [0 , 1] for co-training 0.5 (no sweep) 0.5 (no sweep) 
+
+> Loss
+
+Loss prediction target ϵ ϵ
+
+Loss function Ldenoising Ldenoising 
+
+> Eval.
+
+Num. trials 20 (60 objects) 20 
+
+disproportionally bias the results, 2) across 1000 trials, most policies had less than 10 failed rollouts, 3) the overall trend when averaging across all trials is the same. Figure 15 shows the maze success rate as a function of σtmin , and Figure 14 visualizes representative policy rollouts for each training algorithm. 
+
+G.2 Noisy Trajectories: Neural Motion Planning 
+
+This appendix provides the full experimental details for the neural motion planning experiment in Section 7.2, along with best-of-100 results and a σtmin sweep. The main results (Table 1b and Figure 6b) are presented in Section 7.2. Table 7 compares the 2D maze and 7-DoF NMP setups side by side. The environment in Figure 1b was generated using a procedural method [85] and the assets are from Pfaff et al. [86]. Start and goal configurations are determined by sampling a random end-effector target point p ∈ SE(3) and then solving the optimization inverse kinematics problem 
+
+find q ∈ R7
+
+s.t. FK pos (q) = p, 
+
+SDF( q) ≥ 0.01 ,
+
+(85) where FK pos is the position forward kinematics, returning the position of the gripper as a function of the joint angles, and SDF returns the clearance (in meters) between the robot and any obstacles. The constraint SDF( q) ≥ 0.01 is implemented via Drake’s 
+
+MinimumDistanceLowerBoundConstraint . Targets are sampled 1) within shelves, 2) in bins, 3) near objects, and 4) uniformly in the free space. We sample from all 4 classes of target configu-rations with equal probability. (85) is solved using SNOPT [87]. 40 Figure 14: Policy rollouts from the same start and goal pairs for different training algorithms. a) The policy trained with data filtering (i.e. GCS-only) has not seen enough data to learn the maze. Its rollouts frequently collide with obstacles. b) The policy trained with RRT-only has memorized the maze, but exhibits non-smoothness. c) The co-trained policy’s behavior is similar to the RRT-only policy. d) The Ambient Diffusion Policy is smooth and understands the structure of the maze. 0.0 0.2 0.4 0.6 0.8 1.0  
+
+> tmin
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Success Rate
+> Success Rate vs tmin
+> GCS Only
+> RRT Only
+> Co-training
+> Success Rate
+
+Figure 15: Maze success rate vs σtmin . For small σtmin , the Ambient Policies are smooth and achieve high success rate (see Figure 6a). As σtmin increases, the RRT data is used less during training, which reduces success rate. Given a start and goal configuration q0, q 1 ∈ R7, we use BiRRT [88] to produce the suboptimal data. To produce the high-quality data, we first run randomized shortcutting [89] to slightly simplify the path. We then solve the trajectory optimization problem 
+
+min q(s)
+
+R 10 || ˙q(s)|| 2 ds
+
+s.t. q(0) = q0, q (1) = q1,
+
+SDF( q(s)) ≥ 0, ∀s ∈ [0 , 1] 
+
+(86) with Drake’s KinematicTrajectoryOptimization , using its standard B-spline discretization [90]. We use the shortcut trajectory as an initial guess and solve with IPOPT [91], with solver options tuned aggressively to maintain feasibility. 41 Table 7: Comparison between the 2D maze and 7-DoF neural motion planning experiments. 
+
+2D Maze 7-DoF NMP 
+
+Dp Source GCS [65] Trajectory Optimizer [83] 
+
+Dq Source RRT [66] BiRRT [84] 
+
+|D p| 50 100,000 
+
+|D q | 5,000 1,000,000 
+
+Output Type Action Chunk Full Plan 
+
+Rollouts Closed-Loop Open-Loop 
+
+Penetration Threshold 0cm 2cm 
+
+Output Space 2D (x, y ) 7D (Config. Space) 
+
+Start & End Goals Uniformly Random Around points of interest (See Appendix G.2) Training Algo. Success Rate ↑ Smoothness ↓
+
+(Eq. (84)) Data Filtering 73 .9+2 .7 
+
+> −2.8
+
+% 3.7
+
+Co-train (α∗ = 0 .091 ) 91 .3+1 .7 
+
+> −1.9
+
+% 32 .6
+
+Ambient (σt∗ 
+
+> min
+
+= 0 .025 ) 91 .9+1.6 
+
+> −1.9
+
+% 20 .2
+
+Table 8: Neural Motion Planning Best-of-100 Results (1000 trials). Ambient retains the highest success rate while achieving lower squared acceleration than the co-trained base-line. 0 10 20 30 40 50 60 70    
+
+> Average Squared Acceleration
+> 0.60
+> 0.65
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Success Rate
+> Success Rate vs Smoothness (Best-of-100)
+> Ambient ( tmin sweep)
+> Co-training ( sweep)
+> RRT Only
+> Trajopt Only
+> Better
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> tmin
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Figure 16: Figure 6b repeated with best-of-100 evaluation. The overall trends are the same, but the success rates are higher and the gap between the two Pareto frontiers is smaller. The collision-free constraint SDF( q(s)) ≥ 0, ∀s ∈ [0 , 1] is applied at 200 points evenly spaced along the trajectory. Collision checking with finer granularity is performed after trajectory opti-mization to filter trajectories with collisions. In principle, the discarded trajectories could be added to Dq and used at sufficiently high diffusion times during training. Each trajectory in Dp and Dq is subsampled to 100 waypoints, equally spaced in time. This subsam-pling procedure acts as a low-pass filter which reduces some of the non-smoothness in the BiRRT data. 
+
+Evaluation: Instead of rolling out the model closed-loop (as in the maze experiments), we train the planner to predict the entire plan at once. Start and end configurations are sampled from the 4 classes described above. Each trial is successful if the planner predicts a collision-free trajectory with up to 2cm of penetration. We allow 2cm of padding because the training trajectories were generated with 0cm of padding and frequently pass very close to obstacles. Both the first and last waypoints of the predicted plan must be within a 0.2rad ball of the start and end configurations respectively. Previous works in neural motion planning adopt a best-of-N approach when evaluating their planners [71]. We present the results using N = 1 (Table 1b and Figure 6b) and N = 100 as in [68] (Table 8 and Figure 16). Concretely, for each trial, we generate 100 plans and pick the one with the least collisions. The general trends for both choices of N are the same, but the success rates are significantly higher. The Ambient policy continues to be smoother than the co-trained policy in both cases. 42 0.0 0.2 0.4 0.6 0.8 1.0  
+
+> tmin
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Success Rate
+> Success Rate vs tmin
+> Trajopt Only
+> RRT Only
+> Co-training
+> Success Rate
+
+(a) Success rate vs σtmin .0.0 0.2 0.4 0.6 0.8 1.0          
+
+> tmin
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 1
+> TT
+> 0 at 2 dt
+> 1
+> TT
+> 0at2dt vs tmin
+> 1
+> TT
+> 0at2dt
+> Trajopt Only
+> RRT Only
+> Co-training
+
+(b) Smoothness metric vs σtmin .
+
+Figure 17: Neural motion planning σtmin sweep. (a) For small σtmin , the policies are smoother, which results in fewer accidental collisions and increases success rate. For large σtmin , the RRT data becomes under-utilized, which decreases the success rate. (b) Increasing σtmin improves smooth-ness. 
+
+G.3 Sim-and-Real Co-training: Planar Pushing Data Generation : We use the datasets from Wei et al. [12]. Dp contains human teleoperated demonstrations in their “target” simulation environment and Dq contains automatically generated demonstrations [72] from their “source” simulation environment. Table 9 shows the distribution shift between the source and target simulation datasets. For more details and visualizations of the environments, see Wei et al. [12]. Table 9: Sim-to-target gap along three axes . The sim-to-target gap in the environments from [12] was designed to mimic the sim-to-real gap. See [12] for visualizations. 
+
+Gap Simulation Target Sim 
+
+Visual White spectrum light Different object colors Different camera pose No shadows Warm spectrum light Different object colors Different camera pose Shadows Physics Quasistatic Drake physics [90] Action Motion planning Human teleop 
+
+Evaluation: The slider is randomly initialized within the robot’s workspace. A trial is successful if the robot returns to its default position and the slider’s pose is within 1.5cm and 3.5o of the goal. The time limit is 75s. The evaluation criteria exactly match Wei et al. [12] to ensure a fair comparison. 
+
+Ablations: We use these experiments as a test-bed for evaluating key design decisions in Ambient Diffusion Policy. Figure 19 consolidates eight ablations; the results suggest the following: • Per-datapoint tmin (Figure 19a): Labeling σtmin per dataset improves over co-training, and labeling σtmin per datapoint performs the best. The distribution of tmin assigned by the best classifier is shown in Figure 18. • σtmax sweep (Figure 19b): Using locality ( σtmax > 0) does not appear to improve or hurt performance in sim-and-real co-training until σtmax is larger. Sim and real data do not share the same local action structure (e.g. due to differing contact dynamics); thus, policies should not train on sim data at low diffusion times. • Classifier robustness (Figures 19c and 19d): Policy performance is insensitive to the classi-fier checkpoint and threshold τ ; the classifier merely needs to be sufficiently trained. • Ambient loss buffer (Figure 19e): The Ambient loss is highly sensitive to the buffer size from Appendix C. In most experiments (Table 5), we avoid this sensitivity by training with the regular denoising objective [54]. 43 • tmin granularity (Figure 19f): Assigning tmin at intermediate granularities (one tmin per par-tition of Dq ) appears to be a promising direction. We split Dq into N partitions and annotate one σtmin per partition. N = 1 corresponds to assigning a single tmin to all of Dq , and N → ∞ 
+
+corresponds to annotating a tmin per sample. Given a partition Pi, we annotate 
+
+tmin = inf {t : E(O,A 0)∼Pi,A t|A0 [cϕ∗ (At, t )] > 0.5 − τ }.
+
+We compare three partitioning strategies: (1) randomly partition the action chunks (blue); (2) randomly partition the trajectories – each partition contains the action chunks of its trajectories (red); (3) find tmin for each action chunk using the classifier and sort the chunks according to these values. Then form the partitions in increasing order (orange). For this task, Strategy (1) with N = 10 ,000 performed best. • |D q | scaling (Figures 19g and 19h): As Dq scales, Ambient consistently outperforms co-training via re-weighting at both |D p| = 10 and |D p| = 50 (except at |D q | = 4000 in the latter). The co-training baseline results (green) are from [12]. 0 20 40 60 80 100   
+
+> tmin
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> Density
+> Distribution of tmin per Action Chunk
+
+Figure 18: Distribution of tmin labels. This histogram shows the distribution of tmin ∈ [0 , 100] 
+
+assigned to each action chunk by the classifier for the sim-and-real experiments. 
+
+G.4 Task Mismatch: Block Sorting Data Collection: Both datasets were collected using VR teleoperation. 
+
+Evaluation: On each trial, 1-3 red blocks and 1-3 blue blocks are randomly initialized in a pile between the bins. The time limit is 20s per block. This allows trials with more blocks to have a longer time limit. Each policy is evaluated on 200 trials ( ∼800 blocks). Figure 7 shows the performance of the Ambient Diffusion Policy on each metric during the σtmax 
+
+sweep. Figures 20a and 20b show the average number of grasp attempts and time required per block of the policy’s trained with different σtmax values. Both can be viewed as additional motion metrics and improve (decrease) with higher σtmax .
+
+Ablation 1 (Task-Conditioned): A standard solution to handling the incorrect data is to add a one-hot encoding that indicates the sorting direction. This is analogous to task or quality conditioning [10]. Even with task conditioning, the Ambient Diffusion Policy performs the best (Table 10a). Note that Ambient Diffusion Policy and task-conditioning are complementary. 
+
+Ablation 2 ( Dq only at low noise): Locality implies that the denoisers at t < t max are insensitive to the global task structure. If so, we should be able to train an effective policy without using any “correct” data at low noise. We train a policy (without task-conditioning) that exclusively uses Dq
+
+for t ∈ [0 , t max ) and Dp for t ∈ (tmax , T ]. This policy still achieves a logic accuracy of 97 .9% and a motion score of 93 .8% (Table 10b). This reinforces our claim that the backward process factorizes into a planning and a local refinement regime. 44 0.0 0.2 0.4 0.6 0.8 1.0 
+
+> tmin
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+> Performance
+
+| p| = 50, | q| = 2000 
+
+Co-training 
+
+Real Only 
+
+Ambient ( tmin per datapoint) 
+
+Ambient ( tmin per dataset) 
+
+Performance vs tmin (a) Performance vs σtmin (per dataset). 0.000 0.025 0.050 0.075 0.100 0.125 0.150 0.175 
+
+> tmax
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+> Success Rate
+
+| p| = 50, | q| = 2000 
+
+Co-training  
+
+> p
+
+Only 
+
+Ambient ( tmin per datapoint) 
+
+Ambient + Locality 
+
+Performance vs tmax (b) Performance vs σtmax .0 500 1000 1500 2000 2500 3000 
+
+Classifier Checkpoint 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+> Performance
+
+| p| = 50, | q| = 2000 
+
+Co-training 
+
+Real Only 
+
+Success Rate 
+
+Performance vs Classifier Checkpoint 
+
+(c) Sensitivity to classifier training duration. 0.40 0.42 0.44 0.46 0.48 0.50 
+
+Classifier Threshold 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+> Performance
+
+| p| = 50, | q| = 2000 
+
+Co-training 
+
+Real Only 
+
+Success Rate 
+
+Performance vs Classifier Threshold (d) Sensitivity to classifier threshold τ .10 0 10 1 10 2 10 3
+
+Buffer Size 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+> Performance
+
+| p| = 50, | q| = 2000 
+
+Infinite Buffer 
+
+Ambient Diffusion 
+
+Performance vs Ambient Buffer Size 
+
+(e) Sensitivity to the Ambient loss buffer (Ap-pendix C). 10 0 10 1 10 2 10 3 10 4 10 5 10 6
+
+Number of Partitions 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0    
+
+> Performance
+> tmin per dataset tmin per action chunk
+
+| p| = 50, | q| = 4000 
+
+Ambient Diffusion 
+
+Random Action Chunk Partitions 
+
+Random Episode Partitions 
+
+Sorted Partitions 
+
+Performance vs tmin Granularity 
+
+(f) Performance vs granularity of tmin labels. 500 1000 1500 2000 2500 3000 3500 4000 
+
+Num Sim Demos 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+0.5 
+
+0.6 
+
+0.7 
+
+> Performance
+
+| p| = 10 
+
+Real Only 
+
+Ambient Diffusion 
+
+Co-training 
+
+Performance vs Num Sim Demos 
+
+(g) Performance vs |D q | scale ( |D p| = 10 ). 500 1000 1500 2000 2500 3000 3500 4000 
+
+Num Sim Demos 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+> Performance
+
+| p| = 50 
+
+Real Only 
+
+Ambient Diffusion 
+
+Co-training 
+
+Performance vs Num Sim Demos (h) Performance vs |D q | scale ( |D p| = 50 ). 
+
+Figure 19: Sim-and-real co-training ablations. Eight ablations covering the key design decisions of Ambient Diffusion Policy. See Appendix G.3 for the per-panel analysis. 45 0.0 0.2 0.4 0.6 0.8 1.0  
+
+> tmax
+> 2.00
+> 2.25
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> 3.50
+> 3.75
+> 4.00
+> Grasps Per Block
+> Grasps Per Block vs tmax
+> Grasps Per Block
+> High-quality Only
+> Co-training
+
+(a) Grasp attempts per block vs σtmax .0.0 0.2 0.4 0.6 0.8 1.0   
+
+> tmax
+> 8
+> 10
+> 12
+> 14
+> 16
+> 18
+> 20
+> Time Per Block
+> Time Per Block vs tmax
+> Time Per Block
+> High-quality Only
+> Co-training
+
+(b) Time per block vs σtmax .
+
+Figure 20: Additional motion-level metrics for the block sorting experiment (Section 7.4). (a) 
+
+Grasp attempts per block improves as σtmax increases but plateaus after σt∗ 
+
+> max
+
+= 0 .46 . (b) Time per block improves as σtmax increases. Table 10: Block sorting ablations (200 trials, ∼800 blocks). (a) Ablation 1 (Task-Conditioned): Ambient outperforms co-training. (b) Ablation 2: the Ambient Diffusion Policy performs well despite training on no logically correct samples for t ∈ [0 , t ∗
+
+> max
+
+).
+
+(a) Ablation 1: Task-Conditioned (b) Ablation 2 
+
+Training Algo. Co-train Locality Locality (# Blocks: ∼800) (α∗ = 0 .5) (σt∗ 
+
+> max
+
+= 0 .89 ) Dq only below 
+
+σt∗ 
+
+> max
+
+= 0 .24 
+
+Logic ↑ 98 .6+0.7 
+
+> −1.1
+
+% 98 .5+0 .7 
+
+> −1.1
+
+% 97 .9+0 .9 
+
+> −1.3
+
+%Motion ↑ 91 .5+1 .8 
+
+> −2.2
+
+% 94 .2+1.5 
+
+> −1.8
+
+% 93 .8+1 .6 
+
+> −1.9
+
+%Success Rate ↑ 90 .3+2 .0 
+
+> −2.3
+
+% 92 .8+1.7 
+
+> −2.0
+
+% 91 .9+1 .8 
+
+> −2.1
+
+%
+
+H Scaling Experiments: Open X-Embodiment 
+
+H.1 OXE Experiments Dataset Curation: We collected demonstrations for Dp with VR teleoperation. For each demon-stration, 3-5 objects are placed on the table. These objects are selected among a set of 31 objects in the training distribution. The teleoperator opens the drawer, moves the objects into the drawer, and closes the drawer. These experiments used two different subsets of the Open X-Embodiment (OXE) for Dq : Magic Soup++ (MS++) and Custom OXE (COXE). MS++ is a collection of 27 datasets that was taken directly from the OpenVLA paper [5]. Custom OXE is a collection of 48 datasets. All 27 datasets from MS++ were included in COXE. Afterward, any dataset that met the following criteria was included: • Robot morphology: single arm or mobile manipulator • Action space: EEF position or EEF velocity • Has a known control frequency • Observation space: has proprioception and contains at least one non-depth camera • Accessible: a few datasets that met the criteria above were not accessible, contained am-biguous features and action-space labels, or bugs. These datasets were excluded. 
+
+Dataset Weights: Weights for MS++ were taken from OpenVLA [5]. For COXE, we reused weights for the MS++ subset. For the remaining datasets, we assigned weights that were proportional to their size except for the two largest datasets. For those, we halved their relative weight. Following the 46 Table 11: Table cleaning evaluation rubric. The maximum score per trial is 1.0. 
+
+Subtask Points 
+
+Open drawer 0.1 Clean object (per object, 3 total) 0.8/3 ≈ 0.267 
+
+Close drawer (after table cleaned) 0.1 
+
+Max score per trial 1.0 
+
+“50/50 co-training” in previous literature [92][26], we normalize the total weight of Dq to be 0.5, and assign Dp a weight of 0.5. This is equivalent to assigning α = 0 .5 in the co-training case. In the unweighted case, the weight of each dataset is proportional to its relative size. See Figure 21 for a visualization. 
+
+Annotating tmin : For each sub-dataset in COXE (e.g. DROID [92]), we train a classifier to discern samples from Dp and the sub-dataset. We use this classifier to assign a single tmin value to all action chunks within this sub-dataset. This required us to train 48 classifiers for the 48 sub-datasets in COXE. Although in principle, we could have accomplished this using a single classifier cϕ(At, t, l ),where l ∈ { 0, 1}48 is a one-hot encoding indicating the source dataset of At. Figures 21 and 22 show the distribution of tmin assigned to the sub-datasets of COXE for both the table cleaning and the tower building task. 
+
+Annotating tmax : We simply set tmax = 10 for the table cleaning and tmax = 5 for tower building. We did not perform a sweep. These values are unlikely to be optimal, especially since adding locality showed mixed results for table cleaning. Lowering tmax in the tower building experiments appears to help. Daras et al. [19] present a method to automatically label tmax using a similar classifier-based ap-proach. Their approach assigned tmax = 0 to nearly all datasets in MS++ and COXE. A full hyperparameter sweep on real hardware would have been prohibitively time-consuming. Hence, we selected values that are small enough to be conservative, yet large enough for a meaningful evaluation of locality. 
+
+Table Cleaning Evaluation: During each trial, 3 random unseen objects were placed on the table. The robot’s task completion is measured according to the rubric in Table 11. The time limit is 90s. Each policy was evaluated on 20 trials. The results include a minor camera resolution bug that lowers the policy performance across all table cleaning experiments. The image data was collected at 640 by 320 pixels and resized to 224 by 224 for training. Due to a bug at inference time, the image streams were 128 by 128 and upscaled to 224 by 224 for the policy; thus, the images during inference were effectively lower resolution than the images during training. 
+
+Tower Building Evaluation: The performance of each trial is the number of correct blocks placed before the robot topples the tower or requires human intervention. Correct indicates that the blocks follow the correct alternating direction and color shown in Figure 1f. Each policy was evaluated on 20 trials. The camera resolution bug from the table cleaning experiments was resolved for the tower building experiments. 
+
+H.2 OXE Ablations H.2.1 Qualitative Performance 
+
+The qualitative gap between the Ambient and co-trained policies is larger than the task completion metric would suggest. The 90s timeout artificially inflates the task completion rates of weak policies: they can fail repeatedly without penalty as long as they eventually succeed. To capture this, we recorded the number of grasp attempts and time required per object for each policy. Tables 12 47 0 20 40 60 80 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Proportion
+
+Unweighted Co-training Sampling Distribution 
+
+0 20 40 60 80 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Proportion
+
+Unweighted Ambient Sampling Distribution 
+
+0 20 40 60 80 
+
+Diffusion Time 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Proportion
+
+Reweighted Co-training Sampling Distribution 
+
+0 20 40 60 80 
+
+Diffusion Time 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Proportion
+
+Reweighted Ambient Sampling Distribution 
+
+Table Cleaning (clean) 
+
+RT-1 Robot Action 
+
+QT-Opt 
+
+Berkeley Bridge 
+
+Freiburg Franka Play 
+
+USC Jaco Play 
+
+Berkeley Cable Routing 
+
+Roboturk 
+
+NYU VINN 
+
+Austin VIOLA 
+
+Berkeley Autolab UR5 
+
+TOTO Benchmark 
+
+Language Table 
+
+Columbia PushT Dataset 
+
+Stanford Kuka Multimodal 
+
+NYU ROT 
+
+Stanford HYDRA 
+
+Austin BUDS 
+
+NYU Franka Play 
+
+Maniskill 
+
+Furniture Bench 
+
+CMU Franka Exploration 
+
+UCSD Kitchen 
+
+UCSD Pick Place 
+
+Austin Sailor 
+
+Austin Sirius 
+
+BC-Z 
+
+Tokyo PR2 Fridge Opening 
+
+Tokyo PR2 Tabletop Manip. 
+
+UTokyo xArm PickPlace 
+
+Robonet 
+
+Berkeley RPT Data 
+
+KAIST Nonprehensile 
+
+LSMO Dataset 
+
+DLR Sara Pour 
+
+DLR Sara Grid Clamp 
+
+DLR Wheelchair Shared Ctrl 
+
+ASU TableTop Manip. 
+
+Stanford Robocook 
+
+Imperial Wrist Cam 
+
+CMU Franka Pick-Insert 
+
+UIUC D3Field 
+
+Austin Mutex 
+
+Berkeley Fanuc Manip. 
+
+CMU Play Fusion 
+
+CMU Stretch 
+
+DROID 
+
+DobbE 
+
+FMB 
+
+0 20 40 60 80 
+
+tmin 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+> Number of Datasets
+
+Distribution of tmin Across Datasets 
+
+Task: Table Cleaning Figure 21: Table Cleaning: Dataset re-weighting and tmin visualization. These plots show the sampling ratio for Dp (shown in blue) and each dataset in COXE at different diffusion times for the table cleaning task. Left: Co-training uses the same sampling ratio at all diffusion times. Right: 
+
+The sampling ratio for each dataset varies at each diffusion time. Notably, at intermediate diffusion times, only data from Dp can be used (the “Donut paradox” from Daras et al. [19]). The histogram shows the distribution of tmin values assigned by the classifiers to each dataset in COXE. 48 0 20 40 60 80 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Proportion
+
+Unweighted Co-training Sampling Distribution 
+
+0 20 40 60 80 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Proportion
+
+Unweighted Ambient Sampling Distribution 
+
+0 20 40 60 80 
+
+Diffusion Time 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Proportion
+
+Reweighted Co-training Sampling Distribution 
+
+0 20 40 60 80 
+
+Diffusion Time 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Proportion
+
+Reweighted Ambient Sampling Distribution 
+
+> Tower Building (clean)
+> RT-1 Robot Action
+> QT-Opt
+> Berkeley Bridge
+> Freiburg Franka Play
+> USC Jaco Play
+> Berkeley Cable Routing
+> Roboturk
+> NYU VINN
+> Austin VIOLA
+> Berkeley Autolab UR5
+> TOTO Benchmark
+> Language Table
+> Columbia PushT Dataset
+> Stanford Kuka Multimodal
+> NYU ROT
+> Stanford HYDRA
+> Austin BUDS
+> NYU Franka Play
+> Maniskill
+> Furniture Bench
+> CMU Franka Exploration
+> UCSD Kitchen
+> UCSD Pick Place
+> Austin Sailor
+> Austin Sirius
+> BC-Z
+> Tokyo PR2 Fridge Opening
+> Tokyo PR2 Tabletop Manip.
+> UTokyo xArm PickPlace
+> Robonet
+> Berkeley RPT Data
+> KAIST Nonprehensile
+> LSMO Dataset
+> DLR Sara Pour
+> DLR Sara Grid Clamp
+> DLR Wheelchair Shared Ctrl
+> ASU TableTop Manip.
+> Stanford Robocook
+> Imperial Wrist Cam
+> CMU Franka Pick-Insert
+> UIUC D3Field
+> Austin Mutex
+> Berkeley Fanuc Manip.
+> CMU Play Fusion
+> CMU Stretch
+> DROID
+> DobbE
+> FMB
+
+0 20 40 60 80 
+
+tmin 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+> Number of Datasets
+
+Distribution of tmin Across Datasets 
+
+Task: Tower Building Figure 22: Tower Building: Dataset re-weighting and tmin visualization. See Figure 21 for the equivalent plot descriptions. and 13 show that the Ambient Diffusion Policies require 25-40% fewer grasps and time per object than their co-trained counterparts. The dataset re-weighting ablation is presented in the main body (Section 8.2). 
+
+I Finetuning 
+
+I.1 Implementation 
+
+To finetune the base policies, we reduce the learning rate by 10x to 20x. Checkpoints are saved frequently since finetuning a model for too long can degrade performance. In the simulated experi-ments, we evaluate every checkpoint and report the performance of the best policy. In the real-world experiments, we perform a preliminary evaluation of each checkpoint with 5-10 trials, and perform a full set of trials on the best checkpoint. The controlled finetuning comparison is presented in the main body (Section 7.5). 49 Table 12: Average grasp attempts per object. The error bars on the Average row report the standard error of the mean across per-object values in each column ( n = 10 objects). 
+
+MS++ COXE Object Co-train Ambient + Locality Co-train Ambient + Locality 
+
+Apple 2 1 2 2
+
+Figurine 4 2 2 2
+
+Eraser 4 2 2 1
+
+Play-Doh 2 2 2 2
+
+Robot Gripper 3 2 2 2
+
+Yarn 2 2 2 2
+
+Camera Mount 1 1 1 2
+
+3D Printed Object 2 2 3 1
+
+Mustard 3 1 2 2
+
+Garbage Bag Box 1 1 3 1
+
+Average 2.4 ± 0.3 1.6 ± 0.2 2.1 ± 0.2 1.7 ± 0.2
+
+Table 13: Average cleaning time per object. The error bars on the Average row report the standard error of the mean across per-object values in each column ( n = 10 objects). 
+
+MS++ COXE Object Co-train Ambient + Locality Co-train Ambient + Locality 
+
+Apple 21s 9s 30s 19s 
+
+Figurine 44s 20s 30s 20s 
+
+Eraser 39s 16s 18s 8s 
+
+Play-Doh 20s 20s 19s 20s 
+
+Robot Gripper 31s 19s 19s 20s 
+
+Yarn 22s 19s 20s 20s 
+
+Camera Mount 12s 8s 8s 20s 
+
+3D Printed Object 19s 20s 29s 8s 
+
+Mustard 33s 9s 18s 19s 
+
+Garbage Bag Box 8s 8s 30s 7s 
+
+Average 24 .9 ± 3.6s 14 .8 ± 1.7s 22 .1 ± 2.3s 16 .1 ± 1.8s
+
+I.2 Table Cleaning (OXE) 
+
+Figure 23 compares finetuning the best co-trained and Ambient OXE policies on Dp in the table cleaning task; neither produced a statistically significant gain. The results are consistent with the controlled experiments in Section 7.5. 
+
+J Distribution Shifts in the Observation Space 
+
+We explore two algorithms for handling suboptimality in the observation space. Other approaches exist – such as jointly denoising actions and observations. We note that “suboptimality” in the observation space can be ill-defined: an image from a different task is not necessarily suboptimal. In fact, it could increase the diversity of the dataset which is desirable. Although Ambient Diffusion Policy only addresses action-space distribution shift, its results are already strong. Whether observation-space shift presents a fundamental problem and possible solu-tions remain open directions. 50 Custom OXE 
+
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Success Rate
+> 0.71
+> 0.83
+> 0.71
+> 0.82
+
+## Finetuning Comparison (50 Clean + COXE) 
+
+> Co-training
+> Ambient + Locality
+> Co-training + Finetune
+> Ambient + Locality + Finetune
+
+Figure 23: Finetuning resulted in no statistically significant change in policy performance on the table cleaning task. 
+
+J.1 Noising the Observations 
+
+Ambient Diffusion Policy contracts distributional differences in the actions by adding noise. We explore the same solution for the observations. During training, we add noise to the observation input (images, proprioception, etc) for half of the samples using the same noise schedule as the actions. The model takes in the noise level for both the actions and the observations. At inference time, the model performs inference with clean observations. This ablation is conceptually similar to concurrent work that noises observations [93]; however, their goal was to expand the sampling distribution of a base policy for RL finetuning. Figure 24a presents the results; it did not appear to help for table cleaning. 
+
+J.2 Classifier-Free Guidance 
+
+In classifier-free guidance, the model learns to denoise the actions both unconditionally (i.e. without observations) and conditionally (with observations) [94]. We use the same training implementation as [94]. At sampling-time, we use the denoiser in (87) where w is the guidance weight. We explored classifier-free guidance as a potential solution since it trains an unconditional denoiser which is unaffected by corruptions in the observations. 
+
+˜hθ (At, O, t ) = (1 + w) · hθ (At, O, t ) − w · hθ (At, ∅, t ) (87) Figure 24b shows that classifier-free guidance does not improve performance for all swept values of 
+
+w.51 Ambient Ambient + Locality 
+
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Success Rate
+> 0.82
+> 0.76
+> 0.83
+> 0.73
+
+Noisy Observation Ablation (50 Clean + COXE) 
+
+> Clean obs
+> Noisy obs
+
+(a) Noising the observations during training. 0 1 2 3 4
+
+CFG Weight w
+
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Success Rate
+
+50 Clean Demos + Custom OXE 
+
+> Co-training
+> Ambient (no CFG)
+> CFG
+
+Success Rate vs CFG Weight (b) Classifier-free guidance vs. guidance weight w.
+
+Figure 24: Algorithms for handling distribution shift in the observation space. Neither approach produced stronger policies on the table cleaning task. (a) Adding Gaussian noise to the observations during training. (b) Classifier-free guidance [94] swept over guidance weights w.52
