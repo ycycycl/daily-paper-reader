@@ -6,82 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-06-12
-- 运行时间：2026-06-12 21:20:37 UTC
+- 最新运行日期：2026-06-13
+- 运行时间：2026-06-13 21:45:38 UTC
 - 运行状态：成功
-- 本次总论文数：20
-- 精读区：8
+- 本次总论文数：19
+- 精读区：7
 - 速读区：12
 
 ### 今日简报（AI）
-今日完成 20 篇机器人与强化学习相关论文筛选：8 篇精读、12 篇速读，重点聚焦机器人策略学习、路径规划与安全导航。
-最值得关注的是 ActionMap 的体素动作热图策略学习，以及基于 DDPG 的路径规划方法；同时可速读 VLA 安全社交导航与机器人视频世界模型可信评测。
-建议普通读者先读两篇 9.0 分精读论文，把握“机器人如何学动作、如何规划路径”这条主线，再用速读论文补充安全性与可信度视角。
-- 详情：[/202606/12/README](/202606/12/README)
+今天共筛选 19 篇机器人相关论文，重点精读聚焦生成式机器人策略早期失效检测与几何感知动作表征。  
+最值得看的是 ActProbe 与 GEAR-VLA：前者关注提前发现策略失败，后者指向更可泛化的机器人操作表示；速读中安全导航、视频生成式操作和 affordance 基础模型也值得跟进。  
+普通读者建议先读两篇 9.0 分精读论文，再按兴趣补看 SAFER-Nav、VICX、AFUN，把握机器人“更安全、更泛化、更懂功能”的主线。
+- 详情：[/202606/13/README](/202606/13/README)
 
 ### 精读区论文标签
-1. [ActionMap: Robot Policy Learning via Voxel Action Heatmap](/202606/12/2606.06904v2-actionmap-robot-policy-learning-via-voxel-action-heatmap)  
+1. [ActProbe: Action-Space Probe for Early Failure Detection of Generative Robot Policies](/202606/13/2606.08508v1-actprobe-action-space-probe-for-early-failure-detection-of-generative-robot-policies)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：面向连续控制的VLA动作解码器
-2. [Path Planning Using Deep Deterministic Policy Gradient: A Reinforcement Learning Approach](/202606/12/2606.07855v1-path-planning-using-deep-deterministic-policy-gradient-a-reinforcement-learning-approach)  
-   标签：评分：9.0/10、query:q2
-   evidence：自动驾驶车辆DDPG路径规划
-3. [Ego-Pi: VLA Fine-Tuning for Ego-Centric Human and Robot Data](/202606/12/2606.08107v1-ego-pi-vla-fine-tuning-for-ego-centric-human-and-robot-data)  
+   evidence：生成式机器人策略的时序一致性信号
+2. [GEAR-VLA: Learning Geometry-Aware Action Representations for Generalizable Robotic Manipulation](/202606/13/2606.08530v1-gear-vla-learning-geometry-aware-action-representations-for-generalizable-robotic-manipulation)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：机器人行为学习的VLA微调
-4. [Efficient-WAM: A 1B-Parameter World-Action Model with Low-Cost Future Imagination](/202606/12/2606.10040v1-efficient-wam-a-1b-parameter-world-action-model-with-low-cost-future-imagination)  
+   evidence：机器人操作的VLA动作表示
+3. [GEAR-VLA: Learning Geometry-Aware Action Representations for Generalizable Robotic Manipulation](/202606/13/2606.08530v2-gear-vla-learning-geometry-aware-action-representations-for-generalizable-robotic-manipulation)  
    标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：低延迟世界动作模型用于具身控制
-5. [Efficient-WAM: A 1B-Parameter World-Action Model with Low-Cost Future Imagination](/202606/12/2606.10040v2-efficient-wam-a-1b-parameter-world-action-model-with-low-cost-future-imagination)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：低成本世界动作模型与未来视觉预测
-6. [Ambient Diffusion Policy: Imitation Learning from Suboptimal Data in Robotics](/202606/12/2606.12365v1-ambient-diffusion-policy-imitation-learning-from-suboptimal-data-in-robotics)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：机器人模仿学习扩散策略
-7. [APT: Action Expert Pretraining Improves Instruction Generalization of Vision-Language-Action Policies](/202606/12/2606.12366v1-apt-action-expert-pretraining-improves-instruction-generalization-of-vision-language-action-policies)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：带连续动作专家的VLA策略
-8. [World Pilot: Steering Vision-Language-Action Models with World-Action Priors](/202606/12/2606.12403v1-world-pilot-steering-vision-language-action-models-with-world-action-priors)  
-   标签：评分：9.0/10、query:upstream-ad-planning-idea
-   evidence：带世界动作先验和轨迹引导的VLA
+   evidence：VLA动作表示与轨迹监督
+4. [PACT: Self-Evolving Physical Safety Alignment for Diffusion Policies in Embodied Manipulation](/202606/13/2606.08414v1-pact-self-evolving-physical-safety-alignment-for-diffusion-policies-in-embodied-manipulation)  
+   标签：评分：8.5/10、query:upstream-ad-planning-idea
+   evidence：约束扩散策略安全对齐
+5. [GeoDrive-Bench: Benchmarking Region-Specific Multimodal Reasoning in Autonomous Driving](/202606/13/2606.02774v1-geodrive-bench-benchmarking-region-specific-multimodal-reasoning-in-autonomous-driving)  
+   标签：评分：8.0/10、query:q2
+   evidence：自动驾驶VLM基准涵盖规划推理
+6. [A 3D Isovist World Model -- Revealing a City's Unseen Geometry and Its Emergent Cross-City Signature](/202606/13/2606.03609v2-a-3d-isovist-world-model----revealing-a-citys-unseen-geometry-and-its-emergent-cross-city-signature)  
+   标签：评分：8.0/10、query:q6
+   evidence：城市智能体三维可通行几何世界模型
+7. [DriveReward: A Comprehensive Dataset and Generative Vision-Language Reward Model for Autonomous Driving](/202606/13/2606.08525v1-drivereward-a-comprehensive-dataset-and-generative-vision-language-reward-model-for-autonomous-driving)  
+   标签：评分：8.0/10、query:q2
+   evidence：用于驾驶轨迹选择的生成式视觉语言奖励模型
 
 ### 速读区论文标签
-1. [Act on What You See: Unlocking Safe Social Navigation in Vision-Language-Action Models](/202606/12/2606.10495v1-act-on-what-you-see-unlocking-safe-social-navigation-in-vision-language-action-models)  
+1. [SAFER-Nav: Enhancing Safety for Visual Robot Navigation via Segmentation-Aware Fine-Tuning](/202606/13/2606.11636v1-safer-nav-enhancing-safety-for-visual-robot-navigation-via-segmentation-aware-fine-tuning)  
    标签：评分：8.5/10、query:upstream-ad-planning-idea
-   evidence：面向安全导航动作的VLA对齐
-2. [Lagrangian Perturbation Diffusion Steering: Latent Reinforcement Learning for Generative Policies](/202606/12/2606.01151v1-lagrangian-perturbation-diffusion-steering-latent-reinforcement-learning-for-generative-policies)  
+   evidence：扩散机器人导航轨迹
+2. [VICX: Generalizable Robot Manipulation via Video Generation and In-Context Operator Network](/202606/13/2606.12028v1-vicx-generalizable-robot-manipulation-via-video-generation-and-in-context-operator-network)  
+   标签：评分：8.5/10、query:upstream-ad-planning-idea
+   evidence：视觉语言视频计划转为机器人轨迹
+3. [AFUN: Towards an Affordance Foundation Model for Functionality Understanding](/202606/13/2606.02551v1-afun-towards-an-affordance-foundation-model-for-functionality-understanding)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：面向机器人任务的扩散策略调优
-3. [RoboTrustBench: Benchmarking the Trustworthiness of Video World Models for Robotic Manipulation](/202606/12/2606.01600v1-robotrustbench-benchmarking-the-trustworthiness-of-video-world-models-for-robotic-manipulation)  
+   evidence：机器人动作理解的可供性基础模型
+4. [From Zero to Hero: Training-Free Custom Concept Spawning in World Models](/202606/13/2606.02575v1-from-zero-to-hero-training-free-custom-concept-spawning-in-world-models)  
    标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：机器人视频世界模型评测
-4. [Dexterity-BEV: Aligning 3D World and Actions for Generalizable Robot Policies Learning](/202606/12/2606.02274v1-dexterity-bev-aligning-3d-world-and-actions-for-generalizable-robot-policies-learning)  
-   标签：评分：8.0/10、query:upstream-ad-planning-idea
-   evidence：3D对齐VLM机器人策略与轨迹数据
-5. [Neuro-Symbolic Learning for Long-Horizon Task Planning Under Complex Logical Constraints](/202606/12/2606.06877v1-neuro-symbolic-learning-for-long-horizon-task-planning-under-complex-logical-constraints)  
+   evidence：动作条件交互式世界模型视频生成
+5. [SIMPLE: Simulation-Based Policy Learning and Evaluation for Humanoid Loco-manipulation](/202606/13/2606.08278v1-simple-simulation-based-policy-learning-and-evaluation-for-humanoid-loco-manipulation)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：机器人长时程任务规划
-6. [GenPO++: Generative Policy Optimization with Jacobian-free Likelihood Ratios](/202606/12/2606.06967v1-genpo-generative-policy-optimization-with-jacobian-free-likelihood-ratios)  
+   evidence：人形机器人基础模型策略基准
+6. [SpaceVLN: A Zero-Shot Vision-and-Language Navigation Agent with Online Spatial Cognitive Memory and Reasoning](/202606/13/2606.08992v1-spacevln-a-zero-shot-vision-and-language-navigation-agent-with-online-spatial-cognitive-memory-and-reasoning)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：面向连续控制的流式生成策略
-7. [Beyond Waypoints: A Trajectory-Centric Waypointing Paradigm for Vision-Language Navigation](/202606/12/2606.07244v1-beyond-waypoints-a-trajectory-centric-waypointing-paradigm-for-vision-language-navigation)  
+   evidence：导航策略的在线空间认知记忆
+7. [GuideWalk: Learning Unified Autonomous Navigation and Locomotion for Humanoid Robots across Versatile Terrains](/202606/13/2606.10449v1-guidewalk-learning-unified-autonomous-navigation-and-locomotion-for-humanoid-robots-across-versatile-terrains)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：视觉语言导航中的可执行轨迹
-8. [Spline Policy: A Structured Representation for Robot Policies](/202606/12/2606.07386v1-spline-policy-a-structured-representation-for-robot-policies)  
+   evidence：端到端具身导航与运动规划
+8. [FadeMem: Distance-Aware Memory Consolidation for Autoregressive Video Diffusion](/202606/13/2606.10671v1-fademem-distance-aware-memory-consolidation-for-autoregressive-video-diffusion)  
    标签：评分：7.0/10、query:upstream-ad-planning-idea
-   evidence：结构化机器人轨迹策略与时间分辨率
-9. [Mean Flow Distillation: Robust and Stable Distillation for Flow Matching Models](/202606/12/2606.11155v1-mean-flow-distillation-robust-and-stable-distillation-for-flow-matching-models)  
-   标签：评分：6.5/10、query:upstream-ad-planning-idea
-   evidence：面向更快流匹配推理的蒸馏
-10. [SCOUT: Semantic scene COverage via Uncertainty-guided Traversal](/202606/12/2606.06721v1-scout-semantic-scene-coverage-via-uncertainty-guided-traversal)  
+   evidence：长视频扩散的记忆压缩与一致性
+9. [Dash2Sim: Closed-Loop Driving Simulation from in-the-wild Dashcam Videos](/202606/13/2606.07366v1-dash2sim-closed-loop-driving-simulation-from-in-the-wild-dashcam-videos)  
+   标签：评分：6.0/10、query:q10
+   evidence：基于行车视频的闭环驾驶仿真
+10. [Counterfactual Transport Flows for Offline Conservative Trajectory Refinement](/202606/13/2606.09115v1-counterfactual-transport-flows-for-offline-conservative-trajectory-refinement)  
    标签：评分：6.0/10、query:upstream-ad-planning-idea
-   evidence：具身智能在线语义探索
-11. [A Causal Probabilistic Framework for Perception-Informed Closed-Loop Simulation of Autonomous Driving](/202606/12/2606.07186v1-a-causal-probabilistic-framework-for-perception-informed-closed-loop-simulation-of-autonomous-driving)  
+   evidence：离线决策中的流式轨迹细化
+11. [Self-Paced Curriculum Reinforcement Learning for Autonomous Superbike Racing in Simulation](/202606/13/2606.09236v1-self-paced-curriculum-reinforcement-learning-for-autonomous-superbike-racing-in-simulation)  
    标签：评分：6.0/10、query:q2
-   evidence：自动驾驶闭环仿真验证
-12. [Towards End to End Motion Planning and Execution for Autonomous Underwater Vehicles Using Reinforcement Learning](/202606/12/2606.08513v1-towards-end-to-end-motion-planning-and-execution-for-autonomous-underwater-vehicles-using-reinforcement-learning)  
-   标签：评分：6.0/10、query:q5
-   evidence：传感到控制的端到端运动规划
+   evidence：自动赛车强化学习控制
+12. [Goal Sets, Not Goal States: Queryable Robot Goals through Goal-Set Hindsight Relabeling](/202606/13/2606.09476v1-goal-sets-not-goal-states-queryable-robot-goals-through-goal-set-hindsight-relabeling)  
+   标签：评分：6.0/10、query:upstream-ad-planning-idea
+   evidence：面向灵活规划的目标条件机器人学习
 
 
 <div class="dpr-home-promo-card">
